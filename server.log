@@ -3391,3 +3391,865 @@ INFO:     127.0.0.1:48098 - "GET /api/sheets/config HTTP/1.1" 200 OK
 INFO:     127.0.0.1:56320 - "GET /api/sheets/config HTTP/1.1" 200 OK
 INFO:     127.0.0.1:60594 - "GET /api/sheets/config HTTP/1.1" 200 OK
 INFO:     127.0.0.1:44932 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42176 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37212 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35800 - "GET /api/receipt/TEST-001?api_key=JWIErd3PDRFwvUAZN1CO-AQ HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:35812 - "GET /api/receipt/NONEXISTENT-001?api_key=JWIErd3PDRFwvUAZN1CO-AQ HTTP/1.1" 404 Not Found
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [661658]
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 963
+    safe_id = voucher_id.replace("/", "-").replace("\", "-")
+                                                          ^
+SyntaxError: unterminated string literal (detected at line 963)
+INFO:     Started server process [667530]
+INFO:     Waiting for application startup.
+2026-05-28 21:58:31,203 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-28 21:58:31,635 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-28 21:58:31,955 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [667530]
+INFO:     Started server process [667726]
+INFO:     Waiting for application startup.
+2026-05-28 21:59:39,886 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-28 21:59:40,315 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-28 21:59:40,598 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:40710 - "GET /api/receipt/TEST-001?api_key=JWIErd3PDRFwvUAZN1CO-AQ HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40716 - "GET /api/receipt/NONEXISTENT-001?api_key=JWIErd3PDRFwvUAZN1CO-AQ HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40726 - "POST /api/save_receipt_json?api_key=JWIErd3PDRFwvUAZN1CO-AQ HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:55916 - "GET /api/receipt/TEST-001?api_key=JWIErd3PDRFwvUAZN1CO-AQ HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:55930 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:54020 - "GET /api/receipt/TEST-001 HTTP/1.1" 401 Unauthorized
+2026-05-28 22:00:44,386 [INFO] psvibe_api: Receipt rendered: voucher=TEST-001
+INFO:     127.0.0.1:56614 - "GET /api/receipt/TEST-001?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+2026-05-28 22:00:44,581 [WARNING] psvibe_api: Receipt not found: voucher=NONEXISTENT-001 path=/root/psvibe-sales-bot/bot/receipts/NONEXISTENT-001.json
+INFO:     127.0.0.1:56628 - "GET /api/receipt/NONEXISTENT-001?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 404 Not Found
+2026-05-28 22:00:44,683 [INFO] psvibe_api: Receipt saved: voucher=TEST-003
+INFO:     127.0.0.1:56638 - "POST /api/save_receipt_json?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51728 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49850 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56918 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44366 - "GET /api/sheets/config HTTP/1.1" 200 OK

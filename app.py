@@ -948,6 +948,48 @@ async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+# ═══════════════════════════════════════
+#  QUERY — get_receipt_html
+# ═══════════════════════════════════════
+@app.get("/api/receipt/{voucher_id}", tags=["Receipts"])
+async def api_get_receipt_html(voucher_id: str, auth=Depends(verify_api_key)):
+    """Render receipt HTML for a given voucher_id."""
+    import json
+    import os as _os
+    
+    try:
+        # Normalise voucher_id (replace / and \ with -)
+        safe_id = voucher_id.replace("/", "-").replace("\\", "-")
+        receipt_dir = "/root/psvibe-sales-bot/bot/receipts"
+        receipt_path = _os.path.join(receipt_dir, f"{safe_id}.json")
+        template_path = "/root/psvibe_api_server/receipt_template.html"
+        
+        if not _os.path.exists(receipt_path):
+            logger.warning("Receipt not found: voucher=%s path=%s", voucher_id, receipt_path)
+            return HTMLResponse(
+                content=f"<html><body style=\"font-family:sans-serif;padding:40px;text-align:center\"><h2>404 - Receipt Not Found</h2><p>Voucher: {voucher_id}</p></body></html>",
+                status_code=404
+            )
+        
+        with open(receipt_path, "r") as f:
+            receipt_data = json.load(f)
+        
+        with open(template_path, "r") as f:
+            template = f.read()
+        
+        # Inject receipt data before </head>
+        json_str = json.dumps(receipt_data, ensure_ascii=False)
+        script_tag = f"<script>window.__RECEIPT_DATA__ = {json_str};</script>"
+        injected = template.replace("</head>", script_tag + "\n</head>")
+        
+        logger.info("Receipt rendered: voucher=%s", voucher_id)
+        return HTMLResponse(content=injected)
+    except Exception as e:
+        logger.error("Receipt render error: %s", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ═══════════════════════════════════════
 #  MUTATION — add_console_game / remove_console_game
 # ═══════════════════════════════════════
