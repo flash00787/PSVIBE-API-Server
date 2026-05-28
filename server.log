@@ -3340,3 +3340,54 @@ INFO:     127.0.0.1:39152 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
 INFO:     127.0.0.1:43526 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
 INFO:     127.0.0.1:58572 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
 INFO:     127.0.0.1:56590 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:52426 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:50878 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:41238 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:50684 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:37558 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:39538 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:36906 - "GET /health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:58506 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:44508 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:43146 - "GET /sheets/config HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:43154 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:47450 - "GET /api/sheets/config?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47534 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40558 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37466 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [625220]
+INFO:     Started server process [661541]
+INFO:     Waiting for application startup.
+2026-05-28 21:24:40,496 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-28 21:24:40,946 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-28 21:24:41,243 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:50796 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:50802 - "GET /api/sheets/config?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58202 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [661541]
+INFO:     Started server process [661658]
+INFO:     Waiting for application startup.
+2026-05-28 21:25:04,428 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-28 21:25:04,851 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-28 21:25:05,135 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:33798 - "GET /api/sheets/config?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36790 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36800 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:50804 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33590 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35050 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37692 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48098 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56320 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60594 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44932 - "GET /api/sheets/config HTTP/1.1" 200 OK
