@@ -1,0 +1,1164 @@
+"""PS VIBE API Server — FastAPI REST API
+Auto-generated from function_map.json (2026-05-27)
+
+All endpoint names match function_map.json functions exactly,
+per Boss's requirement.
+"""
+import logging
+import traceback
+import re
+import time
+from datetime import datetime, timezone, timedelta
+
+from fastapi import FastAPI, HTTPException, Query, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from config import (
+    API_TITLE, API_VERSION, API_DESCRIPTION,
+    HOST, PORT, DEBUG, API_KEY,
+    SHEET_SALES_DAILY, SHEET_SETTING, SHEET_CARD_WALLET,
+    SHEET_TOPUP_LOG, SHEET_ATTENDANCE_LOG, SHEET_CONSOLE_BOOKING,
+    SHEET_SALARY_ADVANCE, SHEET_GAME_LIBRARY, SHEET_CONSOLE_GAMES,
+    MMT_HOURS, MMT_MINUTES,
+)
+from sheets_client import (
+    get_workbook, get_worksheet, get_member_rows, get_booking_rows,
+    get_game_rows, get_console_game_rows,
+    invalidate_cache, int_safe, float_safe,
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("psvibe_api")
+
+app = FastAPI(
+    title=API_TITLE,
+    version=API_VERSION,
+    description=API_DESCRIPTION,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+async def verify_api_key(api_key: str = Query(None, alias="api_key")):
+    if API_KEY:
+        if not api_key or api_key != API_KEY:
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    return api_key
+
+
+def now_mmt():
+    mmt = timezone(timedelta(hours=MMT_HOURS, minutes=MMT_MINUTES))
+    return datetime.now(mmt)
+
+
+def today_str():
+    return now_mmt().strftime("%-m/%-d/%Y")
+
+
+def _norm_cid(cid: str) -> str:
+    return cid.replace(" ", "").upper()
+
+
+def ok(data=None, message=""):
+    d = {"success": True, "data": data}
+    if message:
+        d["message"] = message
+    return d
+
+
+# ═══════════════════════════════════════
+#  HEALTH
+# ═══════════════════════════════════════
+#  ROOT HEALTH
+@app.get("/", tags=["System"])
+async def root_health():
+    """Simple health check at the API root."""
+    return {"status": "ok", "service": "psvibe-api"}
+
+# ═══════════════════════════════════════
+@app.get("/api/health", tags=["System"])
+async def health_check():
+    try:
+        wb = get_workbook()
+        wb.worksheets()
+        sheets_ok = True
+    except Exception:
+        sheets_ok = False
+    return {
+        "status": "ok",
+        "version": API_VERSION,
+        "sheets_connected": sheets_ok,
+        "timestamp": now_mmt().isoformat(),
+    }
+
+
+# ═══════════════════════════════════════
+#  fetch_console_status
+# ═══════════════════════════════════════
+@app.get("/api/fetch_console_status", tags=["Console"])
+async def api_fetch_console_status(auth=Depends(verify_api_key)):
+    """Return list of console dicts with live status from Console_Booking sheet."""
+    try:
+        today = today_str()
+        setting_sh = get_worksheet(SHEET_SETTING)
+        names = setting_sh.col_values(8)[1:]
+        types = setting_sh.col_values(9)[1:]
+        mults = setting_sh.col_values(10)[1:]
+
+        consoles = []
+        for i, name in enumerate(names):
+            if not name.strip():
+                continue
+            try:
+                mult = float_safe(mults[i]) if i < len(mults) else 1.0
+                mult = mult if mult > 0 else 1.0
+            except Exception:
+                mult = 1.0
+            ctype = (types[i] if i < len(types) else "").strip()
+            consoles.append({
+                "id": name.strip(), "type": ctype, "mult": mult,
+                "status": "Free", "member": None, "start": None,
+                "staff": None, "booking_id": None,
+            })
+
+        try:
+            bk_rows = get_booking_rows()
+            for row in bk_rows[1:]:
+                if len(row) < 7:
+                    continue
+                bk_date = row[1].strip()
+                bk_cid = row[2].strip()
+                bk_status = row[6].strip()
+                if bk_date == today and bk_status in ("Active", "Scheduled"):
+                    for c in consoles:
+                        if c["id"] == bk_cid:
+                            c["status"] = bk_status
+                            c["member"] = row[3].strip() or "Guest"
+                            c["start"] = row[4].strip()
+                            c["staff"] = row[7].strip() if len(row) > 7 else ""
+                            c["booking_id"] = row[0].strip()
+                            break
+        except Exception as e:
+            logger.warning("Booking overlay error: %s", e)
+
+        return ok(consoles)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_members
+# ═══════════════════════════════════════
+@app.get("/api/fetch_members", tags=["Members"])
+async def api_fetch_members(auth=Depends(verify_api_key)):
+    """Return sorted list of all member IDs from Card_Wallet."""
+    try:
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        raw = ws.col_values(2)[1:]
+        members = [m.strip() for m in raw if m.strip()]
+        return ok(sorted(members))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_member_data
+# ═══════════════════════════════════════
+@app.get("/api/fetch_member_data/{member_id}", tags=["Members"])
+async def api_fetch_member_data(member_id: str, auth=Depends(verify_api_key)):
+    """Return consolidated member data (name, phone, email, rank, wallet, spend) from Card_Wallet."""
+    try:
+        rows = get_member_rows()
+        for row in rows[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                name = row[2].strip() if len(row) > 2 else "-"
+                phone = row[3].strip() if len(row) > 3 else "-"
+                net_spend = int_safe(row[5]) if len(row) > 5 else 0
+                wallet_mins = int_safe(row[7]) if len(row) > 7 and row[7].strip() else None
+                email = row[12].strip() if len(row) > 12 else ""
+
+                setting_sh = get_worksheet(SHEET_SETTING)
+                master_thresh = int_safe(setting_sh.cell(3, 13).value)
+                immortal_thresh = int_safe(setting_sh.cell(4, 13).value)
+
+                rank_raw = "Warrior"
+                if immortal_thresh > 0 and net_spend >= immortal_thresh:
+                    rank_raw = "Immortal"
+                elif master_thresh > 0 and net_spend >= master_thresh:
+                    rank_raw = "Master"
+
+                return ok({
+                    "name": name or "-", "phone": phone or "-",
+                    "email": email, "net_spend": net_spend,
+                    "rank_raw": rank_raw, "wallet_mins": wallet_mins,
+                })
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_wallet_mins
+# ═══════════════════════════════════════
+@app.get("/api/fetch_wallet_mins/{member_id}", tags=["Members"])
+async def api_fetch_wallet_mins(member_id: str, auth=Depends(verify_api_key)):
+    """Fetch wallet balance in mins for a member (col I, formula)."""
+    try:
+        for row in get_member_rows()[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                mins = int_safe(row[7]) if len(row) > 7 and row[7].strip() else 0
+                return ok(mins)
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_balance_mins (alias live read)
+# ═══════════════════════════════════════
+@app.get("/api/fetch_balance_mins/{member_id}", tags=["Members"])
+async def api_fetch_balance_mins(member_id: str, auth=Depends(verify_api_key)):
+    """Fetch wallet balance in mins (live read, bypasses cache)."""
+    try:
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        rows = ws.get_all_values()
+        for row in rows[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                mins = int_safe(row[7]) if len(row) > 7 and row[7].strip() else 0
+                return ok(mins)
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_member_tier
+# ═══════════════════════════════════════
+@app.get("/api/fetch_member_tier/{member_id}", tags=["Members"])
+async def api_fetch_member_tier(member_id: str, auth=Depends(verify_api_key)):
+    """Fetch member's current tier from Card_Wallet col G."""
+    try:
+        for row in get_member_rows()[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                tier = row[6].strip() if len(row) > 6 else ""
+                return ok(tier if tier else "Warrior")
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_staff / fetch_staff_names
+# ═══════════════════════════════════════
+@app.get("/api/fetch_staff", tags=["Staff"])
+async def api_fetch_staff(auth=Depends(verify_api_key)):
+    """Return list of staff names from Setting col S."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        vals = ws.col_values(19)[1:]
+        return ok([v.strip() for v in vals if v.strip()])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/fetch_staff_names", tags=["Staff"])
+async def api_fetch_staff_names(auth=Depends(verify_api_key)):
+    """Alias for fetch_staff."""
+    return await api_fetch_staff(auth)
+
+
+# ═══════════════════════════════════════
+#  fetch_food_prices / fetch_food_costs
+# ═══════════════════════════════════════
+@app.get("/api/fetch_food_prices", tags=["Food"])
+async def api_fetch_food_prices(auth=Depends(verify_api_key)):
+    """Return dict of food item name -> price from Setting (D-E)."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        names = ws.col_values(4)[1:]
+        prices = ws.col_values(5)[1:]
+        return ok({n.strip(): int_safe(p) for n, p in zip(names, prices) if n.strip()})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/fetch_food_costs", tags=["Food"])
+async def api_fetch_food_costs(auth=Depends(verify_api_key)):
+    """Return dict of food item -> cost price from Setting (D, F)."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        names = ws.col_values(4)[1:]
+        costs = ws.col_values(6)[1:]
+        return ok({n.strip(): (int_safe(c) if str(c).strip() else 0)
+                   for n, c in zip(names, costs) if n.strip()})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_games / fetch_game_library
+# ═══════════════════════════════════════
+@app.get("/api/fetch_games", tags=["Games"])
+async def api_fetch_games(auth=Depends(verify_api_key)):
+    """Return all games from Game_Library sheet (cached 10 min)."""
+    try:
+        rows = get_game_rows()
+        if len(rows) < 2:
+            return ok([])
+        games = []
+        for i, row in enumerate(rows[1:], start=2):
+            if not row or not row[1].strip():
+                continue
+            games.append({
+                "row": i,
+                "title": row[1].strip() if len(row) > 1 else "",
+                "platform": row[2].strip() if len(row) > 2 else "",
+                "genre": row[3].strip() if len(row) > 3 else "",
+                "status": row[4].strip() if len(row) > 4 else "",
+                "discs": row[5].strip() if len(row) > 5 else "",
+            })
+        return ok(games)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/fetch_game_library", tags=["Games"])
+async def api_fetch_game_library(auth=Depends(verify_api_key)):
+    """Alias for fetch_games."""
+    return await api_fetch_games(auth)
+
+
+# ═══════════════════════════════════════
+#  fetch_console_games
+# ═══════════════════════════════════════
+@app.get("/api/fetch_console_games", tags=["Games"])
+async def api_fetch_console_games(auth=Depends(verify_api_key)):
+    """Return all console-game installation records (cached 5 min)."""
+    try:
+        rows = get_console_game_rows()
+        if len(rows) < 2:
+            return ok([])
+        result = []
+        for i, row in enumerate(rows[1:], start=2):
+            if not row or not row[0].strip():
+                continue
+            result.append({
+                "row": i,
+                "console_id": row[0].strip() if len(row) > 0 else "",
+                "game_title": row[1].strip() if len(row) > 1 else "",
+                "install_type": row[2].strip() if len(row) > 2 else "",
+                "date": row[3].strip() if len(row) > 3 else "",
+                "notes": row[4].strip() if len(row) > 4 else "",
+            })
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  get_games_on_console
+# ═══════════════════════════════════════
+@app.get("/api/get_games_on_console/{console_id}", tags=["Games"])
+async def api_get_games_on_console(console_id: str, auth=Depends(verify_api_key)):
+    """Return list of game titles installed on a specific console."""
+    try:
+        rows = get_console_game_rows()
+        games = []
+        for row in rows[1:]:
+            if len(row) >= 2 and row[0].strip().upper() == console_id.strip().upper() and row[1].strip():
+                games.append(row[1].strip())
+        return ok(games)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  get_consoles_with_game
+# ═══════════════════════════════════════
+@app.get("/api/get_consoles_with_game", tags=["Games"])
+async def api_get_consoles_with_game(game_title: str = Query(...), auth=Depends(verify_api_key)):
+    """Return list of console IDs that have a specific game installed."""
+    try:
+        rows = get_console_game_rows()
+        gl = game_title.strip().lower()
+        consoles = []
+        for row in rows[1:]:
+            if len(row) >= 2 and row[1].strip().lower() == gl and row[0].strip():
+                consoles.append(row[0].strip())
+        return ok(list(dict.fromkeys(consoles)))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_base_rate
+# ═══════════════════════════════════════
+@app.get("/api/fetch_base_rate", tags=["Settings"])
+async def api_fetch_base_rate(auth=Depends(verify_api_key)):
+    """Fetch hourly base rate from Setting!B2 (Ks/hr)."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        return ok(int_safe(ws.cell(2, 2).value))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_console_multiplier
+# ═══════════════════════════════════════
+@app.get("/api/fetch_console_multiplier/{console_id}", tags=["Settings"])
+async def api_fetch_console_multiplier(console_id: str, auth=Depends(verify_api_key)):
+    """Fetch multiplier for a console from Setting!J."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        names = ws.col_values(8)[1:]
+        mults = ws.col_values(10)[1:]
+        for name, mult in zip(names, mults):
+            if name.strip() == console_id.strip():
+                val = float_safe(mult)
+                return ok(val if val > 0 else 1.0)
+        return ok(1.0)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_new_member_defaults
+# ═══════════════════════════════════════
+@app.get("/api/fetch_new_member_defaults", tags=["Settings"])
+async def api_fetch_new_member_defaults(auth=Depends(verify_api_key)):
+    """Fetch default card price (B20) and base mins (B21) from Setting."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        return ok({"card_price": int_safe(ws.cell(20, 2).value),
+                   "base_mins": int_safe(ws.cell(21, 2).value)})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_rank_thresholds
+# ═══════════════════════════════════════
+@app.get("/api/fetch_rank_thresholds", tags=["Settings"])
+async def api_fetch_rank_thresholds(auth=Depends(verify_api_key)):
+    """Fetch Master and Immortal threshold from Setting!M3:M4."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        return ok({"master_threshold": int_safe(ws.cell(3, 13).value),
+                   "immortal_threshold": int_safe(ws.cell(4, 13).value)})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_bonus_table
+# ═══════════════════════════════════════
+@app.get("/api/fetch_bonus_table", tags=["Settings"])
+async def api_fetch_bonus_table(auth=Depends(verify_api_key)):
+    """Fetch bonus table from Setting!O2:R5."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        rows = ws.get("O2:R5")
+        result = []
+        for row in rows:
+            if len(row) < 4:
+                continue
+            try:
+                thresh = int_safe(row[0])
+                w_b = int_safe(row[1])
+                m_b = int_safe(row[2])
+                i_b = int_safe(row[3])
+                if thresh > 0 or any([w_b, m_b, i_b]):
+                    result.append({
+                        "threshold": thresh, "warrior_bonus": w_b,
+                        "master_bonus": m_b, "immortal_bonus": i_b,
+                    })
+            except Exception:
+                continue
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_rank_table_display
+# ═══════════════════════════════════════
+@app.get("/api/fetch_rank_table_display", tags=["Settings"])
+async def api_fetch_rank_table_display(auth=Depends(verify_api_key)):
+    """Fetch Setting!O1:R5 and return formatted string table for display."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        rows = ws.get("O1:R5")
+        if not rows:
+            return ok("_(data not available)_")
+        lines = [
+            f"{'Amount (Ks)':<14} {'Warrior':>9} {'Master':>9} {'Immortal':>10}",
+            "-" * 48,
+        ]
+        for row in rows[1:]:
+            if len(row) < 4:
+                continue
+            amt = int_safe(row[0])
+            if amt == 0:
+                continue
+            lines.append(f"{amt:>14,}  {int_safe(row[1]):>8,}  {int_safe(row[2]):>8,}  {int_safe(row[3]):>9,}")
+        return ok("\n".join(lines))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_alltime_effective_rate
+# ═══════════════════════════════════════
+@app.get("/api/fetch_alltime_effective_rate", tags=["Analytics"])
+async def api_fetch_alltime_effective_rate(auth=Depends(verify_api_key)):
+    """Calculate all-time average Ks/min across every TopUp_Log row."""
+    try:
+        ws = get_worksheet(SHEET_TOPUP_LOG)
+        rows = ws.get_all_values()
+        total_ks, total_mins = 0, 0
+        for row in rows[1:]:
+            if len(row) < 5:
+                continue
+            ks = int_safe(row[3]) if row[3].strip() else 0
+            mins = int_safe(row[4]) if row[4].strip() else 0
+            if ks and mins:
+                total_ks += ks
+                total_mins += mins
+        rate = round(total_ks / total_mins, 4) if total_mins > 0 else 0.0
+        return ok(rate)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_member_effective_rate
+# ═══════════════════════════════════════
+@app.get("/api/fetch_member_effective_rate/{member_id}", tags=["Members"])
+async def api_fetch_member_effective_rate(member_id: str, auth=Depends(verify_api_key)):
+    """Fetch a member's stored effective rate from Card_Wallet col L."""
+    try:
+        for row in get_member_rows()[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                val = row[11].strip() if len(row) > 11 else ""
+                return ok(float(val) if val else 0.0)
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  build_member_rate_dict
+# ═══════════════════════════════════════
+@app.get("/api/build_member_rate_dict", tags=["Members"])
+async def api_build_member_rate_dict(auth=Depends(verify_api_key)):
+    """Build dict of member_id -> stored effective rate from Card_Wallet."""
+    try:
+        result = {}
+        for row in get_member_rows()[1:]:
+            if len(row) > 1 and row[1].strip():
+                m_id = row[1].strip()
+                val = row[11].strip() if len(row) > 11 else ""
+                if val:
+                    try:
+                        result[m_id] = float(val)
+                    except ValueError:
+                        pass
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_base_salaries
+# ═══════════════════════════════════════
+@app.get("/api/fetch_base_salaries", tags=["Staff"])
+async def api_fetch_base_salaries(auth=Depends(verify_api_key)):
+    """Fetch staff base salaries from Setting!S:T columns."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        staff = ws.col_values(19)[1:]
+        salaries = ws.col_values(20)[1:]
+        result = {}
+        for i, name in enumerate(staff):
+            name = name.strip()
+            if not name:
+                continue
+            sal_str = salaries[i].strip() if i < len(salaries) else "0"
+            result[name] = int_safe(sal_str)
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_attendance
+# ═══════════════════════════════════════
+@app.get("/api/fetch_attendance/{month_str}", tags=["Attendance"])
+async def api_fetch_attendance(month_str: str, auth=Depends(verify_api_key)):
+    """Fetch attendance records for a month from Attendance_Log."""
+    try:
+        ws = get_worksheet(SHEET_ATTENDANCE_LOG)
+        rows = ws.get_all_values()
+        result = {}
+        for row in rows[1:]:
+            if len(row) < 4:
+                continue
+            if row[0].strip() != month_str:
+                continue
+            staff = row[1].strip()
+            if not staff:
+                continue
+            result[staff] = {
+                "leave_days": int_safe(row[2]) if len(row) > 2 else 0,
+                "late_count": int_safe(row[3]) if len(row) > 3 else 0,
+                "deduct_per_late": int_safe(row[4]) if len(row) > 4 and row[4].strip() else 500,
+            }
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_salary_advances
+# ═══════════════════════════════════════
+@app.get("/api/fetch_salary_advances/{month_str}", tags=["Attendance"])
+async def api_fetch_salary_advances(month_str: str, auth=Depends(verify_api_key)):
+    """Return {staff: {total, cash, kpay}} for the given month (YYYY-MM)."""
+    try:
+        ws = get_worksheet(SHEET_SALARY_ADVANCE)
+        rows = ws.get_all_values()
+        result = {}
+        for row in rows[1:]:
+            if len(row) < 5:
+                continue
+            date_val = row[0].strip()
+            staff = row[1].strip()
+            if not staff or not date_val:
+                continue
+            if month_str.replace("-", "/") not in date_val and month_str not in date_val:
+                continue
+            amt = int_safe(row[2]) if row[2].strip() else 0
+            pay_method = row[3].strip().upper() if len(row) > 3 else "CASH"
+            if staff not in result:
+                result[staff] = {"total": 0, "cash": 0, "kpay": 0}
+            result[staff]["total"] += amt
+            if "KPAY" in pay_method:
+                result[staff]["kpay"] += amt
+            else:
+                result[staff]["cash"] += amt
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_promotions_cached
+# ═══════════════════════════════════════
+@app.get("/api/fetch_promotions_cached", tags=["Promotions"])
+async def api_fetch_promotions_cached(auth=Depends(verify_api_key)):
+    """Fetch active promotions (extend w/ real API)."""
+    return ok([], "Promotions API not yet integrated")
+
+
+# ═══════════════════════════════════════
+#  fetch_allowed_staff_ids
+# ═══════════════════════════════════════
+@app.get("/api/fetch_allowed_staff_ids", tags=["Staff"])
+async def api_fetch_allowed_staff_ids(auth=Depends(verify_api_key)):
+    """Fetch dynamic staff whitelist from Setting!B30."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        val = ws.cell(30, 2).value
+        if not val:
+            return ok([])
+        ids = [int(x.strip()) for x in str(val).split(",") if x.strip().isdigit()]
+        return ok(ids)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  next_voucher / next_member_id / next_member_row_no
+# ═══════════════════════════════════════
+@app.get("/api/next_voucher", tags=["Sales"])
+async def api_next_voucher(auth=Depends(verify_api_key)):
+    """Generate next voucher number from Sales_Daily col B."""
+    try:
+        ws = get_worksheet(SHEET_SALES_DAILY)
+        col = ws.col_values(2)
+        ids = [v for v in col[1:] if v.upper().startswith("V-")]
+        if ids:
+            try:
+                return ok(f"V-{int(ids[-1].split('-')[1]) + 1:03d}")
+            except (IndexError, ValueError):
+                pass
+        return ok("V-001")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/next_member_id", tags=["Members"])
+async def api_next_member_id(auth=Depends(verify_api_key)):
+    """Auto-increment member ID: PSV_A_003 -> PSV_A_004."""
+    try:
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        ids = [v.strip() for v in ws.col_values(2)[1:] if v.strip()]
+        if not ids:
+            return ok("PSV_A_001")
+        last = ids[-1]
+        m = re.search(r'(\d+)$', last)
+        if m:
+            prefix = last[:m.start()]
+            num = int(m.group(1)) + 1
+            width = len(m.group(1))
+            return ok(f"{prefix}{num:0{width}d}")
+        return ok(last + "_1")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/next_member_row_no", tags=["Members"])
+async def api_next_member_row_no(auth=Depends(verify_api_key)):
+    """Return next sequential row number for Card_Wallet Column A."""
+    try:
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        col_a = ws.col_values(1)[1:]
+        nums = []
+        for v in col_a:
+            try:
+                nums.append(int(str(v).strip()))
+            except (ValueError, TypeError):
+                pass
+        return ok((max(nums) + 1) if nums else 1)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_referral_code
+# ═══════════════════════════════════════
+@app.get("/api/fetch_referral_code/{member_id}", tags=["Members"])
+async def api_fetch_referral_code(member_id: str, auth=Depends(verify_api_key)):
+    """Fetch referral code for a member from Card_Wallet."""
+    try:
+        for row in get_member_rows()[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                code = row[13].strip() if len(row) > 13 else ""
+                return ok(code or None)
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — create_booking
+# ═══════════════════════════════════════
+@app.post("/api/create_booking", tags=["Bookings"])
+async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
+    """Append a row to Console_Booking and return BookingID."""
+    try:
+        sh = get_worksheet(SHEET_CONSOLE_BOOKING)
+        now = now_mmt()
+        date = now.strftime("%-m/%-d/%Y")
+        time_s = now.strftime("%H:%M")
+        seq = now.strftime("%H%M")
+        console_id = req.get("console_id", "")
+        member_id = req.get("member_id", "")
+        staff = req.get("staff", "")
+        notes = req.get("notes", "")
+        bk_id = f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ','').replace('-','')}-{seq}"
+        sh.append_row([bk_id, date, console_id, member_id, time_s, "", "Active", staff, notes],
+                      value_input_option="USER_ENTERED")
+        invalidate_cache("bookings")
+        return ok({"booking_id": bk_id})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — end_booking
+# ═══════════════════════════════════════
+@app.put("/api/end_booking/{booking_id}", tags=["Bookings"])
+async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
+    """Mark a booking as Done and fill EndTime."""
+    try:
+        sh = get_worksheet(SHEET_CONSOLE_BOOKING)
+        rows = sh.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if row and row[0].strip() == booking_id:
+                now = now_mmt()
+                sh.update(f"F{i}:G{i}", [[now.strftime("%H:%M"), "Done"]])
+                invalidate_cache("bookings")
+                return ok({"booking_id": booking_id, "status": "Done"})
+        raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — cancel_booking
+# ═══════════════════════════════════════
+@app.put("/api/cancel_booking/{booking_id}", tags=["Bookings"])
+async def api_cancel_booking(booking_id: str, auth=Depends(verify_api_key)):
+    """Mark a booking as Cancelled."""
+    try:
+        sh = get_worksheet(SHEET_CONSOLE_BOOKING)
+        rows = sh.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if row and row[0].strip() == booking_id:
+                sh.update(f"G{i}", [["Cancelled"]])
+                invalidate_cache("bookings")
+                return ok({"booking_id": booking_id, "status": "Cancelled"})
+        raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — save_attendance
+# ═══════════════════════════════════════
+@app.post("/api/save_attendance", tags=["Attendance"])
+async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
+    """Save/update attendance record for a staff in Attendance_Log."""
+    try:
+        month_str = req.get("month_str", "")
+        staff = req.get("staff", "")
+        leave_days = req.get("leave_days", 0)
+        late_count = req.get("late_count", 0)
+        deduct_per_late = req.get("deduct_per_late", 500)
+
+        sh = get_worksheet(SHEET_ATTENDANCE_LOG)
+        rows = sh.get_all_values()
+        found = False
+        for i, row in enumerate(rows[1:], start=2):
+            if row[0].strip() == month_str and row[1].strip() == staff:
+                sh.update(f"A{i}:E{i}", [[month_str, staff, leave_days, late_count, deduct_per_late]])
+                found = True
+                break
+        if not found:
+            sh.append_row([month_str, staff, leave_days, late_count, deduct_per_late])
+        return ok({"staff": staff, "month": month_str})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — save_receipt_json
+# ═══════════════════════════════════════
+@app.post("/api/save_receipt_json", tags=["Receipts"])
+async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
+    """Persist receipt data locally."""
+    try:
+        voucher_id = req.get("voucher_id", "unknown")
+        data = req.get("data", {})
+        logger.info("Receipt saved: voucher=%s", voucher_id)
+        return ok({"voucher_id": voucher_id})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — add_console_game / remove_console_game
+# ═══════════════════════════════════════
+@app.post("/api/add_console_game", tags=["Games"])
+async def api_add_console_game(req: dict, auth=Depends(verify_api_key)):
+    """Add a game installation record to Console_Games."""
+    try:
+        console_id = req.get("console_id", "")
+        game_title = req.get("game_title", "")
+        install_type = req.get("install_type", "")
+        notes = req.get("notes", "")
+
+        sh = get_worksheet(SHEET_CONSOLE_GAMES)
+        date = now_mmt().strftime("%-m/%-d/%Y")
+        sh.append_row([console_id, game_title, install_type, date, notes],
+                      value_input_option="USER_ENTERED")
+        invalidate_cache("console_games")
+        return ok({"console_id": console_id, "game_title": game_title})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/remove_console_game", tags=["Games"])
+async def api_remove_console_game(req: dict, auth=Depends(verify_api_key)):
+    """Remove a game installation record from Console_Games."""
+    try:
+        console_id = req.get("console_id", "")
+        game_title = req.get("game_title", "")
+
+        sh = get_worksheet(SHEET_CONSOLE_GAMES)
+        rows = sh.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if (len(row) >= 2
+                    and row[0].strip().upper() == console_id.strip().upper()
+                    and row[1].strip().lower() == game_title.strip().lower()):
+                sh.delete_rows(i)
+                invalidate_cache("console_games")
+                return ok({"console_id": console_id, "game_title": game_title})
+        raise HTTPException(status_code=404, detail=f"Game {game_title} not found on console {console_id}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — set_game_disc_count
+# ═══════════════════════════════════════
+@app.put("/api/set_game_disc_count", tags=["Games"])
+async def api_set_game_disc_count(req: dict, auth=Depends(verify_api_key)):
+    """Update column D (Available Discs) for a game row in Game_Library."""
+    try:
+        row_num = req.get("row_num", 0)
+        count = req.get("count", 0)
+        sh = get_worksheet(SHEET_GAME_LIBRARY)
+        sh.update_cell(row_num, 4, count)
+        invalidate_cache("games")
+        return ok({"row_num": row_num, "count": count})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — update_game_library_install
+# ═══════════════════════════════════════
+@app.put("/api/update_game_library_install", tags=["Games"])
+async def api_update_game_library_install(req: dict, auth=Depends(verify_api_key)):
+    """Set TRUE/FALSE checkbox in Game_Library for (game_title, console_id)."""
+    try:
+        game_title = req.get("game_title", "")
+        console_id = req.get("console_id", "")
+        installed = req.get("installed", False)
+
+        sh = get_worksheet(SHEET_GAME_LIBRARY)
+        rows = sh.get_all_values()
+        if not rows:
+            raise HTTPException(status_code=404, detail="Game_Library sheet is empty")
+
+        cid_norm = _norm_cid(console_id)
+        col_idx = None
+        for i, h in enumerate(rows[0]):
+            if _norm_cid(h) == cid_norm:
+                col_idx = i
+                break
+        if col_idx is None:
+            raise HTTPException(status_code=404, detail=f"Console {console_id} not found in headers")
+
+        game_lower = game_title.strip().lower()
+        row_idx = None
+        for i, row in enumerate(rows[1:], start=2):
+            cell_val = row[1].strip().lower() if len(row) > 1 else ""
+            if cell_val == game_lower:
+                row_idx = i
+                break
+        if row_idx is None:
+            raise HTTPException(status_code=404, detail=f"Game {game_title} not found")
+
+        n = col_idx + 1
+        col_letter = ""
+        while n > 0:
+            n, r = divmod(n - 1, 26)
+            col_letter = chr(65 + r) + col_letter
+        cell_addr = f"{col_letter}{row_idx}"
+
+        sh.update(cell_addr, [[True if installed else ""]])
+        invalidate_cache("games")
+        return ok({"game": game_title, "console": console_id, "installed": installed})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — update_member_effective_rate
+# ═══════════════════════════════════════
+@app.put("/api/update_member_effective_rate", tags=["Members"])
+async def api_update_member_effective_rate(req: dict, auth=Depends(verify_api_key)):
+    """Update or insert member effective rate in Card_Wallet col L."""
+    try:
+        member_id = req.get("member_id", "")
+        rate = req.get("rate", 0.0)
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        rows = ws.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                ws.update_cell(i, 12, round(float(rate), 4))
+                invalidate_cache("members")
+                return ok({"member_id": member_id, "rate": rate})
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — save_referral_code
+# ═══════════════════════════════════════
+@app.post("/api/save_referral_code", tags=["Members"])
+async def api_save_referral_code(req: dict, auth=Depends(verify_api_key)):
+    """Save referral code for a member in Card_Wallet."""
+    try:
+        member_id = req.get("member_id", "")
+        code = req.get("code", "")
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        rows = ws.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                ws.update_cell(i, 14, code)
+                invalidate_cache("members")
+                return ok({"member_id": member_id, "code": code})
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — add_console_to_setting
+# ═══════════════════════════════════════
+@app.post("/api/add_console_to_setting", tags=["Console"])
+async def api_add_console_to_setting(req: dict, auth=Depends(verify_api_key)):
+    """Append a new console to Setting!H:J."""
+    try:
+        console_id = req.get("console_id", "")
+        ctype = req.get("ctype", "")
+        multiplier = req.get("multiplier", 1.0)
+        ws = get_worksheet(SHEET_SETTING)
+        names = ws.col_values(8)
+        next_row = len(names) + 1
+        ws.update(f"H{next_row}:J{next_row}", [[console_id, ctype, str(multiplier)]],
+                  value_input_option="USER_ENTERED")
+        return ok({"console_id": console_id})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — remove_console_from_setting
+# ═══════════════════════════════════════
+@app.delete("/api/remove_console_from_setting/{console_id}", tags=["Console"])
+async def api_remove_console_from_setting(console_id: str, auth=Depends(verify_api_key)):
+    """Clear a console row from Setting!H:J."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        names = ws.col_values(8)
+        for i, name in enumerate(names):
+            if name.strip() == console_id.strip():
+                row = i + 1
+                ws.update(f"H{row}:J{row}", [["", "", ""]])
+                return ok({"console_id": console_id})
+        raise HTTPException(status_code=404, detail=f"Console {console_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  META — Config (used by bot cache)
+# ═══════════════════════════════════════
+@app.get("/api/sheets/config", tags=["Meta"])
+async def api_sheets_config(auth=Depends(verify_api_key)):
+    """Return cached config used by the bot (base_rate, thresholds, etc.)."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        base_rate = int_safe(ws.cell(2, 2).value)
+        master_thresh = int_safe(ws.cell(3, 13).value)
+        immortal_thresh = int_safe(ws.cell(4, 13).value)
+        card_price = int_safe(ws.cell(20, 2).value)
+        base_mins = int_safe(ws.cell(21, 2).value)
+
+        names = ws.col_values(8)[1:]
+        mults = ws.col_values(10)[1:]
+        console_multipliers = {}
+        for name, mult in zip(names, mults):
+            if name.strip():
+                try:
+                    console_multipliers[name.strip()] = float(float_safe(mult)) or 1.0
+                except ValueError:
+                    console_multipliers[name.strip()] = 1.0
+
+        food_names = ws.col_values(4)[1:]
+        food_prices_raw = ws.col_values(5)[1:]
+        food_costs_raw = ws.col_values(6)[1:]
+        food_prices = {}
+        food_costs = {}
+        for n, p, c in zip(food_names, food_prices_raw, food_costs_raw):
+            if n.strip():
+                food_prices[n.strip()] = int_safe(p)
+                food_costs[n.strip()] = int_safe(c) if str(c).strip() else 0
+
+        bonus_rows = ws.get("O2:R5")
+        bonus_table = []
+        for row in bonus_rows:
+            if len(row) >= 4:
+                try:
+                    bonus_table.append([int_safe(row[0]), int_safe(row[1]),
+                                        int_safe(row[2]), int_safe(row[3])])
+                except Exception:
+                    continue
+
+        return ok({
+            "base_rate": base_rate,
+            "master_threshold": master_thresh,
+            "immortal_threshold": immortal_thresh,
+            "new_member_card_price": card_price,
+            "new_member_base_mins": base_mins,
+            "console_multipliers": console_multipliers,
+            "food_prices": food_prices,
+            "food_costs": food_costs,
+            "bonus_table": bonus_table,
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  STARTUP
+# ═══════════════════════════════════════
+@app.on_event("startup")
+async def startup():
+    try:
+        wb = get_workbook()
+        logger.info("Connected to Google Sheets: %s", wb.title)
+        sheets = [s.title for s in wb.worksheets()]
+        logger.info("Available sheets: %s", sheets)
+    except Exception as e:
+        logger.warning("Could not connect to Google Sheets on startup: %s", e)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
