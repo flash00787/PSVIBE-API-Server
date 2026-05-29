@@ -26,6 +26,8 @@ from sheets_client import (
     get_game_rows, get_console_game_rows,
     invalidate_cache, int_safe, float_safe,
 )
+from mysql_db import query as mysql_query, query_one as mysql_query_one, execute as mysql_execute
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,9 +52,16 @@ app.add_middleware(
 )
 
 
-async def verify_api_key(api_key: str = Query(None, alias="api_key")):
+async def verify_api_key(
+    api_key: str = Query(None, alias="api_key"),
+    request: Request = None,
+):
+    """Verify API key from query param or X-API-Key header."""
     if API_KEY:
-        if not api_key or api_key != API_KEY:
+        key = api_key
+        if not key and request:
+            key = request.headers.get("X-API-Key")
+        if not key or key != API_KEY:
             raise HTTPException(status_code=401, detail="Invalid or missing API key")
     return api_key
 
@@ -115,12 +124,155 @@ async def health_check():
         sheets_ok = True
     except Exception:
         sheets_ok = False
-    return ok({
-        "status": "ok",
-        "version": API_VERSION,
-        "sheets_connected": sheets_ok,
-        "timestamp": now_mmt().isoformat(),
-    })
+    return {"success": True, "sheets_ok": sheets_ok, "data_source": "mysql"}
+
+
+# ═══════════════════════════════════════
+#  MYSQL HEALTH
+# ═══════════════════════════════════════
+@app.get("/api/mysql/health", tags=["System"])
+def mysql_health():
+    try:
+        mysql_query_one("SELECT 1 as ok")
+        return {"success": True, "mysql_connected": True, "data_source": "mysql"}
+    except Exception as e:
+        return {"success": True, "mysql_connected": False, "data_source": "gspread", "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  MYSQL HELPER
+# ═══════════════════════════════════════
+_MYSQL_ENABLED = True
+
+def _use_mysql() -> bool:
+    global _MYSQL_ENABLED
+    if not _MYSQL_ENABLED:
+        return False
+    try:
+        mysql_query_one("SELECT 1 as ok")
+        return True
+    except Exception:
+        _MYSQL_ENABLED = False
+        return False
+
+
+# ═══════════════════════════════════════
+#  MYSQL STATUS
+# ═══════════════════════════════════════
+@app.get("/api/mysql/status", tags=["System"])
+def mysql_status(auth=Depends(verify_api_key)):
+    """Show all MySQL tables with row counts."""
+    if not _use_mysql():
+        return {"success": True, "mysql_connected": False, "data_source": "gpsread"}
+    try:
+        tables = mysql_query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'psvibe_api'")
+        result = {}
+        for t in tables:
+            tn = t["TABLE_NAME"]
+            cnt = mysql_query_one(f"SELECT COUNT(*) as cnt FROM `{tn}`")
+            result[tn] = cnt["cnt"] if cnt else 0
+        return ok({"mysql_connected": True, "total_tables": len(result), "tables": result})
+    except Exception as e:
+        return {"success": False, "error": str(e), "mysql_connected": False}
+
+
+# ═══════════════════════════════════════
+#  MYSQL WRAPPERS
+# ═══════════════════════════════════════
+def _fetch_members_from_mysql():
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            return mysql_query("SELECT * FROM member_wallets")
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_member_data_from_mysql(member_id):
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            return mysql_query_one("SELECT * FROM member_wallets WHERE member_id = %s", (member_id,))
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_console_status_from_mysql():
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            return mysql_query("SELECT * FROM console_status")
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_allowed_staff_ids_from_mysql():
+    """Try MySQL first, return data or None.
+
+    NOTE: staff_records.staff_id is an internal auto-increment PK (1,2,3...),
+    NOT a Telegram user ID.  The real Telegram whitelist lives in Google Sheets
+    Setting!B30.  Return None here so the endpoint falls back to Sheets.
+    """
+    return None
+
+
+def _fetch_console_games_from_mysql():
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            return mysql_query("SELECT * FROM console_games")
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_wallet_mins_from_mysql(member_id):
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one("SELECT balance_mins FROM member_wallets WHERE member_id = %s", (member_id,))
+            if row:
+                return row.get("balance_mins", 0)
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_balance_mins_from_mysql(member_id):
+    """Try MySQL first, return data or None (same as wallet_mins live read)."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one("SELECT balance_mins FROM member_wallets WHERE member_id = %s", (member_id,))
+            if row:
+                return row.get("balance_mins", 0)
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_daily_sales_from_mysql(date_str=None):
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            if date_str:
+                return mysql_query("SELECT * FROM sales_daily WHERE date = %s", (date_str,))
+            return mysql_query("SELECT * FROM sales_daily")
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_topups_from_mysql(days=30):
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            return mysql_query("SELECT * FROM topup_log ORDER BY created_at DESC LIMIT 1000")
+    except Exception:
+        pass
+    return None
 
 
 # ═══════════════════════════════════════
@@ -129,6 +281,18 @@ async def health_check():
 @app.get("/api/fetch_console_status", tags=["Console"])
 async def api_fetch_console_status(auth=Depends(verify_api_key)):
     """Return list of console dicts with live status from Console_Booking sheet."""
+    data = _fetch_console_status_from_mysql()
+    if data is not None:
+        return ok([{
+            "id": d.get("console_id", ""),
+            "type": d.get("console_type", d.get("type", "")),
+            "status": d.get("status", "Free"),
+            "member": d.get("member_id", d.get("member")),
+            "start": d.get("start_time", d.get("start")),
+            "staff": d.get("staff"),
+            "booking_id": d.get("booking_id"),
+            "mult": d.get("multiplier", d.get("mult", 1.0)),
+        } for d in data])
     try:
         today = today_str()
         setting_sh = get_worksheet(SHEET_SETTING)
@@ -183,6 +347,9 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)):
 @app.get("/api/fetch_members", tags=["Members"])
 async def api_fetch_members(auth=Depends(verify_api_key)):
     """Return sorted list of all member IDs from Card_Wallet."""
+    data = _fetch_members_from_mysql()
+    if data is not None:
+        return ok(sorted([m["member_id"] for m in data if m.get("member_id")]))
     try:
         ws = get_worksheet(SHEET_CARD_WALLET)
         raw = ws.col_values(2)[1:]
@@ -198,6 +365,16 @@ async def api_fetch_members(auth=Depends(verify_api_key)):
 @app.get("/api/fetch_member_data/{member_id}", tags=["Members"])
 async def api_fetch_member_data(member_id: str, auth=Depends(verify_api_key)):
     """Return consolidated member data (name, phone, email, rank, wallet, spend) from Card_Wallet."""
+    data = _fetch_member_data_from_mysql(member_id)
+    if data is not None:
+        return ok({
+            "name": data.get("member_name", data.get("name", "-")) or "-",
+            "phone": data.get("phone", "-") or "-",
+            "email": data.get("email", ""),
+            "net_spend": data.get("net_spend", 0),
+            "rank_raw": data.get("tier", data.get("rank_raw", "Warrior")),
+            "wallet_mins": data.get("balance_mins", data.get("wallet_mins")),
+        })
     try:
         rows = get_member_rows()
         for row in rows[1:]:
@@ -236,6 +413,9 @@ async def api_fetch_member_data(member_id: str, auth=Depends(verify_api_key)):
 @app.get("/api/fetch_wallet_mins/{member_id}", tags=["Members"])
 async def api_fetch_wallet_mins(member_id: str, auth=Depends(verify_api_key)):
     """Fetch wallet balance in mins for a member (col I, formula)."""
+    data = _fetch_wallet_mins_from_mysql(member_id)
+    if data is not None:
+        return ok(data)
     try:
         for row in get_member_rows()[1:]:
             if len(row) > 1 and row[1].strip() == member_id.strip():
@@ -254,6 +434,9 @@ async def api_fetch_wallet_mins(member_id: str, auth=Depends(verify_api_key)):
 @app.get("/api/fetch_balance_mins/{member_id}", tags=["Members"])
 async def api_fetch_balance_mins(member_id: str, auth=Depends(verify_api_key)):
     """Fetch wallet balance in mins (live read, bypasses cache)."""
+    data = _fetch_balance_mins_from_mysql(member_id)
+    if data is not None:
+        return ok(data)
     try:
         ws = get_worksheet(SHEET_CARD_WALLET)
         rows = ws.get_all_values()
@@ -373,6 +556,16 @@ async def api_fetch_game_library(auth=Depends(verify_api_key)):
 @app.get("/api/fetch_console_games", tags=["Games"])
 async def api_fetch_console_games(auth=Depends(verify_api_key)):
     """Return all console-game installation records (cached 5 min)."""
+    data = _fetch_console_games_from_mysql()
+    if data is not None:
+        return ok([{
+            "row": d.get("id", i),
+            "console_id": d.get("console_id", ""),
+            "game_title": d.get("game_title", ""),
+            "install_type": d.get("install_type", ""),
+            "date": d.get("date", ""),
+            "notes": d.get("notes", ""),
+        } for i, d in enumerate(data, start=2)])
     try:
         rows = get_console_game_rows()
         if len(rows) < 2:
@@ -708,6 +901,9 @@ async def api_fetch_promotions_cached(auth=Depends(verify_api_key)):
 @app.get("/api/fetch_allowed_staff_ids", tags=["Staff"])
 async def api_fetch_allowed_staff_ids(auth=Depends(verify_api_key)):
     """Fetch dynamic staff whitelist from Setting!B30."""
+    data = _fetch_allowed_staff_ids_from_mysql()
+    if data is not None:
+        return ok(data)
     try:
         ws = get_worksheet(SHEET_SETTING)
         val = ws.cell(30, 2).value
@@ -861,89 +1057,6 @@ async def api_cancel_booking(booking_id: str, auth=Depends(verify_api_key)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ═══════════════════════════════════════
-#  SEARCH — bookings/search
-# ═══════════════════════════════════════
-@app.get("/api/bookings/search", tags=["Bookings"])
-async def api_bookings_search(
-    telegram_chat_id: str = Query(None, description="Search by Telegram chat ID"),
-    date: str = Query(None, description="Search by date (YYYY-MM-DD or M/D/YYYY)"),
-    auth=Depends(verify_api_key),
-):
-    """Search bookings by telegram_chat_id and/or date."""
-    try:
-        import json as _json
-        bk = get_booking_rows()
-        results = []
-        for row in bk[1:]:
-            if len(row) < 7:
-                continue
-            bk_id = row[0].strip()
-            bk_date = row[1].strip()
-            bk_console = row[2].strip()
-            bk_member = row[3].strip() if len(row) > 3 else ""
-            bk_time = row[4].strip() if len(row) > 4 else ""
-            bk_endtime = row[5].strip() if len(row) > 5 else ""
-            bk_status = row[6].strip() if len(row) > 6 else ""
-            bk_staff = row[7].strip() if len(row) > 7 else ""
-            bk_notes = row[8].strip() if len(row) > 8 else ""
-
-            # Parse notes for extra data
-            extra = {}
-            if bk_notes:
-                try:
-                    extra = _json.loads(bk_notes)
-                except Exception:
-                    extra = {}
-
-            # Date filter
-            if date:
-                date_match = False
-                if date == bk_date:
-                    date_match = True
-                else:
-                    try:
-                        parts = date.split('-')
-                        if len(parts) == 3:
-                            converted = f"{int(parts[1])}/{int(parts[2])}/{parts[0]}"
-                            if converted == bk_date:
-                                date_match = True
-                    except Exception:
-                        pass
-                if not date_match:
-                    continue
-
-            # Telegram chat_id filter
-            if telegram_chat_id:
-                tg_id = extra.get("telegramChatId", "")
-                if str(tg_id) != str(telegram_chat_id):
-                    continue
-
-            entry = {
-                "id": bk_id,
-                "date": bk_date,
-                "consoleId": bk_console,
-                "memberId": bk_member,
-                "timeSlot": bk_time,
-                "endTime": bk_endtime,
-                "status": bk_status,
-                "staff": bk_staff,
-                "createdAt": f"{bk_date} {bk_time}",
-                "consoleType": extra.get("consoleType", ""),
-                "gameName": extra.get("gameName", ""),
-                "phone": extra.get("phone", ""),
-                "customerName": extra.get("customerName", ""),
-                "durationMins": extra.get("durationMins", 0),
-                "telegramChatId": extra.get("telegramChatId", ""),
-            }
-            results.append(entry)
-
-        return ok(results)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════
 #  CREATE/UPDATE — bookings (customer bot format)
 # ═══════════════════════════════════════
 @app.post("/api/bookings", tags=["Bookings"])
@@ -1014,13 +1127,70 @@ async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.post("/api/save_receipt_json", tags=["Receipts"])
 async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
-    """Persist receipt data locally."""
+    """Persist receipt data to MySQL."""
     try:
-        voucher_id = req.get("voucher_id", "unknown")
-        data = req.get("data", {})
-        logger.info("Receipt saved: voucher=%s", voucher_id)
-        return ok({"voucher_id": voucher_id})
+        receipt_no = req.get("receipt_no", "")
+        member_id = req.get("member_id", "")
+        amount = req.get("amount", 0)
+        payment_method = req.get("payment_method", "")
+        items = req.get("items", "")
+        receipt_date = req.get("receipt_date", "")
+        staff_name = req.get("staff_name", "")
+
+        logger.info("Saving receipt to MySQL: receipt_no=%s", receipt_no)
+
+        mysql_execute(
+            "INSERT INTO receipts (receipt_no, member_id, amount, payment_method, items, receipt_date, staff_name) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (receipt_no, member_id, amount, payment_method, items, receipt_date, staff_name)
+        )
+
+        logger.info("Receipt saved: receipt_no=%s", receipt_no)
+        return {"status": "ok", "receipt_no": receipt_no}
     except Exception as e:
+        logger.error("Receipt save error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+
+# ═══════════════════════════════════════
+#  QUERY — get_receipt_html
+# ═══════════════════════════════════════
+@app.get("/api/receipt/{voucher_id}", tags=["Receipts"])
+async def api_get_receipt_html(voucher_id: str, auth=Depends(verify_api_key)):
+    """Render receipt HTML for a given voucher_id."""
+    import json
+    import os as _os
+    
+    try:
+        # Normalise voucher_id (replace / and \ with -)
+        safe_id = voucher_id.replace("/", "-").replace("\\", "-")
+        receipt_dir = "/root/psvibe-sales-bot/bot/receipts"
+        receipt_path = _os.path.join(receipt_dir, f"{safe_id}.json")
+        template_path = "/root/psvibe_api_server/receipt_template.html"
+        
+        if not _os.path.exists(receipt_path):
+            logger.warning("Receipt not found: voucher=%s path=%s", voucher_id, receipt_path)
+            return HTMLResponse(
+                content=f"<html><body style=\"font-family:sans-serif;padding:40px;text-align:center\"><h2>404 - Receipt Not Found</h2><p>Voucher: {voucher_id}</p></body></html>",
+                status_code=404
+            )
+        
+        with open(receipt_path, "r") as f:
+            receipt_data = json.load(f)
+        
+        with open(template_path, "r") as f:
+            template = f.read()
+        
+        # Inject receipt data before </head>
+        json_str = json.dumps(receipt_data, ensure_ascii=False)
+        script_tag = f"<script>window.__RECEIPT_DATA__ = {json_str};</script>"
+        injected = template.replace("</head>", script_tag + "\n</head>")
+        
+        logger.info("Receipt rendered: voucher=%s", voucher_id)
+        return HTMLResponse(content=injected)
+    except Exception as e:
+        logger.error("Receipt render error: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1293,6 +1463,9 @@ async def api_analytics_daily_sales(
     auth=Depends(verify_api_key),
 ):
     """Return today's (or specified date's) sales KPIs from Sales_Daily."""
+    data = _fetch_daily_sales_from_mysql(date)
+    if data is not None:
+        return ok(data)
     try:
         from analytics import get_daily_sales
         return ok(get_daily_sales(date))
@@ -1305,6 +1478,9 @@ async def api_analytics_topups(
     auth=Depends(verify_api_key),
 ):
     """Return top-up trends: daily/weekly aggregates, all-time effective rate, top members."""
+    data = _fetch_topups_from_mysql(days)
+    if data is not None:
+        return ok({"topup_log": data, "total_topups": len(data)})
     try:
         from analytics import get_topup_trends
         return ok(get_topup_trends(days))

@@ -26,6 +26,8 @@ from sheets_client import (
     get_game_rows, get_console_game_rows,
     invalidate_cache, int_safe, float_safe,
 )
+from mysql_db import query as mysql_query, query_one as mysql_query_one, execute as mysql_execute
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -122,12 +124,155 @@ async def health_check():
         sheets_ok = True
     except Exception:
         sheets_ok = False
-    return ok({
-        "status": "ok",
-        "version": API_VERSION,
-        "sheets_connected": sheets_ok,
-        "timestamp": now_mmt().isoformat(),
-    })
+    return {"success": True, "sheets_ok": sheets_ok, "data_source": "mysql"}
+
+
+# ═══════════════════════════════════════
+#  MYSQL HEALTH
+# ═══════════════════════════════════════
+@app.get("/api/mysql/health", tags=["System"])
+def mysql_health():
+    try:
+        mysql_query_one("SELECT 1 as ok")
+        return {"success": True, "mysql_connected": True, "data_source": "mysql"}
+    except Exception as e:
+        return {"success": True, "mysql_connected": False, "data_source": "gspread", "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  MYSQL HELPER
+# ═══════════════════════════════════════
+_MYSQL_ENABLED = True
+
+def _use_mysql() -> bool:
+    global _MYSQL_ENABLED
+    if not _MYSQL_ENABLED:
+        return False
+    try:
+        mysql_query_one("SELECT 1 as ok")
+        return True
+    except Exception:
+        _MYSQL_ENABLED = False
+        return False
+
+
+# ═══════════════════════════════════════
+#  MYSQL STATUS
+# ═══════════════════════════════════════
+@app.get("/api/mysql/status", tags=["System"])
+def mysql_status(auth=Depends(verify_api_key)):
+    """Show all MySQL tables with row counts."""
+    if not _use_mysql():
+        return {"success": True, "mysql_connected": False, "data_source": "gpsread"}
+    try:
+        tables = mysql_query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'psvibe_api'")
+        result = {}
+        for t in tables:
+            tn = t["TABLE_NAME"]
+            cnt = mysql_query_one(f"SELECT COUNT(*) as cnt FROM `{tn}`")
+            result[tn] = cnt["cnt"] if cnt else 0
+        return ok({"mysql_connected": True, "total_tables": len(result), "tables": result})
+    except Exception as e:
+        return {"success": False, "error": str(e), "mysql_connected": False}
+
+
+# ═══════════════════════════════════════
+#  MYSQL WRAPPERS
+# ═══════════════════════════════════════
+def _fetch_members_from_mysql():
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            return mysql_query("SELECT * FROM member_wallets")
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_member_data_from_mysql(member_id):
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            return mysql_query_one("SELECT * FROM member_wallets WHERE member_id = %s", (member_id,))
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_console_status_from_mysql():
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            return mysql_query("SELECT * FROM console_status")
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_allowed_staff_ids_from_mysql():
+    """Try MySQL first, return data or None.
+
+    NOTE: staff_records.staff_id is an internal auto-increment PK (1,2,3...),
+    NOT a Telegram user ID.  The real Telegram whitelist lives in Google Sheets
+    Setting!B30.  Return None here so the endpoint falls back to Sheets.
+    """
+    return None
+
+
+def _fetch_console_games_from_mysql():
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            return mysql_query("SELECT * FROM console_games")
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_wallet_mins_from_mysql(member_id):
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one("SELECT balance_mins FROM member_wallets WHERE member_id = %s", (member_id,))
+            if row:
+                return row.get("balance_mins", 0)
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_balance_mins_from_mysql(member_id):
+    """Try MySQL first, return data or None (same as wallet_mins live read)."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one("SELECT balance_mins FROM member_wallets WHERE member_id = %s", (member_id,))
+            if row:
+                return row.get("balance_mins", 0)
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_daily_sales_from_mysql(date_str=None):
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            if date_str:
+                return mysql_query("SELECT * FROM sales_daily WHERE date = %s", (date_str,))
+            return mysql_query("SELECT * FROM sales_daily")
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_topups_from_mysql(days=30):
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            return mysql_query("SELECT * FROM topup_log ORDER BY created_at DESC LIMIT 1000")
+    except Exception:
+        pass
+    return None
 
 
 # ═══════════════════════════════════════
@@ -136,6 +281,18 @@ async def health_check():
 @app.get("/api/fetch_console_status", tags=["Console"])
 async def api_fetch_console_status(auth=Depends(verify_api_key)):
     """Return list of console dicts with live status from Console_Booking sheet."""
+    data = _fetch_console_status_from_mysql()
+    if data is not None:
+        return ok([{
+            "id": d.get("console_id", ""),
+            "type": d.get("console_type", d.get("type", "")),
+            "status": d.get("status", "Free"),
+            "member": d.get("member_id", d.get("member")),
+            "start": d.get("start_time", d.get("start")),
+            "staff": d.get("staff"),
+            "booking_id": d.get("booking_id"),
+            "mult": d.get("multiplier", d.get("mult", 1.0)),
+        } for d in data])
     try:
         today = today_str()
         setting_sh = get_worksheet(SHEET_SETTING)
@@ -190,6 +347,9 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)):
 @app.get("/api/fetch_members", tags=["Members"])
 async def api_fetch_members(auth=Depends(verify_api_key)):
     """Return sorted list of all member IDs from Card_Wallet."""
+    data = _fetch_members_from_mysql()
+    if data is not None:
+        return ok(sorted([m["member_id"] for m in data if m.get("member_id")]))
     try:
         ws = get_worksheet(SHEET_CARD_WALLET)
         raw = ws.col_values(2)[1:]
@@ -205,6 +365,16 @@ async def api_fetch_members(auth=Depends(verify_api_key)):
 @app.get("/api/fetch_member_data/{member_id}", tags=["Members"])
 async def api_fetch_member_data(member_id: str, auth=Depends(verify_api_key)):
     """Return consolidated member data (name, phone, email, rank, wallet, spend) from Card_Wallet."""
+    data = _fetch_member_data_from_mysql(member_id)
+    if data is not None:
+        return ok({
+            "name": data.get("member_name", data.get("name", "-")) or "-",
+            "phone": data.get("phone", "-") or "-",
+            "email": data.get("email", ""),
+            "net_spend": data.get("net_spend", 0),
+            "rank_raw": data.get("tier", data.get("rank_raw", "Warrior")),
+            "wallet_mins": data.get("balance_mins", data.get("wallet_mins")),
+        })
     try:
         rows = get_member_rows()
         for row in rows[1:]:
@@ -243,6 +413,9 @@ async def api_fetch_member_data(member_id: str, auth=Depends(verify_api_key)):
 @app.get("/api/fetch_wallet_mins/{member_id}", tags=["Members"])
 async def api_fetch_wallet_mins(member_id: str, auth=Depends(verify_api_key)):
     """Fetch wallet balance in mins for a member (col I, formula)."""
+    data = _fetch_wallet_mins_from_mysql(member_id)
+    if data is not None:
+        return ok(data)
     try:
         for row in get_member_rows()[1:]:
             if len(row) > 1 and row[1].strip() == member_id.strip():
@@ -261,6 +434,9 @@ async def api_fetch_wallet_mins(member_id: str, auth=Depends(verify_api_key)):
 @app.get("/api/fetch_balance_mins/{member_id}", tags=["Members"])
 async def api_fetch_balance_mins(member_id: str, auth=Depends(verify_api_key)):
     """Fetch wallet balance in mins (live read, bypasses cache)."""
+    data = _fetch_balance_mins_from_mysql(member_id)
+    if data is not None:
+        return ok(data)
     try:
         ws = get_worksheet(SHEET_CARD_WALLET)
         rows = ws.get_all_values()
@@ -380,6 +556,16 @@ async def api_fetch_game_library(auth=Depends(verify_api_key)):
 @app.get("/api/fetch_console_games", tags=["Games"])
 async def api_fetch_console_games(auth=Depends(verify_api_key)):
     """Return all console-game installation records (cached 5 min)."""
+    data = _fetch_console_games_from_mysql()
+    if data is not None:
+        return ok([{
+            "row": d.get("id", i),
+            "console_id": d.get("console_id", ""),
+            "game_title": d.get("game_title", ""),
+            "install_type": d.get("install_type", ""),
+            "date": d.get("date", ""),
+            "notes": d.get("notes", ""),
+        } for i, d in enumerate(data, start=2)])
     try:
         rows = get_console_game_rows()
         if len(rows) < 2:
@@ -715,6 +901,9 @@ async def api_fetch_promotions_cached(auth=Depends(verify_api_key)):
 @app.get("/api/fetch_allowed_staff_ids", tags=["Staff"])
 async def api_fetch_allowed_staff_ids(auth=Depends(verify_api_key)):
     """Fetch dynamic staff whitelist from Setting!B30."""
+    data = _fetch_allowed_staff_ids_from_mysql()
+    if data is not None:
+        return ok(data)
     try:
         ws = get_worksheet(SHEET_SETTING)
         val = ws.cell(30, 2).value
@@ -938,14 +1127,29 @@ async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.post("/api/save_receipt_json", tags=["Receipts"])
 async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
-    """Persist receipt data locally."""
+    """Persist receipt data to MySQL."""
     try:
-        voucher_id = req.get("voucher_id", "unknown")
-        data = req.get("data", {})
-        logger.info("Receipt saved: voucher=%s", voucher_id)
-        return ok({"voucher_id": voucher_id})
+        receipt_no = req.get("receipt_no", "")
+        member_id = req.get("member_id", "")
+        amount = req.get("amount", 0)
+        payment_method = req.get("payment_method", "")
+        items = req.get("items", "")
+        receipt_date = req.get("receipt_date", "")
+        staff_name = req.get("staff_name", "")
+
+        logger.info("Saving receipt to MySQL: receipt_no=%s", receipt_no)
+
+        mysql_execute(
+            "INSERT INTO receipts (receipt_no, member_id, amount, payment_method, items, receipt_date, staff_name) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (receipt_no, member_id, amount, payment_method, items, receipt_date, staff_name)
+        )
+
+        logger.info("Receipt saved: receipt_no=%s", receipt_no)
+        return {"status": "ok", "receipt_no": receipt_no}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Receipt save error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
 
 
 
@@ -1259,6 +1463,9 @@ async def api_analytics_daily_sales(
     auth=Depends(verify_api_key),
 ):
     """Return today's (or specified date's) sales KPIs from Sales_Daily."""
+    data = _fetch_daily_sales_from_mysql(date)
+    if data is not None:
+        return ok(data)
     try:
         from analytics import get_daily_sales
         return ok(get_daily_sales(date))
@@ -1271,6 +1478,9 @@ async def api_analytics_topups(
     auth=Depends(verify_api_key),
 ):
     """Return top-up trends: daily/weekly aggregates, all-time effective rate, top members."""
+    data = _fetch_topups_from_mysql(days)
+    if data is not None:
+        return ok({"topup_log": data, "total_topups": len(data)})
     try:
         from analytics import get_topup_trends
         return ok(get_topup_trends(days))
@@ -1669,6 +1879,238 @@ async def api_bot_users_track(req: dict, auth=Depends(verify_api_key)):
         return ok({"tracked": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  P4 Phase 1 — NEW ENDPOINTS (auto-generated 2026-05-29)
+# ═══════════════════════════════════════
+
+# ── Endpoint 1: POST /api/finance/opex ──
+@app.post("/api/finance/opex", tags=["Finance"])
+async def api_finance_opex(req: dict, auth=Depends(verify_api_key)):
+    """Record an operational expense into accounts table."""
+    try:
+        import json as _json
+        date = req.get("date", "")
+        category = req.get("category", "")
+        description = req.get("description", "")
+        amount = req.get("amount", 0)
+        payment_method = req.get("payment_method", "")
+        staff_name = req.get("staff_name", "")
+
+        notes = _json.dumps({
+            "date": date,
+            "payment_method": payment_method,
+            "staff_name": staff_name
+        })
+
+        logger.info("Recording opex: %s | %s | %s", category, description, amount)
+
+        mysql_execute(
+            "INSERT INTO accounts (account_name, account_type, balance, notes) "
+            "VALUES (%s, %s, %s, %s)",
+            (description, category, amount, notes)
+        )
+
+        logger.info("Opex recorded: %s", description)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("Opex save error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 2: POST /api/staff/salary-advance ──
+@app.post("/api/staff/salary-advance", tags=["Staff"])
+async def api_staff_salary_advance(req: dict, auth=Depends(verify_api_key)):
+    """Record a salary advance for a staff member."""
+    try:
+        staff_name = req.get("staff_name", "")
+        amount = req.get("amount", 0)
+        date = req.get("date", "")
+        note = req.get("note", "")
+
+        logger.info("Recording salary advance: %s | %s | %s", staff_name, amount, date)
+
+        mysql_execute(
+            "INSERT INTO salary_advance (staff_name, amount, advance_date, repayment_status, notes) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (staff_name, amount, date, "pending", note)
+        )
+
+        result = mysql_query_one("SELECT LAST_INSERT_ID() as id")
+        insert_id = result["id"] if result else 0
+
+        logger.info("Salary advance recorded: id=%s", insert_id)
+        return {"status": "ok", "id": insert_id}
+    except Exception as e:
+        logger.error("Salary advance save error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 3: POST /api/sales/record ──
+@app.post("/api/sales/record", tags=["Sales"])
+async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
+    """Record a daily sale into sales_daily table."""
+    try:
+        import json as _json
+        receipt_no = req.get("receipt_no", "")
+        items = req.get("items", "")
+        amount = req.get("amount", 0)
+        payment_method = req.get("payment_method", "")
+        member_id = req.get("member_id", "")
+        staff_name = req.get("staff_name", "")
+        receipt_date = req.get("receipt_date", "")
+        food_items = req.get("food_items", "")
+        food_cost = req.get("food_cost", 0)
+
+        notes = _json.dumps({
+            "receipt_no": receipt_no,
+            "items": items,
+            "food_items": food_items,
+            "food_cost": food_cost
+        })
+
+        logger.info("Recording sale: receipt=%s amount=%s", receipt_no, amount)
+
+        mysql_execute(
+            "INSERT INTO sales_daily (sale_date, member_id, amount, staff_name, payment_method, notes) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (receipt_date, member_id, amount, staff_name, payment_method, notes)
+        )
+
+        logger.info("Sale recorded: receipt_no=%s", receipt_no)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("Sale record error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 4: POST /api/inventory/stock-out ──
+@app.post("/api/inventory/stock-out", tags=["Inventory"])
+async def api_inventory_stock_out(req: dict, auth=Depends(verify_api_key)):
+    """Record a stock-out (consumption/usage) event."""
+    try:
+        import json as _json
+        item_name = req.get("item_name", "")
+        quantity = req.get("quantity", 0)
+        unit = req.get("unit", "")
+        reason = req.get("reason", "")
+        staff_name = req.get("staff_name", "")
+        date = req.get("date", "")
+
+        notes = _json.dumps({
+            "unit": unit,
+            "reason": reason
+        })
+
+        logger.info("Recording stock-out: %s qty=%s", item_name, quantity)
+
+        mysql_execute(
+            "INSERT INTO stock_out (item_name, quantity, sale_date, staff_name, notes) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (item_name, quantity, date, staff_name, notes)
+        )
+
+        logger.info("Stock-out recorded: %s", item_name)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("Stock-out save error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 5: POST /api/inventory/stock-in ──
+@app.post("/api/inventory/stock-in", tags=["Inventory"])
+async def api_inventory_stock_in(req: dict, auth=Depends(verify_api_key)):
+    """Record stock-in (restock/purchase) into inventory table."""
+    try:
+        item_name = req.get("item_name", "")
+        quantity = req.get("quantity", 0)
+        unit = req.get("unit", "")
+        supplier = req.get("supplier", "")
+        cost = req.get("cost", 0)
+        staff_name = req.get("staff_name", "")
+        date = req.get("date", "")
+
+        logger.info("Recording stock-in: %s qty=%s from %s", item_name, quantity, supplier)
+
+        # Map: supplier→category, cost→unit_price
+        mysql_execute(
+            "INSERT INTO inventory (item_name, category, quantity, unit_price) "
+            "VALUES (%s, %s, %s, %s)",
+            (item_name, supplier, quantity, cost)
+        )
+
+        logger.info("Stock-in recorded: %s", item_name)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("Stock-in save error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 6: POST /api/members/register ──
+@app.post("/api/members/register", tags=["Members"])
+async def api_members_register(req: dict, auth=Depends(verify_api_key)):
+    """Register a new member and optionally create wallet entry."""
+    try:
+        name = req.get("name", "")
+        phone = req.get("phone", "")
+        email = req.get("email", "")
+        join_date = req.get("join_date", "")
+        staff_name = req.get("staff_name", "")
+
+        # Generate a member_id
+        member_id = f"M-{int(time.time())}"
+
+        logger.info("Registering member: %s | phone=%s", name, phone)
+
+        mysql_execute(
+            "INSERT INTO members (member_id, name, phone) "
+            "VALUES (%s, %s, %s)",
+            (member_id, name, phone)
+        )
+
+        # Also create wallet entry
+        try:
+            mysql_execute(
+                "INSERT IGNORE INTO member_wallets (member_id, member_name, phone, balance_mins) "
+                "VALUES (%s, %s, %s, 0)",
+                (member_id, name, phone)
+            )
+        except Exception as wallet_err:
+            logger.warning("Could not create wallet for member %s: %s", member_id, str(wallet_err))
+
+        logger.info("Member registered: member_id=%s", member_id)
+        return {"status": "ok", "member_id": member_id}
+    except Exception as e:
+        logger.error("Member register error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 7: POST /api/topup/log ──
+@app.post("/api/topup/log", tags=["Topup"])
+async def api_topup_log(req: dict, auth=Depends(verify_api_key)):
+    """Log a top-up transaction into topup_log table."""
+    try:
+        member_id = req.get("member_id", "")
+        amount = req.get("amount", 0)
+        payment_method = req.get("payment_method", "")
+        staff_name = req.get("staff_name", "")
+        date = req.get("date", "")
+
+        logger.info("Logging topup: member=%s amount=%s", member_id, amount)
+
+        mysql_execute(
+            "INSERT INTO topup_log (member_id, amount, topup_date, staff_name, payment_method) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (member_id, amount, date, staff_name, payment_method)
+        )
+
+        logger.info("Topup logged: member=%s amount=%s", member_id, amount)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("Topup log error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
 
 
 @app.on_event("startup")

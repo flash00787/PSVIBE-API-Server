@@ -282,3 +282,11 @@ def get_setting_rows() -> list:
             logger.warning('Setting cache refresh failed: %s', e)
     return _SETTING_ROWS
 
+
+def get_console_booking_rows(row_offset=0, row_limit=100):
+    """Return paginated (headers, rows) from Console_Booking sheet."""
+    ws = get_worksheet(SHEET_CONSOLE_BOOKING)
+    rows = get_booking_rows()
+    headers = rows[0] if rows else []
+    data = rows[1:] if rows else []
+    return headers, data[row_offset:row_offset + row_limit]
