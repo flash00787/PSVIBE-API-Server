@@ -27,6 +27,7 @@ from sheets_client import (
     invalidate_cache, int_safe, float_safe,
 )
 from mysql_db import query as mysql_query, query_one as mysql_query_one, execute as mysql_execute
+from inventory_fifo import get_fifo_stock, compute_fifo_cost, get_fifo_valuation, add_stock_in, get_batches
 
 
 logging.basicConfig(
@@ -1988,11 +1989,11 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
 # ── Endpoint 4: POST /api/inventory/stock-out ──
 @app.post("/api/inventory/stock-out", tags=["Inventory"])
 async def api_inventory_stock_out(req: dict, auth=Depends(verify_api_key)):
-    """Record a stock-out (consumption/usage) event."""
+    """Record a stock-out (consumption/usage) event with FIFO cost tracking."""
     try:
         import json as _json
         item_name = req.get("item_name", "")
-        quantity = req.get("quantity", 0)
+        quantity = int(req.get("quantity", 0))
         unit = req.get("unit", "")
         reason = req.get("reason", "")
         staff_name = req.get("staff_name", "")
@@ -2005,14 +2006,26 @@ async def api_inventory_stock_out(req: dict, auth=Depends(verify_api_key)):
 
         logger.info("Recording stock-out: %s qty=%s", item_name, quantity)
 
+        # Compute FIFO cost of goods sold
+        fifo_result = compute_fifo_cost(item_name, quantity)
+        cogs = fifo_result['total_cost']
+        shortfall = fifo_result['shortfall']
+
         mysql_execute(
             "INSERT INTO stock_out (item_name, quantity, sale_date, staff_name, notes) "
             "VALUES (%s, %s, %s, %s, %s)",
-            (item_name, quantity, date, staff_name, notes)
+            (item_name, quantity, date if date else None, staff_name, notes)
         )
 
-        logger.info("Stock-out recorded: %s", item_name)
-        return {"status": "ok"}
+        logger.info("Stock-out recorded: %s qty=%s COGS=%s", item_name, quantity, cogs)
+        return {
+            "status": "ok",
+            "item_name": item_name,
+            "quantity": quantity,
+            "cogs": cogs,
+            "shortfall": shortfall,
+            "fifo_batches": fifo_result['consumed']
+        }
     except Exception as e:
         logger.error("Stock-out save error: %s", str(e))
         return {"status": "error", "detail": str(e)}
@@ -2021,33 +2034,95 @@ async def api_inventory_stock_out(req: dict, auth=Depends(verify_api_key)):
 # ── Endpoint 5: POST /api/inventory/stock-in ──
 @app.post("/api/inventory/stock-in", tags=["Inventory"])
 async def api_inventory_stock_in(req: dict, auth=Depends(verify_api_key)):
-    """Record stock-in (restock/purchase) into inventory table."""
+    """Record stock-in (restock/purchase) into FIFO batch-tracked stock_in table."""
     try:
         item_name = req.get("item_name", "")
-        quantity = req.get("quantity", 0)
+        quantity = int(req.get("quantity", 0))
         unit = req.get("unit", "")
         supplier = req.get("supplier", "")
-        cost = req.get("cost", 0)
+        cost = float(req.get("cost", 0))
         staff_name = req.get("staff_name", "")
         date = req.get("date", "")
 
-        logger.info("Recording stock-in: %s qty=%s from %s", item_name, quantity, supplier)
+        logger.info("Recording stock-in (FIFO): %s qty=%s from %s cost=%s", item_name, quantity, supplier, cost)
 
-        # Map: supplier→category, cost→unit_price
-        mysql_execute(
-            "INSERT INTO inventory (item_name, category, quantity, unit_price) "
-            "VALUES (%s, %s, %s, %s)",
-            (item_name, supplier, quantity, cost)
+        # FIFO batch tracking: write to stock_in table
+        result = add_stock_in(
+            item_name=item_name,
+            quantity=quantity,
+            unit_cost=cost,
+            source=supplier,
+            receipt_no=date
         )
 
-        logger.info("Stock-in recorded: %s", item_name)
-        return {"status": "ok"}
+        logger.info("Stock-in recorded (FIFO batch %s): %s", result['batch_id'], item_name)
+        return {
+            "status": "ok",
+            "batch_id": result['batch_id'],
+            "item_name": item_name,
+            "quantity": quantity,
+            "unit_cost": cost
+        }
     except Exception as e:
         logger.error("Stock-in save error: %s", str(e))
         return {"status": "error", "detail": str(e)}
 
 
 # ── Endpoint 6: POST /api/members/register ──
+
+
+# ── Endpoint: GET /api/sheets/inventory (FIFO-tracked) ──
+
+@app.get("/api/sheets/inventory", tags=["Inventory"])
+
+async def api_sheets_inventory():
+
+    """Get current FIFO-based inventory stock levels.
+    Uses stock_in (batch-tracked) minus stock_out per item.
+    Returns: {"items": [{"name": str, "current_stock": int}], "success": bool}
+    """
+    try:
+        import logging
+        logger = logging.getLogger("psvibe_api")
+        fifo_items = get_fifo_stock()  # from inventory_fifo module
+        items = [{"name": r['item_name'], "current_stock": r['quantity']} for r in fifo_items]
+        return {"items": items, "success": True}
+    except Exception as e:
+        logger.error("FIFO inventory query error: %s", str(e))
+        return {"items": [], "success": False, "error": str(e)}
+
+# ── Endpoint: GET /api/inventory/stock-value ──
+
+@app.get("/api/inventory/stock-value", tags=["Inventory"])
+async def api_inventory_stock_value():
+    """Get total FIFO inventory valuation.
+    Returns: {"items": [...], "total_inventory_value": float, "success": bool}
+    """
+    try:
+        import logging
+        logger = logging.getLogger("psvibe_api")
+        valuation = get_fifo_valuation()
+        return {"items": valuation['items'], "total_inventory_value": valuation['total_inventory_value'], "success": True}
+    except Exception as e:
+        logger.error("Stock value query error: %s", str(e))
+        return {"items": [], "total_inventory_value": 0, "success": False, "error": str(e)}
+
+# ── Endpoint: GET /api/inventory/batches/{item_name} ──
+
+@app.get("/api/inventory/batches/{item_name}", tags=["Inventory"])
+async def api_inventory_batches(item_name: str):
+    """Get batch details for a specific inventory item.
+    Returns: {"batches": [...], "item_name": str, "success": bool}
+    """
+    try:
+        import logging
+        logger = logging.getLogger("psvibe_api")
+        batches = get_batches(item_name)
+        return {"batches": batches, "item_name": item_name, "success": True}
+    except Exception as e:
+        logger.error("Batch query error: %s", str(e))
+        return {"batches": [], "item_name": item_name, "success": False, "error": str(e)}
+
 @app.post("/api/members/register", tags=["Members"])
 async def api_members_register(req: dict, auth=Depends(verify_api_key)):
     """Register a new member and optionally create wallet entry."""
@@ -2124,7 +2199,6 @@ async def startup():
         logger.warning("Could not connect to Google Sheets on startup: %s", e)
 
 
-import patch_routes
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")

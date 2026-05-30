@@ -11142,3 +11142,1757 @@ INFO:     127.0.0.1:52132 - "GET /api/sheets/config HTTP/1.1" 200 OK
 INFO:     127.0.0.1:52142 - "GET /health HTTP/1.1" 404 Not Found
 INFO:     127.0.0.1:48230 - "GET /api/health HTTP/1.1" 200 OK
 INFO:     127.0.0.1:44500 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     Started server process [1141233]
+INFO:     Waiting for application startup.
+2026-05-29 21:40:57,586 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-29 21:40:57,999 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-29 21:40:58,448 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:42328 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42334 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42350 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:42364 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1141233]
+INFO:     Started server process [1141573]
+INFO:     Waiting for application startup.
+2026-05-29 21:41:30,152 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-29 21:41:30,699 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-29 21:41:31,011 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1141573]
+INFO:     Started server process [1141597]
+INFO:     Waiting for application startup.
+2026-05-29 21:41:33,341 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-29 21:41:33,886 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-29 21:41:34,318 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1141597]
+INFO:     Started server process [1142172]
+INFO:     Waiting for application startup.
+2026-05-29 21:42:46,666 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-29 21:42:47,124 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-29 21:42:47,660 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:59228 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59244 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34826 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34828 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34836 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34852 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:34856 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:34848 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34866 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:34868 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:48928 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1142172]
+INFO:     Started server process [1142376]
+INFO:     Waiting for application startup.
+2026-05-29 21:43:25,533 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-29 21:43:25,976 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-29 21:43:26,286 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:41562 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49780 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49784 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49786 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49796 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49808 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1142376]
+INFO:     Started server process [1142627]
+INFO:     Waiting for application startup.
+2026-05-29 21:44:13,867 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-29 21:44:14,349 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-29 21:44:14,806 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:34714 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47248 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47262 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47264 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:47274 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:42734 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1142627]
+INFO:     Started server process [1143481]
+INFO:     Waiting for application startup.
+2026-05-29 21:46:35,783 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-29 21:46:36,199 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-29 21:46:36,637 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:39386 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55446 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55456 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55462 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55478 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:55482 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:55486 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54624 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54628 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54636 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:54650 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1143481]
+INFO:     Started server process [1143847]
+INFO:     Waiting for application startup.
+2026-05-29 21:47:30,164 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-29 21:47:30,593 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-29 21:47:30,906 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:36322 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37900 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37908 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37916 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37922 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:37928 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:34554 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34556 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34560 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34562 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:34576 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1143847]
+INFO:     Started server process [1144259]
+INFO:     Waiting for application startup.
+2026-05-29 21:48:27,525 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-29 21:48:27,935 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-29 21:48:28,260 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:44072 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48086 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34800 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34802 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34814 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:34816 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:34822 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34826 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34836 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34846 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:34858 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:50022 - "GET /api/sheets/config HTTP/1.1" 500 Internal Server Error
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1144259]
+INFO:     Started server process [1144621]
+INFO:     Waiting for application startup.
+2026-05-29 21:49:27,407 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-29 21:49:27,866 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-29 21:49:28,178 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:49466 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39806 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39814 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39828 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:39830 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:39834 - "POST /api/inventory/stock-in HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:54916 - "GET /api/sheets/config HTTP/1.1" 200 OK
+2026-05-29 21:50:35,047 [INFO] psvibe_api: Recording stock-in: TestFix qty=0 from 
+2026-05-29 21:50:35,054 [INFO] psvibe_api: Stock-in recorded: TestFix
+INFO:     127.0.0.1:35444 - "POST /api/inventory/stock-in?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+2026-05-29 21:50:51,250 [INFO] psvibe_api: Recording stock-in: FinalTest qty=0 from 
+2026-05-29 21:50:51,256 [INFO] psvibe_api: Stock-in recorded: FinalTest
+INFO:     127.0.0.1:54106 - "POST /api/inventory/stock-in?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39996 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40002 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40010 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40016 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40020 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:58964 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52432 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43804 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42078 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42086 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42090 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42094 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:42098 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:37844 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55578 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42728 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     2a06:98c0:3600::103:0 - "GET /wp-admin/install.php?step=1 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:36288 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43712 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43284 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49744 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42936 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53152 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52782 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40554 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37590 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46036 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43062 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45034 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40008 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55496 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46868 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43404 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50608 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50614 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50616 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50628 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:50630 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40044 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40286 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40202 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44696 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50494 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60002 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34370 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54074 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56094 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37736 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42516 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     2a06:98c0:3600::103:0 - "GET /wp-admin/install.php?step=1 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:45894 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60760 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54790 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58432 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58790 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57232 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36090 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33140 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33660 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51138 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51142 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51156 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51162 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:51166 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:55846 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40118 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60196 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45450 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32972 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     43.156.156.96:0 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:55622 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43374 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60836 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47050 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38376 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57172 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44736 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53962 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43584 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54726 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     2a06:98c0:3600::103:0 - "GET /wp-admin/install.php?step=1 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50018 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     2a06:98c0:3600::103:0 - "GET /wp-admin/install.php?step=1 HTTP/1.1" 404 Not Found
+INFO:     2a06:98c0:3600::103:0 - "GET /wp-admin/install.php?step=1 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:42816 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53542 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53910 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51390 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51404 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51410 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51424 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:51428 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:54604 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41796 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52828 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54082 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51034 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54722 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47916 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     170.106.143.6:0 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:46674 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35488 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39632 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47972 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39870 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49764 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52512 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51758 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56000 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50098 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43484 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     203.23.179.24:0 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:55686 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59782 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60192 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60196 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60208 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60224 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60226 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:32954 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60740 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     2a06:98c0:3600::103:0 - "GET /wp-admin/install.php?step=1 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:60260 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51240 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53262 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49668 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43596 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50344 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53754 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41072 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41290 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     46.138.250.165:0 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:39278 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45086 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44738 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53324 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43844 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54846 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     143.244.47.83:0 - "HEAD / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:54494 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45554 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33850 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33858 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33868 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33874 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:33886 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:37060 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49586 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44388 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37196 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39204 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53338 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47534 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48764 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59822 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     2a06:98c0:3600::103:0 - "GET /wp-admin/install.php?step=1 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:44732 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38544 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59042 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48188 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58024 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41238 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     43.165.125.66:0 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:34610 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42300 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56070 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47178 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41224 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41238 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41250 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41260 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:41276 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:59922 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34908 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34920 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34926 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:34932 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40828 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40842 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40856 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40866 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40874 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:54960 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49666 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1144621]
+INFO:     Started server process [1228321]
+INFO:     Waiting for application startup.
+2026-05-30 03:57:36,849 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 03:57:37,256 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 03:57:37,561 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:54018 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54030 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54046 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:54054 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:54066 - "GET /api/sheets/config HTTP/1.1" 500 Internal Server Error
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1228321]
+INFO:     Started server process [1228647]
+INFO:     Waiting for application startup.
+2026-05-30 03:58:14,207 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 03:58:14,684 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 03:58:15,017 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:59704 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59720 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59722 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59726 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:59732 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:42090 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41012 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41018 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41020 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41036 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:41050 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:53992 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43656 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43658 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43662 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:43664 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49964 - "GET /api/sheets/config HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:33010 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33014 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33026 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33030 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33032 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:33046 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:33052 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33062 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33068 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:33076 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40420 - "GET /api/sheets/config HTTP/1.1" 500 Internal Server Error
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1228647]
+INFO:     Started server process [1230292]
+INFO:     Waiting for application startup.
+2026-05-30 04:00:27,517 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 04:00:27,965 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 04:00:28,289 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:50488 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60558 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60568 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60582 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60590 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60606 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:47122 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60534 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36626 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37964 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39368 - "GET /api/bookings/search?telegram_chat_id=6296803251&api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+2026-05-30 04:15:53,027 [INFO] psvibe_api: BOT-USER: tg=6296803251 user=Osmo action=start
+INFO:     127.0.0.1:39378 - "POST /api/bot-users/track?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+2026-05-30 04:15:55,897 [INFO] psvibe_api: BOT-USER: tg=6296803251 user=Osmo action=book_start
+INFO:     127.0.0.1:39380 - "POST /api/bot-users/track?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59820 - "GET /api/bookings/search?telegram_chat_id=6296803251&api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+2026-05-30 04:16:16,462 [INFO] psvibe_api: BOT-USER: tg=6296803251 user=Osmo action=start
+INFO:     127.0.0.1:59830 - "POST /api/bot-users/track?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57740 - "GET /api/fetch_games?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57748 - "GET /api/fetch_console_status?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57756 - "GET /api/bookings/search?date=2026-05-30&api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51450 - "GET /api/bookings/search?telegram_chat_id=6296803251&api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+2026-05-30 04:16:34,425 [INFO] psvibe_api: BOT-USER: tg=6296803251 user=Osmo action=book_start
+INFO:     127.0.0.1:51466 - "POST /api/bot-users/track?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50514 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45024 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45040 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45044 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45558 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45566 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45570 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45582 - "GET /api/fetch_food_prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39164 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35630 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35640 - "GET /api/fetch_food_costs HTTP/1.1" 200 OK
+INFO:     205.169.39.55:0 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:35670 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38390 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38406 - "GET /api/fetch_food_prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38408 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38418 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38424 - "GET /api/fetch_food_costs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34966 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34978 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56930 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43656 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+2026-05-30 04:21:42,475 [INFO] psvibe_api: Recording stock-in: Coca - Cola qty=5 from Cash
+2026-05-30 04:21:42,481 [INFO] psvibe_api: Stock-in recorded: Coca - Cola
+INFO:     127.0.0.1:43662 - "POST /api/inventory/stock-in HTTP/1.1" 200 OK
+2026-05-30 04:21:43,129 [INFO] psvibe_api: Recording stock-in: Water qty=10 from Cash
+2026-05-30 04:21:43,134 [INFO] psvibe_api: Stock-in recorded: Water
+INFO:     127.0.0.1:43674 - "POST /api/inventory/stock-in HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43686 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42190 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42198 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42202 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42206 - "GET /api/sheets/inventory HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:33960 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34606 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34608 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34620 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34632 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34644 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34658 - "GET /api/fetch_wallet_mins/PSV_A_000 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34670 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34680 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34696 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34704 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33956 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33958 - "GET /api/fetch_base_rate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33974 - "GET /api/fetch_food_prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33982 - "GET /api/sheets/inventory HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:33990 - "GET /api/sheets/inventory HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:48360 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48370 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48384 - "GET /api/sheets/inventory HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:37426 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37440 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41972 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42140 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42148 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42164 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41272 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41286 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41298 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:41312 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:41320 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59246 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53172 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37408 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37416 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37432 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37440 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:37446 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35142 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35152 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35164 - "GET /api/sheets/inventory HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56826 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56836 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56848 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56864 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56868 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56884 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56886 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56894 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56908 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56924 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56038 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1230292]
+INFO:     Started server process [1244924]
+INFO:     Waiting for application startup.
+2026-05-30 04:32:32,085 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 04:32:32,538 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 04:32:32,849 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:37446 - "GET /api/sheets/inventory HTTP/1.1" 404 Not Found
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1244924]
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 5, in <module>
+    @app.get("/api/sheets/inventory", tags=["Sheets"])
+     ^^^
+NameError: name 'app' is not defined
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 5, in <module>
+    @app.get("/api/sheets/inventory", tags=["Sheets"])
+     ^^^
+NameError: name 'app' is not defined
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 5, in <module>
+    @app.get("/api/sheets/inventory", tags=["Sheets"])
+     ^^^
+NameError: name 'app' is not defined
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 5, in <module>
+    @app.get("/api/sheets/inventory", tags=["Sheets"])
+     ^^^
+NameError: name 'app' is not defined
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 5, in <module>
+    @app.get("/api/sheets/inventory", tags=["Sheets"])
+     ^^^
+NameError: name 'app' is not defined
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 5, in <module>
+    @app.get("/api/sheets/inventory", tags=["Sheets"])
+     ^^^
+NameError: name 'app' is not defined
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 5, in <module>
+    @app.get("/api/sheets/inventory", tags=["Sheets"])
+     ^^^
+NameError: name 'app' is not defined
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 5, in <module>
+    @app.get("/api/sheets/inventory", tags=["Sheets"])
+     ^^^
+NameError: name 'app' is not defined
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 5, in <module>
+    @app.get("/api/sheets/inventory", tags=["Sheets"])
+     ^^^
+NameError: name 'app' is not defined
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130
+    *
+     ^
+SyntaxError: invalid syntax
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130
+    *
+     ^
+SyntaxError: invalid syntax
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130
+    *
+     ^
+SyntaxError: invalid syntax
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130
+    *
+     ^
+SyntaxError: invalid syntax
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2130
+    *
+     ^
+SyntaxError: invalid syntax
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2131
+    *
+     ^
+SyntaxError: invalid syntax
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1129, in get_code
+  File "<frozen importlib._bootstrap_external>", line 1059, in source_to_code
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2131
+    *
+     ^
+SyntaxError: invalid syntax
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2127, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 7, in <module>
+    async def api_sheets_inventory(auth=Depends(verify_api_key)):
+                                        ^^^^^^^
+NameError: name 'Depends' is not defined
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2127, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 7, in <module>
+    async def api_sheets_inventory(auth=Depends(verify_api_key)):
+                                        ^^^^^^^
+NameError: name 'Depends' is not defined
+Traceback (most recent call last):
+  File "/root/psvibe_api_server/venv/bin/uvicorn", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1524, in __call__
+    return self.main(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1445, in main
+    rv = self.invoke(ctx)
+         ^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 1308, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/click/core.py", line 877, in invoke
+    return callback(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 441, in main
+    run(
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/main.py", line 609, in run
+    config.load_app()
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/config.py", line 415, in load_app
+    return import_from_string(self.app)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/psvibe_api_server/venv/lib/python3.12/site-packages/uvicorn/importer.py", line 19, in import_from_string
+    module = importlib.import_module(module_str)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/psvibe_api_server/app.py", line 2127, in <module>
+    from patch_routes import *
+  File "/root/psvibe_api_server/patch_routes.py", line 7, in <module>
+    async def api_sheets_inventory(auth=Depends(verify_api_key)):
+                                        ^^^^^^^
+NameError: name 'Depends' is not defined
+INFO:     Started server process [1247979]
+INFO:     Waiting for application startup.
+2026-05-30 04:34:35,757 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 04:34:36,212 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 04:34:36,548 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1247979]
+INFO:     Started server process [1248095]
+INFO:     Waiting for application startup.
+2026-05-30 04:34:39,161 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 04:34:39,592 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 04:34:39,915 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:60068 - "GET /api/sheets/inventory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60072 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60084 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60090 - "GET /api/sheets/inventory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:60100 - "GET /api/sheets/config HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+INFO:     127.0.0.1:49086 - "GET /api/sheets/inventory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:57070 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57074 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57088 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57100 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:57114 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:57130 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57142 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57158 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57162 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:57172 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:53322 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1248095]
+INFO:     Started server process [1249167]
+INFO:     Waiting for application startup.
+2026-05-30 04:35:32,686 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 04:35:33,111 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 04:35:33,432 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:41956 - "GET /api/sheets/inventory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:41972 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1249167]
+INFO:     Started server process [1249542]
+INFO:     Waiting for application startup.
+2026-05-30 04:35:50,693 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 04:35:51,143 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 04:35:51,483 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:35552 - "GET /api/sheets/inventory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35568 - "GET /api/sheets/promotions HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35582 - "GET /api/sheets/promotions/all HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35586 - "GET /api/sheets/promotions/log HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:35594 - "GET /api/sheets/consoles HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35608 - "GET /api/sheets/stock-today HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35622 - "GET /api/sheets/pnl HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35628 - "GET /api/sheets/liability HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35642 - "GET /api/sheets/payment-methods HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35656 - "GET /api/sheets/report-data HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35664 - "GET /api/sheets/weekly-report HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35680 - "GET /api/sheets/staff-breakdown HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35696 - "GET /api/waitlist HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35708 - "GET /api/waitlist/list HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35716 - "GET /api/waitlist/add HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35720 - "GET /api/finance/accounts HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35732 - "GET /api/finance/pnl HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35742 - "GET /api/finance/balance-sheet HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:35754 - "GET /api/bookings/list HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:54096 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54108 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54110 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54114 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:54120 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:44052 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44064 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40776 - "GET /api/sheets/inventory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40788 - "GET /api/sheets/stock-today HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40802 - "GET /api/sheets/consoles HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40808 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40812 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40824 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40840 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40850 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40860 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40864 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:40876 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1249542]
+INFO:     Started server process [1250494]
+INFO:     Waiting for application startup.
+2026-05-30 04:36:25,325 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 04:36:25,777 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 04:36:26,087 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:44824 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44832 - "GET /api/sheets/inventory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:44834 - "GET /api/sheets/stock-today HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:44850 - "GET /api/sheets/consoles HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:38306 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38310 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38320 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38336 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:38342 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:53846 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53858 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51704 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51712 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51724 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:51732 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1250494]
+INFO:     Started server process [1252161]
+INFO:     Waiting for application startup.
+2026-05-30 04:37:59,999 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 04:38:00,436 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 04:38:00,762 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:58532 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58538 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58540 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43474 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43486 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:43498 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1252161]
+INFO:     Started server process [1252474]
+INFO:     Waiting for application startup.
+2026-05-30 04:38:12,466 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 04:38:12,889 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 04:38:13,219 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:43506 - "GET /api/sheets/config HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:35152 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56578 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56582 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56592 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56608 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56624 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1252474]
+INFO:     Started server process [1253036]
+INFO:     Waiting for application startup.
+2026-05-30 04:38:36,839 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 04:38:37,183 [WARNING] psvibe_api: Could not connect to Google Sheets on startup: APIError: [429]: Quota exceeded for quota metric 'Read requests' and limit 'Read requests per minute per user' of service 'sheets.googleapis.com' for consumer 'project_number:708801534021'.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:46008 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46022 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46034 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:46046 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:51104 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51106 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51114 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51124 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:51134 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:57876 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55898 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55910 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52106 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52114 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55002 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55006 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55016 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34228 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34236 - "GET /api/sheets/inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34250 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34262 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34278 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34294 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60920 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60924 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60926 - "GET /api/fetch_wallet_mins/PSV_A_000 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60940 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60950 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60964 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60970 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60980 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60996 - "GET /api/fetch_base_rate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32768 - "GET /api/fetch_food_prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32782 - "GET /api/sheets/inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32786 - "GET /api/sheets/inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43246 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     2a06:98c0:3600::103:0 - "GET /wp-admin/install.php?step=1 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53852 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38806 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39152 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41106 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54788 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49742 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     71.6.239.34:0 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:44194 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44204 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44208 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44222 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:44230 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:33968 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1253036]
+INFO:     Started server process [1261262]
+INFO:     Waiting for application startup.
+2026-05-30 05:03:22,660 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 05:03:23,157 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 05:03:23,473 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:38024 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44032 - "POST /api/stock/migrate-remaining HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49342 - "POST /api/stock/migrate-remaining HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:49348 - "GET /api/stock/current HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:57500 - "GET /api/sheets/inventory?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57028 - "POST /api/stock/migrate-remaining?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:57044 - "GET /api/stock/current?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:48250 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48976 - "POST /api/stock/migrate-remaining?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:48980 - "GET /api/stock/current?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 500 Internal Server Error
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1261262]
+INFO:     Started server process [1263384]
+INFO:     Waiting for application startup.
+2026-05-30 05:07:46,100 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 05:07:46,544 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 05:07:46,856 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:35692 - "POST /api/stock/migrate-remaining?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35696 - "GET /api/stock/current?api_key=JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37090 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37100 - "GET /api/stock/current HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1263384]
+INFO:     Started server process [1264709]
+INFO:     Waiting for application startup.
+2026-05-30 05:10:11,094 [INFO] sheets_client: Authorizing Google Sheets with SA: /root/psvibe_api_server/service_account.json
+2026-05-30 05:10:11,512 [INFO] psvibe_api: Connected to Google Sheets: PS VIBE - Staff File
+2026-05-30 05:10:11,845 [INFO] psvibe_api: Available sheets: ['Dashboard', 'Sales_Daily', 'Stock_Out', 'Game_Library', 'TopUp_Log', 'Card_Wallet', 'Inventory', 'Stock_In', 'Setting', 'Salary_Payroll', 'Attendance_Log', 'Salary_Advance', 'Receipts', 'Console_Booking', 'Console_Games', 'Capital_Setup', 'Assets_Register', 'OPEX_Log', 'Accounts', 'Account_Transfers', 'Payables', 'Receivables', 'Advance_Staff', 'Prepaid_Expenses', 'Advance_Payments', 'Promotions', 'Promotions_Log', 'Input_Log']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:42684 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58616 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36736 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32826 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33402 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33410 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33426 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33428 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33438 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33444 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33458 - "GET /api/fetch_wallet_mins/PSV_A_000 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33464 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33478 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59340 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59342 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59346 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59352 - "GET /api/fetch_base_rate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59366 - "GET /api/fetch_food_prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59378 - "GET /api/stock/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59386 - "GET /api/stock/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59402 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+WARNING:  Invalid HTTP request received.
+INFO:     127.0.0.1:47488 - "GET /api/stock/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35300 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40362 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     205.169.39.177:0 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:53888 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53902 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53912 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53926 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44094 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44100 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44110 - "GET /api/fetch_wallet_mins/PSV_A_000 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44114 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44124 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44134 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44136 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44146 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44162 - "GET /api/fetch_base_rate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44174 - "GET /api/fetch_food_prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44184 - "GET /api/stock/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44190 - "GET /api/stock/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37342 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37354 - "GET /api/fetch_base_rate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52862 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44694 - "GET /api/stock/current HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:50844 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36156 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42636 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57728 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57740 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57750 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57764 - "GET /api/sheets/inventory HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44414 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44418 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44424 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44434 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44446 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44448 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44458 - "GET /api/fetch_wallet_mins/PSV_A_000 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44468 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44484 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44486 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44496 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44014 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44018 - "GET /api/fetch_base_rate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/fetch_food_prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44026 - "GET /api/stock/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44042 - "GET /api/stock/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44050 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46218 - "GET /api/fetch_food_prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59326 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56576 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49584 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49596 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58634 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58640 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58642 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58650 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58660 - "GET /api/fetch_wallet_mins/PSV_A_000 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58668 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58676 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49132 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49140 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49144 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49146 - "GET /api/fetch_base_rate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49150 - "GET /api/fetch_food_prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49156 - "GET /api/stock/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49160 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58388 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53274 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42344 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40946 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     2a02:4780:a:2127:0:275a:9629:1:0 - "GET /.env HTTP/1.1" 404 Not Found
+INFO:     2a02:4780:a:2127:0:275a:9629:1:0 - "GET /api/.env HTTP/1.1" 404 Not Found
+INFO:     2a02:4780:a:2127:0:275a:9629:1:0 - "GET /core/.env HTTP/1.1" 404 Not Found
+INFO:     2a02:4780:a:2127:0:275a:9629:1:0 - "GET /admin/.env HTTP/1.1" 404 Not Found
+INFO:     2a02:4780:a:2127:0:275a:9629:1:0 - "GET /app/.env HTTP/1.1" 404 Not Found
+INFO:     2a02:4780:a:2127:0:275a:9629:1:0 - "GET /backend/.env HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:42612 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39848 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39856 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39864 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39872 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39886 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39900 - "GET /api/fetch_members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39906 - "GET /api/fetch_wallet_mins/PSV_A_000 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39920 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39922 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48664 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48678 - "GET /api/fetch_console_status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48686 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48690 - "GET /api/fetch_base_rate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48696 - "GET /api/fetch_food_prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48700 - "GET /api/stock/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48712 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36124 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36130 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36136 - "GET /api/fetch_base_rate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36140 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36146 - "GET /api/fetch_promotions_cached HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57466 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57476 - "GET /api/sheets/payment-methods HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49860 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49872 - "GET /api/sheets/payment-methods HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49888 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37260 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37274 - "GET /api/sheets/payment-methods HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37288 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37300 - "GET /api/sheets/payment-methods HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37308 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37964 - "GET /api/fetch_allowed_staff_ids HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37966 - "GET /api/fetch_food_costs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37980 - "POST /api/receipt HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:41654 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35580 - "GET /api/receipt/test123 HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:39614 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43876 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     2a06:98c0:3600::103:0 - "GET /wp-admin/install.php?step=1 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:54026 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54036 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54046 - "GET /api/mysql/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54052 - "GET /api/sheets/config?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:54066 - "GET /api/bookings/search?api_key=test HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:46226 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38862 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     2a01:4ff:2f0:1dd5::1:0 - "GET / HTTP/1.1" 404 Not Found
+INFO:     2a01:4ff:2f0:1dd5::1:0 - "HEAD / HTTP/1.1" 404 Not Found
+INFO:     2a01:4ff:2f0:1dd5::1:0 - "HEAD / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:39470 - "GET /api/sheets/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39334 - "GET /api/receipt/test123 HTTP/1.1" 401 Unauthorized
+2026-05-30 06:08:54,647 [WARNING] psvibe_api: Receipt not found: voucher=test123 path=/root/psvibe-sales-bot/bot/receipts/test123.json
+INFO:     127.0.0.1:44570 - "GET /api/receipt/test123 HTTP/1.1" 404 Not Found
+2026-05-30 06:09:12,361 [INFO] psvibe_api: Receipt rendered: voucher=20260530-488
+INFO:     127.0.0.1:50410 - "GET /api/receipt/20260530-488 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40274 - "GET /api/receipt/20260530-488 HTTP/1.1" 401 Unauthorized

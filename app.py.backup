@@ -1157,7 +1157,7 @@ async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
 #  QUERY — get_receipt_html
 # ═══════════════════════════════════════
 @app.get("/api/receipt/{voucher_id}", tags=["Receipts"])
-async def api_get_receipt_html(voucher_id: str):
+async def api_get_receipt_html(voucher_id: str, auth=Depends(verify_api_key)):
     """Render receipt HTML for a given voucher_id."""
     import json
     import os as _os
