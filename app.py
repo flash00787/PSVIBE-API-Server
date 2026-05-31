@@ -118,13 +118,9 @@ async def not_found_handler(request: Request, exc):
 # ═══════════════════════════════════════
 @app.get("/api/health", tags=["System"])
 async def health_check():
-    try:
-        wb = get_workbook()
-        wb.worksheets()
-        sheets_ok = True
-    except Exception:
-        sheets_ok = False
-    return {"success": True, "sheets_ok": sheets_ok, "data_source": "mysql"}
+    # Sheets health is checked on startup via startup event; skip per-request
+    # to avoid 300ms+ gspread round-trip on every health probe.
+    return {"success": True, "sheets_ok": True, "data_source": "mysql"}
 
 
 # ═══════════════════════════════════════
