@@ -51,6 +51,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Config Cache ──
+_config_cache_data = None
+_config_cache_time = 0
+_CONFIG_CACHE_TTL = 60  # seconds
+
 
 async def verify_api_key(
     api_key: str = Query(None, alias="api_key"),
@@ -1428,6 +1433,10 @@ async def api_remove_console_from_setting(console_id: str, auth=Depends(verify_a
 @app.get("/api/sheets/config", tags=["Meta"])
 async def api_sheets_config(auth=Depends(verify_api_key)):
     """Return cached config used by the bot (base_rate, thresholds, etc.)."""
+    global _config_cache_data, _config_cache_time
+    now = time.time()
+    if _config_cache_data is not None and (now - _config_cache_time) < _CONFIG_CACHE_TTL:
+        return ok(_config_cache_data)
     try:
         ws = get_worksheet(SHEET_SETTING)
         base_rate = int_safe(ws.cell(2, 2).value)
@@ -1466,7 +1475,7 @@ async def api_sheets_config(auth=Depends(verify_api_key)):
                 except Exception:
                     continue
 
-        return ok({
+        result = {
             "base_rate": base_rate,
             "master_threshold": master_thresh,
             "immortal_threshold": immortal_thresh,
@@ -1476,7 +1485,10 @@ async def api_sheets_config(auth=Depends(verify_api_key)):
             "food_prices": food_prices,
             "food_costs": food_costs,
             "bonus_table": bonus_table,
-        })
+        }
+        _config_cache_data = result
+        _config_cache_time = time.time()
+        return ok(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
