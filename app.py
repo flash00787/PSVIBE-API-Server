@@ -177,13 +177,7 @@ def mysql_status(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 
 def _fetch_games_from_mysql():
-    """Try MySQL first for games list, return data or None."""
-    try:
-        if _use_mysql():
-            rows = mysql_query("SELECT game_title as title, final_status, disc_count as discs, solo_multi, genre FROM games_library")
-            return rows if rows else None
-    except Exception:
-        pass
+    """Return None — use Sheets fallback until MySQL sync is fixed."""
     return None
 
 def _fetch_members_from_mysql():

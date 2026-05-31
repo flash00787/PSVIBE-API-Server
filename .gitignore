@@ -3,3 +3,8 @@ service_account.json
 venv/
 __pycache__/
 *.bak
+*.bak*
+kora_drive_sa.json
+cache/
+server.log
+logo_from_drive.jpg

@@ -1,0 +1,4204 @@
+"""PS VIBE API Server — FastAPI REST API
+Auto-generated from function_map.json (2026-05-27)
+
+All endpoint names match function_map.json functions exactly,
+per Boss's requirement.
+"""
+import json
+import logging
+import re
+import time
+from datetime import datetime, timezone, timedelta
+
+from fastapi import FastAPI, HTTPException, Query, Depends, Request
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+import os
+from fastapi.middleware.cors import CORSMiddleware
+
+from config import (
+    API_TITLE, API_VERSION, API_DESCRIPTION,
+    HOST, PORT, DEBUG, API_KEY,
+    SHEET_SALES_DAILY, SHEET_SETTING, SHEET_CARD_WALLET,
+    SHEET_TOPUP_LOG, SHEET_ATTENDANCE_LOG, SHEET_CONSOLE_BOOKING,
+    SHEET_SALARY_ADVANCE, SHEET_GAME_LIBRARY, SHEET_CONSOLE_GAMES,
+    SHEET_PROMOTIONS, SHEET_REFERRAL_LOG,
+    MMT_HOURS, MMT_MINUTES,
+)
+from sheets_client import (
+    get_workbook, get_worksheet, get_member_rows, get_booking_rows,
+    get_game_rows, get_console_game_rows,
+    invalidate_cache, int_safe, float_safe,
+)
+from mysql_db import query as mysql_query, query_one as mysql_query_one, execute as mysql_execute
+import inventory_fifo
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("psvibe_api")
+
+app = FastAPI(
+    title=API_TITLE,
+    version=API_VERSION,
+    description=API_DESCRIPTION,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+async def verify_api_key(
+    api_key: str = Query(None, alias="api_key"),
+    request: Request = None,
+):
+    """Verify API key from query param or X-API-Key header."""
+    if API_KEY:
+        key = api_key
+        if not key and request:
+            key = request.headers.get("X-API-Key")
+        if not key or key != API_KEY:
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    return api_key
+
+
+def now_mmt():
+    mmt = timezone(timedelta(hours=MMT_HOURS, minutes=MMT_MINUTES))
+    return datetime.now(mmt)
+
+
+def today_str():
+    return now_mmt().strftime("%-m/%-d/%Y")
+
+
+def _norm_cid(cid: str) -> str:
+    return cid.replace(" ", "").upper()
+
+
+def ok(data=None, message=""):
+    d = {"success": True, "data": data}
+    if message:
+        d["message"] = message
+    return d
+
+
+def error_response(message="Internal error", code=500):
+    """Return a standardized error dict (use in route handlers directly)."""
+    return {"success": False, "error": message, "code": code}
+
+
+def success_response(data=None, message=None):
+    """Alias for ok() — canonical success wrapper."""
+    return ok(data=data, message=message or "")
+
+
+# ── Global exception handler: wrap all HTTPException as {success:False,error:...} ──
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"success": False, "error": exc.detail, "code": exc.status_code},
+    )
+
+
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc):
+    return JSONResponse(
+        status_code=404,
+        content={"success": False, "error": "Not Found", "code": 404},
+    )
+
+
+# ═══════════════════════════════════════
+#  HEALTH
+# ═══════════════════════════════════════
+@app.get("/api/health", tags=["System"])
+async def health_check():
+    try:
+        wb = get_workbook()
+        wb.worksheets()
+        sheets_ok = True
+    except Exception:
+        sheets_ok = False
+    return {"success": True, "sheets_ok": sheets_ok, "data_source": "mysql"}
+
+
+# ═══════════════════════════════════════
+#  MYSQL HEALTH
+# ═══════════════════════════════════════
+@app.get("/api/mysql/health", tags=["System"])
+def mysql_health():
+    try:
+        mysql_query_one("SELECT 1 as ok")
+        return {"success": True, "mysql_connected": True, "data_source": "mysql"}
+    except Exception as e:
+        return {"success": True, "mysql_connected": False, "data_source": "gspread", "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  MYSQL HELPER
+# ═══════════════════════════════════════
+
+def _use_mysql() -> bool:
+    """Check if MySQL is available. Retries every call so transient
+    failures auto-recover without permanent circuit breaker."""
+    try:
+        mysql_query_one("SELECT 1 as ok")
+        return True
+    except Exception:
+        return False
+
+# ═══════════════════════════════════════
+#  MYSQL SETTINGS WRAPPERS
+# ═══════════════════════════════════════
+def _get_setting(key: str, default=None):
+    """Read a single setting value from MySQL settings table."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one("SELECT setting_value FROM settings WHERE setting_key = %s", (key,))
+            if row:
+                return row["setting_value"]
+    except Exception:
+        pass
+    return default
+
+def _fetch_games_from_mysql():
+    """Try MySQL first for games list, return data or None."""
+    try:
+        if _use_mysql():
+            rows = mysql_query("SELECT game_title as title, genre, disc_count as discs FROM games_library")
+            return rows if rows else None
+    except Exception:
+        pass
+    return None
+
+def _fetch_base_rate_from_mysql():
+    """Get base_rate from MySQL settings."""
+    val = _get_setting("base_rate", "10000")
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return 10000
+
+def _fetch_new_member_defaults_from_mysql():
+    """Get new member card price and base mins from MySQL settings."""
+    card_price = _get_setting("new_member_card_price", "90000")
+    base_mins = _get_setting("new_member_base_mins", "600")
+    return {
+        "card_price": int_safe(card_price),
+        "base_mins": int_safe(base_mins)
+    }
+
+def _fetch_rank_thresholds_from_mysql():
+    """Get rank thresholds from MySQL settings."""
+    master = _get_setting("master_threshold", "300000")
+    immortal = _get_setting("immortal_threshold", "1000000")
+    return {
+        "master_threshold": int_safe(master),
+        "immortal_threshold": int_safe(immortal)
+    }
+
+def _fetch_bonus_table_from_mysql():
+    """Get bonus table from MySQL settings (JSON-encoded)."""
+    import json
+    val = _get_setting("bonus_table")
+    if val:
+        try:
+            data = json.loads(val)
+            result = []
+            for row in data:
+                if len(row) >= 4:
+                    result.append({
+                        "threshold": int_safe(row[0]),
+                        "warrior_bonus": int_safe(row[1]),
+                        "master_bonus": int_safe(row[2]),
+                        "immortal_bonus": int_safe(row[3]),
+                    })
+            if result:
+                return result
+        except (json.JSONDecodeError, Exception):
+            pass
+    return None
+
+def _fetch_console_multiplier_from_mysql(console_id: str):
+    """Get console multiplier from MySQL settings (JSON-encoded)."""
+    import json
+    val = _get_setting("console_multipliers")
+    if val:
+        try:
+            data = json.loads(val)
+            return data.get(console_id, 1.0)
+        except (json.JSONDecodeError, Exception):
+            pass
+    return None
+
+
+
+
+# ═══════════════════════════════════════
+#  PHASE 5 — NEW MYSQL WRAPPERS
+# ═══════════════════════════════════════
+
+def _fetch_games_on_console_from_mysql(console_id: str):
+    """MySQL: Get active games for a console."""
+    try:
+        if _use_mysql():
+            rows = mysql_query(
+                "SELECT DISTINCT game_title FROM console_games WHERE console_id = %s AND status = 'active'",
+                (console_id,))
+            return [r['game_title'] for r in (rows or [])]
+    except Exception as e:
+        logger.warning(f"MySQL fetch_games_on_console failed: {e}")
+    return None
+
+def _fetch_consoles_with_game_from_mysql(game_title: str):
+    """MySQL: Get consoles that have a specific game."""
+    try:
+        if _use_mysql():
+            rows = mysql_query(
+                "SELECT DISTINCT console_id, console_name FROM console_games WHERE game_title LIKE %s AND status = 'active'",
+                (f"%{game_title}%",))
+            if rows:
+                return list(dict.fromkeys([r['console_id'] for r in rows]))
+    except Exception as e:
+        logger.warning(f"MySQL fetch_consoles_with_game failed: {e}")
+    return None
+
+def _fetch_rank_table_display_from_mysql():
+    """MySQL: Get rank bonus table from settings, format as display string."""
+    import json
+    try:
+        if _use_mysql():
+            val = _get_setting("bonus_table")
+            if val:
+                data = json.loads(val)
+                lines = [
+                    f"{'Amount (Ks)':<14} {'Warrior':>9} {'Master':>9} {'Immortal':>10}",
+                    "-" * 48,
+                ]
+                for row in data:
+                    if len(row) >= 4:
+                        amt = int_safe(row[0])
+                        if amt == 0:
+                            continue
+                        lines.append(f"{amt:>14,}  {int_safe(row[1]):>8,}  {int_safe(row[2]):>8,}  {int_safe(row[3]):>9,}")
+                if len(lines) > 2:
+                    return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"MySQL fetch_rank_table_display failed: {e}")
+    return None
+
+def _fetch_base_salaries_from_mysql():
+    """MySQL: Get base salaries from settings (JSON key)."""
+    import json
+    try:
+        if _use_mysql():
+            val = _get_setting("base_salaries")
+            if val:
+                return json.loads(val)
+    except Exception as e:
+        logger.warning(f"MySQL fetch_base_salaries failed: {e}")
+    return None
+
+def _fetch_attendance_from_mysql(month_str: str):
+    """MySQL: Get attendance records for a month. Maps MySQL schema to legacy API format."""
+    try:
+        if _use_mysql():
+            # Convert "YYYY-MM" to date range "%Y-%m"
+            rows = mysql_query(
+                "SELECT staff_name, DATE_FORMAT(date, '%%Y-%%m') as ym, "
+                "COUNT(*) as total_days, "
+                "SUM(CASE WHEN status = 'late' THEN 1 ELSE 0 END) as late_count, "
+                "SUM(CASE WHEN status = 'leave' THEN 1 ELSE 0 END) as leave_days "
+                "FROM attendance_log WHERE DATE_FORMAT(date, '%%Y-%%m') = %s "
+                "GROUP BY staff_name, ym",
+                (month_str,))
+            if rows:
+                result = {}
+                for row in rows:
+                    staff = row['staff_name'].strip()
+                    if not staff:
+                        continue
+                    result[staff] = {
+                        "leave_days": int(row.get('leave_days', 0)),
+                        "late_count": int(row.get('late_count', 0)),
+                        "deduct_per_late": 500,
+                    }
+                return result
+    except Exception as e:
+        logger.warning(f"MySQL fetch_attendance failed: {e}")
+    return None
+
+def _fetch_salary_advances_from_mysql(month_str: str):
+    """MySQL: Get salary advances for a month."""
+    try:
+        if _use_mysql():
+            rows = mysql_query(
+                "SELECT staff_name, amount, advance_date, repayment_status "
+                "FROM salary_advance WHERE DATE_FORMAT(advance_date, '%%Y-%%m') = %s",
+                (month_str,))
+            if rows:
+                result = {}
+                for row in rows:
+                    staff = row['staff_name'].strip()
+                    if not staff:
+                        continue
+                    amt = int(float(row.get('amount', 0)))
+                    if staff not in result:
+                        result[staff] = {"total": 0, "cash": 0, "kpay": 0}
+                    result[staff]["total"] += amt
+                    result[staff]["cash"] += amt  # default to cash
+                return result
+    except Exception as e:
+        logger.warning(f"MySQL fetch_salary_advances failed: {e}")
+    return None
+
+def _fetch_promotions_cached_from_mysql():
+    """MySQL: Get active promotions."""
+    try:
+        if _use_mysql():
+            today_mmt = now_mmt().strftime("%Y-%m-%d")
+            rows = mysql_query(
+                "SELECT id, promo_name, discount_type, discount_value, start_date, end_date, status, notes "
+                "FROM promotions WHERE status = 'active' AND (end_date IS NULL OR end_date >= %s)",
+                (today_mmt,))
+            if rows:
+                promos = []
+                for row in rows:
+                    promos.append({
+                        "title": row.get('promo_name', 'Promotion'),
+                        "description": row.get('notes', ''),
+                        "type": row.get('discount_type', 'general'),
+                        "discount_percent": str(row.get('discount_value', '')),
+                        "item_name": "",
+                        "bundle_items": "",
+                        "cashback_percent": "",
+                        "conditions": "",
+                        "valid_until": str(row.get('end_date', '')),
+                        "emoji": "🎁",
+                    })
+                return promos
+    except Exception as e:
+        logger.warning(f"MySQL fetch_promotions_cached failed: {e}")
+    return None
+
+def _fetch_next_member_id_from_mysql():
+    """MySQL: Generate next member ID."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one(
+                "SELECT CONCAT('PSV_A_', LPAD(COALESCE(MAX(CAST(SUBSTRING(member_id, 7) AS UNSIGNED)), 0) + 1, 3, '0')) as next_id "
+                "FROM members WHERE member_id LIKE 'PSV_A_%'")
+            if row and row.get('next_id'):
+                return row['next_id']
+    except Exception as e:
+        logger.warning(f"MySQL next_member_id failed: {e}")
+    return None
+
+def _fetch_next_member_row_no_from_mysql():
+    """MySQL: Get next row number."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one("SELECT COUNT(*) + 1 as next_row FROM members")
+            if row:
+                return int(row['next_row'])
+    except Exception as e:
+        logger.warning(f"MySQL next_member_row_no failed: {e}")
+    return None
+
+def _fetch_referral_code_from_mysql(member_id: str):
+    """MySQL: Get referral code for a member."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one(
+                "SELECT referral_code FROM member_wallets WHERE member_id = %s",
+                (member_id,))
+            if row:
+                return row.get('referral_code') or None
+    except Exception as e:
+        logger.warning(f"MySQL fetch_referral_code failed: {e}")
+    return None
+
+def _fetch_analytics_member_activity_from_mysql():
+    """MySQL: Member activity stats."""
+    try:
+        if _use_mysql():
+            total = mysql_query_one("SELECT COUNT(*) as c FROM member_wallets")
+            total_members = total['c'] if total else 0
+
+            tiers = mysql_query("SELECT tier, COUNT(*) as c FROM member_wallets GROUP BY tier")
+            tier_dist = []
+            for t in (tiers or []):
+                tier_dist.append({
+                    "tier": t.get('tier', 'Warrior'),
+                    "count": t['c'],
+                    "pct": round(t['c'] / total_members * 100, 1) if total_members > 0 else 0
+                })
+
+            wallet = mysql_query_one("SELECT SUM(balance_mins) as s FROM member_wallets")
+            total_wallet = int(wallet['s'] or 0) if wallet else 0
+
+            spend = mysql_query_one("SELECT SUM(total_spend) as s FROM member_wallets")
+            total_spend = int(float(spend['s'] or 0)) if spend else 0
+
+            today_mmt = now_mmt().strftime("%Y-%m-%d")
+            active_today = mysql_query_one(
+                "SELECT COUNT(DISTINCT member_id) as c FROM console_booking "
+                "WHERE booking_date = %s AND status = 'Active'",
+                (today_mmt,))
+            active = active_today['c'] if active_today else 0
+
+            recent = mysql_query_one(
+                "SELECT COUNT(DISTINCT member_id) as c FROM topup_log "
+                "WHERE topup_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)")
+            recent_active = recent['c'] if recent else 0
+
+            return {
+                "total_members": total_members,
+                "active_today": active,
+                "active_last_7d": recent_active,
+                "total_wallet_mins": total_wallet,
+                "total_spend_ks": total_spend,
+                "avg_spend_per_member": round(total_spend / total_members, 2) if total_members > 0 else 0,
+                "tier_distribution": tier_dist,
+            }
+    except Exception as e:
+        logger.warning(f"MySQL member_activity failed: {e}")
+    return None
+
+def _fetch_analytics_console_usage_from_mysql(days: int = 30):
+    """MySQL: Console usage analytics."""
+    try:
+        if _use_mysql():
+            total_bookings = mysql_query_one(
+                "SELECT COUNT(*) as c FROM console_booking WHERE booking_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)",
+                (days,))
+            active_now = mysql_query_one(
+                "SELECT COUNT(*) as c FROM console_booking WHERE status = 'Active'")
+
+            consoles_data = mysql_query(
+                "SELECT cs.console_id, COALESCE(cb.total_bk, 0) as total_bookings, "
+                "COALESCE(cb.active_bk, 0) as active_bookings, "
+                "COALESCE(cb.done_bk, 0) as completed_bookings, "
+                "COALESCE(cb.cancelled_bk, 0) as cancelled_bookings "
+                "FROM console_status cs "
+                "LEFT JOIN ("
+                "  SELECT console_id, COUNT(*) as total_bk, "
+                "  SUM(CASE WHEN status='Active' THEN 1 ELSE 0 END) as active_bk, "
+                "  SUM(CASE WHEN status='Done' THEN 1 ELSE 0 END) as done_bk, "
+                "  SUM(CASE WHEN status='Cancelled' THEN 1 ELSE 0 END) as cancelled_bk "
+                "  FROM console_booking WHERE booking_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY) "
+                "  GROUP BY console_id"
+                ") cb ON cs.console_id = cb.console_id",
+                (days,))
+
+            consoles = []
+            for c in (consoles_data or []):
+                consoles.append({
+                    "console_id": c['console_id'],
+                    "type": "",
+                    "total_bookings": int(c.get('total_bookings', 0)),
+                    "active_bookings": int(c.get('active_bookings', 0)),
+                    "completed_bookings": int(c.get('completed_bookings', 0)),
+                    "cancelled_bookings": int(c.get('cancelled_bookings', 0)),
+                    "total_hours": 0,
+                    "unique_members": 0,
+                    "daily_series": [],
+                })
+
+            # Also add consoles from bookings that may not be in console_status
+            extra_consoles = mysql_query(
+                "SELECT DISTINCT console_id FROM console_booking "
+                "WHERE booking_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY) "
+                "AND console_id NOT IN (SELECT console_id FROM console_status)",
+                (days,))
+            existing_ids = {c['console_id'] for c in consoles}
+            for ec in (extra_consoles or []):
+                cid = ec['console_id']
+                if cid and cid not in existing_ids:
+                    consoles.append({
+                        "console_id": cid, "type": "",
+                        "total_bookings": 0, "active_bookings": 0,
+                        "completed_bookings": 0, "cancelled_bookings": 0,
+                        "total_hours": 0, "unique_members": 0, "daily_series": [],
+                    })
+
+            total_con = len(consoles) or 1
+            total_bk = int(total_bookings['c'] or 0) if total_bookings else 0
+            util = round(total_bk / (total_con * days), 2)
+
+            return {
+                "period_days": days,
+                "total_consoles": total_con,
+                "total_bookings": total_bk,
+                "active_now": int(active_now['c'] or 0) if active_now else 0,
+                "avg_bookings_per_console_day": util,
+                "daily_series": [],
+                "consoles": consoles,
+            }
+    except Exception as e:
+        logger.warning(f"MySQL console_usage failed: {e}")
+    return None
+
+def _fetch_analytics_dashboard_from_mysql():
+    """MySQL: Full dashboard summary."""
+    try:
+        if _use_mysql():
+            today_mmt = now_mmt().strftime("%Y-%m-%d")
+            sales = mysql_query_one(
+                "SELECT COALESCE(SUM(amount), 0) as total_sales, COUNT(*) as voucher_count "
+                "FROM sales_daily WHERE sale_date = %s", (today_mmt,))
+            # Try alternate column name
+            if not sales or not sales.get('voucher_count'):
+                sales = mysql_query_one(
+                    "SELECT COALESCE(SUM(amount), 0) as total_sales, COUNT(*) as voucher_count "
+                    "FROM sales_daily WHERE date = %s", (today_mmt,))
+
+            members = mysql_query_one("SELECT COUNT(*) as c FROM member_wallets")
+            active = mysql_query_one(
+                "SELECT COUNT(DISTINCT member_id) as c FROM console_booking "
+                "WHERE booking_date = %s AND status = 'Active'", (today_mmt,))
+            consoles_total = mysql_query_one("SELECT COUNT(*) as c FROM console_status")
+            consoles_active = mysql_query_one(
+                "SELECT COUNT(*) as c FROM console_booking WHERE status = 'Active'")
+
+            week_topups = mysql_query_one(
+                "SELECT COALESCE(SUM(amount), 0) as s, COUNT(*) as c FROM topup_log "
+                "WHERE topup_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)")
+
+            base_rate_val = _fetch_base_rate_from_mysql()
+
+            total_sales = int(sales['total_sales'] or 0) if sales else 0
+            voucher_count = int(sales['voucher_count'] or 0) if sales else 0
+            avg_ticket = round(total_sales / voucher_count, 2) if voucher_count > 0 else 0
+
+            return {
+                "generated_at": now_mmt().isoformat(),
+                "summary": {
+                    "today_sales_ks": total_sales,
+                    "today_vouchers": voucher_count,
+                    "today_avg_ticket_ks": avg_ticket,
+                    "active_members_today": int(active['c'] or 0) if active else 0,
+                    "total_members": int(members['c'] or 0) if members else 0,
+                    "active_consoles": int(consoles_active['c'] or 0) if consoles_active else 0,
+                    "total_consoles": int(consoles_total['c'] or 0) if consoles_total else 0,
+                    "week_topup_ks": int(week_topups['s'] or 0) if week_topups else 0,
+                    "week_topup_count": int(week_topups['c'] or 0) if week_topups else 0,
+                    "base_rate_ks_hr": base_rate_val,
+                },
+            }
+    except Exception as e:
+        logger.warning(f"MySQL dashboard summary failed: {e}")
+    return None
+
+
+# ═══════════════════════════════════════
+#  PHASE 5 — NEW MYSQL WRAPPERS
+# ═══════════════════════════════════════
+
+def _fetch_games_on_console_from_mysql(console_id: str):
+    """MySQL: Get active games for a console."""
+    try:
+        if _use_mysql():
+            rows = mysql_query(
+                "SELECT DISTINCT game_title FROM console_games WHERE console_id = %s AND status = 'active'",
+                (console_id,))
+            return [r['game_title'] for r in (rows or [])]
+    except Exception as e:
+        logger.warning(f"MySQL fetch_games_on_console failed: {e}")
+    return None
+
+def _fetch_consoles_with_game_from_mysql(game_title: str):
+    """MySQL: Get consoles that have a specific game."""
+    try:
+        if _use_mysql():
+            rows = mysql_query(
+                "SELECT DISTINCT console_id, console_name FROM console_games WHERE game_title LIKE %s AND status = 'active'",
+                (f"%{game_title}%",))
+            if rows:
+                return list(dict.fromkeys([r['console_id'] for r in rows]))
+    except Exception as e:
+        logger.warning(f"MySQL fetch_consoles_with_game failed: {e}")
+    return None
+
+def _fetch_rank_table_display_from_mysql():
+    """MySQL: Get rank bonus table from settings, format as display string."""
+    import json
+    try:
+        if _use_mysql():
+            val = _get_setting("bonus_table")
+            if val:
+                data = json.loads(val)
+                lines = [
+                    f"{'Amount (Ks)':<14} {'Warrior':>9} {'Master':>9} {'Immortal':>10}",
+                    "-" * 48,
+                ]
+                for row in data:
+                    if len(row) >= 4:
+                        amt = int_safe(row[0])
+                        if amt == 0:
+                            continue
+                        lines.append(f"{amt:>14,}  {int_safe(row[1]):>8,}  {int_safe(row[2]):>8,}  {int_safe(row[3]):>9,}")
+                if len(lines) > 2:
+                    return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"MySQL fetch_rank_table_display failed: {e}")
+    return None
+
+def _fetch_base_salaries_from_mysql():
+    """MySQL: Get base salaries from settings (JSON key)."""
+    import json
+    try:
+        if _use_mysql():
+            val = _get_setting("base_salaries")
+            if val:
+                return json.loads(val)
+    except Exception as e:
+        logger.warning(f"MySQL fetch_base_salaries failed: {e}")
+    return None
+
+def _fetch_attendance_from_mysql(month_str: str):
+    """MySQL: Get attendance records for a month. Maps MySQL schema to legacy API format."""
+    try:
+        if _use_mysql():
+            # Convert "YYYY-MM" to date range "%Y-%m"
+            rows = mysql_query(
+                "SELECT staff_name, DATE_FORMAT(date, '%Y-%m') as ym, "
+                "COUNT(*) as total_days, "
+                "SUM(CASE WHEN status = 'late' THEN 1 ELSE 0 END) as late_count, "
+                "SUM(CASE WHEN status = 'leave' THEN 1 ELSE 0 END) as leave_days "
+                "FROM attendance_log WHERE DATE_FORMAT(date, '%Y-%m') = %s "
+                "GROUP BY staff_name, ym",
+                (month_str,))
+            if rows:
+                result = {}
+                for row in rows:
+                    staff = row['staff_name'].strip()
+                    if not staff:
+                        continue
+                    result[staff] = {
+                        "leave_days": int(row.get('leave_days', 0)),
+                        "late_count": int(row.get('late_count', 0)),
+                        "deduct_per_late": 500,
+                    }
+                return result
+    except Exception as e:
+        logger.warning(f"MySQL fetch_attendance failed: {e}")
+    return None
+
+def _fetch_salary_advances_from_mysql(month_str: str):
+    """MySQL: Get salary advances for a month."""
+    try:
+        if _use_mysql():
+            rows = mysql_query(
+                "SELECT staff_name, amount, advance_date, repayment_status "
+                "FROM salary_advance WHERE DATE_FORMAT(advance_date, '%Y-%m') = %s",
+                (month_str,))
+            if rows:
+                result = {}
+                for row in rows:
+                    staff = row['staff_name'].strip()
+                    if not staff:
+                        continue
+                    amt = int(float(row.get('amount', 0)))
+                    if staff not in result:
+                        result[staff] = {"total": 0, "cash": 0, "kpay": 0}
+                    result[staff]["total"] += amt
+                    result[staff]["cash"] += amt  # default to cash
+                return result
+    except Exception as e:
+        logger.warning(f"MySQL fetch_salary_advances failed: {e}")
+    return None
+
+def _fetch_promotions_cached_from_mysql():
+    """MySQL: Get active promotions."""
+    try:
+        if _use_mysql():
+            today_mmt = now_mmt().strftime("%Y-%m-%d")
+            rows = mysql_query(
+                "SELECT id, promo_name, discount_type, discount_value, start_date, end_date, status, notes "
+                "FROM promotions WHERE status = 'active' AND (end_date IS NULL OR end_date >= %s)",
+                (today_mmt,))
+            if rows:
+                promos = []
+                for row in rows:
+                    promos.append({
+                        "title": row.get('promo_name', 'Promotion'),
+                        "description": row.get('notes', ''),
+                        "type": row.get('discount_type', 'general'),
+                        "discount_percent": str(row.get('discount_value', '')),
+                        "item_name": "",
+                        "bundle_items": "",
+                        "cashback_percent": "",
+                        "conditions": "",
+                        "valid_until": str(row.get('end_date', '')),
+                        "emoji": "🎁",
+                    })
+                return promos
+    except Exception as e:
+        logger.warning(f"MySQL fetch_promotions_cached failed: {e}")
+    return None
+
+def _fetch_next_member_id_from_mysql():
+    """MySQL: Generate next member ID."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one(
+                "SELECT CONCAT('PSV_A_', LPAD(COALESCE(MAX(CAST(SUBSTRING(member_id, 7) AS UNSIGNED)), 0) + 1, 3, '0')) as next_id "
+                "FROM members WHERE member_id LIKE 'PSV_A_%'")
+            if row and row.get('next_id'):
+                return row['next_id']
+    except Exception as e:
+        logger.warning(f"MySQL next_member_id failed: {e}")
+    return None
+
+def _fetch_next_member_row_no_from_mysql():
+    """MySQL: Get next row number."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one("SELECT COUNT(*) + 1 as next_row FROM members")
+            if row:
+                return int(row['next_row'])
+    except Exception as e:
+        logger.warning(f"MySQL next_member_row_no failed: {e}")
+    return None
+
+def _fetch_referral_code_from_mysql(member_id: str):
+    """MySQL: Get referral code for a member."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one(
+                "SELECT referral_code FROM member_wallets WHERE member_id = %s",
+                (member_id,))
+            if row:
+                return row.get('referral_code') or None
+    except Exception as e:
+        logger.warning(f"MySQL fetch_referral_code failed: {e}")
+    return None
+
+def _fetch_analytics_member_activity_from_mysql():
+    """MySQL: Member activity stats."""
+    try:
+        if _use_mysql():
+            total = mysql_query_one("SELECT COUNT(*) as c FROM member_wallets")
+            total_members = total['c'] if total else 0
+
+            tiers = mysql_query("SELECT tier, COUNT(*) as c FROM member_wallets GROUP BY tier")
+            tier_dist = []
+            for t in (tiers or []):
+                tier_dist.append({
+                    "tier": t.get('tier', 'Warrior'),
+                    "count": t['c'],
+                    "pct": round(t['c'] / total_members * 100, 1) if total_members > 0 else 0
+                })
+
+            wallet = mysql_query_one("SELECT SUM(balance_mins) as s FROM member_wallets")
+            total_wallet = int(wallet['s'] or 0) if wallet else 0
+
+            spend = mysql_query_one("SELECT SUM(total_spend) as s FROM member_wallets")
+            total_spend = int(float(spend['s'] or 0)) if spend else 0
+
+            today_mmt = now_mmt().strftime("%Y-%m-%d")
+            active_today = mysql_query_one(
+                "SELECT COUNT(DISTINCT member_id) as c FROM console_booking "
+                "WHERE booking_date = %s AND status = 'Active'",
+                (today_mmt,))
+            active = active_today['c'] if active_today else 0
+
+            recent = mysql_query_one(
+                "SELECT COUNT(DISTINCT member_id) as c FROM topup_log "
+                "WHERE topup_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)")
+            recent_active = recent['c'] if recent else 0
+
+            return {
+                "total_members": total_members,
+                "active_today": active,
+                "active_last_7d": recent_active,
+                "total_wallet_mins": total_wallet,
+                "total_spend_ks": total_spend,
+                "avg_spend_per_member": round(total_spend / total_members, 2) if total_members > 0 else 0,
+                "tier_distribution": tier_dist,
+            }
+    except Exception as e:
+        logger.warning(f"MySQL member_activity failed: {e}")
+    return None
+
+def _fetch_analytics_console_usage_from_mysql(days: int = 30):
+    """MySQL: Console usage analytics."""
+    try:
+        if _use_mysql():
+            total_bookings = mysql_query_one(
+                "SELECT COUNT(*) as c FROM console_booking WHERE booking_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)",
+                (days,))
+            active_now = mysql_query_one(
+                "SELECT COUNT(*) as c FROM console_booking WHERE status = 'Active'")
+
+            consoles_data = mysql_query(
+                "SELECT cs.console_id, COALESCE(cb.total_bk, 0) as total_bookings, "
+                "COALESCE(cb.active_bk, 0) as active_bookings, "
+                "COALESCE(cb.done_bk, 0) as completed_bookings, "
+                "COALESCE(cb.cancelled_bk, 0) as cancelled_bookings "
+                "FROM console_status cs "
+                "LEFT JOIN ("
+                "  SELECT console_id, COUNT(*) as total_bk, "
+                "  SUM(CASE WHEN status='Active' THEN 1 ELSE 0 END) as active_bk, "
+                "  SUM(CASE WHEN status='Done' THEN 1 ELSE 0 END) as done_bk, "
+                "  SUM(CASE WHEN status='Cancelled' THEN 1 ELSE 0 END) as cancelled_bk "
+                "  FROM console_booking WHERE booking_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY) "
+                "  GROUP BY console_id"
+                ") cb ON cs.console_id = cb.console_id",
+                (days,))
+
+            consoles = []
+            for c in (consoles_data or []):
+                consoles.append({
+                    "console_id": c['console_id'],
+                    "type": "",
+                    "total_bookings": int(c.get('total_bookings', 0)),
+                    "active_bookings": int(c.get('active_bookings', 0)),
+                    "completed_bookings": int(c.get('completed_bookings', 0)),
+                    "cancelled_bookings": int(c.get('cancelled_bookings', 0)),
+                    "total_hours": 0,
+                    "unique_members": 0,
+                    "daily_series": [],
+                })
+
+            # Also add consoles from bookings that may not be in console_status
+            extra_consoles = mysql_query(
+                "SELECT DISTINCT console_id FROM console_booking "
+                "WHERE booking_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY) "
+                "AND console_id NOT IN (SELECT console_id FROM console_status)",
+                (days,))
+            existing_ids = {c['console_id'] for c in consoles}
+            for ec in (extra_consoles or []):
+                cid = ec['console_id']
+                if cid and cid not in existing_ids:
+                    consoles.append({
+                        "console_id": cid, "type": "",
+                        "total_bookings": 0, "active_bookings": 0,
+                        "completed_bookings": 0, "cancelled_bookings": 0,
+                        "total_hours": 0, "unique_members": 0, "daily_series": [],
+                    })
+
+            total_con = len(consoles) or 1
+            total_bk = int(total_bookings['c'] or 0) if total_bookings else 0
+            util = round(total_bk / (total_con * days), 2)
+
+            return {
+                "period_days": days,
+                "total_consoles": total_con,
+                "total_bookings": total_bk,
+                "active_now": int(active_now['c'] or 0) if active_now else 0,
+                "avg_bookings_per_console_day": util,
+                "daily_series": [],
+                "consoles": consoles,
+            }
+    except Exception as e:
+        logger.warning(f"MySQL console_usage failed: {e}")
+    return None
+
+def _fetch_analytics_dashboard_from_mysql():
+    """MySQL: Full dashboard summary."""
+    try:
+        if _use_mysql():
+            today_mmt = now_mmt().strftime("%Y-%m-%d")
+            sales = mysql_query_one(
+                "SELECT COALESCE(SUM(amount), 0) as total_sales, COUNT(*) as voucher_count "
+                "FROM sales_daily WHERE sale_date = %s", (today_mmt,))
+            # Try alternate column name
+            if not sales or not sales.get('voucher_count'):
+                sales = mysql_query_one(
+                    "SELECT COALESCE(SUM(amount), 0) as total_sales, COUNT(*) as voucher_count "
+                    "FROM sales_daily WHERE date = %s", (today_mmt,))
+
+            members = mysql_query_one("SELECT COUNT(*) as c FROM member_wallets")
+            active = mysql_query_one(
+                "SELECT COUNT(DISTINCT member_id) as c FROM console_booking "
+                "WHERE booking_date = %s AND status = 'Active'", (today_mmt,))
+            consoles_total = mysql_query_one("SELECT COUNT(*) as c FROM console_status")
+            consoles_active = mysql_query_one(
+                "SELECT COUNT(*) as c FROM console_booking WHERE status = 'Active'")
+
+            week_topups = mysql_query_one(
+                "SELECT COALESCE(SUM(amount), 0) as s, COUNT(*) as c FROM topup_log "
+                "WHERE topup_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)")
+
+            base_rate_val = _fetch_base_rate_from_mysql()
+
+            total_sales = int(sales['total_sales'] or 0) if sales else 0
+            voucher_count = int(sales['voucher_count'] or 0) if sales else 0
+            avg_ticket = round(total_sales / voucher_count, 2) if voucher_count > 0 else 0
+
+            return {
+                "generated_at": now_mmt().isoformat(),
+                "summary": {
+                    "today_sales_ks": total_sales,
+                    "today_vouchers": voucher_count,
+                    "today_avg_ticket_ks": avg_ticket,
+                    "active_members_today": int(active['c'] or 0) if active else 0,
+                    "total_members": int(members['c'] or 0) if members else 0,
+                    "active_consoles": int(consoles_active['c'] or 0) if consoles_active else 0,
+                    "total_consoles": int(consoles_total['c'] or 0) if consoles_total else 0,
+                    "week_topup_ks": int(week_topups['s'] or 0) if week_topups else 0,
+                    "week_topup_count": int(week_topups['c'] or 0) if week_topups else 0,
+                    "base_rate_ks_hr": base_rate_val,
+                },
+            }
+    except Exception as e:
+        logger.warning(f"MySQL dashboard summary failed: {e}")
+    return None
+
+# ═══════════════════════════════════════
+#  MYSQL STATUS
+# ═══════════════════════════════════════
+@app.get("/api/mysql/status", tags=["System"])
+def mysql_status(auth=Depends(verify_api_key)):
+    """Show all MySQL tables with row counts."""
+    if not _use_mysql():
+        return {"success": True, "mysql_connected": False, "data_source": "gpsread"}
+    try:
+        tables = mysql_query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'psvibe_api'")
+        result = {}
+        for t in tables:
+            tn = t["TABLE_NAME"]
+            cnt = mysql_query_one(f"SELECT COUNT(*) as cnt FROM `{tn}`")
+            result[tn] = cnt["cnt"] if cnt else 0
+        return ok({"mysql_connected": True, "total_tables": len(result), "tables": result})
+    except Exception as e:
+        return {"success": False, "error": str(e), "mysql_connected": False}
+
+
+# ═══════════════════════════════════════
+#  MYSQL WRAPPERS
+# ═══════════════════════════════════════
+def _fetch_members_from_mysql():
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            rows = mysql_query("SELECT * FROM member_wallets")
+            return rows if rows else None
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_member_data_from_mysql(member_id):
+    """Try MySQL member_wallets first, fall back to members table.
+    
+    member_wallets is populated by the GSheet→MySQL sync, but new members
+    created via the API may not yet be mirrored to Google Sheets, and the
+    sync's orphan cleanup can delete them from member_wallets before the
+    GSheet write completes.  The members table (populated at create time)
+    serves as a reliable fallback for API-created members.
+    """
+    try:
+        if _use_mysql():
+            row = mysql_query_one("SELECT * FROM member_wallets WHERE member_id = %s", (member_id,))
+            if row:
+                return row
+            # Fallback: read from members table (populated at API create time)
+            row = mysql_query_one(
+                "SELECT member_id, name AS member_name, phone, balance_minutes AS balance_mins, "
+                "'Warrior' AS tier, 0 AS total_spend, 0 AS lifetime_spend, "
+                "0 AS ranking_net_spend FROM members WHERE member_id = %s",
+                (member_id,))
+            if row:
+                return row
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_console_status_from_mysql():
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            rows = mysql_query("SELECT * FROM console_status")
+            return rows if rows else None
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_allowed_staff_ids_from_mysql():
+    """Try MySQL first, return data or None.
+
+    NOTE: staff_records.staff_id is an internal auto-increment PK (1,2,3...),
+    NOT a Telegram user ID.  The real Telegram whitelist lives in Google Sheets
+    Setting!B30.  Return None here so the endpoint falls back to Sheets.
+    """
+    return None
+
+
+def _fetch_console_games_from_mysql():
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            rows = mysql_query("SELECT * FROM console_games")
+            return rows if rows else None
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_wallet_mins_from_mysql(member_id):
+    """Try MySQL member_wallets first, fall back to members table.
+    
+    See _fetch_member_data_from_mysql for rationale on dual-table fallback.
+    """
+    try:
+        if _use_mysql():
+            row = mysql_query_one("SELECT balance_mins FROM member_wallets WHERE member_id = %s", (member_id,))
+            if row:
+                return row.get("balance_mins", 0)
+            # Fallback: read balance_minutes from members table
+            row = mysql_query_one("SELECT balance_minutes AS balance_mins FROM members WHERE member_id = %s", (member_id,))
+            if row:
+                return int(row.get("balance_mins", 0))
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_balance_mins_from_mysql(member_id):
+    """Try MySQL member_wallets first, fall back to members table.
+    
+    See _fetch_wallet_mins_from_mysql for rationale on dual-table fallback.
+    """
+    try:
+        if _use_mysql():
+            row = mysql_query_one("SELECT balance_mins FROM member_wallets WHERE member_id = %s", (member_id,))
+            if row:
+                return row.get("balance_mins", 0)
+            # Fallback: read balance_minutes from members table
+            row = mysql_query_one("SELECT balance_minutes AS balance_mins FROM members WHERE member_id = %s", (member_id,))
+            if row:
+                return int(row.get("balance_mins", 0))
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_daily_sales_from_mysql(date_str=None):
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            if date_str:
+                rows = mysql_query("SELECT * FROM sales_daily WHERE date = %s", (date_str,))
+                return rows if rows else None
+            rows = mysql_query("SELECT * FROM sales_daily")
+            return rows if rows else None
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_topups_from_mysql(days=30):
+    """Try MySQL first, return data or None."""
+    try:
+        if _use_mysql():
+            rows = mysql_query("SELECT * FROM topup_log ORDER BY created_at DESC LIMIT 1000")
+            return rows if rows else None
+    except Exception:
+        pass
+    return None
+
+
+# ═══════════════════════════════════════
+#  fetch_console_status
+# ═══════════════════════════════════════
+@app.get("/api/fetch_console_status", tags=["Console"])
+async def api_fetch_console_status(auth=Depends(verify_api_key)):
+    """Return list of console dicts with live status from Console_Booking sheet."""
+    data = _fetch_console_status_from_mysql()
+    if data is not None:
+        return ok([{
+            "id": d.get("console_id", ""),
+            "type": d.get("console_type", d.get("type", "")),
+            "status": d.get("status", "Free"),
+            "member": d.get("member_id", d.get("member")),
+            "start": d.get("start_time", d.get("start")),
+            "staff": d.get("staff"),
+            "booking_id": d.get("booking_id"),
+            "mult": d.get("multiplier", d.get("mult", 1.0)),
+        } for d in data])
+    try:
+        today = today_str()
+        setting_sh = get_worksheet(SHEET_SETTING)
+        names = setting_sh.col_values(8)[1:]
+        types = setting_sh.col_values(9)[1:]
+        mults = setting_sh.col_values(10)[1:]
+
+        consoles = []
+        for i, name in enumerate(names):
+            if not name.strip():
+                continue
+            try:
+                mult = float_safe(mults[i]) if i < len(mults) else 1.0
+                mult = mult if mult > 0 else 1.0
+            except Exception:
+                mult = 1.0
+            ctype = (types[i] if i < len(types) else "").strip()
+            consoles.append({
+                "id": name.strip(), "type": ctype, "mult": mult,
+                "status": "Free", "member": None, "start": None,
+                "staff": None, "booking_id": None,
+            })
+
+        try:
+            bk_rows = get_booking_rows()
+            for row in bk_rows[1:]:
+                if len(row) < 7:
+                    continue
+                bk_date = row[1].strip()
+                bk_cid = row[2].strip()
+                bk_status = row[6].strip()
+                if bk_date == today and bk_status in ("Active", "Scheduled"):
+                    for c in consoles:
+                        if c["id"] == bk_cid:
+                            c["status"] = bk_status
+                            c["member"] = row[3].strip() or "Guest"
+                            c["start"] = row[4].strip()
+                            c["staff"] = row[7].strip() if len(row) > 7 else ""
+                            c["booking_id"] = row[0].strip()
+                            break
+        except Exception as e:
+            logger.warning("Booking overlay error: %s", e)
+
+        return ok(consoles)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_members
+# ═══════════════════════════════════════
+@app.get("/api/fetch_members", tags=["Members"])
+async def api_fetch_members(auth=Depends(verify_api_key)):
+    """Return sorted list of all member IDs from Card_Wallet."""
+    data = _fetch_members_from_mysql()
+    if data is not None:
+        return ok(sorted([m["member_id"] for m in data if m.get("member_id")]))
+    try:
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        raw = ws.col_values(2)[1:]
+        members = [m.strip() for m in raw if m.strip()]
+        return ok(sorted(members))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_member_data
+# ═══════════════════════════════════════
+@app.get("/api/fetch_member_data/{member_id}", tags=["Members"])
+async def api_fetch_member_data(member_id: str, auth=Depends(verify_api_key)):
+    """Return consolidated member data (name, phone, email, rank, wallet, spend) from Card_Wallet."""
+    data = _fetch_member_data_from_mysql(member_id)
+    if data is not None:
+        return ok({
+            "name": data.get("member_name", data.get("name", "-")) or "-",
+            "phone": data.get("phone", "-") or "-",
+            "email": data.get("email", ""),
+            "net_spend": data.get("net_spend", 0),
+            "rank_raw": data.get("tier", data.get("rank_raw", "Warrior")),
+            "wallet_mins": data.get("balance_mins", data.get("wallet_mins")),
+        })
+    try:
+        rows = get_member_rows()
+        for row in rows[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                name = row[2].strip() if len(row) > 2 else "-"
+                phone = row[3].strip() if len(row) > 3 else "-"
+                net_spend = int_safe(row[5]) if len(row) > 5 else 0
+                wallet_mins = int_safe(row[7]) if len(row) > 7 and row[7].strip() else None
+                email = row[12].strip() if len(row) > 12 else ""
+
+                setting_sh = get_worksheet(SHEET_SETTING)
+                master_thresh = int_safe(setting_sh.cell(3, 13).value)
+                immortal_thresh = int_safe(setting_sh.cell(4, 13).value)
+
+                rank_raw = "Warrior"
+                if immortal_thresh > 0 and net_spend >= immortal_thresh:
+                    rank_raw = "Immortal"
+                elif master_thresh > 0 and net_spend >= master_thresh:
+                    rank_raw = "Master"
+
+                return ok({
+                    "name": name or "-", "phone": phone or "-",
+                    "email": email, "net_spend": net_spend,
+                    "rank_raw": rank_raw, "wallet_mins": wallet_mins,
+                })
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_wallet_mins
+# ═══════════════════════════════════════
+@app.get("/api/fetch_wallet_mins/{member_id}", tags=["Members"])
+async def api_fetch_wallet_mins(member_id: str, auth=Depends(verify_api_key)):
+    """Fetch wallet balance in mins for a member (col I, formula)."""
+    data = _fetch_wallet_mins_from_mysql(member_id)
+    if data is not None:
+        return ok(data)
+    try:
+        for row in get_member_rows()[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                mins = int_safe(row[7]) if len(row) > 7 and row[7].strip() else 0
+                return ok(mins)
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_balance_mins (alias live read)
+# ═══════════════════════════════════════
+@app.get("/api/fetch_balance_mins/{member_id}", tags=["Members"])
+async def api_fetch_balance_mins(member_id: str, auth=Depends(verify_api_key)):
+    """Fetch wallet balance in mins (live read, bypasses cache)."""
+    data = _fetch_balance_mins_from_mysql(member_id)
+    if data is not None:
+        return ok(data)
+    try:
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        rows = ws.get_all_values()
+        for row in rows[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                mins = int_safe(row[7]) if len(row) > 7 and row[7].strip() else 0
+                return ok(mins)
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_member_tier
+# ═══════════════════════════════════════
+@app.get("/api/fetch_member_tier/{member_id}", tags=["Members"])
+async def api_fetch_member_tier(member_id: str, auth=Depends(verify_api_key)):
+    """Fetch member's current tier — MySQL path with gspread fallback."""
+    try:
+        # MySQL path
+        if _use_mysql():
+            row = mysql_query_one(
+                "SELECT tier, total_spend, balance_mins FROM member_wallets WHERE member_id = %s",
+                (member_id,),
+            )
+            if row:
+                total = float(row["total_spend"]) if row["total_spend"] else 0.0
+                balance = float(row["balance_mins"]) if row["balance_mins"] else 0.0
+                tier = row["tier"] or "Warrior"
+                master = float(_get_setting("master_threshold", 300000))
+                immortal = float(_get_setting("immortal_threshold", 1000000))
+                if total >= immortal:
+                    tier = "Immortal"
+                elif total >= master:
+                    tier = "Master"
+                else:
+                    tier = "Warrior"
+                return ok({"tier": tier, "total_spend": total, "balance_mins": balance})
+        # gspread fallback
+        for row in get_member_rows()[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                tier = row[6].strip() if len(row) > 6 else ""
+                return ok(tier if tier else "Warrior")
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_staff / fetch_staff_names
+# ═══════════════════════════════════════
+@app.get("/api/fetch_staff", tags=["Staff"])
+async def api_fetch_staff(auth=Depends(verify_api_key)):
+    """Return list of staff names (MySQL staff_records first, Sheets fallback)."""
+    try:
+        if _use_mysql():
+            rows = mysql_query("SELECT staff_name FROM staff_records WHERE is_active=1 ORDER BY staff_id")
+            if rows:
+                staff = [r["staff_name"] for r in rows if r.get("staff_name")]
+                return ok(staff)
+        # Fallback: Google Sheets Setting col S
+        ws = get_worksheet(SHEET_SETTING)
+        vals = ws.col_values(19)[1:]
+        return ok([v.strip() for v in vals if v.strip()])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/fetch_staff_names", tags=["Staff"])
+async def api_fetch_staff_names(auth=Depends(verify_api_key)):
+    """Alias for fetch_staff."""
+    return await api_fetch_staff(auth)
+
+
+# ═══════════════════════════════════════
+#  fetch_food_prices / fetch_food_costs
+# ═══════════════════════════════════════
+@app.get("/api/fetch_food_prices", tags=["Food"])
+async def api_fetch_food_prices(auth=Depends(verify_api_key)):
+    """Return dict of food item name -> price (MySQL settings first, Sheets fallback)."""
+    try:
+        if _use_mysql():
+            val = _get_setting("food_prices")
+            if val:
+                try:
+                    prices = json.loads(val) if isinstance(val, str) else val
+                    if prices and isinstance(prices, dict):
+                        return ok(prices)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        # Fallback: Google Sheets Setting cols D-E
+        ws = get_worksheet(SHEET_SETTING)
+        names = ws.col_values(4)[1:]
+        prices = ws.col_values(5)[1:]
+        return ok({n.strip(): int_safe(p) for n, p in zip(names, prices) if n.strip()})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/fetch_food_costs", tags=["Food"])
+async def api_fetch_food_costs(auth=Depends(verify_api_key)):
+    """Return dict of food item -> cost price (MySQL settings first, Sheets fallback)."""
+    try:
+        if _use_mysql():
+            val = _get_setting("food_costs")
+            if val:
+                try:
+                    costs = json.loads(val) if isinstance(val, str) else val
+                    if costs and isinstance(costs, dict):
+                        return ok(costs)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        # Fallback: Google Sheets Setting cols D, F
+        ws = get_worksheet(SHEET_SETTING)
+        names = ws.col_values(4)[1:]
+        costs = ws.col_values(6)[1:]
+        return ok({n.strip(): (int_safe(c) if str(c).strip() else 0)
+                   for n, c in zip(names, costs) if n.strip()})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_games / fetch_game_library
+# ═══════════════════════════════════════
+@app.get("/api/fetch_games", tags=["Games"])
+async def api_fetch_games(auth=Depends(verify_api_key)):
+    """Return all games from Game_Library (MySQL preferred, Sheets fallback)."""
+    try:
+        mysql_data = _fetch_games_from_mysql()
+        if mysql_data is not None:
+            games = []
+            for i, g in enumerate(mysql_data, start=2):
+                games.append({
+                    "row": i,
+                    "title": g.get("title", ""),
+                    "platform": "",
+                    "genre": g.get("genre", ""),
+                    "status": "0",
+                    "discs": str(g.get("discs", 0)),
+                })
+            return ok(games)
+        rows = get_game_rows()
+        if len(rows) < 2:
+            return ok([])
+        games = []
+        for i, row in enumerate(rows[1:], start=2):
+            if not row or not row[1].strip():
+                continue
+            games.append({
+                "row": i,
+                "title": row[1].strip() if len(row) > 1 else "",
+                "platform": row[2].strip() if len(row) > 2 else "",
+                "genre": row[3].strip() if len(row) > 3 else "",
+                "status": row[4].strip() if len(row) > 4 else "",
+                "discs": row[5].strip() if len(row) > 5 else "",
+            })
+        return ok(games)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/fetch_game_library", tags=["Games"])
+async def api_fetch_game_library(auth=Depends(verify_api_key)):
+    """Alias for fetch_games."""
+    return await api_fetch_games(auth)
+
+
+# ═══════════════════════════════════════
+#  fetch_console_games
+# ═══════════════════════════════════════
+@app.get("/api/fetch_console_games", tags=["Games"])
+async def api_fetch_console_games(auth=Depends(verify_api_key)):
+    """Return all console-game installation records (cached 5 min)."""
+    data = _fetch_console_games_from_mysql()
+    if data is not None:
+        return ok([{
+            "row": d.get("id", i),
+            "console_id": d.get("console_id", ""),
+            "game_title": d.get("game_title", ""),
+            "install_type": d.get("install_type", ""),
+            "date": d.get("date", ""),
+            "notes": d.get("notes", ""),
+        } for i, d in enumerate(data, start=2)])
+    try:
+        rows = get_console_game_rows()
+        if len(rows) < 2:
+            return ok([])
+        result = []
+        for i, row in enumerate(rows[1:], start=2):
+            if not row or not row[0].strip():
+                continue
+            result.append({
+                "row": i,
+                "console_id": row[0].strip() if len(row) > 0 else "",
+                "game_title": row[1].strip() if len(row) > 1 else "",
+                "install_type": row[2].strip() if len(row) > 2 else "",
+                "date": row[3].strip() if len(row) > 3 else "",
+                "notes": row[4].strip() if len(row) > 4 else "",
+            })
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  get_games_on_console
+# ═══════════════════════════════════════
+@app.get("/api/get_games_on_console/{console_id}", tags=["Games"])
+async def api_get_games_on_console(console_id: str, auth=Depends(verify_api_key)):
+    """Return list of game titles installed on a specific console — MySQL path with gspread fallback."""
+    data = _fetch_games_on_console_from_mysql(console_id)
+    if data is not None:
+        return ok(data)
+    try:
+        rows = get_console_game_rows()
+        games = []
+        for row in rows[1:]:
+            if len(row) >= 2 and row[0].strip().upper() == console_id.strip().upper() and row[1].strip():
+                games.append(row[1].strip())
+        return ok(games)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  get_consoles_with_game
+# ═══════════════════════════════════════
+@app.get("/api/get_consoles_with_game", tags=["Games"])
+async def api_get_consoles_with_game(game_title: str = Query(...), auth=Depends(verify_api_key)):
+    """Return list of console IDs that have a specific game installed — MySQL path with gspread fallback."""
+    data = _fetch_consoles_with_game_from_mysql(game_title)
+    if data is not None:
+        return ok(data)
+    try:
+        rows = get_console_game_rows()
+        gl = game_title.strip().lower()
+        consoles = []
+        for row in rows[1:]:
+            if len(row) >= 2 and row[1].strip().lower() == gl and row[0].strip():
+                consoles.append(row[0].strip())
+        return ok(list(dict.fromkeys(consoles)))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_base_rate
+# ═══════════════════════════════════════
+@app.get("/api/fetch_base_rate", tags=["Settings"])
+async def api_fetch_base_rate(auth=Depends(verify_api_key)):
+    """Fetch hourly base rate from MySQL settings (Ks/hr)."""
+    try:
+        val = _fetch_base_rate_from_mysql()
+        return ok(val)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_console_multiplier
+# ═══════════════════════════════════════
+@app.get("/api/fetch_console_multiplier/{console_id}", tags=["Settings"])
+async def api_fetch_console_multiplier(console_id: str, auth=Depends(verify_api_key)):
+    """Fetch multiplier for a console from MySQL settings or Sheets."""
+    try:
+        val = _fetch_console_multiplier_from_mysql(console_id)
+        if val is not None:
+            return ok(val)
+        ws = get_worksheet(SHEET_SETTING)
+        names = ws.col_values(8)[1:]
+        mults = ws.col_values(10)[1:]
+        for name, mult in zip(names, mults):
+            if name.strip() == console_id.strip():
+                val = float_safe(mult)
+                return ok(val if val > 0 else 1.0)
+        return ok(1.0)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_new_member_defaults
+# ═══════════════════════════════════════
+@app.get("/api/fetch_new_member_defaults", tags=["Settings"])
+async def api_fetch_new_member_defaults(auth=Depends(verify_api_key)):
+    """Fetch default card price and base mins from MySQL settings."""
+    try:
+        val = _fetch_new_member_defaults_from_mysql()
+        return ok(val)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_rank_thresholds
+# ═══════════════════════════════════════
+@app.get("/api/fetch_rank_thresholds", tags=["Settings"])
+async def api_fetch_rank_thresholds(auth=Depends(verify_api_key)):
+    """Fetch Master and Immortal thresholds from MySQL settings."""
+    try:
+        val = _fetch_rank_thresholds_from_mysql()
+        return ok(val)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_bonus_table
+# ═══════════════════════════════════════
+@app.get("/api/fetch_bonus_table", tags=["Settings"])
+async def api_fetch_bonus_table(auth=Depends(verify_api_key)):
+    """Fetch bonus table from MySQL settings (JSON)."""
+    try:
+        val = _fetch_bonus_table_from_mysql()
+        if val is not None:
+            return ok(val)
+        # Fallback to gspread
+        ws = get_worksheet(SHEET_SETTING)
+        rows = ws.get("O2:R5")
+        result = []
+        for row in rows:
+            if len(row) < 4:
+                continue
+            try:
+                thresh = int_safe(row[0])
+                w_b = int_safe(row[1])
+                m_b = int_safe(row[2])
+                i_b = int_safe(row[3])
+                if thresh > 0 or any([w_b, m_b, i_b]):
+                    result.append({
+                        "threshold": thresh, "warrior_bonus": w_b,
+                        "master_bonus": m_b, "immortal_bonus": i_b,
+                    })
+            except Exception:
+                continue
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_rank_table_display
+# ═══════════════════════════════════════
+@app.get("/api/fetch_rank_table_display", tags=["Settings"])
+async def api_fetch_rank_table_display(auth=Depends(verify_api_key)):
+    """Fetch rank bonus table for display — MySQL path with gspread fallback."""
+    data = _fetch_rank_table_display_from_mysql()
+    if data is not None:
+        return ok(data)
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        rows = ws.get("O1:R5")
+        if not rows:
+            return ok("_(data not available)_")
+        lines = [
+            f"{'Amount (Ks)':<14} {'Warrior':>9} {'Master':>9} {'Immortal':>10}",
+            "-" * 48,
+        ]
+        for row in rows[1:]:
+            if len(row) < 4:
+                continue
+            amt = int_safe(row[0])
+            if amt == 0:
+                continue
+            lines.append(f"{amt:>14,}  {int_safe(row[1]):>8,}  {int_safe(row[2]):>8,}  {int_safe(row[3]):>9,}")
+        return ok("\n".join(lines))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_alltime_effective_rate
+# ═══════════════════════════════════════
+@app.get("/api/fetch_alltime_effective_rate", tags=["Analytics"])
+async def api_fetch_alltime_effective_rate(auth=Depends(verify_api_key)):
+    """Calculate all-time average Ks/min — MySQL path with gspread fallback."""
+    try:
+        # MySQL path
+        if _use_mysql():
+            rows = mysql_query("SELECT SUM(amount) as total_ks, SUM(mins_added) as total_mins FROM topup_log")
+            if rows:
+                row = rows[0]
+                total_ks = float(row.get("total_ks") or 0)
+                total_mins = int(row.get("total_mins") or 0)
+                rate = round(total_ks / total_mins, 4) if total_mins > 0 else 0.0
+                return ok(rate)
+        # gspread fallback
+        ws = get_worksheet(SHEET_TOPUP_LOG)
+        rows = ws.get_all_values()
+        total_ks, total_mins = 0, 0
+        for row in rows[1:]:
+            if len(row) < 5:
+                continue
+            ks = int_safe(row[3]) if row[3].strip() else 0
+            mins = int_safe(row[4]) if row[4].strip() else 0
+            if ks and mins:
+                total_ks += ks
+                total_mins += mins
+        rate = round(total_ks / total_mins, 4) if total_mins > 0 else 0.0
+        return ok(rate)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_member_effective_rate
+# ═══════════════════════════════════════
+@app.get("/api/fetch_member_effective_rate/{member_id}", tags=["Members"])
+async def api_fetch_member_effective_rate(member_id: str, auth=Depends(verify_api_key)):
+    """Fetch a member's stored effective rate — MySQL path with gspread fallback."""
+    try:
+        # MySQL path
+        if _use_mysql():
+            row = mysql_query_one(
+                "SELECT effective_rate FROM member_wallets WHERE member_id = %s",
+                (member_id,),
+            )
+            if row:
+                return ok(float(row["effective_rate"]) if row["effective_rate"] else 0.0)
+        # gspread fallback
+        for row in get_member_rows()[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                val = row[11].strip() if len(row) > 11 else ""
+                return ok(float(val) if val else 0.0)
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  build_member_rate_dict
+# ═══════════════════════════════════════
+@app.get("/api/build_member_rate_dict", tags=["Members"])
+async def api_build_member_rate_dict(auth=Depends(verify_api_key)):
+    """Build dict of member_id -> stored effective rate — MySQL path with gspread fallback."""
+    try:
+        result = {}
+        # MySQL path
+        if _use_mysql():
+            rows = mysql_query("SELECT member_id, effective_rate FROM member_wallets WHERE effective_rate IS NOT NULL")
+            if rows:
+                for row in rows:
+                    m_id = row.get("member_id")
+                    rate = row.get("effective_rate")
+                    if m_id and rate is not None:
+                        result[m_id] = float(rate)
+                return ok(result)
+        # gspread fallback
+        for row in get_member_rows()[1:]:
+            if len(row) > 1 and row[1].strip():
+                m_id = row[1].strip()
+                val = row[11].strip() if len(row) > 11 else ""
+                if val:
+                    try:
+                        result[m_id] = float(val)
+                    except ValueError:
+                        pass
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_base_salaries
+# ═══════════════════════════════════════
+@app.get("/api/fetch_base_salaries", tags=["Staff"])
+async def api_fetch_base_salaries(auth=Depends(verify_api_key)):
+    """Fetch staff base salaries — MySQL path with gspread fallback."""
+    data = _fetch_base_salaries_from_mysql()
+    if data is not None:
+        return ok(data)
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        staff = ws.col_values(19)[1:]
+        salaries = ws.col_values(20)[1:]
+        result = {}
+        for i, name in enumerate(staff):
+            name = name.strip()
+            if not name:
+                continue
+            sal_str = salaries[i].strip() if i < len(salaries) else "0"
+            result[name] = int_safe(sal_str)
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_attendance
+# ═══════════════════════════════════════
+@app.get("/api/fetch_attendance/{month_str}", tags=["Attendance"])
+async def api_fetch_attendance(month_str: str, auth=Depends(verify_api_key)):
+    """Fetch attendance records for a month — MySQL path with gspread fallback."""
+    data = _fetch_attendance_from_mysql(month_str)
+    if data is not None:
+        return ok(data)
+    try:
+        ws = get_worksheet(SHEET_ATTENDANCE_LOG)
+        rows = ws.get_all_values()
+        result = {}
+        for row in rows[1:]:
+            if len(row) < 4:
+                continue
+            if row[0].strip() != month_str:
+                continue
+            staff = row[1].strip()
+            if not staff:
+                continue
+            result[staff] = {
+                "leave_days": int_safe(row[2]) if len(row) > 2 else 0,
+                "late_count": int_safe(row[3]) if len(row) > 3 else 0,
+                "deduct_per_late": int_safe(row[4]) if len(row) > 4 and row[4].strip() else 500,
+            }
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_salary_advances
+# ═══════════════════════════════════════
+@app.get("/api/fetch_salary_advances/{month_str}", tags=["Attendance"])
+async def api_fetch_salary_advances(month_str: str, auth=Depends(verify_api_key)):
+    """Return {staff: {total, cash, kpay}} for the given month (YYYY-MM) — MySQL path with gspread fallback."""
+    data = _fetch_salary_advances_from_mysql(month_str)
+    if data is not None:
+        return ok(data)
+    try:
+        ws = get_worksheet(SHEET_SALARY_ADVANCE)
+        rows = ws.get_all_values()
+        result = {}
+        for row in rows[1:]:
+            if len(row) < 5:
+                continue
+            date_val = row[0].strip()
+            staff = row[1].strip()
+            if not staff or not date_val:
+                continue
+            if month_str.replace("-", "/") not in date_val and month_str not in date_val:
+                continue
+            amt = int_safe(row[2]) if row[2].strip() else 0
+            pay_method = row[3].strip().upper() if len(row) > 3 else "CASH"
+            if staff not in result:
+                result[staff] = {"total": 0, "cash": 0, "kpay": 0}
+            result[staff]["total"] += amt
+            if "KPAY" in pay_method:
+                result[staff]["kpay"] += amt
+            else:
+                result[staff]["cash"] += amt
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_promotions_cached
+# ═══════════════════════════════════════
+@app.get("/api/fetch_promotions_cached", tags=["Promotions"])
+async def api_fetch_promotions_cached(auth=Depends(verify_api_key)):
+    """Fetch active promotions — MySQL path with gspread fallback."""
+    data = _fetch_promotions_cached_from_mysql()
+    if data is not None:
+        return ok(data)
+    try:
+        today = today_str()
+        ws = get_worksheet(SHEET_PROMOTIONS)
+        rows = ws.get_all_values()
+        promos = []
+        if len(rows) < 2:
+            return ok([])
+
+        # Build header-index map for flexible column order
+        headers_raw = rows[0]
+        header_map = {h.strip().lower().replace(" ", "_"): i for i, h in enumerate(headers_raw)}
+
+        def col(key, row, default=""):
+            idx = header_map.get(key, -1)
+            if idx >= 0 and idx < len(row):
+                val = row[idx].strip()
+                return val if val else default
+            return default
+
+        for row in rows[1:]:
+            if not row or not any(c.strip() for c in row):
+                continue
+
+            # Check active flag
+            is_active = col("active", row, "") or col("is_active", row, "") or col("status", row, "")
+            if is_active.upper() in ("FALSE", "NO", "INACTIVE", "0", "OFF"):
+                continue
+
+            valid_until = col("valid_until", row, "") or col("expires", row, "") or col("end_date", row, "")
+
+            # Only return active promotions (valid_until >= today or empty = always active)
+            if valid_until:
+                try:
+                    parts = valid_until.replace("-", "/").split("/")
+                    from datetime import date
+                    if len(parts) >= 3:
+                        if len(parts[2]) == 4:
+                            y, m, d = int(parts[2]), int(parts[0]), int(parts[1])
+                        elif len(parts[0]) == 4:
+                            y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                        else:
+                            raise ValueError(f"Unparseable date: {valid_until}")
+                        v_date = date(y, m, d)
+                        t_parts = today.replace("-", "/").split("/")
+                        t_date = date(int(t_parts[2]), int(t_parts[0]), int(t_parts[1]))
+                        if v_date < t_date:
+                            continue
+                except (ValueError, IndexError):
+                    pass
+
+            promos.append({
+                "title": col("title", row, "Promotion"),
+                "description": col("description", row, ""),
+                "type": col("type", row, "general") or col("promo_type", row, "general"),
+                "discount_percent": col("discount_percent", row, "") or col("discount", row, ""),
+                "item_name": col("item_name", row, ""),
+                "bundle_items": col("bundle_items", row, ""),
+                "cashback_percent": col("cashback_percent", row, "") or col("cashback", row, ""),
+                "conditions": col("conditions", row, ""),
+                "valid_until": valid_until,
+                "emoji": col("emoji", row, "🎁") or col("icon", row, "🎁"),
+            })
+
+        return ok(promos)
+    except Exception as e:
+        logger.warning("fetch_promotions_cached error: %s", e)
+        return ok([], f"Error loading promotions: {str(e)}")
+
+
+# ═══════════════════════════════════════
+#  track_referral
+# ═══════════════════════════════════════
+@app.post("/api/track_referral", tags=["Referral"])
+async def api_track_referral(req: dict, auth=Depends(verify_api_key)):
+    """Track a referral event — log to Referral_Log sheet."""
+    try:
+        referrer_id = req.get("referrer_id", "")
+        referred_user_id = req.get("referred_user_id", "")
+        referred_username = req.get("referred_username", "")
+
+        if not referrer_id or not referred_user_id:
+            raise HTTPException(status_code=400, detail="referrer_id and referred_user_id required")
+
+        now = now_mmt()
+
+        # MySQL path
+        if _use_mysql():
+            mysql_execute(
+                "INSERT INTO referral_log (member_id, referrer_id, referral_code, source, notes) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (referred_user_id, referrer_id, referred_username, "customer_bot",
+                 f"Referred user: {referred_username}"))
+            logger.info("Referral tracked (MySQL): referrer=%s referred=%s", referrer_id, referred_user_id)
+            return ok({"status": "ok"})
+
+        # gspread fallback
+        date_str = now.strftime("%-m/%-d/%Y")
+        time_str = now.strftime("%H:%M:%S")
+        ws = get_worksheet(SHEET_REFERRAL_LOG)
+
+        # Ensure headers exist
+        all_rows = ws.get_all_values()
+        if not all_rows:
+            ws.append_row(["Date", "Time", "Referrer ID", "Referred User ID",
+                           "Referred Username", "Status"])
+            logger.info("Created Referral_Log headers")
+
+        ws.append_row([date_str, time_str, referrer_id, referred_user_id,
+                       referred_username or "", "clicked"],
+                      value_input_option="USER_ENTERED")
+
+        logger.info("Referral tracked: referrer=%s referred=%s", referrer_id, referred_user_id)
+        return ok({"status": "ok"})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("track_referral error: %s", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_allowed_staff_ids
+# ═══════════════════════════════════════
+@app.get("/api/fetch_allowed_staff_ids", tags=["Staff"])
+async def api_fetch_allowed_staff_ids(auth=Depends(verify_api_key)):
+    """Fetch dynamic staff whitelist from Setting!B30."""
+    data = _fetch_allowed_staff_ids_from_mysql()
+    if data is not None:
+        return ok(data)
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        val = ws.cell(30, 2).value
+        if not val:
+            return ok([])
+        ids = [int(x.strip()) for x in str(val).split(",") if x.strip().isdigit()]
+        return ok(ids)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  next_voucher / next_member_id / next_member_row_no
+# ═══════════════════════════════════════
+@app.get("/api/next_voucher", tags=["Sales"])
+async def api_next_voucher(auth=Depends(verify_api_key)):
+    """Generate next voucher number (MySQL sales_daily/receipts first, Sheets fallback)."""
+    try:
+        if _use_mysql():
+            # Try sales_daily first (voucher_no column)
+            row = mysql_query_one(
+                "SELECT voucher_no FROM sales_daily WHERE voucher_no IS NOT NULL AND voucher_no LIKE 'V-%%' ORDER BY id DESC LIMIT 1"
+            )
+            if row and row.get("voucher_no"):
+                vid = row["voucher_no"]
+                try:
+                    return ok(f"V-{int(vid.split('-')[1]) + 1:03d}")
+                except (IndexError, ValueError):
+                    pass
+            # Try receipts table as fallback
+            row = mysql_query_one(
+                "SELECT receipt_no FROM receipts WHERE receipt_no IS NOT NULL AND receipt_no LIKE 'V-%%' ORDER BY id DESC LIMIT 1"
+            )
+            if row and row.get("receipt_no"):
+                rid = row["receipt_no"]
+                try:
+                    return ok(f"V-{int(rid.split('-')[1]) + 1:03d}")
+                except (IndexError, ValueError):
+                    pass
+        # Fallback: Google Sheets Sales_Daily col B
+        ws = get_worksheet(SHEET_SALES_DAILY)
+        col = ws.col_values(2)
+        ids = [v for v in col[1:] if v.upper().startswith("V-")]
+        if ids:
+            try:
+                return ok(f"V-{int(ids[-1].split('-')[1]) + 1:03d}")
+            except (IndexError, ValueError):
+                pass
+        return ok("V-001")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/next_member_id", tags=["Members"])
+async def api_next_member_id(auth=Depends(verify_api_key)):
+    """Auto-increment member ID: PSV_A_003 -> PSV_A_004 — MySQL path with gspread fallback."""
+    data = _fetch_next_member_id_from_mysql()
+    if data is not None:
+        return ok(data)
+    try:
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        ids = [v.strip() for v in ws.col_values(2)[1:] if v.strip()]
+        if not ids:
+            return ok("PSV_A_001")
+        last = ids[-1]
+        m = re.search(r'(\d+)$', last)
+        if m:
+            prefix = last[:m.start()]
+            num = int(m.group(1)) + 1
+            width = len(m.group(1))
+            return ok(f"{prefix}{num:0{width}d}")
+        return ok(last + "_1")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/next_member_row_no", tags=["Members"])
+async def api_next_member_row_no(auth=Depends(verify_api_key)):
+    """Return next sequential row number — MySQL path with gspread fallback."""
+    data = _fetch_next_member_row_no_from_mysql()
+    if data is not None:
+        return ok(data)
+    try:
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        col_a = ws.col_values(1)[1:]
+        nums = []
+        for v in col_a:
+            try:
+                nums.append(int(str(v).strip()))
+            except (ValueError, TypeError):
+                pass
+        return ok((max(nums) + 1) if nums else 1)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_referral_code
+# ═══════════════════════════════════════
+@app.get("/api/fetch_referral_code/{member_id}", tags=["Members"])
+async def api_fetch_referral_code(member_id: str, auth=Depends(verify_api_key)):
+    """Fetch referral code for a member — MySQL path with gspread fallback."""
+    data = _fetch_referral_code_from_mysql(member_id)
+    if data is not None:
+        return ok(data)
+    try:
+        for row in get_member_rows()[1:]:
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                code = row[13].strip() if len(row) > 13 else ""
+                return ok(code or None)
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — create_booking
+# ═══════════════════════════════════════
+@app.post("/api/create_booking", tags=["Bookings"])
+async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
+    """Create a booking — MySQL path with gspread fallback."""
+    try:
+        now = now_mmt()
+        date = now.strftime("%-m/%-d/%Y")
+        time_s = now.strftime("%H:%M")
+        seq = now.strftime("%H%M")
+        console_id = req.get("console_id", "")
+        member_id = req.get("member_id", "")
+        staff = req.get("staff", "")
+        notes = req.get("notes", "")
+        bk_id = f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ','').replace('-','')}-{seq}"
+        # MySQL path
+        if _use_mysql():
+            mysql_execute(
+                "INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (console_id, member_id, now.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d %H:%M:%S"), "Active", staff, notes),
+            )
+            row = mysql_query_one("SELECT LAST_INSERT_ID() as id")
+            mysql_id = row["id"] if row else None
+            invalidate_cache("bookings")
+            return ok({"booking_id": bk_id, "mysql_id": mysql_id})
+        # gspread fallback
+        sh = get_worksheet(SHEET_CONSOLE_BOOKING)
+        sh.append_row([bk_id, date, console_id, member_id, time_s, "", "Active", staff, notes],
+                      value_input_option="USER_ENTERED")
+        invalidate_cache("bookings")
+        return ok({"booking_id": bk_id})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — end_booking
+# ═══════════════════════════════════════
+@app.put("/api/end_booking/{booking_id}", tags=["Bookings"])
+async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
+    """Mark a booking as Done and fill EndTime — MySQL path with gspread fallback."""
+    try:
+        now = now_mmt()
+        # MySQL path: try by numeric id first
+        if _use_mysql():
+            try:
+                bid_int = int(booking_id)
+                row = mysql_query_one("SELECT id FROM console_booking WHERE id = %s", (bid_int,))
+                if row:
+                    mysql_execute(
+                        "UPDATE console_booking SET status = 'Done', end_time = %s WHERE id = %s",
+                        (now.strftime("%Y-%m-%d %H:%M:%S"), bid_int),
+                    )
+                    invalidate_cache("bookings")
+                    return ok({"booking_id": booking_id, "status": "Done"})
+            except ValueError:
+                pass
+        # gspread fallback
+        sh = get_worksheet(SHEET_CONSOLE_BOOKING)
+        rows = sh.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if row and row[0].strip() == booking_id:
+                sh.update(f"F{i}:G{i}", [[now.strftime("%H:%M"), "Done"]])
+                invalidate_cache("bookings")
+                return ok({"booking_id": booking_id, "status": "Done"})
+        raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — cancel_booking
+# ═══════════════════════════════════════
+@app.put("/api/cancel_booking/{booking_id}", tags=["Bookings"])
+async def api_cancel_booking(booking_id: str, auth=Depends(verify_api_key)):
+    """Mark a booking as Cancelled — MySQL path with gspread fallback."""
+    try:
+        # MySQL path: try by numeric id first
+        if _use_mysql():
+            try:
+                bid_int = int(booking_id)
+                row = mysql_query_one("SELECT id FROM console_booking WHERE id = %s", (bid_int,))
+                if row:
+                    mysql_execute(
+                        "UPDATE console_booking SET status = 'Cancelled' WHERE id = %s",
+                        (bid_int,),
+                    )
+                    invalidate_cache("bookings")
+                    return ok({"booking_id": booking_id, "status": "Cancelled"})
+            except ValueError:
+                pass
+        # gspread fallback
+        sh = get_worksheet(SHEET_CONSOLE_BOOKING)
+        rows = sh.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if row and row[0].strip() == booking_id:
+                sh.update(f"G{i}", [["Cancelled"]])
+                invalidate_cache("bookings")
+                return ok({"booking_id": booking_id, "status": "Cancelled"})
+        raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+#  CREATE/UPDATE — bookings (customer bot format)
+# ═══════════════════════════════════════
+@app.post("/api/bookings", tags=["Bookings"])
+async def api_bookings(req: dict, auth=Depends(verify_api_key)):
+    """Create a booking from customer bot payload — MySQL path with gspread fallback."""
+    try:
+        import json as _json
+        now = now_mmt()
+        date_formatted = now.strftime("%-m/%-d/%Y")
+        time_s = now.strftime("%H:%M")
+        seq = now.strftime("%H%M")
+        console_type = req.get("consoleType", "")
+        console_id = console_type  # Store as-is
+
+        notes_data = {
+            "customerName": req.get("customerName", ""),
+            "phone": req.get("phone", ""),
+            "timeSlot": req.get("timeSlot", ""),
+            "consoleType": req.get("consoleType", ""),
+            "durationMins": req.get("durationMins", 0),
+            "gameName": req.get("gameName", ""),
+            "telegramChatId": req.get("telegramChatId", ""),
+            "username": req.get("username", ""),
+        }
+        notes_json = _json.dumps(notes_data)
+        bk_id = f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ', '').replace('-', '')}-{seq}"
+
+        # MySQL path
+        if _use_mysql():
+            mysql_execute(
+                "INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, notes) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (console_id, "", now.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d %H:%M:%S"), "Pending", notes_json))
+            invalidate_cache("bookings")
+            return ok({"id": bk_id, "status": "Pending"})
+
+        # gspread fallback
+        sh = get_worksheet(SHEET_CONSOLE_BOOKING)
+        sh.append_row([bk_id, date_formatted, console_id, "", time_s, "", "Pending", "", notes_json],
+                      value_input_option="USER_ENTERED")
+        invalidate_cache("bookings")
+        return ok({"id": bk_id, "status": "Pending"})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+# ═══════════════════════════════════════
+#  MUTATION — save_attendance
+# ═══════════════════════════════════════
+@app.post("/api/save_attendance", tags=["Attendance"])
+async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
+    """Save/update attendance record for a staff — MySQL path with gspread fallback."""
+    try:
+        month_str = req.get("month_str", "")
+        staff = req.get("staff", "")
+        leave_days = req.get("leave_days", 0)
+        late_count = req.get("late_count", 0)
+        deduct_per_late = req.get("deduct_per_late", 500)
+
+        # MySQL path: Log attendance entries individually
+        if _use_mysql() and leave_days > 0:
+            mysql_execute(
+                "INSERT INTO attendance_log (staff_name, date, status, notes) VALUES (%s, CURDATE(), 'leave', %s)",
+                (staff, f"{leave_days} leave days"))
+        if _use_mysql() and late_count > 0:
+            mysql_execute(
+                "INSERT INTO attendance_log (staff_name, date, status, notes) VALUES (%s, CURDATE(), 'late', %s)",
+                (staff, f"{late_count} late marks, deduct={deduct_per_late}"))
+
+        # gspread fallback
+        sh = get_worksheet(SHEET_ATTENDANCE_LOG)
+        rows = sh.get_all_values()
+        found = False
+        for i, row in enumerate(rows[1:], start=2):
+            if row[0].strip() == month_str and row[1].strip() == staff:
+                sh.update(f"A{i}:E{i}", [[month_str, staff, leave_days, late_count, deduct_per_late]])
+                found = True
+                break
+        if not found:
+            sh.append_row([month_str, staff, leave_days, late_count, deduct_per_late])
+        return ok({"staff": staff, "month": month_str})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — save_receipt_json
+# ═══════════════════════════════════════
+@app.post("/api/save_receipt_json", tags=["Receipts"])
+async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
+    """Persist receipt data to MySQL."""
+    try:
+        receipt_no = req.get("receipt_no", "")
+        member_id = req.get("member_id", "")
+        amount = req.get("amount", 0)
+        payment_method = req.get("payment_method", "")
+        items = req.get("items", "")
+        receipt_date = req.get("receipt_date", "") or now_mmt().strftime("%Y-%m-%d")
+        staff_name = req.get("staff_name", "")
+
+        logger.info("Saving receipt to MySQL: receipt_no=%s", receipt_no)
+
+        mysql_execute(
+            "INSERT INTO receipts (receipt_no, member_id, amount, payment_method, items, receipt_date, staff_name) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (receipt_no, member_id, amount, payment_method, items, receipt_date, staff_name)
+        )
+
+        logger.info("Receipt saved: receipt_no=%s", receipt_no)
+        return {"status": "ok", "receipt_no": receipt_no}
+    except Exception as e:
+        logger.error("Receipt save error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+
+# ═══════════════════════════════════════
+#  QUERY — get_receipt_html
+# ═══════════════════════════════════════
+@app.get("/api/receipt/{voucher_id}", tags=["Receipts"])
+async def api_get_receipt_html(voucher_id: str):
+    """Render receipt HTML for a given voucher_id."""
+    import json
+    import os as _os
+    
+    try:
+        # Normalise voucher_id (replace / and \ with -)
+        safe_id = voucher_id.replace("/", "-").replace("\\", "-")
+        receipt_dir = "/root/psvibe-sales-bot/bot/receipts"
+        receipt_path = _os.path.join(receipt_dir, f"{safe_id}.json")
+        template_path = "/root/psvibe_api_server/receipt_template.html"
+        
+        if not _os.path.exists(receipt_path):
+            logger.warning("Receipt not found: voucher=%s path=%s", voucher_id, receipt_path)
+            return HTMLResponse(
+                content=f"<html><body style=\"font-family:sans-serif;padding:40px;text-align:center\"><h2>404 - Receipt Not Found</h2><p>Voucher: {voucher_id}</p></body></html>",
+                status_code=404
+            )
+        
+        with open(receipt_path, "r") as f:
+            receipt_data = json.load(f)
+        
+        with open(template_path, "r") as f:
+            template = f.read()
+        
+        # Inject receipt data before </head>
+        json_str = json.dumps(receipt_data, ensure_ascii=False)
+        script_tag = f"<script>window.__RECEIPT_DATA__ = {json_str};</script>"
+        injected = template.replace("</head>", script_tag + "\n</head>")
+        
+        logger.info("Receipt rendered: voucher=%s", voucher_id)
+        return HTMLResponse(content=injected)
+    except Exception as e:
+        logger.error("Receipt render error: %s", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — add_console_game / remove_console_game
+# ═══════════════════════════════════════
+@app.post("/api/add_console_game", tags=["Games"])
+async def api_add_console_game(req: dict, auth=Depends(verify_api_key)):
+    """Add a game installation record to Console_Games — MySQL path with gspread fallback."""
+    try:
+        console_id = req.get("console_id", "")
+        game_title = req.get("game_title", "")
+        install_type = req.get("install_type", "")
+        notes = req.get("notes", "")
+
+        # MySQL path
+        if _use_mysql():
+            mysql_execute(
+                "INSERT INTO console_games (console_id, console_name, game_title, status, notes) "
+                "VALUES (%s, %s, %s, 'active', %s)",
+                (console_id, console_id, game_title, notes))
+            invalidate_cache("console_games")
+            return ok({"console_id": console_id, "game_title": game_title})
+
+        # gspread fallback
+        sh = get_worksheet(SHEET_CONSOLE_GAMES)
+        date = now_mmt().strftime("%-m/%-d/%Y")
+        sh.append_row([console_id, game_title, install_type, date, notes],
+                      value_input_option="USER_ENTERED")
+        invalidate_cache("console_games")
+        return ok({"console_id": console_id, "game_title": game_title})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/remove_console_game", tags=["Games"])
+async def api_remove_console_game(req: dict, auth=Depends(verify_api_key)):
+    """Remove a game installation record from Console_Games — MySQL path with gspread fallback."""
+    try:
+        console_id = req.get("console_id", "")
+        game_title = req.get("game_title", "")
+
+        # MySQL path
+        if _use_mysql():
+            result = mysql_execute(
+                "UPDATE console_games SET status = 'inactive' WHERE console_id = %s AND game_title = %s AND status = 'active'",
+                (console_id, game_title))
+            if result > 0:
+                invalidate_cache("console_games")
+                return ok({"console_id": console_id, "game_title": game_title})
+            raise HTTPException(status_code=404, detail=f"Game {game_title} not found on console {console_id}")
+
+        # gspread fallback
+        sh = get_worksheet(SHEET_CONSOLE_GAMES)
+        rows = sh.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if (len(row) >= 2
+                    and row[0].strip().upper() == console_id.strip().upper()
+                    and row[1].strip().lower() == game_title.strip().lower()):
+                sh.delete_rows(i)
+                invalidate_cache("console_games")
+                return ok({"console_id": console_id, "game_title": game_title})
+        raise HTTPException(status_code=404, detail=f"Game {game_title} not found on console {console_id}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — set_game_disc_count
+# ═══════════════════════════════════════
+@app.put("/api/set_game_disc_count", tags=["Games"])
+async def api_set_game_disc_count(req: dict, auth=Depends(verify_api_key)):
+    """Update disc count for a game in Game_Library — MySQL path with gspread fallback."""
+    try:
+        game_title = req.get("game_title", "")
+        count = req.get("count", 0)
+        row_num = req.get("row_num", 0)
+
+        # MySQL path
+        if _use_mysql() and game_title:
+            mysql_execute(
+                "UPDATE games_library SET disc_count = %s WHERE game_title = %s",
+                (count, game_title))
+            invalidate_cache("games")
+            return ok({"game_title": game_title, "count": count})
+
+        # gspread fallback
+        sh = get_worksheet(SHEET_GAME_LIBRARY)
+        sh.update_cell(row_num, 4, count)
+        invalidate_cache("games")
+        return ok({"row_num": row_num, "count": count})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — update_game_library_install
+# ═══════════════════════════════════════
+@app.put("/api/update_game_library_install", tags=["Games"])
+async def api_update_game_library_install(req: dict, auth=Depends(verify_api_key)):
+    """Set install status for a game — MySQL path with gspread fallback."""
+    try:
+        game_title = req.get("game_title", "")
+        console_id = req.get("console_id", "")
+        installed = req.get("installed", False)
+
+        # MySQL path: upsert into console_games
+        if _use_mysql():
+            if installed:
+                mysql_execute(
+                    "INSERT INTO console_games (console_id, console_name, game_title, status) "
+                    "VALUES (%s, %s, %s, 'active') "
+                    "ON DUPLICATE KEY UPDATE status = 'active'",
+                    (console_id, console_id, game_title))
+            else:
+                mysql_execute(
+                    "UPDATE console_games SET status = 'inactive' WHERE console_id = %s AND game_title = %s",
+                    (console_id, game_title))
+            invalidate_cache("games")
+            return ok({"game": game_title, "console": console_id, "installed": installed})
+
+        # gspread fallback
+        sh = get_worksheet(SHEET_GAME_LIBRARY)
+        rows = sh.get_all_values()
+        if not rows:
+            raise HTTPException(status_code=404, detail="Game_Library sheet is empty")
+
+        cid_norm = _norm_cid(console_id)
+        col_idx = None
+        for i, h in enumerate(rows[0]):
+            if _norm_cid(h) == cid_norm:
+                col_idx = i
+                break
+        if col_idx is None:
+            raise HTTPException(status_code=404, detail=f"Console {console_id} not found in headers")
+
+        game_lower = game_title.strip().lower()
+        row_idx = None
+        for i, row in enumerate(rows[1:], start=2):
+            cell_val = row[1].strip().lower() if len(row) > 1 else ""
+            if cell_val == game_lower:
+                row_idx = i
+                break
+        if row_idx is None:
+            raise HTTPException(status_code=404, detail=f"Game {game_title} not found")
+
+        n = col_idx + 1
+        col_letter = ""
+        while n > 0:
+            n, r = divmod(n - 1, 26)
+            col_letter = chr(65 + r) + col_letter
+        cell_addr = f"{col_letter}{row_idx}"
+
+        sh.update(cell_addr, [[True if installed else ""]])
+        invalidate_cache("games")
+        return ok({"game": game_title, "console": console_id, "installed": installed})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — update_member_effective_rate
+# ═══════════════════════════════════════
+@app.put("/api/update_member_effective_rate", tags=["Members"])
+async def api_update_member_effective_rate(req: dict, auth=Depends(verify_api_key)):
+    """Update or insert member effective rate in Card_Wallet col L."""
+    try:
+        member_id = req.get("member_id", "")
+        rate = req.get("rate", 0.0)
+
+        # MySQL path
+        if _use_mysql():
+            result = mysql_execute(
+                "UPDATE member_wallets SET effective_rate = %s WHERE member_id = %s",
+                (round(float(rate), 4), member_id))
+            if result > 0:
+                return ok({"member_id": member_id, "rate": rate})
+            raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+
+        # gspread fallback
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        rows = ws.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                ws.update_cell(i, 12, round(float(rate), 4))
+                invalidate_cache("members")
+                return ok({"member_id": member_id, "rate": rate})
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — save_referral_code
+# ═══════════════════════════════════════
+@app.post("/api/save_referral_code", tags=["Members"])
+async def api_save_referral_code(req: dict, auth=Depends(verify_api_key)):
+    """Save referral code for a member — MySQL path with gspread fallback."""
+    try:
+        member_id = req.get("member_id", "")
+        code = req.get("code", "")
+
+        # MySQL path
+        if _use_mysql():
+            result = mysql_execute(
+                "UPDATE member_wallets SET referral_code = %s WHERE member_id = %s",
+                (code, member_id))
+            if result > 0:
+                return ok({"member_id": member_id, "code": code})
+            # Try members table if wallet not found
+            result = mysql_execute(
+                "INSERT INTO member_wallets (member_id, referral_code, balance_mins, tier) VALUES (%s, %s, 0, 'Warrior') "
+                "ON DUPLICATE KEY UPDATE referral_code = %s",
+                (member_id, code, code))
+            if result > 0:
+                return ok({"member_id": member_id, "code": code})
+
+        ws = get_worksheet(SHEET_CARD_WALLET)
+        rows = ws.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if len(row) > 1 and row[1].strip() == member_id.strip():
+                ws.update_cell(i, 14, code)
+                invalidate_cache("members")
+                return ok({"member_id": member_id, "code": code})
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — add_console_to_setting
+# ═══════════════════════════════════════
+@app.post("/api/add_console_to_setting", tags=["Console"])
+async def api_add_console_to_setting(req: dict, auth=Depends(verify_api_key)):
+    """Add a new console — MySQL path with gspread fallback."""
+    try:
+        console_id = req.get("console_id", "")
+        ctype = req.get("ctype", "")
+        multiplier = req.get("multiplier", 1.0)
+
+        # MySQL path
+        if _use_mysql():
+            mysql_execute(
+                "INSERT INTO console_status (console_id, status) VALUES (%s, 'available') "
+                "ON DUPLICATE KEY UPDATE status = 'available'",
+                (console_id,))
+            return ok({"console_id": console_id})
+
+        # gspread fallback
+        ws = get_worksheet(SHEET_SETTING)
+        names = ws.col_values(8)
+        next_row = len(names) + 1
+        ws.update(f"H{next_row}:J{next_row}", [[console_id, ctype, str(multiplier)]],
+                  value_input_option="USER_ENTERED")
+        return ok({"console_id": console_id})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  MUTATION — remove_console_from_setting
+# ═══════════════════════════════════════
+@app.delete("/api/remove_console_from_setting/{console_id}", tags=["Console"])
+async def api_remove_console_from_setting(console_id: str, auth=Depends(verify_api_key)):
+    """Remove a console — MySQL path with gspread fallback."""
+    try:
+        # MySQL path
+        if _use_mysql():
+            result = mysql_execute("DELETE FROM console_status WHERE console_id = %s", (console_id,))
+            if result > 0:
+                return ok({"console_id": console_id})
+            raise HTTPException(status_code=404, detail=f"Console {console_id} not found")
+
+        # gspread fallback
+        ws = get_worksheet(SHEET_SETTING)
+        names = ws.col_values(8)
+        for i, name in enumerate(names):
+            if name.strip() == console_id.strip():
+                row = i + 1
+                ws.update(f"H{row}:J{row}", [["", "", ""]])
+                return ok({"console_id": console_id})
+        raise HTTPException(status_code=404, detail=f"Console {console_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  META — Config (used by bot cache)
+# ═══════════════════════════════════════
+@app.get("/api/sheets/config", tags=["Meta"])
+async def api_sheets_config(auth=Depends(verify_api_key)):
+    """Return cached config used by the bot (base_rate, thresholds, etc.)."""
+    try:
+        ws = get_worksheet(SHEET_SETTING)
+        base_rate = int_safe(ws.cell(2, 2).value)
+        master_thresh = int_safe(ws.cell(3, 13).value)
+        immortal_thresh = int_safe(ws.cell(4, 13).value)
+        card_price = int_safe(ws.cell(20, 2).value)
+        base_mins = int_safe(ws.cell(21, 2).value)
+
+        names = ws.col_values(8)[1:]
+        mults = ws.col_values(10)[1:]
+        console_multipliers = {}
+        for name, mult in zip(names, mults):
+            if name.strip():
+                try:
+                    console_multipliers[name.strip()] = float(float_safe(mult)) or 1.0
+                except ValueError:
+                    console_multipliers[name.strip()] = 1.0
+
+        food_names = ws.col_values(4)[1:]
+        food_prices_raw = ws.col_values(5)[1:]
+        food_costs_raw = ws.col_values(6)[1:]
+        food_prices = {}
+        food_costs = {}
+        for n, p, c in zip(food_names, food_prices_raw, food_costs_raw):
+            if n.strip():
+                food_prices[n.strip()] = int_safe(p)
+                food_costs[n.strip()] = int_safe(c) if str(c).strip() else 0
+
+        bonus_rows = ws.get("O2:R5")
+        bonus_table = []
+        for row in bonus_rows:
+            if len(row) >= 4:
+                try:
+                    bonus_table.append([int_safe(row[0]), int_safe(row[1]),
+                                        int_safe(row[2]), int_safe(row[3])])
+                except Exception:
+                    continue
+
+        return ok({
+            "base_rate": base_rate,
+            "master_threshold": master_thresh,
+            "immortal_threshold": immortal_thresh,
+            "new_member_card_price": card_price,
+            "new_member_base_mins": base_mins,
+            "console_multipliers": console_multipliers,
+            "food_prices": food_prices,
+            "food_costs": food_costs,
+            "bonus_table": bonus_table,
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+# ═══════════════════════════════════════
+#  BI DASHBOARD — Analytics Endpoints
+# ═══════════════════════════════════════
+@app.get("/api/analytics/daily_sales", tags=["Analytics"])
+async def api_analytics_daily_sales(
+    date: str = Query(None, description="Date in M/D/YYYY format, defaults to today"),
+    auth=Depends(verify_api_key),
+):
+    """Return today's (or specified date's) sales KPIs from Sales_Daily."""
+    data = _fetch_daily_sales_from_mysql(date)
+    if data is not None:
+        return ok(data)
+    try:
+        from analytics import get_daily_sales
+        return ok(get_daily_sales(date))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/analytics/topups", tags=["Analytics"])
+async def api_analytics_topups(
+    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
+    auth=Depends(verify_api_key),
+):
+    """Return top-up trends: daily/weekly aggregates, all-time effective rate, top members."""
+    data = _fetch_topups_from_mysql(days)
+    if data is not None:
+        return ok({"topup_log": data, "total_topups": len(data)})
+    try:
+        from analytics import get_topup_trends
+        return ok(get_topup_trends(days))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/analytics/member_activity", tags=["Analytics"])
+async def api_analytics_member_activity(auth=Depends(verify_api_key)):
+    """Return member activity stats — MySQL path with gspread fallback."""
+    data = _fetch_analytics_member_activity_from_mysql()
+    if data is not None:
+        return ok(data)
+    try:
+        from analytics import get_member_activity
+        return ok(get_member_activity())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/analytics/console_usage", tags=["Analytics"])
+async def api_analytics_console_usage(
+    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
+    auth=Depends(verify_api_key),
+):
+    """Return console usage stats — MySQL path with gspread fallback."""
+    data = _fetch_analytics_console_usage_from_mysql(days)
+    if data is not None:
+        return ok(data)
+    try:
+        from analytics import get_console_usage
+        return ok(get_console_usage(days))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/analytics/dashboard", tags=["Analytics"])
+async def api_analytics_dashboard(auth=Depends(verify_api_key)):
+    """Return full BI dashboard summary — MySQL path with gspread fallback."""
+    data = _fetch_analytics_dashboard_from_mysql()
+    if data is not None:
+        # Also include member_activity data
+        member_data = _fetch_analytics_member_activity_from_mysql()
+        if member_data:
+            data["member_activity"] = member_data
+        return ok(data)
+    try:
+        from analytics import get_dashboard_summary
+        return ok(get_dashboard_summary())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/analytics/weekly_trends", tags=["Analytics"])
+async def api_analytics_weekly_trends(
+    weeks: int = Query(4, ge=1, le=52, description="Number of weeks to analyze"),
+    auth=Depends(verify_api_key),
+):
+    """Return weekly trends — MySQL path with gspread fallback."""
+    # MySQL path
+    if _use_mysql():
+        days = weeks * 7
+        topups = mysql_query(
+            "SELECT DATE_FORMAT(topup_date, '%%Y-%%u') as week, COUNT(*) as cnt, "
+            "COALESCE(SUM(amount), 0) as total, COALESCE(SUM(mins_added), 0) as mins "
+            "FROM topup_log WHERE topup_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY) "
+            "GROUP BY week ORDER BY week", (days,))
+        bookings = mysql_query(
+            "SELECT DATE_FORMAT(booking_date, '%%Y-%%u') as week, COUNT(*) as cnt "
+            "FROM console_booking WHERE booking_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY) "
+            "GROUP BY week ORDER BY week", (days,))
+        return ok({
+            "period_weeks": weeks,
+            "topup_weekly": [{"week": r['week'], "count": r['cnt'], "amount": int(r['total'] or 0), "mins": int(r['mins'] or 0)} for r in (topups or [])],
+            "console_weekly": [{"week": r['week'], "count": r['cnt']} for r in (bookings or [])],
+        })
+    try:
+        from analytics import get_topup_trends, get_console_usage, get_daily_sales
+        days = weeks * 7
+        topups = get_topup_trends(days)
+        consoles = get_console_usage(days)
+        return ok({
+            "period_weeks": weeks,
+            "topup_weekly": topups.get("weekly_aggregates", []),
+            "topup_daily": topups.get("daily_series", []),
+            "console_daily": consoles.get("daily_series", []),
+            "console_summary": {
+                "total_bookings": consoles["total_bookings"],
+                "utilization_rate": consoles.get("avg_bookings_per_console_day", 0),
+                "active_now": consoles["active_now"],
+            },
+            "all_time_rate": topups.get("all_time_effective_rate", 0),
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ═══════════════════════════════════════
+#  ADMIN DASHBOARD API — View + Edit
+# ═══════════════════════════════════════
+
+@app.get("/api/dashboard/summary", tags=["Dashboard"])
+async def api_dashboard_summary(auth=Depends(verify_api_key)):
+    """Return admin dashboard summary stats."""
+    try:
+        total = 0; active = 0; wallet = 0; revenue = 0
+        if _use_mysql():
+            row = mysql_query_one("SELECT COUNT(*) as c FROM member_wallets")
+            total = row["c"] if row else 0
+            try:
+                today_mmt = now_mmt().strftime("%Y-%m-%d")
+                row = mysql_query_one("SELECT COUNT(DISTINCT member_id) as c FROM sales_daily WHERE sale_date = %s", (today_mmt,))
+                active = row["c"] if row else 0
+            except Exception:
+                try:
+                    row = mysql_query_one("SELECT COUNT(DISTINCT member_id) as c FROM sales_daily WHERE date = %s", (today_mmt,))
+                    active = row["c"] if row else 0
+                except Exception:
+                    active = 0
+            row = mysql_query_one("SELECT SUM(balance_mins) as s FROM member_wallets")
+            wallet = int(row["s"] or 0) if row else 0
+            try:
+                row = mysql_query_one("SELECT COALESCE(SUM(CAST(amount AS DECIMAL(12,0))),0) as s FROM sales_daily WHERE sale_date = %s", (today_mmt,))
+                revenue = int(row["s"] or 0) if row else 0
+            except Exception:
+                revenue = 0
+        else:
+            try:
+                from sheets_client import get_member_rows, get_sales_daily_rows
+                mrows = get_member_rows()
+                total = max(0, len(mrows) - 1)
+                try:
+                    srows = get_sales_daily_rows()
+                    today_s = today_str()
+                    for r in srows[1:]:
+                        if len(r) > 0 and r[0].strip() == today_s:
+                            active += 1
+                except Exception:
+                    active = 0
+                for r in mrows[1:]:
+                    if len(r) > 7 and r[7].strip():
+                        wallet += int_safe(r[7])
+            except Exception:
+                pass
+        return ok({"total_members": total, "active_today": active,
+                    "total_wallet_mins": wallet, "today_revenue": revenue})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/members", tags=["Dashboard"])
+async def api_dashboard_members(search: str = "", page: int = 1, limit: int = 500, auth=Depends(verify_api_key)):
+    """Return member list with optional search."""
+    try:
+        members = []
+        if _use_mysql():
+            if search:
+                rows = mysql_query(
+                    "SELECT member_id, member_name as name, phone, balance_mins as wallet_mins, "
+                    "COALESCE(total_spend,0) as net_spend, COALESCE(tier,'Warrior') as tier FROM member_wallets "
+                    "WHERE member_id LIKE %s OR member_name LIKE %s OR phone LIKE %s "
+                    "ORDER BY member_id LIMIT %s OFFSET %s",
+                    (f"%{search}%", f"%{search}%", f"%{search}%", limit, (page-1)*limit)
+                )
+            else:
+                rows = mysql_query(
+                    "SELECT member_id, member_name as name, phone, balance_mins as wallet_mins, "
+                    "COALESCE(total_spend,0) as net_spend, COALESCE(tier,'Warrior') as tier FROM member_wallets "
+                    "ORDER BY member_id LIMIT %s OFFSET %s",
+                    (limit, (page-1)*limit)
+                )
+            for r in (rows or []):
+                members.append({
+                    "member_id": r.get("member_id",""),
+                    "name": r.get("name","") or "",
+                    "phone": r.get("phone","") or "",
+                    "email": "",
+                    "wallet_mins": int(r.get("wallet_mins") or 0),
+                    "net_spend": int(r.get("net_spend") or 0),
+                    "rank": r.get("tier","Warrior") or "Warrior",
+                })
+        else:
+            try:
+                from sheets_client import get_member_rows, get_setting_rows
+                mrows = get_member_rows()
+                setting_rows = get_setting_rows()
+                master_thresh = 0; immortal_thresh = 0
+                if setting_rows and len(setting_rows) >= 4:
+                    master_thresh = int_safe(setting_rows[2][12]) if len(setting_rows[2]) > 12 else 0
+                    immortal_thresh = int_safe(setting_rows[3][12]) if len(setting_rows[3]) > 12 else 0
+                for row in mrows[1:]:
+                    if len(row) < 2 or not row[1].strip():
+                        continue
+                    mid = row[1].strip()
+                    name = row[2].strip() if len(row) > 2 else ""
+                    phone = row[3].strip() if len(row) > 3 else ""
+                    email = row[12].strip() if len(row) > 12 else ""
+                    net_spend = int_safe(row[5]) if len(row) > 5 else 0
+                    wallet_mins = int_safe(row[7]) if len(row) > 7 and row[7].strip() else 0
+                    rank_raw = "Warrior"
+                    if immortal_thresh > 0 and net_spend >= immortal_thresh:
+                        rank_raw = "Immortal"
+                    elif master_thresh > 0 and net_spend >= master_thresh:
+                        rank_raw = "Master"
+                    if search and search.lower() not in mid.lower() and search.lower() not in name.lower() and search.lower() not in phone.lower():
+                        continue
+                    members.append({"member_id":mid,"name":name,"phone":phone,"email":email,
+                                   "wallet_mins":wallet_mins,"net_spend":net_spend,"rank":rank_raw})
+            except Exception:
+                pass
+        return ok(members)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/member/{member_id}", tags=["Dashboard"])
+async def api_dashboard_member_detail(member_id: str, auth=Depends(verify_api_key)):
+    """Return single member detail."""
+    try:
+        if _use_mysql():
+            row = mysql_query_one(
+                "SELECT member_id, member_name as name, phone, balance_mins as wallet_mins, "
+                "COALESCE(total_spend,0) as net_spend, COALESCE(tier,'Warrior') as tier FROM member_wallets WHERE member_id = %s",
+                (member_id,)
+            )
+            if row:
+                return ok({
+                    "member_id": row.get("member_id",""),
+                    "name": row.get("name","") or "",
+                    "phone": row.get("phone","") or "",
+                    "email": "",
+                    "wallet_mins": int(row.get("wallet_mins") or 0),
+                    "net_spend": int(row.get("net_spend") or 0),
+                    "rank": row.get("tier","Warrior") or "Warrior",
+                })
+        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/wallet/{member_id}", tags=["Dashboard"])
+async def api_dashboard_wallet(member_id: str, auth=Depends(verify_api_key)):
+    """Return wallet details for a member with I/J/H breakdown."""
+    try:
+        balance = 0; name = ""; phone = ""; email = ""; net_spend = 0; rank = "Warrior"
+        total_bought = 0; total_used = 0
+        if _use_mysql():
+            row = mysql_query_one(
+                "SELECT member_id, member_name as name, phone, balance_mins, "
+                "COALESCE(total_spend,0) as net_spend, COALESCE(tier,'Warrior') as tier "
+                "FROM member_wallets WHERE member_id = %s",
+                (member_id,)
+            )
+            if row:
+                balance = int(row.get("balance_mins") or 0)
+                name = row.get("name","") or ""
+                phone = row.get("phone","") or ""
+                email = ""
+                net_spend = int(row.get("net_spend") or 0)
+                rank = row.get("tier","Warrior") or "Warrior"
+                total_bought = 0
+                total_used = 0
+        else:
+            try:
+                from sheets_client import get_member_rows
+                for row in get_member_rows()[1:]:
+                    if len(row) > 1 and row[1].strip() == member_id.strip():
+                        balance = int_safe(row[7]) if len(row) > 7 and row[7].strip() else 0
+                        name = row[2].strip() if len(row) > 2 else ""
+                        phone = row[3].strip() if len(row) > 3 else ""
+                        email = row[12].strip() if len(row) > 12 else ""
+                        net_spend = int_safe(row[5]) if len(row) > 5 else 0
+                        total_bought = int_safe(row[8]) if len(row) > 8 else 0
+                        total_used = int_safe(row[9]) if len(row) > 9 else 0
+                        break
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+        if not name and not balance:
+            if _use_mysql():
+                exists = mysql_query_one("SELECT 1 FROM member_wallets WHERE member_id = %s", (member_id,))
+                if not exists:
+                    raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+        return ok({
+            "member_id": member_id, "name": name, "phone": phone, "email": email,
+            "balance_mins": balance, "total_bought_mins": total_bought,
+            "total_used_mins": total_used, "net_spend": net_spend, "rank": rank
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/sales", tags=["Dashboard"])
+async def api_dashboard_sales(date: str = "today", auth=Depends(verify_api_key)):
+    """Return sales for a given date (YYYY-MM-DD or 'today')."""
+    try:
+        if date == "today":
+            date = now_mmt().strftime("%Y-%m-%d")
+        sales = []
+        if _use_mysql():
+            try:
+                rows = mysql_query(
+                    "SELECT sale_date, member_id, amount, staff_name, payment_method, notes FROM sales_daily WHERE sale_date = %s ORDER BY id DESC",
+                    (date,)
+                )
+            except Exception:
+                rows = mysql_query(
+                    "SELECT date as sale_date, member_id, amount, staff_name, payment_method, notes FROM sales_daily WHERE date = %s ORDER BY id DESC",
+                    (date,)
+                )
+            for r in (rows or []):
+                receipt_no = ""
+                if r.get("notes"):
+                    try:
+                        import json
+                        n = json.loads(r["notes"])
+                        receipt_no = n.get("receipt_no", "")
+                    except Exception:
+                        pass
+                sales.append({
+                    "sale_date": str(r.get("sale_date","")),
+                    "member_id": r.get("member_id",""),
+                    "amount": r.get("amount", 0),
+                    "staff_name": r.get("staff_name",""),
+                    "payment_method": r.get("payment_method",""),
+                    "receipt_no": receipt_no,
+                })
+        return ok(sales)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/recent-topups", tags=["Dashboard"])
+async def api_dashboard_recent_topups(auth=Depends(verify_api_key)):
+    """Return recent top-ups for summary view."""
+    try:
+        if _use_mysql():
+            rows = mysql_query(
+                "SELECT member_id, amount, topup_date, payment_method FROM topup_log ORDER BY created_at DESC LIMIT 10"
+            )
+            return ok([{
+                "member_id": r.get("member_id",""),
+                "amount": r.get("amount",0),
+                "topup_date": str(r.get("topup_date","")),
+                "payment_method": r.get("payment_method",""),
+            } for r in (rows or [])])
+        return ok([])
+    except Exception as e:
+        return ok([])
+
+
+@app.post("/api/dashboard/member/{member_id}/update", tags=["Dashboard"])
+async def api_update_member(member_id: str, data: dict, auth=Depends(verify_api_key)):
+    """Update member name/phone/email. Write to MySQL + GSheet."""
+    try:
+        name = data.get("name", "")
+        phone = data.get("phone", "")
+        email = data.get("email", "")
+        if _use_mysql():
+            mysql_execute(
+                "UPDATE member_wallets SET member_name = %s, phone = %s WHERE member_id = %s",
+                (name, phone, member_id)
+            )
+        # Also try to update GSheet Card_Wallet
+        try:
+            from sheets_client import get_worksheet, get_member_rows, invalidate_cache
+            ws = get_worksheet("Card_Wallet")
+            rows = ws.get_all_values()
+            for i, row in enumerate(rows[1:], start=2):
+                if len(row) > 1 and row[1].strip() == member_id.strip():
+                    if name:
+                        ws.update_cell(i, 3, name)
+                    if phone:
+                        ws.update_cell(i, 4, phone)
+                    if email:
+                        ws.update_cell(i, 13, email)
+                    break
+            invalidate_cache("member")
+        except Exception as gs_err:
+            logger.warning("GSheet member update failed for %s: %s", member_id, gs_err)
+        logger.info("Member updated: %s name=%s", member_id, name)
+        return ok({"updated": True, "member_id": member_id})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/dashboard/wallet/adjust", tags=["Dashboard"])
+async def api_adjust_wallet(data: dict, auth=Depends(verify_api_key)):
+    """+/- mins with reason. Write to MySQL + GSheet + log."""
+    try:
+        member_id = data.get("member_id", "")
+        amount = int(data.get("amount", 0))
+        reason = data.get("reason", "")
+        if not member_id:
+            raise HTTPException(status_code=400, detail="member_id required")
+        if amount == 0:
+            raise HTTPException(status_code=400, detail="amount must be non-zero")
+        if not reason:
+            raise HTTPException(status_code=400, detail="reason required")
+        if _use_mysql():
+            mysql_execute(
+                "UPDATE member_wallets SET balance_mins = balance_mins + %s WHERE member_id = %s",
+                (amount, member_id)
+            )
+            now_dt = now_mmt().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                mysql_execute(
+                    "INSERT INTO wallet_adjustments (member_id, amount, reason, created_at) VALUES (%s, %s, %s, %s)",
+                    (member_id, amount, reason, now_dt)
+                )
+            except Exception:
+                pass  # table may not exist yet
+        # Update GSheet
+        try:
+            from sheets_client import get_worksheet, invalidate_cache
+            ws = get_worksheet("Card_Wallet")
+            rows = ws.get_all_values()
+            for i, row in enumerate(rows[1:], start=2):
+                if len(row) > 1 and row[1].strip() == member_id.strip():
+                    current = int_safe(row[7]) if len(row) > 7 and row[7].strip() else 0
+                    new_balance = current + amount
+                    ws.update_cell(i, 8, new_balance)
+                    if amount > 0:
+                        current_bought = int_safe(row[8]) if len(row) > 8 else 0
+                        ws.update_cell(i, 9, current_bought + amount)
+                    else:
+                        current_used = int_safe(row[9]) if len(row) > 9 else 0
+                        ws.update_cell(i, 10, current_used + abs(amount))
+                    break
+            invalidate_cache("member")
+        except Exception as gs_err:
+            logger.warning("GSheet wallet adjust failed for %s: %s", member_id, gs_err)
+        logger.info("Wallet adjusted: member=%s amount=%+d reason=%s", member_id, amount, reason)
+        return ok({"adjusted": True, "member_id": member_id, "amount": amount})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/dashboard/topup", tags=["Dashboard"])
+async def api_dashboard_topup(data: dict, auth=Depends(verify_api_key)):
+    """Record a top-up: amount, payment_method. Write to MySQL + GSheet."""
+    try:
+        member_id = data.get("member_id", "")
+        amount = int(data.get("amount", 0))
+        payment_method = data.get("payment_method", "Cash")
+        staff_name = data.get("staff_name", "")
+        date = data.get("date", now_mmt().strftime("%Y-%m-%d"))
+        if not member_id:
+            raise HTTPException(status_code=400, detail="member_id required")
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="amount must be positive")
+        if _use_mysql():
+            mysql_execute(
+                "INSERT INTO topup_log (member_id, amount, topup_date, staff_name, payment_method) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (member_id, amount, date, staff_name, payment_method)
+            )
+            # Update wallet balance
+            mysql_execute(
+                "UPDATE member_wallets SET balance_mins = balance_mins + %s, total_spend = COALESCE(total_spend,0) + %s WHERE member_id = %s",
+                (amount, amount, member_id)
+            )
+        # Update GSheet
+        try:
+            from sheets_client import get_worksheet, invalidate_cache
+            ws = get_worksheet("Card_Wallet")
+            rows = ws.get_all_values()
+            for i, row in enumerate(rows[1:], start=2):
+                if len(row) > 1 and row[1].strip() == member_id.strip():
+                    current = int_safe(row[7]) if len(row) > 7 and row[7].strip() else 0
+                    ws.update_cell(i, 8, current + amount)
+                    current_bought = int_safe(row[8]) if len(row) > 8 else 0
+                    ws.update_cell(i, 9, current_bought + amount)
+                    break
+            invalidate_cache("member")
+        except Exception as gs_err:
+            logger.warning("GSheet topup update failed for %s: %s", member_id, gs_err)
+        logger.info("Dashboard topup recorded: member=%s amount=%s", member_id, amount)
+        return ok({"recorded": True, "member_id": member_id, "amount": amount})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  BI DASHBOARD — Web Dashboard (HTML)
+# ═══════════════════════════════════════
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="60">
+<title>PS VIBE — BI Dashboard</title>
+<style>
+:root {
+  --bg: #0a0e17;
+  --card: #111827;
+  --border: #1f2937;
+  --text: #e5e7eb;
+  --dim: #9ca3af;
+  --accent: #6366f1;
+  --green: #10b981;
+  --amber: #f59e0b;
+  --red: #ef4444;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+       background: var(--bg); color: var(--text); line-height:1.5; }
+.header { background: linear-gradient(135deg, #1e1b4b, #111827); padding: 1.5rem 2rem;
+          border-bottom: 1px solid var(--border); display:flex; justify-content:space-between;
+          align-items:center; flex-wrap:wrap; gap:1rem; }
+.header h1 { font-size: 1.75rem; font-weight: 700; }
+.header h1 span { color: var(--accent); }
+.header .ts { font-size: 0.85rem; color: var(--dim); }
+.container { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
+.kpi-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap:1rem; margin-bottom: 1.5rem; }
+.kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+            padding: 1.25rem; }
+.kpi-card .label { font-size:0.8rem; color:var(--dim); text-transform:uppercase;
+                   letter-spacing:0.05em; margin-bottom:0.25rem; }
+.kpi-card .value { font-size:1.75rem; font-weight:700; }
+.kpi-card .value.accent { color: var(--accent); }
+.kpi-card .value.green { color: var(--green); }
+.kpi-card .value.amber { color: var(--amber); }
+.row { display:grid; grid-template-columns: repeat(auto-fit, minmax(480px, 1fr)); gap:1.5rem; }
+.panel { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+         overflow:hidden; margin-bottom:1.5rem; }
+.panel h3 { padding:1rem 1.25rem; border-bottom:1px solid var(--border); font-size:1rem;
+            font-weight:600; }
+.panel-body { padding:1.25rem; }
+table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+th, td { padding:0.6rem 0.75rem; text-align:left; border-bottom:1px solid var(--border); }
+th { color: var(--dim); font-weight:500; font-size:0.8rem; text-transform:uppercase; }
+tr:hover { background: rgba(255,255,255,0.02); }
+.bar { height:8px; border-radius:4px; background:var(--border); overflow:hidden; margin-top:0.25rem; }
+.bar-fill { height:100%; border-radius:4px; transition: width 0.5s; }
+.loading { text-align:center; padding:3rem; color:var(--dim); }
+.error { background: rgba(239,68,68,0.1); color: var(--red); padding:1rem; border-radius:8px; }
+.footer { text-align:center; padding:2rem; color:var(--dim); font-size:0.8rem;
+          border-top:1px solid var(--border); margin-top:2rem; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>🎮 PS <span>VIBE</span> — BI Dashboard</h1>
+  <div class="ts" id="ts">Loading...</div>
+</div>
+<div class="container" id="app"><div class="loading">Loading dashboard data...</div></div>
+<div class="footer">PS VIBE Gaming Lounge &copy; 2026 · BI Dashboard v3.0</div>
+<script>
+const F = (n) => n != null ? Number(n).toLocaleString() : '-';
+const FKS = (n) => n != null ? Number(n).toLocaleString() + ' Ks' : '-';
+const P = (n, t) => n != null && t > 0 ? (n/t*100).toFixed(1) + '%' : '0%';
+
+async function load() {
+  try {
+    const r = await fetch(DASHBOARD_API_URL);
+    const d = (await r.json()).data;
+    if (!d) throw new Error('No data');
+    render(d);
+    document.getElementById('ts').textContent = 'Generated: ' + d.generated_at;
+  } catch(e) {
+    document.getElementById('app').innerHTML =
+      '<div class="error">⚠ Failed to load dashboard: ' + e.message + '</div>';
+  }
+}
+
+function render(d) {
+  const s = d.summary, sales = d.daily_sales, mem = d.member_activity,
+        con = d.console_usage_today, tup = d.topup_trends_7d;
+  let h = '';
+  h += '<div class="kpi-grid">';
+  h += kpi('Today Sales', FKS(s.today_sales_ks), 'accent');
+  h += kpi('Vouchers', F(s.today_vouchers));
+  h += kpi('Avg Ticket', FKS(s.today_avg_ticket_ks));
+  h += kpi('Active Members', F(s.active_members_today), 'green');
+  h += kpi('Active Consoles', s.active_consoles + '/' + s.total_consoles);
+  h += kpi('Week Top-ups', FKS(s.week_topup_ks), 'amber');
+  h += '</div>';
+
+  h += '<div class="row">';
+  h += '<div class="panel"><h3>📊 Today's Sales Breakdown</h3><div class="panel-body">';
+  if (sales.by_payment && Object.keys(sales.by_payment).length) {
+    h += '<table><tr><th>Payment</th><th>Count</th><th>Amount</th></tr>';
+    for (const [k,v] of Object.entries(sales.by_payment)) {
+      h += '<tr><td>'+k+'</td><td>'+F(v.count)+'</td><td>'+FKS(v.amount)+'</td></tr>';
+    }
+    h += '</table>';
+  } else { h += '<p style="color:var(--dim)">No sales recorded today</p>'; }
+  h += '</div></div>';
+
+  h += '<div class="panel"><h3>👥 Member Activity</h3><div class="panel-body">';
+  h += '<table>';
+  h += '<tr><td>Total Members</td><td><strong>'+F(mem.total_members)+'</strong></td></tr>';
+  h += '<tr><td>Active Today</td><td><strong style="color:var(--green)">'+F(mem.active_today)+'</strong></td></tr>';
+  h += '<tr><td>Active (Last 7d)</td><td>'+F(mem.active_last_7d)+'</td></tr>';
+  h += '<tr><td>Total Wallet Mins</td><td>'+F(mem.total_wallet_mins)+'</td></tr>';
+  h += '<tr><td>Avg Spend/Member</td><td>'+FKS(mem.avg_spend_per_member)+'</td></tr>';
+  h += '</table>';
+  if (mem.tier_distribution && mem.tier_distribution.length) {
+    h += '<h4 style="margin:1rem 0 0.5rem">Tier Distribution</h4><table><tr><th>Tier</th><th>Members</th><th>Share</th><th></th></tr>';
+    for (const t of mem.tier_distribution) {
+      h += '<tr><td>'+t.tier+'</td><td>'+F(t.count)+'</td><td>'+t.pct+'%</td>';
+      h += '<td style="width:120px"><div class="bar"><div class="bar-fill" style="width:'+t.pct+'%;background:var(--accent)"></div></div></td></tr>';
+    }
+    h += '</table>';
+  }
+  h += '</div></div>';
+  h += '</div>';
+
+  h += '<div class="row">';
+  h += '<div class="panel"><h3>🎮 Console Usage (Today)</h3><div class="panel-body">';
+  if (con.consoles && con.consoles.length) {
+    h += '<table><tr><th>Console</th><th>Type</th><th>Bookings</th><th>Hours</th><th>Active</th></tr>';
+    for (const c of con.consoles) {
+      h += '<tr><td><strong>'+c.console_id+'</strong></td><td>'+c.type+'</td><td>'+F(c.total_bookings)+'</td>';
+      h += '<td>'+c.total_hours+'h</td>';
+      h += '<td>'+(c.active_bookings>0?'<span style="color:var(--green)">● Active</span>':'<span style="color:var(--dim)">○ Free</span>')+'</td></tr>';
+    }
+    h += '</table>';
+  } else { h += '<p style="color:var(--dim)">No console data available</p>'; }
+  h += '</div></div>';
+
+  h += '<div class="panel"><h3>💰 Top-Up Trends (7 Days)</h3><div class="panel-body">';
+  h += '<table>';
+  h += '<tr><td>Total Top-ups</td><td><strong>'+F(tup.total_topups)+'</strong></td></tr>';
+  h += '<tr><td>Total Amount</td><td><strong style="color:var(--amber)">'+FKS(tup.total_amount_ks)+'</strong></td></tr>';
+  h += '<tr><td>Total Mins</td><td>'+F(tup.total_mins)+'</td></tr>';
+  h += '<tr><td>All-Time Eff. Rate</td><td>'+tup.all_time_effective_rate+' Ks/min</td></tr>';
+  h += '</table>';
+  if (tup.top_members && tup.top_members.length) {
+    h += '<h4 style="margin:1rem 0 0.5rem">Top Top-Up Members</h4>';
+    h += '<table><tr><th>#</th><th>Member</th><th>Amount</th><th>Mins</th><th>Rate</th></tr>';
+    tup.top_members.slice(0,5).forEach((m,i) => {
+      h += '<tr><td>'+(i+1)+'</td><td><strong>'+m.member_id+'</strong></td><td>'+FKS(m.amount)+'</td><td>'+F(m.mins)+'</td><td>'+m.rate+' Ks/min</td></tr>';
+    });
+    h += '</table>';
+  }
+  h += '</div></div>';
+  h += '</div>';
+
+  if (tup.daily_series && tup.daily_series.length) {
+    h += '<div class="panel"><h3>📈 Daily Top-Up Trend</h3><div class="panel-body">';
+    h += '<table><tr><th>Date</th><th>Count</th><th>Amount</th><th>Mins</th><th>Rate</th></tr>';
+    tup.daily_series.slice(-7).reverse().forEach(d => {
+      h += '<tr><td>'+d.date+'</td><td>'+F(d.count)+'</td><td>'+FKS(d.amount)+'</td><td>'+F(d.mins)+'</td><td>'+d.rate+'</td></tr>';
+    });
+    h += '</table></div></div>';
+  }
+
+  document.getElementById('app').innerHTML = h;
+}
+
+function kpi(label, value, cls) {
+  return '<div class="kpi-card"><div class="label">'+label+'</div><div class="value'+(cls?' '+cls:'')+'">'+value+'</div></div>';
+}
+
+load();
+</script>
+</body>
+</html>"""
+
+@app.get("/dashboard-old", response_class=HTMLResponse, include_in_schema=False)
+async def web_dashboard_old():
+    """Old BI web dashboard with embedded API key."""
+    api_url = f"/api/analytics/dashboard?api_key={API_KEY}" if API_KEY else "/api/analytics/dashboard"
+    html = DASHBOARD_HTML.replace("DASHBOARD_API_URL", f"'{api_url}'")
+    return HTMLResponse(html)
+
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+async def web_dashboard():
+    """Redirect to the new Admin Dashboard."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/dashboard/dashboard.html")
+
+@app.get("/api/dashboard", response_class=HTMLResponse, include_in_schema=False)
+async def web_dashboard_api():
+    """Redirect to the new Admin Dashboard."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/dashboard/dashboard.html")
+
+# ═══════════════════════════════════════
+#  STARTUP
+# ═══════════════════════════════════════
+
+# ═══════════════════════════════════════
+#  BOOKING QUERIES — bookings/search
+# ═══════════════════════════════════════
+@app.get("/api/bookings/search", tags=["Bookings"])
+async def api_bookings_search(
+    telegram_chat_id: str = Query(None),
+    date: str = Query(None),
+    status: str = Query(None),
+    auth=Depends(verify_api_key),
+):
+    """Search bookings by telegram_chat_id, date, and/or status."""
+    try:
+        rows = get_booking_rows()
+        results = []
+        for row in rows[1:]:
+            if not row or len(row) < 7:
+                continue
+            bkid = row[0].strip() if len(row) > 0 else ""
+            bk_date = row[1].strip() if len(row) > 1 else ""
+            console_id = row[2].strip() if len(row) > 2 else ""
+            member_id = row[3].strip() if len(row) > 3 else ""
+            time_slot = row[4].strip() if len(row) > 4 else ""
+            end_time = row[5].strip() if len(row) > 5 else ""
+            bk_status = row[6].strip() if len(row) > 6 else ""
+            staff = row[7].strip() if len(row) > 7 else ""
+            notes = row[8].strip() if len(row) > 8 else ""
+
+            # Apply filters
+            if date and bk_date != date:
+                continue
+            if status and bk_status.lower() != status.lower():
+                continue
+            if telegram_chat_id:
+                tg_col = row[9].strip() if len(row) > 9 else ""
+                if tg_col != telegram_chat_id:
+                    continue
+
+            results.append({
+                "booking_id": bkid,
+                "date": bk_date,
+                "console_id": console_id,
+                "member_id": member_id,
+                "timeSlot": time_slot,
+                "endTime": end_time,
+                "status": bk_status,
+                "staff": staff,
+                "notes": notes,
+                "telegramChatId": tg_col if len(row) > 9 else "",
+                "consoleType": "",
+                "gameName": "",
+                "durationMins": 0,
+            })
+        return ok(results)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  BOOKING — get by ID
+# ═══════════════════════════════════════
+@app.get("/api/bookings/{booking_id}", tags=["Bookings"])
+async def api_get_booking(booking_id: str, auth=Depends(verify_api_key)):
+    """Get a single booking by ID."""
+    try:
+        rows = get_booking_rows()
+        for row in rows[1:]:
+            if row and row[0].strip() == booking_id:
+                return ok({
+                    "booking_id": row[0].strip(),
+                    "date": row[1].strip() if len(row) > 1 else "",
+                    "console_id": row[2].strip() if len(row) > 2 else "",
+                    "member_id": row[3].strip() if len(row) > 3 else "",
+                    "timeSlot": row[4].strip() if len(row) > 4 else "",
+                    "endTime": row[5].strip() if len(row) > 5 else "",
+                    "status": row[6].strip() if len(row) > 6 else "",
+                    "staff": row[7].strip() if len(row) > 7 else "",
+                    "notes": row[8].strip() if len(row) > 8 else "",
+                    "telegramChatId": row[9].strip() if len(row) > 9 else "",
+                })
+        raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  FEEDBACK — submit
+# ═══════════════════════════════════════
+@app.post("/api/feedback/submit", tags=["Feedback"])
+async def api_feedback_submit(req: dict, auth=Depends(verify_api_key)):
+    """Accept customer feedback (fire-and-forget log)."""
+    try:
+        tg_id = req.get("tg_id", "")
+        username = req.get("username", "")
+        booking_id = req.get("booking_id", "")
+        rating = req.get("rating", 0)
+        comment = req.get("comment", "")
+        logger.info("Feedback: tg=%s rating=%s bk=%s comment=%s", tg_id, rating, booking_id, comment[:80])
+        return ok({"received": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  LOG — sheets log
+# ═══════════════════════════════════════
+@app.post("/api/sheets/log", tags=["Logging"])
+async def api_sheets_log(req: dict, auth=Depends(verify_api_key)):
+    """Fire-and-forget: log an AI interaction row."""
+    try:
+        tg_id = req.get("tg_id", "")
+        username = req.get("username", "")
+        user_name = req.get("user_name", "")
+        query = req.get("query", "")[:300]
+        response = req.get("response", "")[:500]
+        sentiment = req.get("sentiment", "neutral")
+        logger.info("AI-LOG: user=%s query=%s sentiment=%s", user_name, query[:60], sentiment)
+        return ok({"logged": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  BOT USERS — track
+# ═══════════════════════════════════════
+@app.post("/api/bot-users/track", tags=["Bot Users"])
+async def api_bot_users_track(req: dict, auth=Depends(verify_api_key)):
+    """Fire-and-forget: upsert bot user tracking row."""
+    try:
+        tg_id = req.get("tg_id", "")
+        username = req.get("username", "")
+        user_name = req.get("user_name", "")
+        action = req.get("action", "")
+        logger.info("BOT-USER: tg=%s user=%s action=%s", tg_id, user_name, action)
+        return ok({"tracked": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  P4 Phase 1 — NEW ENDPOINTS (auto-generated 2026-05-29)
+# ═══════════════════════════════════════
+
+# ── Endpoint 1: POST /api/finance/opex ──
+@app.post("/api/finance/opex", tags=["Finance"])
+async def api_finance_opex(req: dict, auth=Depends(verify_api_key)):
+    """Record an operational expense into accounts table."""
+    try:
+        import json as _json
+        date = req.get("date", "")
+        category = req.get("category", "")
+        description = req.get("description", "")
+        amount = req.get("amount", 0)
+        payment_method = req.get("payment_method", "")
+        staff_name = req.get("staff_name", "")
+
+        notes = _json.dumps({
+            "date": date,
+            "payment_method": payment_method,
+            "staff_name": staff_name
+        })
+
+        logger.info("Recording opex: %s | %s | %s", category, description, amount)
+
+        mysql_execute(
+            "INSERT INTO accounts (account_name, account_type, balance, notes) "
+            "VALUES (%s, %s, %s, %s)",
+            (description, category, amount, notes)
+        )
+
+        logger.info("Opex recorded: %s", description)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("Opex save error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 2: POST /api/staff/salary-advance ──
+@app.post("/api/staff/salary-advance", tags=["Staff"])
+async def api_staff_salary_advance(req: dict, auth=Depends(verify_api_key)):
+    """Record a salary advance for a staff member."""
+    try:
+        staff_name = req.get("staff_name", "")
+        amount = req.get("amount", 0)
+        date = req.get("date", "")
+        note = req.get("note", "")
+
+        logger.info("Recording salary advance: %s | %s | %s", staff_name, amount, date)
+
+        mysql_execute(
+            "INSERT INTO salary_advance (staff_name, amount, advance_date, repayment_status, notes) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (staff_name, amount, date, "pending", note)
+        )
+
+        result = mysql_query_one("SELECT LAST_INSERT_ID() as id")
+        insert_id = result["id"] if result else 0
+
+        logger.info("Salary advance recorded: id=%s", insert_id)
+        return {"status": "ok", "id": insert_id}
+    except Exception as e:
+        logger.error("Salary advance save error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 3: POST /api/sales/record ──
+@app.post("/api/sales/record", tags=["Sales"])
+async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
+    """Record a daily sale into sales_daily table + update member wallet + trigger GSheet sync."""
+    try:
+        import json as _json
+        receipt_no = req.get("receipt_no", "")
+        voucher_no = req.get("voucher_no", receipt_no)
+        items = req.get("items", "")
+        amount = req.get("amount", 0)
+        gross = req.get("gross", amount)
+        discount = req.get("discount", 0)
+        net = req.get("net", amount)
+        payment_method = req.get("payment_method", "")
+        member_id = req.get("member_id", "")
+        staff_name = req.get("staff_name", "")
+        receipt_date = req.get("receipt_date", "") or now_mmt().strftime("%Y-%m-%d")
+        food_items = req.get("food_items", "")
+        food_cost = req.get("food_cost", 0)
+        mins_used = req.get("mins_used", 0)
+
+        notes = _json.dumps({
+            "receipt_no": receipt_no,
+            "items": items,
+            "food_items": food_items,
+            "food_cost": food_cost
+        })
+
+        logger.info("Recording sale: voucher=%s member=%s amount=%s mins_used=%s",
+                    voucher_no, member_id, net, mins_used)
+
+        mysql_execute(
+            "INSERT INTO sales_daily "
+            "(voucher_no, sale_date, member_id, amount, gross, discount, net, staff_name, payment_method, notes) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (voucher_no, receipt_date, member_id, amount, gross, discount, net, staff_name, payment_method, notes)
+        )
+
+        # Update member wallet: deduct minutes, increment total_spend
+        if member_id and (mins_used > 0 or float(net or 0) > 0):
+            try:
+                mysql_execute(
+                    "UPDATE member_wallets SET "
+                    "balance_mins = GREATEST(balance_mins - %s, 0), "
+                    "total_used_mins = total_used_mins + %s, "
+                    "total_spend = total_spend + %s "
+                    "WHERE member_id = %s",
+                    (mins_used, mins_used, float(net or 0), member_id)
+                )
+                logger.info("Wallet updated: member=%s deducted=%s mins, spent=%s", member_id, mins_used, net)
+            except Exception as wallet_err:
+                logger.warning("Wallet update failed (non-fatal): %s", wallet_err)
+
+        # Trigger background GSheet sync for this member
+        _trigger_gsheet_sync("member_wallets", member_id)
+
+        logger.info("Sale recorded: voucher_no=%s", voucher_no)
+        return {"status": "ok", "voucher_no": voucher_no}
+    except Exception as e:
+        logger.error("Sale record error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 4: POST /api/inventory/stock-out ──
+@app.post("/api/inventory/stock-out", tags=["Inventory"])
+async def api_inventory_stock_out(req: dict, auth=Depends(verify_api_key)):
+    """Record a stock-out (consumption/usage) event."""
+    try:
+        import json as _json
+        item_name = req.get("item_name", "")
+        quantity = req.get("quantity", 0)
+        unit = req.get("unit", "")
+        reason = req.get("reason", "")
+        staff_name = req.get("staff_name", "")
+        date = req.get("date", "")
+
+        notes = _json.dumps({
+            "unit": unit,
+            "reason": reason
+        })
+
+        logger.info("Recording stock-out: %s qty=%s", item_name, quantity)
+
+        mysql_execute(
+            "INSERT INTO stock_out (item_name, quantity, sale_date, staff_name, notes) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (item_name, quantity, date, staff_name, notes)
+        )
+
+        logger.info("Stock-out recorded: %s", item_name)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("Stock-out save error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 5: POST /api/inventory/stock-in ──
+@app.post("/api/inventory/stock-in", tags=["Inventory"])
+async def api_inventory_stock_in(req: dict, auth=Depends(verify_api_key)):
+    """Record stock-in (restock/purchase) into inventory table."""
+    try:
+        item_name = req.get("item_name", "")
+        quantity = req.get("quantity", 0)
+        unit = req.get("unit", "")
+        supplier = req.get("supplier", "")
+        cost = req.get("cost", 0)
+        staff_name = req.get("staff_name", "")
+        date = req.get("date", "")
+
+        logger.info("Recording stock-in: %s qty=%s from %s", item_name, quantity, supplier)
+
+        # Map: supplier→category, cost→unit_price
+        mysql_execute(
+            "INSERT INTO inventory (item_name, category, quantity, unit_price) "
+            "VALUES (%s, %s, %s, %s)",
+            (item_name, supplier, quantity, cost)
+        )
+
+        logger.info("Stock-in recorded: %s", item_name)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("Stock-in save error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 6: POST /api/members/register ──
+@app.post("/api/members/register", tags=["Members"])
+async def api_members_register(req: dict, auth=Depends(verify_api_key)):
+    """Register a new member and optionally create wallet entry."""
+    try:
+        name = req.get("name", "")
+        phone = req.get("phone", "")
+        email = req.get("email", "")
+        join_date = req.get("join_date", "")
+        staff_name = req.get("staff_name", "")
+
+        # Generate a member_id
+        member_id = f"M-{int(time.time())}"
+
+        logger.info("Registering member: %s | phone=%s", name, phone)
+
+        mysql_execute(
+            "INSERT INTO members (member_id, name, phone) "
+            "VALUES (%s, %s, %s)",
+            (member_id, name, phone)
+        )
+
+        # Also create wallet entry
+        try:
+            mysql_execute(
+                "INSERT IGNORE INTO member_wallets (member_id, member_name, phone, balance_mins) "
+                "VALUES (%s, %s, %s, 0)",
+                (member_id, name, phone)
+            )
+        except Exception as wallet_err:
+            logger.warning("Could not create wallet for member %s: %s", member_id, str(wallet_err))
+
+        logger.info("Member registered: member_id=%s", member_id)
+        return {"status": "ok", "member_id": member_id}
+    except Exception as e:
+        logger.error("Member register error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 7: POST /api/topup/log ──
+@app.post("/api/topup/log", tags=["Topup"])
+async def api_topup_log(req: dict, auth=Depends(verify_api_key)):
+    """Log a top-up transaction into topup_log table + update member wallet."""
+    try:
+        member_id = req.get("member_id", "")
+        amount = req.get("amount", 0)
+        mins_added = req.get("mins_added", 0)
+        payment_method = req.get("payment_method", "")
+        staff_name = req.get("staff_name", "")
+        date = req.get("date", "")
+
+        logger.info("Logging topup: member=%s amount=%s mins=%s", member_id, amount, mins_added)
+
+        # Get current wallet state
+        current = mysql_query_one(
+            "SELECT balance_mins, total_bought_mins FROM member_wallets WHERE member_id = %s",
+            (member_id,)
+        )
+        balance_before = current["balance_mins"] if current else 0
+        balance_after = balance_before + mins_added
+        total_bought = (current["total_bought_mins"] if current else 0) + mins_added
+
+        mysql_execute(
+            "INSERT INTO topup_log "
+            "(member_id, amount, mins_added, topup_date, staff_name, payment_method, "
+            " balance_before, balance_after, balance_mins_before, balance_mins_after) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (member_id, amount, mins_added, date, staff_name, payment_method,
+             amount, amount, balance_before, balance_after)
+        )
+
+        # Update member wallet
+        mysql_execute(
+            "UPDATE member_wallets SET "
+            "balance_mins = balance_mins + %s, "
+            "total_bought_mins = total_bought_mins + %s "
+            "WHERE member_id = %s",
+            (mins_added, mins_added, member_id)
+        )
+        logger.info("Wallet updated: member=%s +%s mins (balance: %s -> %s)",
+                    member_id, mins_added, balance_before, balance_after)
+
+        # Trigger background GSheet sync
+        _trigger_gsheet_sync("member_wallets", member_id)
+
+        logger.info("Topup logged: member=%s amount=%s", member_id, amount)
+        return {"status": "ok", "balance_before": balance_before, "balance_after": balance_after}
+    except Exception as e:
+        logger.error("Topup log error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+
+# ── Endpoint 8: POST /api/member/topup ──
+@app.post("/api/member/topup", tags=["Members"])
+async def api_member_topup(req: dict, auth=Depends(verify_api_key)):
+    """Top-up member: add bought mins, update wallet. Full endpoint combining log + wallet update."""
+    try:
+        member_id = req.get("member_id", "")
+        amount_mmk = req.get("amount", 0)
+        mins_added = req.get("mins_added", 0)
+        payment_method = req.get("payment_method", "")
+        staff_name = req.get("staff_name", "")
+        date = req.get("date", now_mmt().isoformat())
+
+        logger.info("Member topup: member=%s mins=%s mmk=%s", member_id, mins_added, amount_mmk)
+
+        # Get current wallet
+        current = mysql_query_one(
+            "SELECT balance_mins, total_bought_mins, member_name FROM member_wallets WHERE member_id = %s",
+            (member_id,)
+        )
+        if not current:
+            return {"status": "error", "detail": f"Member not found: {member_id}"}
+
+        balance_before = current["balance_mins"]
+        total_bought_before = current["total_bought_mins"]
+
+        # Insert topup log
+        mysql_execute(
+            "INSERT INTO topup_log "
+            "(member_id, amount, mins_added, topup_date, staff_name, payment_method, "
+            " balance_before, balance_after, balance_mins_before, balance_mins_after) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (member_id, amount_mmk, mins_added, date, staff_name, payment_method,
+             amount_mmk, amount_mmk, balance_before, balance_before + mins_added)
+        )
+
+        # Update member wallet
+        mysql_execute(
+            "UPDATE member_wallets SET "
+            "balance_mins = balance_mins + %s, "
+            "total_bought_mins = total_bought_mins + %s "
+            "WHERE member_id = %s",
+            (mins_added, mins_added, member_id)
+        )
+
+        new_balance = balance_before + mins_added
+        logger.info("Member topup complete: member=%s balance %s -> %s (+%s mins)",
+                    member_id, balance_before, new_balance, mins_added)
+
+        # Trigger background GSheet sync
+        _trigger_gsheet_sync("member_wallets", member_id)
+
+        return {
+            "status": "ok",
+            "member_id": member_id,
+            "balance_before": balance_before,
+            "balance_after": new_balance,
+            "mins_added": mins_added,
+        }
+    except Exception as e:
+        logger.error("Member topup error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 9: POST /api/member/create ──
+@app.post("/api/member/create", tags=["Members"])
+async def api_member_create(req: dict, auth=Depends(verify_api_key)):
+    """Create new member with initial wallet entry."""
+    try:
+        name = req.get("name", "")
+        phone = req.get("phone", "")
+        member_id = req.get("member_id", f"M-{int(time.time())}")
+        initial_mins = req.get("initial_mins", 0)
+        staff_name = req.get("staff_name", "")
+        join_date = req.get("join_date", now_mmt().strftime("%Y-%m-%d"))
+
+        logger.info("Creating member: id=%s name=%s phone=%s", member_id, name, phone)
+
+        # Check if member already exists
+        existing = mysql_query_one(
+            "SELECT member_id FROM member_wallets WHERE member_id = %s",
+            (member_id,)
+        )
+        if existing:
+            return {"status": "error", "detail": f"Member already exists: {member_id}"}
+
+        # Insert into members table (with balance_minutes for fallback reads)
+        try:
+            mysql_execute(
+                "INSERT INTO members (member_id, name, phone, balance_minutes) VALUES (%s, %s, %s, %s)",
+                (member_id, name, phone, initial_mins)
+            )
+        except Exception:
+            # If balance_minutes column doesn't exist, try without it
+            try:
+                mysql_execute(
+                    "INSERT INTO members (member_id, name, phone) VALUES (%s, %s, %s)",
+                    (member_id, name, phone)
+                )
+            except Exception:
+                pass  # members table may not exist; wallet is the critical one
+
+        # Insert into member_wallets
+        mysql_execute(
+            "INSERT INTO member_wallets "
+            "(member_id, member_name, phone, balance_mins, total_bought_mins, total_used_mins, "
+            "tier, total_spend, lifetime_spend, ranking_net_spend, reg_staff, referral_code, join_date) "
+            "VALUES (%s, %s, %s, %s, %s, 0, 'Warrior', 0.00, 0.00, 0.00, %s, %s, %s)",
+            (member_id, name, phone, initial_mins, initial_mins, staff_name, req.get("referral_code", ""), join_date)
+        )
+
+        logger.info("Member created: member_id=%s", member_id)
+
+        # Trigger GSheet sync
+        _trigger_gsheet_sync("member_wallets", member_id)
+
+        return {"status": "ok", "member_id": member_id}
+    except Exception as e:
+        logger.error("Member create error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 10: POST /api/wallet/deduct ──
+@app.post("/api/wallet/deduct", tags=["Wallet"])
+async def api_wallet_deduct(req: dict, auth=Depends(verify_api_key)):
+    """Deduct wallet minutes (used during sale or gameplay)."""
+    try:
+        member_id = req.get("member_id", "")
+        mins = req.get("mins", 0)
+        reason = req.get("reason", "sale")
+
+        if not member_id or mins <= 0:
+            return {"status": "error", "detail": "member_id and mins>0 required"}
+
+        logger.info("Wallet deduct: member=%s mins=%s reason=%s", member_id, mins, reason)
+
+        current = mysql_query_one(
+            "SELECT balance_mins FROM member_wallets WHERE member_id = %s",
+            (member_id,)
+        )
+        if not current:
+            return {"status": "error", "detail": f"Member not found: {member_id}"}
+
+        balance_before = current["balance_mins"]
+
+        mysql_execute(
+            "UPDATE member_wallets SET "
+            "balance_mins = GREATEST(balance_mins - %s, 0), "
+            "total_used_mins = total_used_mins + %s "
+            "WHERE member_id = %s",
+            (mins, mins, member_id)
+        )
+
+        new_balance = max(balance_before - mins, 0)
+        logger.info("Wallet deducted: member=%s balance %s -> %s (-%s mins)",
+                    member_id, balance_before, new_balance, mins)
+
+        _trigger_gsheet_sync("member_wallets", member_id)
+
+        return {
+            "status": "ok",
+            "member_id": member_id,
+            "balance_before": balance_before,
+            "balance_after": new_balance,
+            "mins_deducted": mins,
+        }
+    except Exception as e:
+        logger.error("Wallet deduct error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 11: POST /api/wallet/bonus ──
+@app.post("/api/wallet/bonus", tags=["Wallet"])
+async def api_wallet_bonus(req: dict, auth=Depends(verify_api_key)):
+    """Add bonus minutes to a member's wallet (promotion, referral, etc.)."""
+    try:
+        member_id = req.get("member_id", "")
+        mins = req.get("mins", 0)
+        reason = req.get("reason", "bonus")
+        staff_name = req.get("staff_name", "")
+
+        if not member_id or mins <= 0:
+            return {"status": "error", "detail": "member_id and mins>0 required"}
+
+        logger.info("Wallet bonus: member=%s mins=%s reason=%s", member_id, mins, reason)
+
+        current = mysql_query_one(
+            "SELECT balance_mins FROM member_wallets WHERE member_id = %s",
+            (member_id,)
+        )
+        if not current:
+            return {"status": "error", "detail": f"Member not found: {member_id}"}
+
+        balance_before = current["balance_mins"]
+
+        mysql_execute(
+            "UPDATE member_wallets SET "
+            "balance_mins = balance_mins + %s, "
+            "total_bought_mins = total_bought_mins + %s "
+            "WHERE member_id = %s",
+            (mins, mins, member_id)
+        )
+
+        new_balance = balance_before + mins
+        logger.info("Wallet bonus added: member=%s balance %s -> %s (+%s mins)",
+                    member_id, balance_before, new_balance, mins)
+
+        _trigger_gsheet_sync("member_wallets", member_id)
+
+        return {
+            "status": "ok",
+            "member_id": member_id,
+            "balance_before": balance_before,
+            "balance_after": new_balance,
+            "mins_added": mins,
+        }
+    except Exception as e:
+        logger.error("Wallet bonus error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 12: POST /api/stock/in ──
+@app.post("/api/stock/in", tags=["Stock"])
+async def api_stock_in(req: dict, auth=Depends(verify_api_key)):
+    """Record stock-in entry."""
+    try:
+        item_name = req.get("item_name", "")
+        quantity = req.get("quantity", req.get("qty", 0))
+        unit_cost = req.get("unit_cost", req.get("cost_price", 0))
+        source = req.get("source", req.get("supplier", ""))
+        receipt_no = req.get("receipt_no", "")
+        staff_name = req.get("staff_name", "")
+
+        import uuid
+        batch_id = req.get("batch_id", f"BATCH-{str(uuid.uuid4())[:8].upper()}")
+
+        logger.info("Stock-in: %s qty=%s cost=%s batch=%s", item_name, quantity, unit_cost, batch_id)
+
+        mysql_execute(
+            "INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (batch_id, item_name, quantity, unit_cost, source, receipt_no)
+        )
+
+        logger.info("Stock-in recorded: %s batch=%s", item_name, batch_id)
+        return {"status": "ok", "batch_id": batch_id}
+    except Exception as e:
+        logger.error("Stock-in error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Endpoint 13: POST /api/stock/out ──
+@app.post("/api/stock/out", tags=["Stock"])
+async def api_stock_out(req: dict, auth=Depends(verify_api_key)):
+    """Record stock-out (sale/consumption from stock)."""
+    try:
+        item_name = req.get("item_name", "")
+        quantity = req.get("quantity", req.get("qty", 0))
+        unit_price = req.get("unit_price", req.get("price", 0))
+        total = req.get("total", quantity * unit_price)
+        staff_name = req.get("staff_name", "")
+        date = req.get("date", now_mmt().isoformat())
+
+        logger.info("Stock-out: %s qty=%s price=%s", item_name, quantity, unit_price)
+
+        mysql_execute(
+            "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, staff_name) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (item_name, quantity, unit_price, total, date, staff_name)
+        )
+
+        logger.info("Stock-out recorded: %s", item_name)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error("Stock-out error: %s", str(e))
+        return {"status": "error", "detail": str(e)}
+
+
+# ── Background GSheet sync helper ──
+def _trigger_gsheet_sync(sheet_name: str, member_id: str = None):
+    """Trigger a background GSheet sync for a specific sheet/member.
+
+    This runs asynchronously in a thread to avoid blocking the API response.
+    Currently logs the trigger; full background sync via sync_service can be
+    enabled later.
+    """
+    try:
+        import threading
+
+        def _sync_worker():
+            try:
+                logger.debug("Background sync triggered: sheet=%s member=%s", sheet_name, member_id)
+                # Future: call sync_service methods here
+                # from sync_service import get_sync_service
+                # svc = get_sync_service()
+                # if sheet_name == "member_wallets":
+                #     svc.sync_member_wallets()
+            except Exception as e:
+                logger.warning("Background sync worker error: %s", e)
+
+        t = threading.Thread(target=_sync_worker, name=f"gsheet-sync-{sheet_name}", daemon=True)
+        t.start()
+    except Exception as e:
+        logger.warning("Could not trigger background sync: %s", e)
+
+
+
+@app.on_event("startup")
+async def startup():
+    try:
+        wb = get_workbook()
+        logger.info("Connected to Google Sheets: %s", wb.title)
+        sheets = [s.title for s in wb.worksheets()]
+        logger.info("Available sheets: %s", sheets)
+    except Exception as e:
+        logger.warning("Could not connect to Google Sheets on startup: %s", e)
+
+
+
+# ═══════════════════════════════════════
+#  STOCK — FIFO Deduction (wired from inventory_fifo)
+# ═══════════════════════════════════════
+@app.post("/api/stock/deduct", tags=["Stock"])
+async def api_stock_deduct(req: dict, auth=Depends(verify_api_key)):
+    """Deduct stock quantity using FIFO method.
+    Accepts: { product_name, quantity }
+    Returns: remaining quantity + FIFO cost breakdown.
+    """
+    try:
+        product_name = req.get("product_name", "")
+        quantity = int(req.get("quantity", 0))
+        if not product_name or quantity <= 0:
+            raise HTTPException(status_code=400, detail="product_name and quantity>0 required")
+        result = inventory_fifo.deduct(product_name, quantity)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        logger.info("Stock deducted: %s qty=%s remaining=%s fifo_cost=%s",
+                    product_name, quantity, result["remaining"], result["fifo_cost"])
+        return ok(result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Stock deduct error: %s", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Mount static files for admin dashboard
+app.mount("/dashboard", StaticFiles(directory="static", html=True), name="dashboard_static")
+import patch_routes
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")

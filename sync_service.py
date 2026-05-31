@@ -92,8 +92,10 @@ CREATE_TABLES_SQL = {
     "games_library": """
         CREATE TABLE IF NOT EXISTS games_library (
             game_title   VARCHAR(200) PRIMARY KEY,
-            genre        VARCHAR(100),
+            final_status VARCHAR(50)  DEFAULT '',
             disc_count   INT          DEFAULT 0,
+            solo_multi   VARCHAR(50)  DEFAULT '',
+            genre        VARCHAR(100),
             last_updated DATETIME     DEFAULT CURRENT_TIMESTAMP
                          ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -296,12 +298,14 @@ class SyncService:
         conn = self._get_connection()
         sql = """
             INSERT INTO games_library
-                (game_title, genre, disc_count)
+                (game_title, final_status, disc_count, solo_multi, genre)
             VALUES
-                (%(game_title)s, %(genre)s, %(disc_count)s)
+                (%(game_title)s, %(final_status)s, %(disc_count)s, %(solo_multi)s, %(genre)s)
             ON DUPLICATE KEY UPDATE
-                genre      = VALUES(genre),
-                disc_count = VALUES(disc_count)
+                final_status = VALUES(final_status),
+                disc_count   = VALUES(disc_count),
+                solo_multi   = VALUES(solo_multi),
+                genre        = VALUES(genre)
         """
         count = 0
         try:
@@ -445,8 +449,9 @@ class SyncService:
 
         Game_Library column mapping (0-indexed):
             1 → game_title
-            3 → genre
-            5 → disc_count (discs)
+            2 → final_status
+            3 → disc_count (available discs)
+            20 → solo_multi | genre (parsed from Installed_On)
 
         Returns:
             Number of rows synced.
@@ -475,10 +480,20 @@ class SyncService:
             title = row[1].strip() if len(row) > 1 else ""
             if not title:
                 continue
+            # Parse col U (Installed_On) = "solo_multi|genre"
+            meta_raw = row[20].strip() if len(row) > 20 else ""
+            solo_multi = ""
+            genre = ""
+            if "|" in meta_raw:
+                parts = meta_raw.split("|", 1)
+                solo_multi = parts[0].strip()
+                genre      = parts[1].strip()
             parsed.append({
-                "game_title": title,
-                "genre":       row[3].strip() if len(row) > 3 else "",
-                "disc_count":  int_safe(row[5]) if len(row) > 5 else 0,
+                "game_title":   title,
+                "final_status": row[2].strip() if len(row) > 2 else "",
+                "disc_count":   int_safe(row[3]) if len(row) > 3 else 0,
+                "solo_multi":   solo_multi,
+                "genre":        genre,
             })
 
         count = self._upsert_games_library(parsed)

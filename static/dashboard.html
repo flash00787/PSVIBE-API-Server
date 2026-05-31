@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PS VIBE — Admin Dashboard</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --card: #161b22;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --dim: #8b949e;
+  --cyan: #00d4ff;
+  --magenta: #ff00ff;
+  --green: #3fb950;
+  --amber: #d2991d;
+  --red: #f85149;
+  --input-bg: #0d1117;
+  --hover: #1c2128;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+       background:var(--bg); color:var(--text); min-height:100vh; line-height:1.5; }
+.header { background:linear-gradient(135deg,#0a0e14 0%,#141028 30%,#1a1640 50%,#141028 70%,#0a0e14 100%);
+          padding:0.85rem 2rem; border-bottom:1px solid var(--border);
+          display:flex; align-items:center; min-height:72px;
+          position:sticky; top:0; z-index:100; backdrop-filter:blur(12px); }
+.header .info { margin-left: auto; }
+.header .info { display:flex; align-items:center; gap:1rem; }
+.header .info button { background:var(--border); color:var(--text); border:none;
+  padding:0.3rem 0.7rem; border-radius:5px; cursor:pointer; font-size:0.78rem; }
+.header .info button:hover { background:var(--cyan); color:#000; }
+.nav { background:var(--card); border-bottom:1px solid var(--border); display:flex;
+       overflow-x:auto; padding:0 0.5rem; -webkit-overflow-scrolling:touch; }
+.nav button { background:none; border:none; color:var(--dim); padding:0.85rem 0.9rem;
+  cursor:pointer; font-size:0.9rem; font-weight:500; white-space:nowrap;
+  border-bottom:2px solid transparent; transition:all 0.2s; }
+.nav button:hover { color:var(--text); }
+.nav button.active { color:var(--cyan); border-bottom-color:var(--cyan); }
+.main { max-width:1400px; margin:0 auto; padding:1.5rem; }
+.tab-content { display:none; }
+.tab-content.active { display:block; }
+/* Cards */
+.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1rem; margin-bottom:1.5rem; }
+.kpi-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:1.25rem;
+  position:relative; overflow:hidden; }
+.kpi-card::before { content:''; position:absolute; top:0; left:0; width:4px; height:100%; }
+.kpi-card.cyan::before { background:var(--cyan); }
+.kpi-card.magenta::before { background:var(--magenta); }
+.kpi-card.green::before { background:var(--green); }
+.kpi-card.amber::before { background:var(--amber); }
+.kpi-card .label { font-size:0.8rem; color:var(--dim); text-transform:uppercase;
+  letter-spacing:0.05em; margin-bottom:0.25rem; }
+.kpi-card .value { font-size:1.75rem; font-weight:700; }
+.kpi-card .value.cyan { color:var(--cyan); }
+.kpi-card .value.magenta { color:var(--magenta); }
+.kpi-card .value.green { color:var(--green); }
+.kpi-card .value.amber { color:var(--amber); }
+/* Panels */
+.panel { background:var(--card); border:1px solid var(--border); border-radius:12px;
+  margin-bottom:1.5rem; overflow:hidden; }
+.panel-header { padding:0.85rem 0.9rem; border-bottom:1px solid var(--border);
+  font-weight:600; font-size:0.95rem; display:flex; justify-content:space-between;
+  align-items:center; flex-wrap:wrap; gap:0.5rem; }
+.panel-body { padding:1.25rem; }
+/* Search */
+.search-box { position:relative; }
+.search-box input { background:var(--input-bg); border:1px solid var(--border); color:var(--text);
+  padding:0.5rem 0.75rem 0.5rem 2rem; border-radius:6px; font-size:0.9rem; width:220px; }
+.search-box input:focus { outline:none; border-color:var(--cyan); }
+.search-box .icon { position:absolute; left:0.65rem; top:50%; transform:translateY(-50%); color:var(--dim); }
+/* Tables */
+table { width:100%; border-collapse:collapse; font-size:0.88rem; }
+th, td { padding:0.55rem 0.75rem; text-align:left; border-bottom:1px solid var(--border); }
+th { color:var(--dim); font-weight:500; font-size:0.78rem; text-transform:uppercase;
+  cursor:pointer; user-select:none; white-space:nowrap; }
+th:hover { color:var(--cyan); }
+th .sort-arrow { margin-left:0.3rem; font-size:0.7rem; }
+tr:hover { background:var(--hover); }
+.action-btns { display:flex; gap:0.35rem; flex-wrap:wrap; }
+.btn { padding:0.35rem 0.7rem; border-radius:4px; border:none; cursor:pointer;
+  font-size:0.8rem; font-weight:500; transition:all 0.15s; }
+.btn-cyan { background:var(--cyan); color:#000; }
+.btn-cyan:hover { opacity:0.85; }
+.btn-magenta { background:var(--magenta); color:#fff; }
+.btn-magenta:hover { opacity:0.85; }
+.btn-green { background:var(--green); color:#000; }
+.btn-green:hover { opacity:0.85; }
+.btn-red { background:var(--red); color:#fff; }
+.btn-red:hover { opacity:0.85; }
+.btn-outline { background:transparent; border:1px solid var(--border); color:var(--text); }
+.btn-outline:hover { border-color:var(--cyan); color:var(--cyan); }
+/* Modals */
+.modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+  background:rgba(0,0,0,0.7); z-index:1000; justify-content:center;
+  align-items:center; padding:1rem; }
+.modal-overlay.show { display:flex; }
+.modal { background:var(--card); border:1px solid var(--border); border-radius:12px;
+  width:100%; max-width:480px; max-height:90vh; overflow-y:auto; }
+.modal-header { padding:1rem 1.25rem; border-bottom:1px solid var(--border);
+  display:flex; justify-content:space-between; align-items:center; }
+.modal-header h3 { font-size:1.1rem; }
+.modal-header .close { background:none; border:none; color:var(--dim); font-size:1.5rem;
+  cursor:pointer; line-height:1; }
+.modal-header .close:hover { color:var(--red); }
+.modal-body { padding:1.25rem; }
+.modal-footer { padding:0.75rem 1.25rem; border-top:1px solid var(--border);
+  display:flex; justify-content:flex-end; gap:0.5rem; }
+.form-group { margin-bottom:1rem; }
+.form-group label { display:block; font-size:0.82rem; color:var(--dim); margin-bottom:0.3rem;
+  font-weight:500; }
+.form-group input, .form-group select, .form-group textarea { width:100%;
+  background:var(--input-bg); border:1px solid var(--border); color:var(--text);
+  padding:0.55rem 0.75rem; border-radius:6px; font-size:0.9rem; font-family:inherit; }
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+  outline:none; border-color:var(--cyan); }
+.form-row { display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; }
+/* Toast */
+.toast-container { position:fixed; top:1rem; right:1rem; z-index:2000; display:flex;
+  flex-direction:column; gap:0.5rem; }
+.toast { padding:0.75rem 1.25rem; border-radius:8px; font-size:0.88rem; font-weight:500;
+  animation:slideIn 0.3s ease; max-width:360px; }
+.toast.success { background:#0d3320; border:1px solid var(--green); color:var(--green); }
+.toast.error { background:#3d111a; border:1px solid var(--red); color:var(--red); }
+.toast.info { background:#0d1f33; border:1px solid var(--cyan); color:var(--cyan); }
+@keyframes slideIn { from { transform:translateX(100%); opacity:0; }
+  to { transform:translateX(0); opacity:1; } }
+/* Confirm dialog */
+.confirm-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+  background:rgba(0,0,0,0.7); z-index:1500; justify-content:center; align-items:center; }
+.confirm-overlay.show { display:flex; }
+.confirm-box { background:var(--card); border:1px solid var(--red); border-radius:12px;
+  padding:1.5rem; max-width:400px; text-align:center; }
+.confirm-box p { margin-bottom:1rem; }
+.confirm-box .actions { display:flex; gap:0.5rem; justify-content:center; }
+/* Loading / Empty */
+.loading { text-align:center; padding:3rem; color:var(--dim); }
+.empty { text-align:center; padding:2rem; color:var(--dim); font-size:0.9rem; }
+/* Auth modal */
+.auth-overlay { display:flex; position:fixed; top:0; left:0; width:100%; height:100%;
+  background:rgba(0,0,0,0.85); z-index:3000; justify-content:center;
+  align-items:center; }
+.auth-box { background:var(--card); border:1px solid var(--cyan); border-radius:12px;
+  padding:2rem; max-width:400px; width:90%; text-align:center; }
+.auth-box h2 { margin-bottom:0.5rem; }
+.auth-box h2 span { color:var(--magenta); }
+.auth-box p { color:var(--dim); margin-bottom:1.25rem; font-size:0.9rem; }
+/* Responsive */
+@media (max-width:768px) {
+  .header { padding:0.6rem 0.75rem; }
+  .header h1 { font-size:1.2rem; }
+  .nav button { padding:0.65rem 0.75rem; font-size:0.8rem; }
+  .main { padding:0.75rem; }
+  .form-row { grid-template-columns:1fr; }
+  th, td { padding:0.4rem 0.5rem; font-size:0.78rem; }
+  .kpi-grid { grid-template-columns:repeat(2,1fr); }
+}
+
+/* Logo styles */
+.header-logo {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.header-logo img {
+  max-width: 200px;
+  max-height: 60px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 0 8px rgba(0,212,255,0.35));
+}
+@media (max-width: 480px) {
+  .header-logo img {
+    max-width: 150px;
+    max-height: 45px;
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-logo">
+    <img src="psvibe_logo_text.png" alt="PS VIBE">
+  </div>
+  <div class="info">
+    <span id="header-ts" style="font-size:0.8rem;color:var(--dim)"></span>
+    <button onclick="logout()" title="Clear API key">🔑 Reset Key</button>
+  </div>
+</div>
+
+<div class="nav">
+  <button class="active" onclick="switchTab('summary')">📊 Summary</button>
+  <button onclick="switchTab('members')">👥 Members</button>
+  <button onclick="switchTab('wallet')">💰 Wallet</button>
+  <button onclick="switchTab('sales')">📋 Sales</button>
+</div>
+
+<div class="main">
+  <!-- Summary Tab -->
+  <div id="tab-summary" class="tab-content active">
+    <div class="kpi-grid" id="summary-cards"></div>
+    <div class="panel">
+      <div class="panel-header">Recent Top-Ups</div>
+      <div class="panel-body" id="recent-topups"><div class="loading">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- Members Tab -->
+  <div id="tab-members" class="tab-content">
+    <div class="panel">
+      <div class="panel-header">
+        <span>Member List</span>
+        <div style="display:flex;gap:0.5rem;align-items:center">
+          <div class="search-box">
+            <span class="icon">🔍</span>
+            <input type="text" id="member-search" placeholder="Search members..."
+              oninput="loadMembers()">
+          </div>
+          <button class="btn btn-outline" onclick="loadMembers()">🔄</button>
+        </div>
+      </div>
+      <div class="panel-body" id="members-table"><div class="loading">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- Wallet Tab -->
+  <div id="tab-wallet" class="tab-content">
+    <div class="panel">
+      <div class="panel-header">
+        <span>Wallet Balance Lookup</span>
+        <div style="display:flex;gap:0.5rem">
+          <input type="text" id="wallet-member-id" placeholder="Enter Member ID..."
+            style="background:var(--input-bg);border:1px solid var(--border);
+            color:var(--text);padding:0.45rem 0.75rem;border-radius:6px;font-size:0.9rem;width:180px;"
+            onkeydown="if(event.key==='Enter')loadWallet()">
+          <button class="btn btn-cyan" onclick="loadWallet()">Look Up</button>
+        </div>
+      </div>
+      <div class="panel-body" id="wallet-display">
+        <div class="empty">Enter a member ID and click Look Up</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sales Tab -->
+  <div id="tab-sales" class="tab-content">
+    <div class="panel">
+      <div class="panel-header">
+        <span>Sales Records</span>
+        <div style="display:flex;gap:0.5rem;align-items:center">
+          <input type="date" id="sales-date-filter"
+            style="background:var(--input-bg);border:1px solid var(--border);
+            color:var(--text);padding:0.4rem 0.75rem;border-radius:6px;font-size:0.85rem;"
+            onchange="loadSales()">
+          <button class="btn btn-outline" onclick="loadSales()">🔄</button>
+        </div>
+      </div>
+      <div class="panel-body" id="sales-table"><div class="loading">Loading...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Auth Modal -->
+<div class="auth-overlay" id="auth-overlay">
+  <div class="auth-box">
+    <h2>🔐 PS <span>VIBE</span> Admin</h2>
+    <p>Enter your API key to access the dashboard.</p>
+    <div class="form-group">
+      <input type="password" id="api-key-input" placeholder="API Key"
+        onkeydown="if(event.key==='Enter')setApiKey()">
+    </div>
+    <button class="btn btn-cyan" onclick="setApiKey()" style="width:100%;padding:0.6rem;">
+      Unlock Dashboard
+    </button>
+    <p style="margin-top:0.75rem;font-size:0.75rem;color:var(--dim);">
+      Keys are stored in your browser session only.
+    </p>
+  </div>
+</div>
+
+<!-- Edit Member Modal -->
+<div class="modal-overlay" id="edit-member-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>✏️ Edit Member</h3>
+      <button class="close" onclick="closeModal('edit-member-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Member ID</label>
+        <input type="text" id="edit-member-id" readonly style="opacity:0.6">
+      </div>
+      <div class="form-group">
+        <label>Name</label>
+        <input type="text" id="edit-member-name">
+      </div>
+      <div class="form-group">
+        <label>Phone</label>
+        <input type="text" id="edit-member-phone">
+      </div>
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" id="edit-member-email">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('edit-member-modal')">Cancel</button>
+      <button class="btn btn-cyan" onclick="saveMember()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- Wallet Adjust Modal -->
+<div class="modal-overlay" id="adjust-wallet-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>⚡ Adjust Wallet Balance</h3>
+      <button class="close" onclick="closeModal('adjust-wallet-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Member ID</label>
+        <input type="text" id="adjust-member-id" readonly style="opacity:0.6">
+      </div>
+      <div class="form-group">
+        <label>Current Balance</label>
+        <input type="text" id="adjust-current-balance" readonly style="opacity:0.6">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Adjustment (+/- mins)</label>
+          <input type="number" id="adjust-amount" placeholder="e.g. 100 or -50">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Reason</label>
+        <textarea id="adjust-reason" rows="2" placeholder="Why is this adjustment being made?"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('adjust-wallet-modal')">Cancel</button>
+      <button class="btn btn-magenta" onclick="saveWalletAdjust()">Adjust Balance</button>
+    </div>
+  </div>
+</div>
+
+<!-- Top-Up Modal -->
+<div class="modal-overlay" id="topup-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>💳 Record Top-Up</h3>
+      <button class="close" onclick="closeModal('topup-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Member ID</label>
+        <input type="text" id="topup-member-id" readonly style="opacity:0.6">
+      </div>
+      <div class="form-group">
+        <label>Amount (Ks)</label>
+        <input type="number" id="topup-amount" placeholder="e.g. 50000">
+      </div>
+      <div class="form-group">
+        <label>Payment Method</label>
+        <select id="topup-method">
+          <option value="Cash">Cash</option>
+          <option value="KPay">KPay</option>
+          <option value="WavePay">WavePay</option>
+          <option value="AYA Pay">AYA Pay</option>
+          <option value="CB Pay">CB Pay</option>
+          <option value="Bank Transfer">Bank Transfer</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Staff Name</label>
+        <input type="text" id="topup-staff" placeholder="Staff name (optional)">
+      </div>
+      <div class="form-group">
+        <label>Date</label>
+        <input type="date" id="topup-date">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('topup-modal')">Cancel</button>
+      <button class="btn btn-green" onclick="saveTopup()">Record Top-Up</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Dialog -->
+<div class="confirm-overlay" id="confirm-overlay">
+  <div class="confirm-box">
+    <p id="confirm-message"></p>
+    <div class="actions">
+      <button class="btn btn-outline" onclick="closeConfirm()">Cancel</button>
+      <button class="btn btn-red" id="confirm-yes-btn">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+// ── State ──
+let API_KEY = "";
+let API_BASE = window.location.origin;
+let currentTab = 'summary';
+let sortColumn = null;
+let sortDir = 'asc';
+let membersData = [];
+let confirmCallback = null;
+
+// ── Init ──
+window.addEventListener('DOMContentLoaded', () => {
+  API_KEY = API_KEY || sessionStorage.getItem("psvibe_api_key") || "";
+  if (API_KEY) {
+    document.getElementById('auth-overlay').style.display = 'none';
+    initDashboard();
+  } else {
+    document.getElementById('auth-overlay').style.display = 'flex';
+    document.getElementById('api-key-input').focus();
+  }
+  // Set today's date for date inputs
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('sales-date-filter').value = today;
+  document.getElementById('topup-date').value = today;
+});
+
+function setApiKey() {
+  const key = document.getElementById('api-key-input').value.trim();
+  if (!key) return toast('Please enter an API key', 'error');
+  API_KEY = key;
+  sessionStorage.setItem('psvibe_api_key', key);
+  document.getElementById('auth-overlay').style.display = 'none';
+  initDashboard();
+}
+
+function logout() {
+  API_KEY = '';
+  sessionStorage.removeItem('psvibe_api_key');
+  document.getElementById('auth-overlay').style.display = 'flex';
+  document.getElementById('api-key-input').value = '';
+  document.getElementById('api-key-input').focus();
+}
+
+// ── API Helpers ──
+async function api(url, opts = {}) {
+  const headers = { 'X-API-Key': API_KEY, ...(opts.headers || {}) };
+  if (opts.body && typeof opts.body === 'object') {
+    headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.body);
+  }
+  const res = await fetch(API_BASE + url, { ...opts, headers });
+  return res.json();
+}
+
+// ── Tab Switching ──
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  event.target.classList.add('active');
+  if (tab === 'summary') loadSummary();
+  else if (tab === 'members') loadMembers();
+  else if (tab === 'sales') loadSales();
+}
+
+// ── Init Dashboard ──
+function initDashboard() {
+  document.getElementById('header-ts').textContent = new Date().toLocaleString();
+  loadSummary();
+}
+
+// ── Toast ──
+function toast(msg, type = 'info') {
+  const c = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  c.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s';
+    setTimeout(() => el.remove(), 300); }, 3500);
+}
+
+// ── Modals ──
+function openModal(id) { document.getElementById(id).classList.add('show'); }
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+// ── Confirm ──
+function showConfirm(msg, cb) {
+  document.getElementById('confirm-message').textContent = msg;
+  confirmCallback = cb;
+  document.getElementById('confirm-overlay').classList.add('show');
+  document.getElementById('confirm-yes-btn').onclick = () => {
+    document.getElementById('confirm-overlay').classList.remove('show');
+    if (confirmCallback) confirmCallback();
+    confirmCallback = null;
+  };
+}
+function closeConfirm() {
+  document.getElementById('confirm-overlay').classList.remove('show');
+  confirmCallback = null;
+}
+
+// ── Formatting ──
+function F(n) { return n != null ? Number(n).toLocaleString() : '-'; }
+function FKS(n) { return n != null ? Number(n).toLocaleString() + ' Ks' : '-'; }
+
+// ═══════════════════════════════════════
+// SUMMARY TAB
+// ═══════════════════════════════════════
+async function loadSummary() {
+  try {
+    const r = await api('/api/dashboard/summary');
+    if (!r.success) { document.getElementById('summary-cards').innerHTML =
+      '<div class="error">Failed: ' + (r.error||'unknown') + '</div>'; return; }
+    const d = r.data;
+    document.getElementById('summary-cards').innerHTML =
+      kpi('Total Members', F(d.total_members), 'cyan') +
+      kpi('Active Today', F(d.active_today), 'green') +
+      kpi('Total Wallet Mins', F(d.total_wallet_mins), 'magenta') +
+      kpi('Today Revenue', FKS(d.today_revenue), 'amber');
+  } catch(e) {
+    document.getElementById('summary-cards').innerHTML =
+      '<div class="error">Error loading summary</div>';
+  }
+  // Load recent top-ups for summary
+  try {
+    const r = await api('/api/dashboard/recent-topups');
+    if (r.success && r.data && r.data.length) {
+      let h = '<table><tr><th>Date</th><th>Member</th><th>Amount</th><th>Method</th></tr>';
+      r.data.forEach(t => {
+        h += `<tr><td>${t.topup_date||'-'}</td><td>${t.member_id||'-'}</td>
+          <td>${FKS(t.amount)}</td><td>${t.payment_method||'-'}</td></tr>`;
+      });
+      h += '</table>';
+      document.getElementById('recent-topups').innerHTML = h;
+    } else {
+      document.getElementById('recent-topups').innerHTML =
+        '<div class="empty">No recent top-ups</div>';
+    }
+  } catch(e) {}
+}
+
+function kpi(label, value, cls) {
+  return `<div class="kpi-card ${cls}"><div class="label">${label}</div>
+    <div class="value ${cls}">${value}</div></div>`;
+}
+
+// ═══════════════════════════════════════
+// MEMBERS TAB
+// ═══════════════════════════════════════
+async function loadMembers() {
+  const search = document.getElementById('member-search').value.trim();
+  document.getElementById('members-table').innerHTML = '<div class="loading">Loading...</div>';
+  try {
+    const r = await api(`/api/dashboard/members?search=${encodeURIComponent(search)}&page=1&limit=500`);
+    if (!r.success) {
+      document.getElementById('members-table').innerHTML =
+        `<div class="error">Failed: ${r.error||'unknown'}</div>`; return;
+    }
+    membersData = r.data || [];
+    renderMembersTable(membersData);
+  } catch(e) {
+    document.getElementById('members-table').innerHTML =
+      `<div class="error">Error: ${e.message}</div>`;
+  }
+}
+
+function renderMembersTable(data) {
+  if (!data.length) {
+    document.getElementById('members-table').innerHTML =
+      '<div class="empty">No members found</div>'; return;
+  }
+  let h = '<table><thead><tr>';
+  h += th('ID', 'member_id') + th('Name', 'name') + th('Phone', 'phone') +
+       th('Balance (mins)', 'wallet_mins') + th('Total Spend', 'net_spend') +
+       th('Rank', 'rank');
+  h += '<th>Actions</th></tr></thead><tbody>';
+  data.forEach(m => {
+    h += `<tr>
+      <td><strong>${m.member_id||'-'}</strong></td>
+      <td>${m.name||'-'}</td>
+      <td>${m.phone||'-'}</td>
+      <td>${F(m.wallet_mins)}</td>
+      <td>${FKS(m.net_spend)}</td>
+      <td>${m.rank||'-'}</td>
+      <td><div class="action-btns">
+        <button class="btn btn-outline" onclick="editMember('${m.member_id}')">✏️ Edit</button>
+        <button class="btn btn-magenta" onclick="adjustWallet('${m.member_id}',${m.wallet_mins||0})">⚡ Adjust</button>
+        <button class="btn btn-green" onclick="topupMember('${m.member_id}')">💳 Top-Up</button>
+      </div></td></tr>`;
+  });
+  h += '</tbody></table>';
+  document.getElementById('members-table').innerHTML = h;
+}
+
+function th(label, key) {
+  const arrow = sortColumn === key ? (sortDir === 'asc' ? '▲' : '▼') : '';
+  return `<th onclick="sortMembers('${key}')">${label}<span class="sort-arrow">${arrow}</span></th>`;
+}
+
+function sortMembers(key) {
+  if (sortColumn === key) { sortDir = sortDir === 'asc' ? 'desc' : 'asc'; }
+  else { sortColumn = key; sortDir = 'asc'; }
+  const data = [...membersData].sort((a,b) => {
+    let va = a[key], vb = b[key];
+    if (va == null) va = '';
+    if (vb == null) vb = '';
+    if (typeof va === 'number') return sortDir === 'asc' ? va - vb : vb - va;
+    return sortDir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+  });
+  renderMembersTable(data);
+}
+
+// ── Edit Member ──
+async function editMember(memberId) {
+  try {
+    const r = await api(`/api/dashboard/member/${encodeURIComponent(memberId)}`);
+    if (!r.success) { toast('Member not found', 'error'); return; }
+    document.getElementById('edit-member-id').value = r.data.member_id;
+    document.getElementById('edit-member-name').value = r.data.name || '';
+    document.getElementById('edit-member-phone').value = r.data.phone || '';
+    document.getElementById('edit-member-email').value = r.data.email || '';
+    openModal('edit-member-modal');
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function saveMember() {
+  const id = document.getElementById('edit-member-id').value;
+  const data = {
+    name: document.getElementById('edit-member-name').value.trim(),
+    phone: document.getElementById('edit-member-phone').value.trim(),
+    email: document.getElementById('edit-member-email').value.trim()
+  };
+  try {
+    const r = await api(`/api/dashboard/member/${encodeURIComponent(id)}/update`, {
+      method: 'POST', body: data
+    });
+    if (r.success) { toast('Member updated!', 'success'); closeModal('edit-member-modal'); loadMembers(); }
+    else { toast('Failed: ' + (r.error||'unknown'), 'error'); }
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ── Adjust Wallet ──
+function adjustWallet(memberId, balance) {
+  document.getElementById('adjust-member-id').value = memberId;
+  document.getElementById('adjust-current-balance').value = F(balance) + ' mins';
+  document.getElementById('adjust-amount').value = '';
+  document.getElementById('adjust-reason').value = '';
+  openModal('adjust-wallet-modal');
+}
+
+async function saveWalletAdjust() {
+  const data = {
+    member_id: document.getElementById('adjust-member-id').value,
+    amount: parseInt(document.getElementById('adjust-amount').value) || 0,
+    reason: document.getElementById('adjust-reason').value.trim()
+  };
+  if (!data.amount) { toast('Please enter an amount', 'error'); return; }
+  if (!data.reason) { toast('Please enter a reason', 'error'); return; }
+  showConfirm(`Adjust wallet by ${data.amount > 0 ? '+' : ''}${data.amount} mins for ${data.member_id}?`, async () => {
+    try {
+      const r = await api('/api/dashboard/wallet/adjust', { method: 'POST', body: data });
+      if (r.success) { toast('Wallet adjusted!', 'success'); closeModal('adjust-wallet-modal'); loadMembers(); }
+      else { toast('Failed: ' + (r.error||'unknown'), 'error'); }
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+  });
+}
+
+// ── Top-Up ──
+function topupMember(memberId) {
+  document.getElementById('topup-member-id').value = memberId;
+  document.getElementById('topup-amount').value = '';
+  document.getElementById('topup-method').value = 'Cash';
+  document.getElementById('topup-staff').value = '';
+  document.getElementById('topup-date').value = new Date().toISOString().split('T')[0];
+  openModal('topup-modal');
+}
+
+async function saveTopup() {
+  const data = {
+    member_id: document.getElementById('topup-member-id').value,
+    amount: parseInt(document.getElementById('topup-amount').value) || 0,
+    payment_method: document.getElementById('topup-method').value,
+    staff_name: document.getElementById('topup-staff').value.trim(),
+    date: document.getElementById('topup-date').value
+  };
+  if (!data.amount) { toast('Please enter an amount', 'error'); return; }
+  if (!data.date) { toast('Please select a date', 'error'); return; }
+  showConfirm(`Record top-up of ${FKS(data.amount)} for ${data.member_id} via ${data.payment_method}?`, async () => {
+    try {
+      const r = await api('/api/dashboard/topup', { method: 'POST', body: data });
+      if (r.success) { toast('Top-up recorded!', 'success'); closeModal('topup-modal'); loadMembers(); }
+      else { toast('Failed: ' + (r.error||'unknown'), 'error'); }
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+  });
+}
+
+// ═══════════════════════════════════════
+// WALLET TAB
+// ═══════════════════════════════════════
+async function loadWallet() {
+  const memberId = document.getElementById('wallet-member-id').value.trim();
+  if (!memberId) { toast('Please enter a member ID', 'error'); return; }
+  document.getElementById('wallet-display').innerHTML = '<div class="loading">Loading...</div>';
+  try {
+    const r = await api(`/api/dashboard/wallet/${encodeURIComponent(memberId)}`);
+    if (!r.success) {
+      document.getElementById('wallet-display').innerHTML =
+        `<div class="error">${r.error||'Member not found'}</div>`; return;
+    }
+    const d = r.data;
+    const netSpend = (d.net_spend||0);
+    document.getElementById('wallet-display').innerHTML = `
+      <div class="kpi-grid" style="margin-bottom:1rem">
+        ${kpi('Total Bought (I)', F(d.total_bought_mins||0) + ' mins', 'cyan')}
+        ${kpi('Total Used (J)', F(d.total_used_mins||0) + ' mins', 'magenta')}
+        ${kpi('Balance (H)', F(d.balance_mins||0) + ' mins', 'green')}
+        ${kpi('Net Spend', FKS(netSpend), 'amber')}
+      </div>
+      <table>
+        <tr><td style="width:140px;color:var(--dim)">Member ID</td><td><strong>${d.member_id||'-'}</strong></td></tr>
+        <tr><td style="color:var(--dim)">Name</td><td>${d.name||'-'}</td></tr>
+        <tr><td style="color:var(--dim)">Phone</td><td>${d.phone||'-'}</td></tr>
+        <tr><td style="color:var(--dim)">Email</td><td>${d.email||'-'}</td></tr>
+        <tr><td style="color:var(--dim)">Rank</td><td>${d.rank||'-'}</td></tr>
+      </table>
+      <div style="margin-top:1rem;display:flex;gap:0.5rem">
+        <button class="btn btn-magenta" onclick="adjustWallet('${d.member_id}',${d.balance_mins||0})">⚡ Adjust</button>
+        <button class="btn btn-green" onclick="topupMember('${d.member_id}')">💳 Top-Up</button>
+      </div>`;
+  } catch(e) {
+    document.getElementById('wallet-display').innerHTML =
+      `<div class="error">Error: ${e.message}</div>`;
+  }
+}
+
+// ═══════════════════════════════════════
+// SALES TAB
+// ═══════════════════════════════════════
+async function loadSales() {
+  const date = document.getElementById('sales-date-filter').value;
+  document.getElementById('sales-table').innerHTML = '<div class="loading">Loading...</div>';
+  try {
+    const r = await api(`/api/dashboard/sales?date=${encodeURIComponent(date||'today')}`);
+    if (!r.success) {
+      document.getElementById('sales-table').innerHTML =
+        `<div class="error">${r.error||'Failed to load'}</div>`; return;
+    }
+    const data = r.data || [];
+    if (!data.length) {
+      document.getElementById('sales-table').innerHTML =
+        '<div class="empty">No sales for this date</div>'; return;
+    }
+    // Calculate totals
+    let totalAmount = 0;
+    data.forEach(s => totalAmount += (s.amount||0));
+    let h = `<div style="margin-bottom:1rem;font-size:0.9rem;color:var(--amber)">
+      Total: ${F(data.length)} vouchers · ${FKS(totalAmount)}
+    </div>`;
+    h += '<table><thead><tr>';
+    h += '<th>Voucher#</th><th>Member</th><th>Amount</th><th>Payment</th><th>Staff</th><th>Date</th>';
+    h += '</tr></thead><tbody>';
+    data.forEach(s => {
+      h += `<tr>
+        <td>${s.receipt_no||s.voucher_no||'-'}</td>
+        <td>${s.member_id||'-'}</td>
+        <td>${FKS(s.amount)}</td>
+        <td>${s.payment_method||'-'}</td>
+        <td>${s.staff_name||'-'}</td>
+        <td>${s.sale_date||s.date||'-'}</td>
+      </tr>`;
+    });
+    h += '</tbody></table>';
+    document.getElementById('sales-table').innerHTML = h;
+  } catch(e) {
+    document.getElementById('sales-table').innerHTML =
+      `<div class="error">Error: ${e.message}</div>`;
+  }
+}
+</script>
+</body>
+</html>

@@ -77,7 +77,7 @@ _COLS_MEMBER = (
     "effective_rate, tier, total_spend, last_updated"
 )
 
-_COLS_GAME = "game_title, genre, disc_count, last_updated"
+_COLS_GAME = "game_title, final_status, disc_count, solo_multi, genre, last_updated"
 
 _COLS_STAFF = "staff_id, staff_name, base_salary, role, is_active, last_updated"
 
