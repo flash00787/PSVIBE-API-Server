@@ -17,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -56,7 +57,7 @@ logger = logging.getLogger(__name__)
 MYSQL_HOST = os.environ.get("MYSQL_HOST", "localhost")
 MYSQL_PORT = int(os.environ.get("MYSQL_PORT", "3306"))
 MYSQL_USER = os.environ.get("MYSQL_USER", "psvibe_user")
-MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "PsVibe@User2024!")
+MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "PsVibe@2026_Rotated!")
 MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "psvibe_api")
 
 # Default sync interval (seconds)
@@ -132,6 +133,19 @@ CREATE_TABLES_SQL = {
             created_at  DATETIME     DEFAULT CURRENT_TIMESTAMP,
             updated_at  DATETIME     DEFAULT CURRENT_TIMESTAMP
                         ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    "settings_config": """
+        CREATE TABLE IF NOT EXISTS settings_config (
+            id          INT AUTO_INCREMENT PRIMARY KEY,
+            config_key  VARCHAR(100) NOT NULL UNIQUE,
+            config_value TEXT NOT NULL,
+            config_type ENUM('string','int','float','json','bool') DEFAULT 'string',
+            category    VARCHAR(50) DEFAULT 'general',
+            description VARCHAR(255) DEFAULT '',
+            updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_key (config_key),
+            INDEX idx_category (category)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
 }
@@ -631,6 +645,94 @@ class SyncService:
 
     # ── Sync All ──────────────────────────────────────────────────
 
+    def sync_settings_config(self) -> int:
+        """Sync settings from Google Sheets Settings tab → MySQL settings_config.
+
+        Reads config cells (rate, thresholds, multipliers, food, bonus) and
+        upserts them as key-value rows using INSERT ON DUPLICATE KEY UPDATE.
+        """
+        import json as _json
+        logger.info("Syncing settings_config ...")
+        ws = get_worksheet(SHEET_SETTING)
+
+        configs: List[tuple] = []
+
+        # ── Basic pricing settings ──
+        configs.append(("base_rate", str(int_safe(ws.cell(2, 2).value)),
+                        "int", "pricing", "Base rate per minute (MMK)"))
+        configs.append(("master_threshold", str(int_safe(ws.cell(3, 13).value)),
+                        "int", "pricing", "Master tier threshold"))
+        configs.append(("immortal_threshold", str(int_safe(ws.cell(4, 13).value)),
+                        "int", "pricing", "Immortal tier threshold"))
+        configs.append(("new_member_card_price", str(int_safe(ws.cell(20, 2).value)),
+                        "int", "pricing", "New member card price"))
+        configs.append(("new_member_base_mins", str(int_safe(ws.cell(21, 2).value)),
+                        "int", "pricing", "New member base minutes"))
+
+        # ── Console multipliers ──
+        names = ws.col_values(8)[1:]
+        mults = ws.col_values(10)[1:]
+        console_multipliers: Dict[str, float] = {}
+        for name, mult in zip(names, mults):
+            if name.strip():
+                try:
+                    console_multipliers[name.strip()] = float(float_safe(mult)) or 1.0
+                except ValueError:
+                    console_multipliers[name.strip()] = 1.0
+        configs.append(("console_multipliers", _json.dumps(console_multipliers),
+                        "json", "console", "Console multiplier mapping"))
+
+        # ── Food prices & costs ──
+        food_names = ws.col_values(4)[1:]
+        food_prices_raw = ws.col_values(5)[1:]
+        food_costs_raw = ws.col_values(6)[1:]
+        food_prices: Dict[str, int] = {}
+        food_costs: Dict[str, int] = {}
+        for n, p, c in zip(food_names, food_prices_raw, food_costs_raw):
+            if n.strip():
+                food_prices[n.strip()] = int_safe(p)
+                food_costs[n.strip()] = int_safe(c) if str(c).strip() else 0
+        configs.append(("food_prices", _json.dumps(food_prices),
+                        "json", "food", "Food price map"))
+        configs.append(("food_costs", _json.dumps(food_costs),
+                        "json", "food", "Food cost map"))
+
+        # ── Bonus table ──
+        bonus_rows = ws.get("O2:R5")
+        bonus_table: list = []
+        for row in bonus_rows:
+            if len(row) >= 4:
+                try:
+                    bonus_table.append([int_safe(row[0]), int_safe(row[1]),
+                                        int_safe(row[2]), int_safe(row[3])])
+                except Exception:
+                    continue
+        configs.append(("bonus_table", _json.dumps(bonus_table),
+                        "json", "bonus", "Bonus table (range O2:R5)"))
+
+        # ── Upsert into MySQL ──
+        conn = self._get_connection()
+        upsert_sql = """
+            INSERT INTO settings_config
+                (config_key, config_value, config_type, category, description)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                config_value = VALUES(config_value),
+                config_type  = VALUES(config_type),
+                category     = VALUES(category),
+                description  = VALUES(description)
+        """
+        count = 0
+        with conn.cursor() as cur:
+            for key, value, ctype, cat, desc in configs:
+                cur.execute(upsert_sql, (key, value, ctype, cat, desc))
+                count += 1
+        conn.commit()
+
+        self._update_sync_status("settings_config", count, "ok")
+        logger.info("settings_config: %d configs synced", count)
+        return count
+
     def sync_all(self) -> Dict[str, int]:
         """Run all sync functions in sequence and return row counts.
 
@@ -642,10 +744,11 @@ class SyncService:
 
         results: Dict[str, int] = {}
         sync_order = [
-            ("member_wallets", self.sync_member_wallets),
-            ("games_library",  self.sync_games_library),
-            ("console_status", self.sync_console_status),
-            ("staff_records",  self.sync_staff_records),
+            ("member_wallets",   self.sync_member_wallets),
+            ("games_library",    self.sync_games_library),
+            ("console_status",   self.sync_console_status),
+            ("staff_records",    self.sync_staff_records),
+            ("settings_config",  self.sync_settings_config),
         ]
 
         for name, fn in sync_order:

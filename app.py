@@ -27,6 +27,10 @@ from sheets_client import (
     invalidate_cache, int_safe, float_safe,
 )
 from mysql_db import query as mysql_query, query_one as mysql_query_one, execute as mysql_execute
+from models import (
+    GameResponse, ConfigResponse, MemberResponse,
+    BookingResponse, HealthResponse, GenericResponse
+)
 
 
 logging.basicConfig(
@@ -121,7 +125,7 @@ async def not_found_handler(request: Request, exc):
 # ═══════════════════════════════════════
 #  HEALTH
 # ═══════════════════════════════════════
-@app.get("/api/health", tags=["System"])
+@app.get("/api/health", response_model=HealthResponse, tags=["System"], summary="Health check")
 async def health_check():
     # Sheets health is checked on startup via startup event; skip per-request
     # to avoid 300ms+ gspread round-trip on every health probe.
@@ -131,7 +135,7 @@ async def health_check():
 # ═══════════════════════════════════════
 #  MYSQL HEALTH
 # ═══════════════════════════════════════
-@app.get("/api/mysql/health", tags=["System"])
+@app.get("/api/mysql/health", response_model=GenericResponse, tags=["System"], summary="MySQL health check")
 def mysql_health():
     try:
         mysql_query_one("SELECT 1 as ok")
@@ -160,7 +164,7 @@ def _use_mysql() -> bool:
 # ═══════════════════════════════════════
 #  MYSQL STATUS
 # ═══════════════════════════════════════
-@app.get("/api/mysql/status", tags=["System"])
+@app.get("/api/mysql/status", response_model=GenericResponse, tags=["System"], summary="MySQL table status")
 def mysql_status(auth=Depends(verify_api_key)):
     """Show all MySQL tables with row counts."""
     if not _use_mysql():
@@ -290,7 +294,7 @@ def _fetch_topups_from_mysql(days=30):
 # ═══════════════════════════════════════
 #  fetch_console_status
 # ═══════════════════════════════════════
-@app.get("/api/fetch_console_status", tags=["Console"])
+@app.get("/api/fetch_console_status", response_model=GenericResponse, tags=["Console"], summary="Get live console status with booking overlay")
 async def api_fetch_console_status(auth=Depends(verify_api_key)):
     """Return list of console dicts with live status from Console_Booking sheet."""
     data = _fetch_console_status_from_mysql()
@@ -356,7 +360,7 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_members
 # ═══════════════════════════════════════
-@app.get("/api/fetch_members", tags=["Members"])
+@app.get("/api/fetch_members", response_model=GenericResponse, tags=["Members"], summary="Fetch sorted list of all member IDs")
 async def api_fetch_members(auth=Depends(verify_api_key)):
     """Return sorted list of all member IDs from Card_Wallet."""
     data = _fetch_members_from_mysql()
@@ -374,7 +378,7 @@ async def api_fetch_members(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_member_data
 # ═══════════════════════════════════════
-@app.get("/api/fetch_member_data/{member_id}", tags=["Members"])
+@app.get("/api/fetch_member_data/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch consolidated member data (name, phone, rank, wallet)")
 async def api_fetch_member_data(member_id: str, auth=Depends(verify_api_key)):
     """Return consolidated member data (name, phone, email, rank, wallet, spend) from Card_Wallet."""
     data = _fetch_member_data_from_mysql(member_id)
@@ -422,7 +426,7 @@ async def api_fetch_member_data(member_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_wallet_mins
 # ═══════════════════════════════════════
-@app.get("/api/fetch_wallet_mins/{member_id}", tags=["Members"])
+@app.get("/api/fetch_wallet_mins/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch wallet balance in minutes for a member")
 async def api_fetch_wallet_mins(member_id: str, auth=Depends(verify_api_key)):
     """Fetch wallet balance in mins for a member (col I, formula)."""
     data = _fetch_wallet_mins_from_mysql(member_id)
@@ -443,7 +447,7 @@ async def api_fetch_wallet_mins(member_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_balance_mins (alias live read)
 # ═══════════════════════════════════════
-@app.get("/api/fetch_balance_mins/{member_id}", tags=["Members"])
+@app.get("/api/fetch_balance_mins/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch wallet balance live (bypasses cache)")
 async def api_fetch_balance_mins(member_id: str, auth=Depends(verify_api_key)):
     """Fetch wallet balance in mins (live read, bypasses cache)."""
     data = _fetch_balance_mins_from_mysql(member_id)
@@ -466,7 +470,7 @@ async def api_fetch_balance_mins(member_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_member_tier
 # ═══════════════════════════════════════
-@app.get("/api/fetch_member_tier/{member_id}", tags=["Members"])
+@app.get("/api/fetch_member_tier/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch member current tier")
 async def api_fetch_member_tier(member_id: str, auth=Depends(verify_api_key)):
     """Fetch member's current tier from Card_Wallet col G."""
     try:
@@ -484,7 +488,7 @@ async def api_fetch_member_tier(member_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_staff / fetch_staff_names
 # ═══════════════════════════════════════
-@app.get("/api/fetch_staff", tags=["Staff"])
+@app.get("/api/fetch_staff", response_model=GenericResponse, tags=["Staff"], summary="Fetch list of staff names")
 async def api_fetch_staff(auth=Depends(verify_api_key)):
     """Return list of staff names from Setting col S."""
     try:
@@ -495,7 +499,7 @@ async def api_fetch_staff(auth=Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/fetch_staff_names", tags=["Staff"])
+@app.get("/api/fetch_staff_names", response_model=GenericResponse, tags=["Staff"], summary="Alias for fetch_staff")
 async def api_fetch_staff_names(auth=Depends(verify_api_key)):
     """Alias for fetch_staff."""
     return await api_fetch_staff(auth)
@@ -504,7 +508,7 @@ async def api_fetch_staff_names(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_food_prices / fetch_food_costs
 # ═══════════════════════════════════════
-@app.get("/api/fetch_food_prices", tags=["Food"])
+@app.get("/api/fetch_food_prices", response_model=GenericResponse, tags=["Food"], summary="Fetch food item name to price dict")
 async def api_fetch_food_prices(auth=Depends(verify_api_key)):
     """Return dict of food item name -> price from Setting (D-E)."""
     try:
@@ -516,7 +520,7 @@ async def api_fetch_food_prices(auth=Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/fetch_food_costs", tags=["Food"])
+@app.get("/api/fetch_food_costs", response_model=GenericResponse, tags=["Food"], summary="Fetch food item name to cost price dict")
 async def api_fetch_food_costs(auth=Depends(verify_api_key)):
     """Return dict of food item -> cost price from Setting (D, F)."""
     try:
@@ -532,7 +536,7 @@ async def api_fetch_food_costs(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_games / fetch_game_library
 # ═══════════════════════════════════════
-@app.get("/api/fetch_games", tags=["Games"])
+@app.get("/api/fetch_games", response_model=GenericResponse, tags=["Games"], summary="Fetch all games from Game Library")
 async def api_fetch_games(auth=Depends(verify_api_key)):
     """Return all games from Game_Library (MySQL preferred, Sheets fallback)."""
     try:
@@ -577,7 +581,7 @@ async def api_fetch_games(auth=Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/fetch_game_library", tags=["Games"])
+@app.get("/api/fetch_game_library", response_model=GenericResponse, tags=["Games"], summary="Alias for fetch_games")
 async def api_fetch_game_library(auth=Depends(verify_api_key)):
     """Alias for fetch_games."""
     return await api_fetch_games(auth)
@@ -586,7 +590,7 @@ async def api_fetch_game_library(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_console_games
 # ═══════════════════════════════════════
-@app.get("/api/fetch_console_games", tags=["Games"])
+@app.get("/api/fetch_console_games", response_model=GenericResponse, tags=["Games"], summary="Fetch console game installations")
 async def api_fetch_console_games(auth=Depends(verify_api_key)):
     """Return all console-game installation records (cached 5 min)."""
     data = _fetch_console_games_from_mysql()
@@ -623,7 +627,7 @@ async def api_fetch_console_games(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  get_games_on_console
 # ═══════════════════════════════════════
-@app.get("/api/get_games_on_console/{console_id}", tags=["Games"])
+@app.get("/api/get_games_on_console/{console_id}", response_model=GenericResponse, tags=["Games"], summary="Get games installed on a console")
 async def api_get_games_on_console(console_id: str, auth=Depends(verify_api_key)):
     """Return list of game titles installed on a specific console."""
     try:
@@ -640,7 +644,7 @@ async def api_get_games_on_console(console_id: str, auth=Depends(verify_api_key)
 # ═══════════════════════════════════════
 #  get_consoles_with_game
 # ═══════════════════════════════════════
-@app.get("/api/get_consoles_with_game", tags=["Games"])
+@app.get("/api/get_consoles_with_game", response_model=GenericResponse, tags=["Games"], summary="Get consoles with a specific game")
 async def api_get_consoles_with_game(game_title: str = Query(...), auth=Depends(verify_api_key)):
     """Return list of console IDs that have a specific game installed."""
     try:
@@ -658,7 +662,7 @@ async def api_get_consoles_with_game(game_title: str = Query(...), auth=Depends(
 # ═══════════════════════════════════════
 #  fetch_base_rate
 # ═══════════════════════════════════════
-@app.get("/api/fetch_base_rate", tags=["Settings"])
+@app.get("/api/fetch_base_rate", response_model=GenericResponse, tags=["Settings"], summary="Fetch hourly base rate")
 async def api_fetch_base_rate(auth=Depends(verify_api_key)):
     """Fetch hourly base rate from Setting!B2 (Ks/hr)."""
     try:
@@ -671,7 +675,7 @@ async def api_fetch_base_rate(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_console_multiplier
 # ═══════════════════════════════════════
-@app.get("/api/fetch_console_multiplier/{console_id}", tags=["Settings"])
+@app.get("/api/fetch_console_multiplier/{console_id}", response_model=GenericResponse, tags=["Settings"], summary="Fetch multiplier for a console")
 async def api_fetch_console_multiplier(console_id: str, auth=Depends(verify_api_key)):
     """Fetch multiplier for a console from Setting!J."""
     try:
@@ -690,7 +694,7 @@ async def api_fetch_console_multiplier(console_id: str, auth=Depends(verify_api_
 # ═══════════════════════════════════════
 #  fetch_new_member_defaults
 # ═══════════════════════════════════════
-@app.get("/api/fetch_new_member_defaults", tags=["Settings"])
+@app.get("/api/fetch_new_member_defaults", response_model=GenericResponse, tags=["Settings"], summary="Fetch default card price and base mins")
 async def api_fetch_new_member_defaults(auth=Depends(verify_api_key)):
     """Fetch default card price (B20) and base mins (B21) from Setting."""
     try:
@@ -704,7 +708,7 @@ async def api_fetch_new_member_defaults(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_rank_thresholds
 # ═══════════════════════════════════════
-@app.get("/api/fetch_rank_thresholds", tags=["Settings"])
+@app.get("/api/fetch_rank_thresholds", response_model=GenericResponse, tags=["Settings"], summary="Fetch Master and Immortal thresholds")
 async def api_fetch_rank_thresholds(auth=Depends(verify_api_key)):
     """Fetch Master and Immortal threshold from Setting!M3:M4."""
     try:
@@ -718,7 +722,7 @@ async def api_fetch_rank_thresholds(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_bonus_table
 # ═══════════════════════════════════════
-@app.get("/api/fetch_bonus_table", tags=["Settings"])
+@app.get("/api/fetch_bonus_table", response_model=GenericResponse, tags=["Settings"], summary="Fetch bonus table")
 async def api_fetch_bonus_table(auth=Depends(verify_api_key)):
     """Fetch bonus table from Setting!O2:R5."""
     try:
@@ -748,7 +752,7 @@ async def api_fetch_bonus_table(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_rank_table_display
 # ═══════════════════════════════════════
-@app.get("/api/fetch_rank_table_display", tags=["Settings"])
+@app.get("/api/fetch_rank_table_display", response_model=GenericResponse, tags=["Settings"], summary="Fetch rank table as formatted string")
 async def api_fetch_rank_table_display(auth=Depends(verify_api_key)):
     """Fetch Setting!O1:R5 and return formatted string table for display."""
     try:
@@ -775,7 +779,7 @@ async def api_fetch_rank_table_display(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_alltime_effective_rate
 # ═══════════════════════════════════════
-@app.get("/api/fetch_alltime_effective_rate", tags=["Analytics"])
+@app.get("/api/fetch_alltime_effective_rate", response_model=GenericResponse, tags=["Analytics"], summary="All-time average effective rate (Ks/min)")
 async def api_fetch_alltime_effective_rate(auth=Depends(verify_api_key)):
     """Calculate all-time average Ks/min across every TopUp_Log row."""
     try:
@@ -799,7 +803,7 @@ async def api_fetch_alltime_effective_rate(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_member_effective_rate
 # ═══════════════════════════════════════
-@app.get("/api/fetch_member_effective_rate/{member_id}", tags=["Members"])
+@app.get("/api/fetch_member_effective_rate/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch member effective rate (Ks/min)")
 async def api_fetch_member_effective_rate(member_id: str, auth=Depends(verify_api_key)):
     """Fetch a member's stored effective rate from Card_Wallet col L."""
     try:
@@ -817,7 +821,7 @@ async def api_fetch_member_effective_rate(member_id: str, auth=Depends(verify_ap
 # ═══════════════════════════════════════
 #  build_member_rate_dict
 # ═══════════════════════════════════════
-@app.get("/api/build_member_rate_dict", tags=["Members"])
+@app.get("/api/build_member_rate_dict", response_model=GenericResponse, tags=["Members"], summary="Build dict of member_id to effective rate")
 async def api_build_member_rate_dict(auth=Depends(verify_api_key)):
     """Build dict of member_id -> stored effective rate from Card_Wallet."""
     try:
@@ -839,7 +843,7 @@ async def api_build_member_rate_dict(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_base_salaries
 # ═══════════════════════════════════════
-@app.get("/api/fetch_base_salaries", tags=["Staff"])
+@app.get("/api/fetch_base_salaries", response_model=GenericResponse, tags=["Staff"], summary="Fetch staff base salaries")
 async def api_fetch_base_salaries(auth=Depends(verify_api_key)):
     """Fetch staff base salaries from Setting!S:T columns."""
     try:
@@ -861,7 +865,7 @@ async def api_fetch_base_salaries(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_attendance
 # ═══════════════════════════════════════
-@app.get("/api/fetch_attendance/{month_str}", tags=["Attendance"])
+@app.get("/api/fetch_attendance/{month_str}", response_model=GenericResponse, tags=["Attendance"], summary="Get staff attendance records for a month")
 async def api_fetch_attendance(month_str: str, auth=Depends(verify_api_key)):
     """Fetch attendance records for a month from Attendance_Log."""
     try:
@@ -889,7 +893,7 @@ async def api_fetch_attendance(month_str: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_salary_advances
 # ═══════════════════════════════════════
-@app.get("/api/fetch_salary_advances/{month_str}", tags=["Attendance"])
+@app.get("/api/fetch_salary_advances/{month_str}", response_model=GenericResponse, tags=["Attendance"], summary="Get salary advances for a month")
 async def api_fetch_salary_advances(month_str: str, auth=Depends(verify_api_key)):
     """Return {staff: {total, cash, kpay}} for the given month (YYYY-MM)."""
     try:
@@ -922,7 +926,7 @@ async def api_fetch_salary_advances(month_str: str, auth=Depends(verify_api_key)
 # ═══════════════════════════════════════
 #  fetch_promotions_cached
 # ═══════════════════════════════════════
-@app.get("/api/fetch_promotions_cached", tags=["Promotions"])
+@app.get("/api/fetch_promotions_cached", response_model=GenericResponse, tags=["Promotions"], summary="Fetch active promotions")
 async def api_fetch_promotions_cached(auth=Depends(verify_api_key)):
     """Fetch active promotions (extend w/ real API)."""
     return ok([], "Promotions API not yet integrated")
@@ -931,7 +935,7 @@ async def api_fetch_promotions_cached(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_allowed_staff_ids
 # ═══════════════════════════════════════
-@app.get("/api/fetch_allowed_staff_ids", tags=["Staff"])
+@app.get("/api/fetch_allowed_staff_ids", response_model=GenericResponse, tags=["Staff"], summary="Fetch dynamic staff whitelist")
 async def api_fetch_allowed_staff_ids(auth=Depends(verify_api_key)):
     """Fetch dynamic staff whitelist from Setting!B30."""
     data = _fetch_allowed_staff_ids_from_mysql()
@@ -951,7 +955,7 @@ async def api_fetch_allowed_staff_ids(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  next_voucher / next_member_id / next_member_row_no
 # ═══════════════════════════════════════
-@app.get("/api/next_voucher", tags=["Sales"])
+@app.get("/api/next_voucher", response_model=GenericResponse, tags=["Sales"], summary="Generate next voucher number")
 async def api_next_voucher(auth=Depends(verify_api_key)):
     """Generate next voucher number from Sales_Daily col B."""
     try:
@@ -968,7 +972,7 @@ async def api_next_voucher(auth=Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/next_member_id", tags=["Members"])
+@app.get("/api/next_member_id", response_model=GenericResponse, tags=["Members"], summary="Auto-increment member ID")
 async def api_next_member_id(auth=Depends(verify_api_key)):
     """Auto-increment member ID: PSV_A_003 -> PSV_A_004."""
     try:
@@ -988,7 +992,7 @@ async def api_next_member_id(auth=Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/next_member_row_no", tags=["Members"])
+@app.get("/api/next_member_row_no", response_model=GenericResponse, tags=["Members"], summary="Get next sequential row number")
 async def api_next_member_row_no(auth=Depends(verify_api_key)):
     """Return next sequential row number for Card_Wallet Column A."""
     try:
@@ -1008,7 +1012,7 @@ async def api_next_member_row_no(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_referral_code
 # ═══════════════════════════════════════
-@app.get("/api/fetch_referral_code/{member_id}", tags=["Members"])
+@app.get("/api/fetch_referral_code/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch referral code for a member")
 async def api_fetch_referral_code(member_id: str, auth=Depends(verify_api_key)):
     """Fetch referral code for a member from Card_Wallet."""
     try:
@@ -1026,7 +1030,7 @@ async def api_fetch_referral_code(member_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — create_booking
 # ═══════════════════════════════════════
-@app.post("/api/create_booking", tags=["Bookings"])
+@app.post("/api/create_booking", response_model=GenericResponse, tags=["Bookings"], summary="Create new console booking")
 async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
     """Append a row to Console_Booking and return BookingID."""
     try:
@@ -1051,7 +1055,7 @@ async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — end_booking
 # ═══════════════════════════════════════
-@app.put("/api/end_booking/{booking_id}", tags=["Bookings"])
+@app.put("/api/end_booking/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="Mark booking as Done and set end time")
 async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
     """Mark a booking as Done and fill EndTime."""
     try:
@@ -1073,7 +1077,7 @@ async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — cancel_booking
 # ═══════════════════════════════════════
-@app.put("/api/cancel_booking/{booking_id}", tags=["Bookings"])
+@app.put("/api/cancel_booking/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="Cancel a booking")
 async def api_cancel_booking(booking_id: str, auth=Depends(verify_api_key)):
     """Mark a booking as Cancelled."""
     try:
@@ -1092,7 +1096,7 @@ async def api_cancel_booking(booking_id: str, auth=Depends(verify_api_key)):
 
 #  CREATE/UPDATE — bookings (customer bot format)
 # ═══════════════════════════════════════
-@app.post("/api/bookings", tags=["Bookings"])
+@app.post("/api/bookings", response_model=GenericResponse, tags=["Bookings"], summary="Create booking from customer bot payload")
 async def api_bookings(req: dict, auth=Depends(verify_api_key)):
     """Create a booking from customer bot payload."""
     try:
@@ -1130,7 +1134,7 @@ async def api_bookings(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — save_attendance
 # ═══════════════════════════════════════
-@app.post("/api/save_attendance", tags=["Attendance"])
+@app.post("/api/save_attendance", response_model=GenericResponse, tags=["Attendance"], summary="Record/update staff attendance")
 async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
     """Save/update attendance record for a staff in Attendance_Log."""
     try:
@@ -1158,7 +1162,7 @@ async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — save_receipt_json
 # ═══════════════════════════════════════
-@app.post("/api/save_receipt_json", tags=["Receipts"])
+@app.post("/api/save_receipt_json", response_model=GenericResponse, tags=["Receipts"], summary="Persist receipt data to MySQL")
 async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
     """Persist receipt data to MySQL."""
     try:
@@ -1230,7 +1234,7 @@ async def api_get_receipt_html(voucher_id: str):
 # ═══════════════════════════════════════
 #  MUTATION — add_console_game / remove_console_game
 # ═══════════════════════════════════════
-@app.post("/api/add_console_game", tags=["Games"])
+@app.post("/api/add_console_game", response_model=GenericResponse, tags=["Games"], summary="Add game installation to console")
 async def api_add_console_game(req: dict, auth=Depends(verify_api_key)):
     """Add a game installation record to Console_Games."""
     try:
@@ -1249,7 +1253,7 @@ async def api_add_console_game(req: dict, auth=Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/api/remove_console_game", tags=["Games"])
+@app.delete("/api/remove_console_game", response_model=GenericResponse, tags=["Games"], summary="Remove game installation from console")
 async def api_remove_console_game(req: dict, auth=Depends(verify_api_key)):
     """Remove a game installation record from Console_Games."""
     try:
@@ -1275,7 +1279,7 @@ async def api_remove_console_game(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — set_game_disc_count
 # ═══════════════════════════════════════
-@app.put("/api/set_game_disc_count", tags=["Games"])
+@app.put("/api/set_game_disc_count", response_model=GenericResponse, tags=["Games"], summary="Update game disc count")
 async def api_set_game_disc_count(req: dict, auth=Depends(verify_api_key)):
     """Update column D (Available Discs) for a game row in Game_Library."""
     try:
@@ -1292,7 +1296,7 @@ async def api_set_game_disc_count(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — update_game_library_install
 # ═══════════════════════════════════════
-@app.put("/api/update_game_library_install", tags=["Games"])
+@app.put("/api/update_game_library_install", response_model=GenericResponse, tags=["Games"], summary="Set TRUE/FALSE for game install checkbox")
 async def api_update_game_library_install(req: dict, auth=Depends(verify_api_key)):
     """Set TRUE/FALSE checkbox in Game_Library for (game_title, console_id)."""
     try:
@@ -1343,7 +1347,7 @@ async def api_update_game_library_install(req: dict, auth=Depends(verify_api_key
 # ═══════════════════════════════════════
 #  MUTATION — update_member_effective_rate
 # ═══════════════════════════════════════
-@app.put("/api/update_member_effective_rate", tags=["Members"])
+@app.put("/api/update_member_effective_rate", response_model=GenericResponse, tags=["Members"], summary="Update member effective rate")
 async def api_update_member_effective_rate(req: dict, auth=Depends(verify_api_key)):
     """Update or insert member effective rate in Card_Wallet col L."""
     try:
@@ -1366,7 +1370,7 @@ async def api_update_member_effective_rate(req: dict, auth=Depends(verify_api_ke
 # ═══════════════════════════════════════
 #  MUTATION — save_referral_code
 # ═══════════════════════════════════════
-@app.post("/api/save_referral_code", tags=["Members"])
+@app.post("/api/save_referral_code", response_model=GenericResponse, tags=["Members"], summary="Save referral code for a member")
 async def api_save_referral_code(req: dict, auth=Depends(verify_api_key)):
     """Save referral code for a member in Card_Wallet."""
     try:
@@ -1389,7 +1393,7 @@ async def api_save_referral_code(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — add_console_to_setting
 # ═══════════════════════════════════════
-@app.post("/api/add_console_to_setting", tags=["Console"])
+@app.post("/api/add_console_to_setting", response_model=GenericResponse, tags=["Console"], summary="Add new console to settings")
 async def api_add_console_to_setting(req: dict, auth=Depends(verify_api_key)):
     """Append a new console to Setting!H:J."""
     try:
@@ -1409,7 +1413,7 @@ async def api_add_console_to_setting(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — remove_console_from_setting
 # ═══════════════════════════════════════
-@app.delete("/api/remove_console_from_setting/{console_id}", tags=["Console"])
+@app.delete("/api/remove_console_from_setting/{console_id}", response_model=GenericResponse, tags=["Console"], summary="Remove console from settings")
 async def api_remove_console_from_setting(console_id: str, auth=Depends(verify_api_key)):
     """Clear a console row from Setting!H:J."""
     try:
@@ -1430,13 +1434,47 @@ async def api_remove_console_from_setting(console_id: str, auth=Depends(verify_a
 # ═══════════════════════════════════════
 #  META — Config (used by bot cache)
 # ═══════════════════════════════════════
-@app.get("/api/sheets/config", tags=["Meta"])
+@app.get("/api/sheets/config", response_model=GenericResponse, tags=["Meta"], summary="Get cached config (base rate, thresholds, multipliers, prices)")
 async def api_sheets_config(auth=Depends(verify_api_key)):
-    """Return cached config used by the bot (base_rate, thresholds, etc.)."""
+    """Return cached config used by the bot (base_rate, thresholds, etc.).
+
+    Reads from MySQL settings_config table first; falls back to Google Sheets
+    if the MySQL table is empty.
+    """
+    import json as _json
     global _config_cache_data, _config_cache_time
     now = time.time()
     if _config_cache_data is not None and (now - _config_cache_time) < _CONFIG_CACHE_TTL:
         return ok(_config_cache_data)
+
+    # ── 1. Try MySQL first ──
+    try:
+        mysql_rows = mysql_query("SELECT config_key, config_value, config_type FROM settings_config")
+        if mysql_rows:
+            # Build a lookup dict from MySQL rows
+            raw: dict = {}
+            for row in mysql_rows:
+                raw[row["config_key"]] = row["config_value"]
+
+            result = {
+                "base_rate": int(raw.get("base_rate", 0)),
+                "master_threshold": int(raw.get("master_threshold", 0)),
+                "immortal_threshold": int(raw.get("immortal_threshold", 0)),
+                "new_member_card_price": int(raw.get("new_member_card_price", 0)),
+                "new_member_base_mins": int(raw.get("new_member_base_mins", 0)),
+                "console_multipliers": _json.loads(raw.get("console_multipliers", "{}")),
+                "food_prices": _json.loads(raw.get("food_prices", "{}")),
+                "food_costs": _json.loads(raw.get("food_costs", "{}")),
+                "bonus_table": _json.loads(raw.get("bonus_table", "[]")),
+                "source": "mysql",
+            }
+            _config_cache_data = result
+            _config_cache_time = time.time()
+            return ok(result)
+    except Exception as e:
+        logger.warning("MySQL config read failed, falling back to GSheets: %s", e)
+
+    # ── 2. Fallback to Google Sheets ──
     try:
         ws = get_worksheet(SHEET_SETTING)
         base_rate = int_safe(ws.cell(2, 2).value)
@@ -1485,6 +1523,7 @@ async def api_sheets_config(auth=Depends(verify_api_key)):
             "food_prices": food_prices,
             "food_costs": food_costs,
             "bonus_table": bonus_table,
+            "source": "sheets",
         }
         _config_cache_data = result
         _config_cache_time = time.time()
@@ -1497,7 +1536,7 @@ async def api_sheets_config(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  BI DASHBOARD — Analytics Endpoints
 # ═══════════════════════════════════════
-@app.get("/api/analytics/daily_sales", tags=["Analytics"])
+@app.get("/api/analytics/daily_sales", response_model=GenericResponse, tags=["Analytics"], summary="Daily sales report with KPIs")
 async def api_analytics_daily_sales(
     date: str = Query(None, description="Date in M/D/YYYY format, defaults to today"),
     auth=Depends(verify_api_key),
@@ -1512,7 +1551,7 @@ async def api_analytics_daily_sales(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/analytics/topups", tags=["Analytics"])
+@app.get("/api/analytics/topups", response_model=GenericResponse, tags=["Analytics"], summary="Top-up trends: daily/weekly aggregates and top members")
 async def api_analytics_topups(
     days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
     auth=Depends(verify_api_key),
@@ -1527,7 +1566,7 @@ async def api_analytics_topups(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/analytics/member_activity", tags=["Analytics"])
+@app.get("/api/analytics/member_activity", response_model=GenericResponse, tags=["Analytics"], summary="Member activity stats: tiers, active counts, wallet totals")
 async def api_analytics_member_activity(auth=Depends(verify_api_key)):
     """Return member activity stats: total members, tier distribution, active today, wallet totals."""
     try:
@@ -1536,7 +1575,7 @@ async def api_analytics_member_activity(auth=Depends(verify_api_key)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/analytics/console_usage", tags=["Analytics"])
+@app.get("/api/analytics/console_usage", response_model=GenericResponse, tags=["Analytics"], summary="Console usage stats: bookings, utilization, daily series")
 async def api_analytics_console_usage(
     days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
     auth=Depends(verify_api_key),
@@ -1548,7 +1587,7 @@ async def api_analytics_console_usage(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/analytics/dashboard", tags=["Analytics"])
+@app.get("/api/analytics/dashboard", response_model=GenericResponse, tags=["Analytics"], summary="Full BI dashboard summary with all KPIs")
 async def api_analytics_dashboard(auth=Depends(verify_api_key)):
     """Return full BI dashboard summary with all KPIs."""
     try:
@@ -1557,7 +1596,7 @@ async def api_analytics_dashboard(auth=Depends(verify_api_key)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/analytics/weekly_trends", tags=["Analytics"])
+@app.get("/api/analytics/weekly_trends", response_model=GenericResponse, tags=["Analytics"], summary="Weekly trends: sales, top-ups, console usage")
 async def api_analytics_weekly_trends(
     weeks: int = Query(4, ge=1, le=52, description="Number of weeks to analyze"),
     auth=Depends(verify_api_key),
@@ -1784,7 +1823,7 @@ async def web_dashboard_api():
 # ═══════════════════════════════════════
 #  BOOKING QUERIES — bookings/search
 # ═══════════════════════════════════════
-@app.get("/api/bookings/search", tags=["Bookings"])
+@app.get("/api/bookings/search", response_model=GenericResponse, tags=["Bookings"], summary="Search bookings by chat ID, date, or status")
 async def api_bookings_search(
     telegram_chat_id: str = Query(None),
     date: str = Query(None),
@@ -1841,7 +1880,7 @@ async def api_bookings_search(
 # ═══════════════════════════════════════
 #  BOOKING — get by ID
 # ═══════════════════════════════════════
-@app.get("/api/bookings/{booking_id}", tags=["Bookings"])
+@app.get("/api/bookings/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="Get single booking by ID")
 async def api_get_booking(booking_id: str, auth=Depends(verify_api_key)):
     """Get a single booking by ID."""
     try:
@@ -1870,7 +1909,7 @@ async def api_get_booking(booking_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  FEEDBACK — submit
 # ═══════════════════════════════════════
-@app.post("/api/feedback/submit", tags=["Feedback"])
+@app.post("/api/feedback/submit", response_model=GenericResponse, tags=["Feedback"], summary="Submit customer feedback")
 async def api_feedback_submit(req: dict, auth=Depends(verify_api_key)):
     """Accept customer feedback (fire-and-forget log)."""
     try:
@@ -1888,7 +1927,7 @@ async def api_feedback_submit(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  LOG — sheets log
 # ═══════════════════════════════════════
-@app.post("/api/sheets/log", tags=["Logging"])
+@app.post("/api/sheets/log", response_model=GenericResponse, tags=["Logging"], summary="Log AI interaction")
 async def api_sheets_log(req: dict, auth=Depends(verify_api_key)):
     """Fire-and-forget: log an AI interaction row."""
     try:
@@ -1907,7 +1946,7 @@ async def api_sheets_log(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  BOT USERS — track
 # ═══════════════════════════════════════
-@app.post("/api/bot-users/track", tags=["Bot Users"])
+@app.post("/api/bot-users/track", response_model=GenericResponse, tags=["Bot Users"], summary="Track bot user interaction")
 async def api_bot_users_track(req: dict, auth=Depends(verify_api_key)):
     """Fire-and-forget: upsert bot user tracking row."""
     try:
@@ -1926,7 +1965,7 @@ async def api_bot_users_track(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 
 # ── Endpoint 1: POST /api/finance/opex ──
-@app.post("/api/finance/opex", tags=["Finance"])
+@app.post("/api/finance/opex", response_model=GenericResponse, tags=["Finance"], summary="Record operational expense")
 async def api_finance_opex(req: dict, auth=Depends(verify_api_key)):
     """Record an operational expense into accounts table."""
     try:
@@ -1960,7 +1999,7 @@ async def api_finance_opex(req: dict, auth=Depends(verify_api_key)):
 
 
 # ── Endpoint 2: POST /api/staff/salary-advance ──
-@app.post("/api/staff/salary-advance", tags=["Staff"])
+@app.post("/api/staff/salary-advance", response_model=GenericResponse, tags=["Staff"], summary="Record a salary advance")
 async def api_staff_salary_advance(req: dict, auth=Depends(verify_api_key)):
     """Record a salary advance for a staff member."""
     try:
@@ -1988,7 +2027,7 @@ async def api_staff_salary_advance(req: dict, auth=Depends(verify_api_key)):
 
 
 # ── Endpoint 3: POST /api/sales/record ──
-@app.post("/api/sales/record", tags=["Sales"])
+@app.post("/api/sales/record", response_model=GenericResponse, tags=["Sales"], summary="Record a daily sale")
 async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
     """Record a daily sale into sales_daily table."""
     try:
@@ -2026,7 +2065,7 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
 
 
 # ── Endpoint 4: POST /api/inventory/stock-out ──
-@app.post("/api/inventory/stock-out", tags=["Inventory"])
+@app.post("/api/inventory/stock-out", response_model=GenericResponse, tags=["Inventory"], summary="Record stock-out event")
 async def api_inventory_stock_out(req: dict, auth=Depends(verify_api_key)):
     """Record a stock-out (consumption/usage) event."""
     try:
@@ -2059,7 +2098,7 @@ async def api_inventory_stock_out(req: dict, auth=Depends(verify_api_key)):
 
 
 # ── Endpoint 5: POST /api/inventory/stock-in ──
-@app.post("/api/inventory/stock-in", tags=["Inventory"])
+@app.post("/api/inventory/stock-in", response_model=GenericResponse, tags=["Inventory"], summary="Record stock-in event")
 async def api_inventory_stock_in(req: dict, auth=Depends(verify_api_key)):
     """Record stock-in (restock/purchase) into inventory table."""
     try:
@@ -2088,7 +2127,7 @@ async def api_inventory_stock_in(req: dict, auth=Depends(verify_api_key)):
 
 
 # ── Endpoint 6: POST /api/members/register ──
-@app.post("/api/members/register", tags=["Members"])
+@app.post("/api/members/register", response_model=GenericResponse, tags=["Members"], summary="Register a new member")
 async def api_members_register(req: dict, auth=Depends(verify_api_key)):
     """Register a new member and optionally create wallet entry."""
     try:
@@ -2128,7 +2167,7 @@ async def api_members_register(req: dict, auth=Depends(verify_api_key)):
 
 
 # ── Endpoint 7: POST /api/topup/log ──
-@app.post("/api/topup/log", tags=["Topup"])
+@app.post("/api/topup/log", response_model=GenericResponse, tags=["Topup"], summary="Log a top-up transaction and update wallet")
 async def api_topup_log(req: dict, auth=Depends(verify_api_key)):
     """Log a top-up transaction into topup_log table + update member wallet."""
     try:
