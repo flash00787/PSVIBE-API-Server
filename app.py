@@ -175,6 +175,17 @@ def mysql_status(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MYSQL WRAPPERS
 # ═══════════════════════════════════════
+
+def _fetch_games_from_mysql():
+    """Try MySQL first for games list, return data or None."""
+    try:
+        if _use_mysql():
+            rows = mysql_query("SELECT game_title as title, final_status, disc_count as discs, solo_multi, genre FROM games_library")
+            return rows if rows else None
+    except Exception:
+        pass
+    return None
+
 def _fetch_members_from_mysql():
     """Try MySQL first, return data or None."""
     try:
@@ -518,8 +529,21 @@ async def api_fetch_food_costs(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.get("/api/fetch_games", tags=["Games"])
 async def api_fetch_games(auth=Depends(verify_api_key)):
-    """Return all games from Game_Library sheet (cached 10 min)."""
+    """Return all games from Game_Library (MySQL preferred, Sheets fallback)."""
     try:
+        mysql_data = _fetch_games_from_mysql()
+        if mysql_data is not None:
+            games = []
+            for i, g in enumerate(mysql_data, start=2):
+                games.append({
+                    "row": i,
+                    "title": g.get("title", ""),
+                    "solo_multi": g.get("solo_multi", ""),
+                    "genre": g.get("genre", ""),
+                    "status": g.get("final_status", ""),
+                    "discs": str(g.get("discs", 0)),
+                })
+            return ok(games)
         rows = get_game_rows()
         if len(rows) < 2:
             return ok([])
@@ -527,13 +551,21 @@ async def api_fetch_games(auth=Depends(verify_api_key)):
         for i, row in enumerate(rows[1:], start=2):
             if not row or not row[1].strip():
                 continue
+            # Parse col U (Installed_On) = "solo_multi|genre"
+            meta_raw = row[20].strip() if len(row) > 20 else ""
+            solo_m = ""
+            gen = ""
+            if "|" in meta_raw:
+                parts = meta_raw.split("|", 1)
+                solo_m = parts[0].strip()
+                gen     = parts[1].strip()
             games.append({
                 "row": i,
                 "title": row[1].strip() if len(row) > 1 else "",
-                "platform": row[2].strip() if len(row) > 2 else "",
-                "genre": row[3].strip() if len(row) > 3 else "",
-                "status": row[4].strip() if len(row) > 4 else "",
-                "discs": row[5].strip() if len(row) > 5 else "",
+                "solo_multi": solo_m,
+                "genre": gen,
+                "status": row[2].strip() if len(row) > 2 else "",
+                "discs": row[3].strip() if len(row) > 3 else "",
             })
         return ok(games)
     except Exception as e:
@@ -2085,24 +2117,48 @@ async def api_members_register(req: dict, auth=Depends(verify_api_key)):
 # ── Endpoint 7: POST /api/topup/log ──
 @app.post("/api/topup/log", tags=["Topup"])
 async def api_topup_log(req: dict, auth=Depends(verify_api_key)):
-    """Log a top-up transaction into topup_log table."""
+    """Log a top-up transaction into topup_log table + update member wallet."""
     try:
         member_id = req.get("member_id", "")
         amount = req.get("amount", 0)
+        mins_added = req.get("mins_added", 0)
         payment_method = req.get("payment_method", "")
         staff_name = req.get("staff_name", "")
         date = req.get("date", "")
 
-        logger.info("Logging topup: member=%s amount=%s", member_id, amount)
+        logger.info("Logging topup: member=%s amount=%s mins=%s", member_id, amount, mins_added)
+
+        # Get current wallet state
+        current = mysql_query_one(
+            "SELECT balance_mins, total_bought_mins FROM member_wallets WHERE member_id = %s",
+            (member_id,)
+        )
+        balance_before = current["balance_mins"] if current else 0
+        balance_after = balance_before + mins_added
+        total_bought = (current["total_bought_mins"] if current else 0) + mins_added
 
         mysql_execute(
-            "INSERT INTO topup_log (member_id, amount, topup_date, staff_name, payment_method) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (member_id, amount, date, staff_name, payment_method)
+            "INSERT INTO topup_log "
+            "(member_id, amount, mins_added, topup_date, staff_name, payment_method, "
+            " balance_before, balance_after, balance_mins_before, balance_mins_after) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (member_id, amount, mins_added, date, staff_name, payment_method,
+             amount, amount, balance_before, balance_after)
         )
 
+        # Update member wallet
+        mysql_execute(
+            "UPDATE member_wallets SET "
+            "balance_mins = balance_mins + %s, "
+            "total_bought_mins = total_bought_mins + %s "
+            "WHERE member_id = %s",
+            (mins_added, mins_added, member_id)
+        )
+        logger.info("Wallet updated: member=%s +%s mins (balance: %s -> %s)",
+                    member_id, mins_added, balance_before, balance_after)
+
         logger.info("Topup logged: member=%s amount=%s", member_id, amount)
-        return {"status": "ok"}
+        return {"status": "ok", "balance_before": balance_before, "balance_after": balance_after}
     except Exception as e:
         logger.error("Topup log error: %s", str(e))
         return {"status": "error", "detail": str(e)}
