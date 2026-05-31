@@ -177,7 +177,13 @@ def mysql_status(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 
 def _fetch_games_from_mysql():
-    """Return None — use Sheets fallback until MySQL sync is fixed."""
+    """Try MySQL first for games list, return data or None."""
+    try:
+        if _use_mysql():
+            rows = mysql_query("SELECT game_title as title, final_status, disc_count as discs, solo_multi, genre FROM games_library")
+            return rows if rows else None
+    except Exception:
+        pass
     return None
 
 def _fetch_members_from_mysql():
@@ -2080,8 +2086,8 @@ async def api_members_register(req: dict, auth=Depends(verify_api_key)):
         join_date = req.get("join_date", "")
         staff_name = req.get("staff_name", "")
 
-        # Generate a member_id
-        member_id = f"M-{int(time.time())}"
+        # Use bot-provided member_id or auto-generate
+        member_id = req.get("member_id", "") or f"M-{int(time.time())}"
 
         logger.info("Registering member: %s | phone=%s", name, phone)
 
@@ -2092,11 +2098,12 @@ async def api_members_register(req: dict, auth=Depends(verify_api_key)):
         )
 
         # Also create wallet entry
+        initial_mins = req.get("initial_mins", 0) or 0
         try:
             mysql_execute(
                 "INSERT IGNORE INTO member_wallets (member_id, member_name, phone, balance_mins) "
-                "VALUES (%s, %s, %s, 0)",
-                (member_id, name, phone)
+                "VALUES (%s, %s, %s, %s)",
+                (member_id, name, phone, initial_mins)
             )
         except Exception as wallet_err:
             logger.warning("Could not create wallet for member %s: %s", member_id, str(wallet_err))
