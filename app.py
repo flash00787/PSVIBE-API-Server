@@ -206,10 +206,16 @@ def _fetch_members_from_mysql():
 
 
 def _fetch_member_data_from_mysql(member_id):
-    """Try MySQL first, return data or None."""
+    """Try MySQL first, return data or None.
+    Returns None if balance data is > 15 min stale (forces GSheet fallback)."""
     try:
         if _use_mysql():
-            return mysql_query_one("SELECT * FROM member_wallets WHERE member_id = %s", (member_id,))
+            row = mysql_query_one("SELECT * FROM member_wallets WHERE member_id = %s", (member_id,))
+            if row:
+                age = (datetime.now(timezone.utc) - row.get("last_updated", datetime.min.replace(tzinfo=timezone.utc))).total_seconds()
+                if age < 900:  # 15 min max staleness for full member data
+                    return row
+                logging.warning("MySQL member_data for %s is stale (%.0fs old), falling back to GSheet", member_id, age)
     except Exception:
         pass
     return None
@@ -246,24 +252,32 @@ def _fetch_console_games_from_mysql():
 
 
 def _fetch_wallet_mins_from_mysql(member_id):
-    """Try MySQL first, return data or None."""
+    """Try MySQL first, return data or None.
+    Returns None if data is > 10 min stale (forces GSheet fallback)."""
     try:
         if _use_mysql():
-            row = mysql_query_one("SELECT balance_mins FROM member_wallets WHERE member_id = %s", (member_id,))
+            row = mysql_query_one("SELECT balance_mins, last_updated FROM member_wallets WHERE member_id = %s", (member_id,))
             if row:
-                return row.get("balance_mins", 0)
+                age = (datetime.now(timezone.utc) - row.get("last_updated", datetime.min.replace(tzinfo=timezone.utc))).total_seconds()
+                if age < 600:  # 10 min max staleness
+                    return row.get("balance_mins", 0)
+                logging.warning("MySQL wallet_mins for %s is stale (%.0fs old), falling back to GSheet", member_id, age)
     except Exception:
         pass
     return None
 
 
 def _fetch_balance_mins_from_mysql(member_id):
-    """Try MySQL first, return data or None (same as wallet_mins live read)."""
+    """Try MySQL first, return data or None (same as wallet_mins live read).
+    Returns None if data is > 10 min stale (forces GSheet fallback)."""
     try:
         if _use_mysql():
-            row = mysql_query_one("SELECT balance_mins FROM member_wallets WHERE member_id = %s", (member_id,))
+            row = mysql_query_one("SELECT balance_mins, last_updated FROM member_wallets WHERE member_id = %s", (member_id,))
             if row:
-                return row.get("balance_mins", 0)
+                age = (datetime.now(timezone.utc) - row.get("last_updated", datetime.min.replace(tzinfo=timezone.utc))).total_seconds()
+                if age < 600:  # 10 min max staleness
+                    return row.get("balance_mins", 0)
+                logging.warning("MySQL balance_mins for %s is stale (%.0fs old), falling back to GSheet", member_id, age)
     except Exception:
         pass
     return None
