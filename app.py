@@ -129,7 +129,7 @@ async def not_found_handler(request: Request, exc):
 async def health_check():
     # Sheets health is checked on startup via startup event; skip per-request
     # to avoid 300ms+ gspread round-trip on every health probe.
-    return {"success": True, "sheets_ok": True, "data_source": "mysql"}
+    return {"status": "ok", "timestamp": __import__("time").time(), "services": {"api": "running"}}
 
 
 # ═══════════════════════════════════════
@@ -1965,6 +1965,84 @@ async def api_bot_users_track(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 
 # ── Endpoint 1: POST /api/finance/opex ──
+
+@app.get("/api/finance/opex", response_model=GenericResponse, tags=["Finance"], summary="List opex records")
+async def api_finance_opex_list(auth=Depends(verify_api_key)):
+    """List all operational expense records."""
+    if not _use_mysql():
+        return {"success": False, "error": "MySQL not available"}
+    try:
+        rows = mysql_query("SELECT * FROM finance_opex_log ORDER BY id DESC LIMIT 500")
+        return ok(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/finance/assets", response_model=GenericResponse, tags=["Finance"], summary="List asset records")
+async def api_finance_assets_list(auth=Depends(verify_api_key)):
+    """List all asset records."""
+    if not _use_mysql():
+        return {"success": False, "error": "MySQL not available"}
+    try:
+        rows = mysql_query("SELECT * FROM finance_assets ORDER BY id DESC LIMIT 500")
+        return ok(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/finance/prepaid", response_model=GenericResponse, tags=["Finance"], summary="List prepaid records")
+async def api_finance_prepaid_list(auth=Depends(verify_api_key)):
+    """List all prepaid expense records."""
+    if not _use_mysql():
+        return {"success": False, "error": "MySQL not available"}
+    try:
+        rows = mysql_query("SELECT * FROM finance_prepaid ORDER BY id DESC LIMIT 500")
+        return ok(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/finance/payables", response_model=GenericResponse, tags=["Finance"], summary="List payable records")
+async def api_finance_payables_list(auth=Depends(verify_api_key)):
+    """List all payable records."""
+    if not _use_mysql():
+        return {"success": False, "error": "MySQL not available"}
+    try:
+        rows = mysql_query("SELECT * FROM finance_payables ORDER BY id DESC LIMIT 500")
+        return ok(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/finance/receivables", response_model=GenericResponse, tags=["Finance"], summary="List receivable records")
+async def api_finance_receivables_list(auth=Depends(verify_api_key)):
+    """List all receivable records."""
+    if not _use_mysql():
+        return {"success": False, "error": "MySQL not available"}
+    try:
+        rows = mysql_query("SELECT * FROM finance_receivables ORDER BY id DESC LIMIT 500")
+        return ok(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/finance/advances", response_model=GenericResponse, tags=["Finance"], summary="List advance records")
+async def api_finance_advances_list(auth=Depends(verify_api_key)):
+    """List all advance payment records."""
+    if not _use_mysql():
+        return {"success": False, "error": "MySQL not available"}
+    try:
+        rows = mysql_query("SELECT * FROM finance_advances ORDER BY id DESC LIMIT 500")
+        return ok(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/finance/accounts", response_model=GenericResponse, tags=["Finance"], summary="List capital/accounts")
+async def api_finance_accounts_list(auth=Depends(verify_api_key)):
+    """List all capital/account records."""
+    if not _use_mysql():
+        return {"success": False, "error": "MySQL not available"}
+    try:
+        rows = mysql_query("SELECT * FROM settings_config WHERE category='capital' ORDER BY id DESC LIMIT 500")
+        return ok(rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/finance/opex", response_model=GenericResponse, tags=["Finance"], summary="Record operational expense")
 async def api_finance_opex(req: dict, auth=Depends(verify_api_key)):
     """Record an operational expense into accounts table."""
@@ -1974,8 +2052,12 @@ async def api_finance_opex(req: dict, auth=Depends(verify_api_key)):
         category = req.get("category", "")
         description = req.get("description", "")
         amount = req.get("amount", 0)
-        payment_method = req.get("payment_method", "")
-        staff_name = req.get("staff_name", "")
+        payment_method = req.get("payment_method") or f"Kpay:{req.get('kpay',0)}/Cash:{req.get('cash',0)}"
+        staff_name = req.get("staff_name") or req.get("staff", "") or ""
+
+        # Backward compat: accept old field names
+        if not payment_method:
+            payment_method = req.get("type", "")
 
         notes = _json.dumps({
             "date": date,
@@ -2174,8 +2256,12 @@ async def api_topup_log(req: dict, auth=Depends(verify_api_key)):
         member_id = req.get("member_id", "")
         amount = req.get("amount", 0)
         mins_added = req.get("mins_added", 0)
-        payment_method = req.get("payment_method", "")
-        staff_name = req.get("staff_name", "")
+        payment_method = req.get("payment_method") or f"Kpay:{req.get('kpay',0)}/Cash:{req.get('cash',0)}"
+        staff_name = req.get("staff_name") or req.get("staff", "") or ""
+
+        # Backward compat: accept old field names
+        if not payment_method:
+            payment_method = req.get("type", "")
         date = req.get("date", "")
 
         logger.info("Logging topup: member=%s amount=%s mins=%s", member_id, amount, mins_added)
@@ -2216,6 +2302,70 @@ async def api_topup_log(req: dict, auth=Depends(verify_api_key)):
         return {"status": "error", "detail": str(e)}
 
 
+
+
+@app.put("/api/finance/assets/{item_id}", response_model=GenericResponse, tags=["Finance"], summary="Update asset")
+async def api_finance_assets_update(item_id: int, req: dict, auth=Depends(verify_api_key)):
+    """Update a finance asset record."""
+    if not _use_mysql():
+        return {"success": False, "error": "MySQL not available"}
+    try:
+        asset_name = req.get("asset_name", "")
+        purchase_date = req.get("purchase_date", "")
+        cost = req.get("cost", 0)
+        status = req.get("status", "")
+        disposal_date = req.get("disposal_date", "")
+        disposal_qty = req.get("disposal_qty", 0)
+        proceeds = req.get("proceeds", 0)
+        notes = req.get("notes", "")
+        mysql_execute(
+            "UPDATE finance_assets SET asset_name=%s, purchase_date=%s, cost=%s, status=%s, disposal_date=%s, disposal_qty=%s, proceeds=%s, notes=%s WHERE id=%s",
+            (asset_name, purchase_date, cost, status, disposal_date, disposal_qty, proceeds, notes, item_id)
+        )
+        return ok({"updated": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/finance/payables/{item_id}", response_model=GenericResponse, tags=["Finance"], summary="Update payable")
+async def api_finance_payables_update(item_id: int, req: dict, auth=Depends(verify_api_key)):
+    """Update a finance payable record."""
+    if not _use_mysql():
+        return {"success": False, "error": "MySQL not available"}
+    try:
+        party = req.get("party", "")
+        amount = req.get("amount", 0)
+        due_date = req.get("due_date", "")
+        status = req.get("status", "")
+        settle_date = req.get("settle_date", "")
+        notes = req.get("notes", "")
+        mysql_execute(
+            "UPDATE finance_payables SET party=%s, amount=%s, due_date=%s, status=%s, settle_date=%s, notes=%s WHERE id=%s",
+            (party, amount, due_date, status, settle_date, notes, item_id)
+        )
+        return ok({"updated": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/finance/receivables/{item_id}", response_model=GenericResponse, tags=["Finance"], summary="Update receivable")
+async def api_finance_receivables_update(item_id: int, req: dict, auth=Depends(verify_api_key)):
+    """Update a finance receivable record."""
+    if not _use_mysql():
+        return {"success": False, "error": "MySQL not available"}
+    try:
+        party = req.get("party", "")
+        amount = req.get("amount", 0)
+        due_date = req.get("due_date", "")
+        status = req.get("status", "")
+        paid_date = req.get("paid_date", "")
+        notes = req.get("notes", "")
+        settle_account = req.get("settle_account", "")
+        mysql_execute(
+            "UPDATE finance_receivables SET party=%s, amount=%s, due_date=%s, status=%s, paid_date=%s, notes=%s, settle_account=%s WHERE id=%s",
+            (party, amount, due_date, status, paid_date, notes, settle_account, item_id)
+        )
+        return ok({"updated": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.on_event("startup")
 async def startup():

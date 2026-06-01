@@ -148,6 +148,75 @@ CREATE_TABLES_SQL = {
             INDEX idx_category (category)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
+    "finance_opex_log": """
+        CREATE TABLE IF NOT EXISTS finance_opex_log (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            date            VARCHAR(50),
+            category        VARCHAR(100),
+            amount          DECIMAL(12,2) DEFAULT 0.00,
+            description     TEXT,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    "finance_assets": """
+        CREATE TABLE IF NOT EXISTS finance_assets (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            name            VARCHAR(200),
+            purchase_date   VARCHAR(50),
+            amount          DECIMAL(12,2) DEFAULT 0.00,
+            notes           TEXT,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    "finance_prepaid": """
+        CREATE TABLE IF NOT EXISTS finance_prepaid (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            description     TEXT,
+            amount          DECIMAL(12,2) DEFAULT 0.00,
+            settle_date     VARCHAR(50),
+            status          VARCHAR(50) DEFAULT "active",
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    "finance_payables": """
+        CREATE TABLE IF NOT EXISTS finance_payables (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            payee           VARCHAR(200),
+            description     TEXT,
+            amount          DECIMAL(12,2) DEFAULT 0.00,
+            due_date        VARCHAR(50),
+            status          VARCHAR(50) DEFAULT "pending",
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    "finance_receivables": """
+        CREATE TABLE IF NOT EXISTS finance_receivables (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            payer           VARCHAR(200),
+            description     TEXT,
+            amount          DECIMAL(12,2) DEFAULT 0.00,
+            due_date        VARCHAR(50),
+            status          VARCHAR(50) DEFAULT "pending",
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    "finance_advances": """
+        CREATE TABLE IF NOT EXISTS finance_advances (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            member_id       VARCHAR(50),
+            amount          DECIMAL(12,2) DEFAULT 0.00,
+            advance_date    VARCHAR(50),
+            settle_date     VARCHAR(50),
+            status          VARCHAR(50) DEFAULT "outstanding",
+            notes           TEXT,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
 }
 
 
@@ -155,6 +224,24 @@ CREATE_TABLES_SQL = {
 #  SyncService
 # ═════════════════════════════════════════════════════════════════════
 
+
+def _parse_date(val: str):
+    """Parse date string from GSheet. Returns date or None."""
+    if not val or not val.strip():
+        return None
+    val = val.strip()
+    # Already a date
+    import re
+    # YYYY-MM-DD
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', val):
+        return val
+    # M/D/YYYY or M/D/YY
+    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4}|\d{2})$', val)
+    if m:
+        mth, day, yr = m.groups()
+        if len(yr) == 2: yr = '20' + yr
+        return f"{yr}-{int(mth):02d}-{int(day):02d}"
+    return None
 class SyncService:
     """Syncs Google Sheets data into MySQL tables.
 
@@ -733,6 +820,244 @@ class SyncService:
         logger.info("settings_config: %d configs synced", count)
         return count
 
+    # -- Finance Sync Functions ----------------------------------------------------
+
+    def sync_finance_opex(self) -> int:
+        """Sync OPEX_Log worksheet -> finance_opex_log table."""
+        logger.info("▶ Syncing finance_opex_log from OPEX_Log ...")
+        try:
+            ws = get_worksheet("OPEX_Log")
+            rows = ws.get_all_values()
+        except Exception as e:
+            logger.error("Failed to read OPEX_Log: %s", e)
+            self._update_sync_status("finance_opex_log", 0, "error")
+            return 0
+        if len(rows) < 2:
+            self._update_sync_status("finance_opex_log", 0, "ok")
+            return 0
+        conn = self._get_connection()
+        sql = (
+            "INSERT INTO finance_opex_log (date, category, amount, description) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE "
+            "category = VALUES(category), amount = VALUES(amount), "
+            "description = VALUES(description)"
+        )
+        count = 0
+        with conn.cursor() as cur:
+            for row in rows[1:]:
+                if not row or not any(row):
+                    continue
+                date_val = str(row[0]).strip() if len(row) > 0 else ""
+                category = str(row[1]).strip() if len(row) > 1 else ""
+                description = str(row[2]).strip() if len(row) > 2 else ""
+                amount = float_safe(str(row[3])) if len(row) > 3 else 0
+                cur.execute(sql, (_parse_date(date_val), category, amount, description))
+                count += 1
+        conn.commit()
+        self._update_sync_status("finance_opex_log", count, "ok")
+        logger.info("✔ finance_opex_log synced: %d rows", count)
+        return count
+
+    def sync_finance_assets(self) -> int:
+        """Sync Assets_Register worksheet -> finance_assets table."""
+        logger.info("▶ Syncing finance_assets from Assets_Register ...")
+        try:
+            ws = get_worksheet("Assets_Register")
+            rows = ws.get_all_values()
+        except Exception as e:
+            logger.error("Failed to read Assets_Register: %s", e)
+            self._update_sync_status("finance_assets", 0, "error")
+            return 0
+        if len(rows) < 2:
+            self._update_sync_status("finance_assets", 0, "ok")
+            return 0
+        conn = self._get_connection()
+        sql = (
+            "INSERT INTO finance_assets (name, purchase_date, amount, notes) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE "
+            "purchase_date = VALUES(purchase_date), amount = VALUES(amount), "
+            "notes = VALUES(notes)"
+        )
+        count = 0
+        with conn.cursor() as cur:
+            for row in rows[1:]:
+                if not row or not any(row):
+                    continue
+                name = str(row[0]).strip() if len(row) > 0 else ""
+                category = str(row[1]).strip() if len(row) > 1 else ""
+                purchase_date = str(row[2]).strip() if len(row) > 2 else ""
+                amount = float_safe(str(row[3])) if len(row) > 3 else 0
+                cur.execute(sql, (name, _parse_date(purchase_date), amount, ""))
+                count += 1
+        conn.commit()
+        self._update_sync_status("finance_assets", count, "ok")
+        logger.info("✔ finance_assets synced: %d rows", count)
+        return count
+
+    def sync_finance_prepaid(self) -> int:
+        """Sync Prepaid_Expenses worksheet -> finance_prepaid table."""
+        logger.info("▶ Syncing finance_prepaid from Prepaid_Expenses ...")
+        try:
+            ws = get_worksheet("Prepaid_Expenses")
+            rows = ws.get_all_values()
+        except Exception as e:
+            logger.error("Failed to read Prepaid_Expenses: %s", e)
+            self._update_sync_status("finance_prepaid", 0, "error")
+            return 0
+        if len(rows) < 2:
+            self._update_sync_status("finance_prepaid", 0, "ok")
+            return 0
+        conn = self._get_connection()
+        sql = (
+            "INSERT INTO finance_prepaid (description, amount, settle_date, status) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE "
+            "amount = VALUES(amount), settle_date = VALUES(settle_date), "
+            "status = VALUES(status)"
+        )
+        count = 0
+        with conn.cursor() as cur:
+            for row in rows[1:]:
+                if not row or not any(row):
+                    continue
+                description = str(row[0]).strip() if len(row) > 0 else ""
+                category = str(row[1]).strip() if len(row) > 1 else ""
+                amount = float_safe(str(row[2])) if len(row) > 2 else 0
+                start_date = str(row[3]).strip() if len(row) > 3 else ""
+                end_date = str(row[4]).strip() if len(row) > 4 else ""
+                cur.execute(sql, (description, amount, _parse_date(start_date), "active"))
+                count += 1
+        conn.commit()
+        self._update_sync_status("finance_prepaid", count, "ok")
+        logger.info("✔ finance_prepaid synced: %d rows", count)
+        return count
+
+    def sync_finance_payables(self) -> int:
+        """Sync Payables worksheet -> finance_payables table."""
+        logger.info("▶ Syncing finance_payables from Payables ...")
+        try:
+            ws = get_worksheet("Payables")
+            rows = ws.get_all_values()
+        except Exception as e:
+            logger.error("Failed to read Payables: %s", e)
+            self._update_sync_status("finance_payables", 0, "error")
+            return 0
+        if len(rows) < 2:
+            self._update_sync_status("finance_payables", 0, "ok")
+            return 0
+        conn = self._get_connection()
+        sql = (
+            "INSERT INTO finance_payables (payee, description, amount, due_date, status) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE "
+            "description = VALUES(description), amount = VALUES(amount), "
+            "due_date = VALUES(due_date), status = VALUES(status)"
+        )
+        count = 0
+        with conn.cursor() as cur:
+            for row in rows[1:]:
+                if not row or not any(row):
+                    continue
+                pay_date = str(row[0]).strip() if len(row) > 0 else ""
+                payee = str(row[1]).strip() if len(row) > 1 else ""
+                description = str(row[2]).strip() if len(row) > 2 else ""
+                amount = float_safe(str(row[3])) if len(row) > 3 else 0
+                due_date = str(row[4]).strip() if len(row) > 4 else ""
+                status = str(row[5]).strip() if len(row) > 5 else "pending"
+                cur.execute(sql, (payee, description, amount, _parse_date(due_date), status))
+                count += 1
+        conn.commit()
+        self._update_sync_status("finance_payables", count, "ok")
+        logger.info("✔ finance_payables synced: %d rows", count)
+        return count
+
+    def sync_finance_receivables(self) -> int:
+        """Sync Receivables worksheet -> finance_receivables table."""
+        logger.info("▶ Syncing finance_receivables from Receivables ...")
+        try:
+            ws = get_worksheet("Receivables")
+            rows = ws.get_all_values()
+        except Exception as e:
+            logger.error("Failed to read Receivables: %s", e)
+            self._update_sync_status("finance_receivables", 0, "error")
+            return 0
+        if len(rows) < 2:
+            self._update_sync_status("finance_receivables", 0, "ok")
+            return 0
+        conn = self._get_connection()
+        sql = (
+            "INSERT INTO finance_receivables (payer, description, amount, due_date, status) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE "
+            "description = VALUES(description), amount = VALUES(amount), "
+            "due_date = VALUES(due_date), status = VALUES(status)"
+        )
+        count = 0
+        with conn.cursor() as cur:
+            for row in rows[1:]:
+                if not row or not any(row):
+                    continue
+                rec_date = str(row[0]).strip() if len(row) > 0 else ""
+                payer = str(row[1]).strip() if len(row) > 1 else ""
+                description = str(row[2]).strip() if len(row) > 2 else ""
+                amount = float_safe(str(row[3])) if len(row) > 3 else 0
+                due_date = str(row[4]).strip() if len(row) > 4 else ""
+                status = str(row[5]).strip() if len(row) > 5 else "pending"
+                cur.execute(sql, (payer, description, amount, _parse_date(due_date), status))
+                count += 1
+        conn.commit()
+        self._update_sync_status("finance_receivables", count, "ok")
+        logger.info("✔ finance_receivables synced: %d rows", count)
+        return count
+
+    def sync_finance_advances(self) -> int:
+        """Sync Advance_Payments worksheet -> finance_advances table."""
+        logger.info("▶ Syncing finance_advances from Advance_Payments ...")
+        try:
+            ws = get_worksheet("Advance_Payments")
+            rows = ws.get_all_values()
+        except Exception as e:
+            logger.error("Failed to read Advance_Payments: %s", e)
+            self._update_sync_status("finance_advances", 0, "error")
+            return 0
+        if len(rows) < 2:
+            self._update_sync_status("finance_advances", 0, "ok")
+            return 0
+        conn = self._get_connection()
+        sql = (
+            "INSERT INTO finance_advances (member_id, amount, advance_date, settle_date, status, notes) "
+            "VALUES (%s, %s, %s, %s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE "
+            "amount = VALUES(amount), settle_date = VALUES(settle_date), "
+            "status = VALUES(status), notes = VALUES(notes)"
+        )
+        count = 0
+        with conn.cursor() as cur:
+            for row in rows[1:]:
+                if not row or not any(row):
+                    continue
+                adv_date = str(row[0]).strip() if len(row) > 0 else ""
+                member_id = str(row[1]).strip() if len(row) > 1 else ""
+                description = str(row[2]).strip() if len(row) > 2 else ""
+                amount = float_safe(str(row[3])) if len(row) > 3 else 0
+                account = str(row[4]).strip() if len(row) > 4 else ""
+                expected_date = str(row[5]).strip() if len(row) > 5 else ""
+                status = str(row[6]).strip() if len(row) > 6 else "Pending"
+                notes = str(row[7]).strip() if len(row) > 7 else ""
+                cur.execute(
+                    "INSERT INTO finance_advances (member_id, amount, advance_date, settle_date, status, notes) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE "
+                    "amount=VALUES(amount), settle_date=VALUES(settle_date), status=VALUES(status)",
+                    (member_id, amount, _parse_date(adv_date), _parse_date(expected_date), status, notes)
+                )
+                count += 1
+        conn.commit()
+        self._update_sync_status("finance_advances", count, "ok")
+        logger.info("✔ finance_advances synced: %d rows", count)
+        return count
+
     def sync_all(self) -> Dict[str, int]:
         """Run all sync functions in sequence and return row counts.
 
@@ -749,6 +1074,12 @@ class SyncService:
             ("console_status",   self.sync_console_status),
             ("staff_records",    self.sync_staff_records),
             ("settings_config",  self.sync_settings_config),
+            ("finance_opex_log",    self.sync_finance_opex),
+            ("finance_assets",      self.sync_finance_assets),
+            ("finance_prepaid",     self.sync_finance_prepaid),
+            ("finance_payables",    self.sync_finance_payables),
+            ("finance_receivables", self.sync_finance_receivables),
+            ("finance_advances",    self.sync_finance_advances),
         ]
 
         for name, fn in sync_order:
