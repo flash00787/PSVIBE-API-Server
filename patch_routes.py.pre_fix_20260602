@@ -20,47 +20,6 @@ def _mysql_get_settings_dict(prefix=None):
 
 # Additional imports for FIFO inventory
 from inventory_fifo import get_fifo_valuation
-
-def _map_booking_row(row: dict) -> dict:
-    """Map MySQL snake_case columns to camelCase for admin_bookings compatibility."""
-    if not row:
-        return row
-    mapping = {
-        "id": "id",
-        "console_id": "consoleType",
-        "member_id": "memberId",
-        "booking_date": "date",
-        "start_time": "startTime",
-        "end_time": "endTime",
-        "status": "status",
-        "member_id": "customerName",
-        "notes": "notes",
-        "telegram_chat_id": "telegramChatId",
-        "duration_mins": "durationMins",
-        "phone": "phone",
-        "game_name": "gameName",
-    }
-    result = {}
-    for db_key, bk_key in mapping.items():
-        if db_key in row and row[db_key] is not None:
-            result[bk_key] = row[db_key]
-    if "start_time" in row and row["start_time"]:
-        try:
-            result["timeSlot"] = row["start_time"].strftime("%H:%M")
-        except:
-            result["timeSlot"] = str(row["start_time"])[11:16]
-    if "end_time" in row and row["end_time"]:
-        try:
-            result["endTime"] = row["end_time"].strftime("%H:%M")
-        except:
-            pass
-    # Also keep staff_name as-is
-    if "staff_name" in row and row["staff_name"]:
-        result["staffName"] = row["staff_name"]
-
-    return result
-
-
 SHEET_STOCK_IN = "Stock_In"
 SHEET_STOCK_OUT = "Stock_Out"
 
@@ -482,20 +441,11 @@ async def api_sheets_weekly_report(auth=Depends(verify_api_key)):
 #  BOOKINGS — list all with filters
 # ═══════════════════════════════════════
 @app.get("/api/bookings", tags=["Bookings"])
-async def api_bookings_list(
-    status: str = Query(""),
-    auth=Depends(verify_api_key),
-):
-    """List all bookings from MySQL. Optional ?status=pending|confirmed|rejected filter."""
+async def api_bookings_list(auth=Depends(verify_api_key)):
+    """List all bookings from MySQL."""
     try:
-        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking"
-        params = []
-        if status:
-            sql += " WHERE status = %s"
-            params.append(status)
-        sql += " ORDER BY id DESC LIMIT 500"
-        rows = _mysql_query(sql, tuple(params))
-        return ok({"bookings": [_map_booking_row(r) for r in rows]})
+        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes FROM console_booking ORDER BY id DESC LIMIT 500")
+        return ok({"bookings": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -503,14 +453,13 @@ async def api_bookings_list(
 @app.get("/api/bookings/search", tags=["Bookings"])
 async def api_bookings_search(
     date: str = Query(""),
-    status: str = Query(""),
+    status: str = Query("Active"),
     chat_id: str = Query(""),
-    telegram_chat_id: str = Query(""),
     auth=Depends(verify_api_key),
 ):
     """Search bookings from MySQL by date, status, or chat_id."""
     try:
-        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE 1=1"
+        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes FROM console_booking WHERE 1=1"
         params = []
         if date:
             sql += " AND booking_date = %s"
@@ -521,12 +470,9 @@ async def api_bookings_search(
         if chat_id:
             sql += " AND member_id = %s"
             params.append(chat_id)
-        if telegram_chat_id:
-            sql += " AND telegram_chat_id = %s"
-            params.append(telegram_chat_id)
         sql += " ORDER BY id DESC LIMIT 200"
         rows = _mysql_query(sql, tuple(params))
-        return ok({"bookings": [_map_booking_row(r) for r in rows]})
+        return ok({"bookings": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -535,10 +481,10 @@ async def api_bookings_search(
 async def api_bookings_get(booking_id: str, auth=Depends(verify_api_key)):
     """Get a booking from MySQL."""
     try:
-        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE id=%s", (booking_id,))
+        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes FROM console_booking WHERE id=%s", (booking_id,))
         if not rows:
             raise HTTPException(status_code=404, detail="Booking not found")
-        return ok({"booking": _map_booking_row(rows[0])})
+        return ok({"booking": rows[0]})
     except HTTPException:
         raise
     except Exception as e:
@@ -813,80 +759,5 @@ async def api_sheets_config(auth=Depends(verify_api_key)):
     try:
         data = _mysql_get_settings_dict()
         return ok({"config": data})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.patch("/api/bookings/{booking_id}/status", tags=["Bookings"])
-async def api_bookings_update_status(booking_id: int, req: dict, auth=Depends(verify_api_key)):
-    """Update booking status (approve/reject/cancel). Returns full booking data."""
-    try:
-        new_status = req.get("status", "")
-        if new_status not in ("pending", "confirmed", "rejected", "active", "done", "cancelled"):
-            raise HTTPException(status_code=400, detail=f"Invalid status: {new_status}")
-        
-        staff_note = req.get("staffNote", "")
-        console_id = req.get("consoleId", "")
-        
-        # Update status
-        if console_id and new_status == "confirmed":
-            _mysql_exec(
-                "UPDATE console_booking SET status=%s, staff_name=%s, notes=CONCAT(IFNULL(notes,''), %s), console_id=%s WHERE id=%s",
-                (new_status, req.get("staff_name", ""), staff_note, console_id, booking_id)
-            )
-        else:
-            _mysql_exec(
-                "UPDATE console_booking SET status=%s, staff_name=%s, notes=CONCAT(IFNULL(notes,''), %s) WHERE id=%s",
-                (new_status, req.get("staff_name", ""), staff_note, booking_id)
-            )
-
-        # --- Booking <-> Console Status Link ---
-        # When confirmed: mark assigned console as Reserved
-        # When cancelled: free the console (unless it is currently Active)
-        if console_id and new_status == "confirmed":
-            try:
-                _mysql_exec(
-                    "UPDATE console_status SET status = 'Reserved' WHERE console_id = %s",
-                    (console_id,)
-                )
-            except Exception:
-                pass  # graceful fail
-        elif new_status == "cancelled":
-            try:
-                old_bk = _mysql_query(
-                    "SELECT console_id FROM console_booking WHERE id = %s",
-                    (booking_id,)
-                )
-                if old_bk and old_bk[0].get("console_id"):
-                    bk_console_id = old_bk[0]["console_id"]
-                    _mysql_exec(
-                        "UPDATE console_status SET status = 'Free' WHERE console_id = %s AND status != 'Active'",
-                        (bk_console_id,)
-                    )
-            except Exception:
-                pass  # graceful fail
-        
-        # Return updated booking
-        rows = _mysql_query(
-            "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE id=%s",
-            (booking_id,)
-        )
-        if not rows:
-            raise HTTPException(status_code=404, detail="Booking not found after update")
-        
-        b = rows[0]
-        # Also update end_time if confirmed (set end_time = start_time + duration_mins)
-        if new_status == "confirmed" and b.get("end_time") and b.get("duration_mins"):
-            from datetime import timedelta
-            try:
-                new_end = b["start_time"] + timedelta(minutes=b["duration_mins"])
-                _mysql_exec("UPDATE console_booking SET end_time=%s WHERE id=%s", (new_end, booking_id))
-                b["end_time"] = new_end
-            except:
-                pass
-        
-        return ok({"booking": _map_booking_row(b)})
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

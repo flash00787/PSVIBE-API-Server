@@ -18,6 +18,9 @@
   .header h1 { font-size: 28px; font-weight: 800; background: linear-gradient(135deg, var(--primary), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; letter-spacing: 2px; }
   .header .subtitle { font-size: 12px; color: var(--text-muted); margin-top: 4px; letter-spacing: 3px; text-transform: uppercase; }
   .header .badge-receipt { display: inline-block; background: var(--primary); color: white; font-size: 10px; font-weight: 700; padding: 3px 12px; border-radius: 20px; margin-top: 8px; letter-spacing: 1px; text-transform: uppercase; }
+  .header .badge-gift { background: var(--accent); }
+  .header .badge-new { background: var(--success); }
+  .header .badge-topup { background: #FF9800; }
   .voucher-banner { background: linear-gradient(135deg, var(--primary-dark), #7C4DFF); border-radius: 12px; padding: 12px 16px; text-align: center; margin-bottom: 16px; }
   .voucher-banner .label { font-size: 10px; text-transform: uppercase; letter-spacing: 2px; opacity: 0.8; }
   .voucher-banner .voucher-id { font-size: 20px; font-weight: 800; letter-spacing: 1px; margin-top: 2px; }
@@ -25,6 +28,7 @@
   .info-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 10px 12px; }
   .info-card .label { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 3px; }
   .info-card .value { font-size: 14px; font-weight: 600; }
+  .info-wide { grid-column: 1 / -1; }
   .section { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
   .section-header { padding: 10px 14px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: var(--primary); border-bottom: 1px solid var(--card-border); }
   .section-body { padding: 8px 14px; }
@@ -54,52 +58,100 @@
   .wallet-display { text-align: center; padding: 10px; background: rgba(0,230,118,0.06); border-radius: 8px; margin: 4px 0; }
   .wallet-display .wallet-label { font-size: 9px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; }
   .wallet-display .wallet-value { font-size: 22px; font-weight: 800; color: var(--success); }
+  .member-hero { text-align: center; padding: 16px; border-bottom: 1px solid var(--card-border); }
+  .member-hero .member-name { font-size: 20px; font-weight: 700; }
+  .member-hero .member-id { font-size: 12px; color: var(--text-muted); margin-top: 2px; font-family: monospace; letter-spacing: 1px; }
+  .summary-row { display: flex; justify-content: space-between; padding: 8px 14px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .summary-row .s-label { color: var(--text-muted); }
+  .summary-row .s-value { font-weight: 600; }
+  .referral-box { background: rgba(255,214,0,0.08); border: 1px solid rgba(255,214,0,0.2); border-radius: 8px; padding: 10px 14px; margin: 8px 14px; text-align: center; font-size: 12px; }
+  .referral-box .ref-code { font-weight: 700; color: var(--warning); font-family: monospace; font-size: 14px; }
   @media print { body { background: white; color: black; } .header h1, .footer .tagline { -webkit-text-fill-color: initial; background: none; color: var(--primary); } .voucher-banner { background: var(--primary-dark); -webkit-print-color-adjust: exact; print-color-adjust: exact; } .info-card, .section { border-color: #ddd; background: #fafafa; } .total-row.grand-total { background: #f0f0f0; } .footer .print-btn { display: none; } .container { max-width: 100%; padding: 0; } }
 </style>
 </head>
 <body>
 <div class="container" id="app">
-  <div class="header"><h1>PS VIBE</h1><div class="subtitle">⚡ Gaming Lounge ⚡</div><div class="badge-receipt">🧾 Receipt</div></div>
+  <div class="header">
+    <h1>PS VIBE</h1>
+    <div class="subtitle">⚡ Gaming Lounge ⚡</div>
+    <div class="badge-receipt" id="receiptBadge">🧾 Receipt</div>
+  </div>
   <div class="voucher-banner"><div class="label">Voucher ID</div><div class="voucher-id" id="voucherId"></div></div>
-  <div class="info-grid">
-    <div class="info-card"><div class="label">📅 Date</div><div class="value" id="receiptDate"></div></div>
-    <div class="info-card"><div class="label">🕹️ Console</div><div class="value" id="consoleId"></div></div>
-    <div class="info-card"><div class="label">👤 Member</div><div class="value" id="memberId"></div></div>
-    <div class="info-card"><div class="label">⏱️ Duration</div><div class="value" id="playDuration"></div></div>
+
+  <!-- Session sections (hidden for new_member / topup) -->
+  <div id="sessionSections">
+    <div class="info-grid" id="sessionGrid">
+      <div class="info-card"><div class="label">📅 Date</div><div class="value" id="receiptDate"></div></div>
+      <div class="info-card"><div class="label">🕹️ Console</div><div class="value" id="consoleId"></div></div>
+      <div class="info-card"><div class="label">👤 Member</div><div class="value" id="memberId"></div></div>
+      <div class="info-card"><div class="label">⏱️ Duration</div><div class="value" id="playDuration"></div></div>
+    </div>
+    <div class="section" id="gameFeeSection">
+      <div class="section-header">🎮 Gaming Fee</div>
+      <div class="section-body"><table><tr><th>Description</th><th>Amount</th></tr><tr id="gameFeeRow"><td></td><td></td></tr></table></div>
+    </div>
+    <div class="section" id="foodSection" style="display:none">
+      <div class="section-header">🍕 Food & Drinks</div>
+      <div class="section-body"><table><tr><th>Item</th><th>Amount</th></tr></table></div>
+    </div>
+    <div class="section" id="discountSection" style="display:none">
+      <div class="section-header">🎁 Discounts & Promotions</div>
+      <div id="discountBody"></div>
+    </div>
+    <div class="section" style="border-color: var(--primary);" id="totalSection">
+      <div class="total-row muted"><span class="label">Gross Total</span><span class="amount" id="grossTotal"></span></div>
+      <div class="total-row muted" id="discountRow" style="display:none"><span class="label">Discount</span><span class="amount negative" id="discountAmount"></span></div>
+      <div class="total-row muted" id="bonusRow" style="display:none"><span class="label">🎁 Bonus Minutes</span><span class="amount positive" id="bonusAmount"></span></div>
+      <div class="total-row grand-total"><span class="label">💰 Net Total</span><span class="amount" id="netTotal"></span></div>
+    </div>
   </div>
-  <div class="section" id="gameFeeSection">
-    <div class="section-header">🎮 Gaming Fee</div>
-    <div class="section-body"><table><tr><th>Description</th><th>Amount</th></tr><tr id="gameFeeRow"><td></td><td></td></tr></table></div>
+
+  <!-- New Member sections -->
+  <div id="nmSections" style="display:none">
+    <div class="section" style="border-color: var(--primary);">
+      <div class="member-hero">
+        <div class="member-name" id="nmName">-</div>
+        <div class="member-id" id="nmMid">-</div>
+      </div>
+      <div class="summary-row"><span class="s-label">📅 Date</span><span class="s-value" id="nmDate">-</span></div>
+      <div class="summary-row"><span class="s-label">📞 Phone</span><span class="s-value" id="nmPhone">-</span></div>
+      <div class="summary-row"><span class="s-label">💵 Card Price</span><span class="s-value" id="nmAmount">-</span></div>
+      <div class="summary-row"><span class="s-label">⏱️ Base Mins</span><span class="s-value" id="nmMins">-</span></div>
+      <div class="summary-row" id="nmGiftBadge" style="display:none"><span class="s-label">🎁 Type</span><span class="s-value" style="color:var(--accent);font-weight:700">Gift / Free Card</span></div>
+      <div class="referral-box" id="nmReferralBox" style="display:none">
+        🎁 Referral Bonus!<br>
+        Code: <span class="ref-code" id="nmRefCode"></span><br>
+        <span style="color:var(--success);font-weight:600">+30 mins</span> added to wallet
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-header">💳 Payment</div>
+      <div class="payment-grid">
+        <div class="payment-item"><div class="pay-label">Cash</div><div class="pay-amount cash" id="nmCash">0 Ks</div></div>
+        <div class="payment-item"><div class="pay-label">KPay</div><div class="pay-amount kpay" id="nmKpay">0 Ks</div></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-header">💰 Wallet</div>
+      <div class="wallet-display">
+        <div class="wallet-label">Initial Balance</div>
+        <div class="wallet-value" id="nmBalance">0 mins</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+          Rank: <span id="nmRank">New Member</span>
+          <span id="nmBonusInfo" style="display:none"> | Referral: +30 mins</span>
+        </div>
+      </div>
+    </div>
   </div>
-  <div class="section" id="foodSection" style="display:none">
-    <div class="section-header">🍕 Food & Drinks</div>
-    <div class="section-body"><table><tr><th>Item</th><th>Amount</th></tr></table></div>
-  </div>
-  <div class="section" id="discountSection" style="display:none">
-    <div class="section-header">🎁 Discounts & Promotions</div>
-    <div id="discountBody"></div>
-  </div>
-  <div class="section" style="border-color: var(--primary);">
-    <div class="total-row muted"><span class="label">Gross Total</span><span class="amount" id="grossTotal"></span></div>
-    <div class="total-row muted" id="discountRow" style="display:none"><span class="label">Discount</span><span class="amount negative" id="discountAmount"></span></div>
-    <div class="total-row muted" id="bonusRow" style="display:none"><span class="label">🎁 Bonus Minutes</span><span class="amount positive" id="bonusAmount"></span></div>
-    <div class="total-row grand-total"><span class="label">💰 Net Total</span><span class="amount" id="netTotal"></span></div>
-  </div>
-  <div class="section">
+
+  <div class="section" id="receiptPayment" style="display:none">
     <div class="section-header">💳 Payment</div>
     <div class="payment-grid">
       <div class="payment-item"><div class="pay-label">Cash</div><div class="pay-amount cash" id="cashAmount">0 Ks</div></div>
       <div class="payment-item"><div class="pay-label">KPay</div><div class="pay-amount kpay" id="kpayAmount">0 Ks</div></div>
     </div>
   </div>
-  <div class="section" id="walletSection" style="display:none">
-    <div class="section-header">💳 Wallet Balance</div>
-    <div class="wallet-display">
-      <div class="wallet-label">Remaining Balance</div>
-      <div class="wallet-value" id="balanceAfter"></div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Previous: <span id="prevBalance"></span> mins <span id="balanceChange"></span></div>
-    </div>
-  </div>
+
   <div class="footer">
     <div class="tagline">🎮 Play The Game. Share The VIBE! 🎮</div>
     <div class="copyright">PS VIBE Gaming Lounge &mdash; Yangon, Myanmar</div>
@@ -111,6 +163,62 @@
   var data = window.__RECEIPT_DATA__;
   if(!data){document.getElementById('voucherId').textContent='Receipt not found';return;}
   document.getElementById('voucherId').textContent = data.voucher_id||'-';
+
+  var rtype = data.type || '';
+
+  if(rtype === 'new_member'){
+    // ── New Member Receipt ──
+    var badge = document.getElementById('receiptBadge');
+    if(data.is_gift){ badge.textContent = '🎁 Gift Member'; badge.className = 'badge-receipt badge-gift'; }
+    else { badge.textContent = '🆕 New Member'; badge.className = 'badge-receipt badge-new'; }
+    document.getElementById('sessionSections').style.display = 'none';
+    document.getElementById('receiptPayment').style.display = 'none';
+    document.getElementById('nmSections').style.display = 'block';
+    document.getElementById('nmName').textContent = data.name || '-';
+    document.getElementById('nmMid').textContent = '🪪 ' + (data.member_id || '-');
+    document.getElementById('nmDate').textContent = data.date || '-';
+    document.getElementById('nmPhone').textContent = data.phone || '-';
+    var amt = data.amount||0;
+    if(data.is_gift && amt===0){ document.getElementById('nmAmount').textContent = 'N/A (Gift)'; }
+    else { document.getElementById('nmAmount').textContent = fmtKs(amt); }
+    document.getElementById('nmMins').textContent = (data.mins||0) + ' mins';
+    if(data.is_gift) document.getElementById('nmGiftBadge').style.display = 'flex';
+    document.getElementById('nmCash').textContent = fmtKs(data.kpay ? 0 : data.amount||0);
+    document.getElementById('nmKpay').textContent = fmtKs(data.kpay||0);
+    document.getElementById('nmBalance').textContent = (data.balance_after||data.balance_mins||0) + ' mins';
+    document.getElementById('nmRank').textContent = data.rank || 'New Member';
+    if(data.referral_code){
+      document.getElementById('nmReferralBox').style.display = 'block';
+      document.getElementById('nmRefCode').textContent = data.referral_code;
+      document.getElementById('nmBonusInfo').style.display = 'inline';
+    }
+    return;
+  }
+
+  if(rtype === 'topup'){
+    var badge = document.getElementById('receiptBadge');
+    badge.textContent = '💳 Top Up'; badge.className = 'badge-receipt badge-topup';
+    document.getElementById('sessionSections').style.display = 'none';
+    document.getElementById('receiptPayment').style.display = 'none';
+    document.getElementById('nmSections').style.display = 'block';
+    var amt = data.amount||0;
+    document.getElementById('nmName').textContent = data.name || data.member_id || '-';
+    document.getElementById('nmMid').textContent = '🪪 ' + (data.member_id || '-');
+    document.getElementById('nmDate').textContent = data.date || '-';
+    document.getElementById('nmPhone').textContent = data.staff_name || '-';
+    document.getElementById('nmAmount').textContent = fmtKs(amt);
+    document.getElementById('nmMins').textContent = (data.mins_added||data.mins||0) + ' mins';
+    document.getElementById('nmGiftBadge').style.display = 'none';
+    document.getElementById('nmCash').textContent = fmtKs(data.cash||0);
+    document.getElementById('nmKpay').textContent = fmtKs(data.kpay||0);
+    document.getElementById('nmBalance').textContent = (data.balance_after||0) + ' mins';
+    document.getElementById('nmRank').textContent = data.rank || '-';
+    return;
+  }
+
+  // ── Default: Gaming Session Receipt ──
+  document.getElementById('nmSections').style.display = 'none';
+  document.getElementById('receiptPayment').style.display = 'block';
   document.getElementById('receiptDate').textContent = data.date||'-';
   document.getElementById('consoleId').textContent = data.console_id||'-';
   document.getElementById('memberId').textContent = data.is_guest ? '👤 Guest' : (data.member_id||'👤 Guest');
@@ -138,14 +246,6 @@
   document.getElementById('netTotal').textContent = fmtKs(data.net_total||0);
   document.getElementById('cashAmount').textContent = fmtKs(data.cash||0);
   document.getElementById('kpayAmount').textContent = fmtKs(data.kpay||0);
-  if(!data.is_guest && data.balance_after!==null && data.balance_after!==undefined){
-    document.getElementById('walletSection').style.display='block';
-    document.getElementById('balanceAfter').textContent = data.balance_after+' mins';
-    document.getElementById('prevBalance').textContent = data.prev_balance||0;
-    if(data.balance_change!==null && data.balance_change!==0){
-      document.getElementById('balanceChange').textContent = '('+(data.balance_change>0?'+':'')+data.balance_change+' mins)';
-    }
-  }
   function fmtKs(a){a=a??0;return Number(a).toLocaleString()+' Ks';}
 })();
 </script>

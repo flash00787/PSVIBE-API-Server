@@ -541,7 +541,7 @@ async def api_fetch_food_costs(auth=Depends(verify_api_key)):
 async def api_fetch_games(auth=Depends(verify_api_key)):
     """Fetch game list from MySQL games_library."""
     try:
-        rows = _mysql_query("SELECT game_title, genre, solo_multi, final_status, disc_count FROM games_library ORDER BY game_title")
+        rows = _mysql_query("SELECT game_title, genre, solo_multi, disc_count FROM games_library ORDER BY game_title")
         return ok({"games": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -590,9 +590,10 @@ async def api_get_games_on_console(console_id: str, auth=Depends(verify_api_key)
 #  get_consoles_with_game
 # ═══════════════════════════════════════
 @app.get("/api/get_consoles_with_game", response_model=GenericResponse, tags=["Games"], summary="Get consoles with a game [MySQL]")
-async def api_get_consoles_with_game(game_title: str = Query("", description="Game title to search"), auth=Depends(verify_api_key)):
+async def api_get_consoles_with_game(req: dict, auth=Depends(verify_api_key)):
     """Get consoles that have a specific game from MySQL."""
     try:
+        game_title = req.get("game_title", "")
         rows = _mysql_query(
             "SELECT DISTINCT console_id, console_name FROM console_games WHERE game_title=%s",
             (game_title,))
@@ -806,7 +807,7 @@ async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
     try:
         _mysql_exec(
             "INSERT INTO attendance_log (staff_name, login_time, date, status) VALUES (%s, NOW(), CURDATE(), %s)",
-            (req.get("staff_name") or req.get("staff", ""), req.get("status", "Present")))
+            (req.get("staff_name", ""), req.get("status", "Present")))
         return ok({"saved": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -966,78 +967,21 @@ async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.post("/api/bookings", response_model=GenericResponse, tags=["Bookings"], summary="Create booking from customer bot payload [MySQL]")
 async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
-    """Create a booking - supports both customer bot and staff formats."""
+    """Create a booking from customer bot in MySQL."""
     try:
         now = now_mmt()
-        
-        # Detect customer bot format (has customerName)
-        customer_name = req.get("customerName", "")
-        if customer_name:
-            # Customer bot format
-            telegram_chat_id = req.get("telegramChatId", "")
-            phone = req.get("phone", "")
-            booking_date_str = req.get("date", "")
-            time_slot = req.get("timeSlot", "")
-            console_type = req.get("consoleType", "PS5")
-            duration_mins = int(req.get("durationMins", 60))
-            game_name = req.get("gameName", "")
-            username = req.get("username", "")
-            
-            from datetime import datetime, timedelta
-            try:
-                start_dt = datetime.strptime(f"{booking_date_str} {time_slot}", "%Y-%m-%d %H:%M")
-            except:
-                start_dt = now
-            end_dt = start_dt + timedelta(minutes=duration_mins)
-            
-            notes = f"Game: {game_name} | Phone: {phone} | User: {username}"
-            
-            bk_id = _mysql_exec(
-                "INSERT INTO console_booking (console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                ("", telegram_chat_id, booking_date_str, start_dt, end_dt, "pending", customer_name, notes, telegram_chat_id, duration_mins, phone, game_name)
-            )
-            
-            # Send admin notification
-            _notify_booking_received(customer_name, booking_date_str, time_slot, console_type, duration_mins, game_name, phone, bk_id)
-            
-            return ok({"id": bk_id, "message": "Booking created"})
-        else:
-            # Staff format (existing)
-            console_id = req.get("console_id", "")
-            member_id = req.get("member_id", "")
-            staff = req.get("staff_name", req.get("staff", ""))
-            notes = req.get("notes", "")
-            _mysql_exec("INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s)", (console_id, member_id, now.date(), now, "Active", staff, notes))
-            return ok({"booking_id": f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ','').replace('-','')}-{now.strftime('%H%M')}"})
+        console_id = req.get("console_id", "")
+        member_id = req.get("member_id", "")
+        staff = req.get("staff_name", req.get("staff", ""))
+        notes = req.get("notes", "")
+        _mysql_exec("INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s)", (console_id, member_id, now.date(), now, "Active", staff, notes))
+        return ok({"booking_id": f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ','').replace('-','')}-{now.strftime('%H%M')}"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 
-
-
 # ═══════════════════════════════════════
-
-
-def _notify_booking_received(name, date, time_slot, console_type, duration, game, phone, bk_id):
-    """Notify admin via Telegram about new customer booking. Use Sale Bot to approve."""
-    import json, urllib.request, os
-    token = os.environ.get("CUSTOMER_BOT_TOKEN", os.environ.get("BOT_TOKEN", ""))
-    chat_id = "-1003686032747"
-    if not token or not chat_id:
-        return
-    msg = ("\U0001f195 *New Booking Request #" + str(bk_id) + "*\n\n"
-           + "\U0001f464 " + name + "\n\U0001f4de " + phone + "\n\U0001f4c5 " + date + " \u23f0 " + time_slot
-           + "\n\U0001f3ae " + console_type + "\n\u23f1 " + str(duration) + " min\n\U0001f579 " + (game if game else "\u2014")
-           + "\n\n_Customer မှ booking တင်ထားပါသည်။_\n"
-           + "_(Sale Bot → Customer Booking မှ Approve/Reject ပြုလုပ်ပါ)_")
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = json.dumps({"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}).encode()
-    try:
-        urllib.request.urlopen(urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}), timeout=5)
-    except:
-        pass
-
 
 # ================================================================
 #  MUTATION — topup/log
@@ -1135,15 +1079,13 @@ async def api_member_register(req: dict, auth=Depends(verify_api_key)):
 async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
     """Persist receipt data to MySQL."""
     try:
-        inner = req.get("data")
-        req_src = inner if (inner and isinstance(inner, dict)) else req
-        receipt_no = req_src.get("receipt_no") or req.get("voucher_id", "")
-        member_id = req_src.get("member_id", "")
-        amount = req_src.get("amount", 0)
-        payment_method = req_src.get("payment_method", "")
-        items = req_src.get("items", "")
-        receipt_date = req_src.get("receipt_date", "")
-        staff_name = req_src.get("staff_name", "")
+        receipt_no = req.get("receipt_no", "")
+        member_id = req.get("member_id", "")
+        amount = req.get("amount", 0)
+        payment_method = req.get("payment_method", "")
+        items = req.get("items", "")
+        receipt_date = req.get("receipt_date", "")
+        staff_name = req.get("staff_name", "")
 
         logger.info("Saving receipt to MySQL: receipt_no=%s", receipt_no)
 
@@ -1211,8 +1153,8 @@ async def api_add_console_game(req: dict, auth=Depends(verify_api_key)):
     try:
         _mysql_exec(
             "INSERT INTO console_games (console_id, console_name, game_id, game_title, genre, status, slot_position) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (req.get("console_id",""), req.get("console_name") or req.get("console_id",""), req.get("game_id") or req.get("game_title",""),
-             req.get("game_title",""), req.get("genre",""), req.get("status") or req.get("install_type","Installed"),
+            (req.get("console_id",""), req.get("console_name",""), req.get("game_id",""),
+             req.get("game_title",""), req.get("genre",""), req.get("status","Installed"),
              req.get("slot_position",1)))
         return ok({"saved": True})
     except Exception as e:

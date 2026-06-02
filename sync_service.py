@@ -491,7 +491,7 @@ class SyncService:
 
     # ── Sync Functions ────────────────────────────────────────────
 
-    def sync_member_wallets(self) -> int:
+    #DISABLED_KORA     def sync_member_wallets(self) -> int:
         """Sync Card_Wallet sheet → member_wallets MySQL table.
 
         Card_Wallet column mapping (0-indexed):
@@ -1069,7 +1069,7 @@ class SyncService:
 
         results: Dict[str, int] = {}
         sync_order = [
-            ("member_wallets",   self.sync_member_wallets),
+#DISABLED_KORA             ("member_wallets",   self.sync_member_wallets),
             ("games_library",    self.sync_games_library),
             ("console_status",   self.sync_console_status),
             ("staff_records",    self.sync_staff_records),
