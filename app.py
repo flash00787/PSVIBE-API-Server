@@ -979,6 +979,7 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
             booking_date_str = req.get("date", "")
             time_slot = req.get("timeSlot", "")
             console_type = req.get("consoleType", "PS5")
+            console_id = req.get("console_id", "")
             duration_mins = int(req.get("durationMins", 60))
             game_name = req.get("gameName", "")
             username = req.get("username", "")
@@ -994,7 +995,7 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
             
             bk_id = _mysql_exec(
                 "INSERT INTO console_booking (console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                ("", telegram_chat_id, booking_date_str, start_dt, end_dt, "pending", customer_name, notes, telegram_chat_id, duration_mins, phone, game_name)
+                (console_id, telegram_chat_id, booking_date_str, start_dt, end_dt, "pending", customer_name, notes, telegram_chat_id, duration_mins, phone, game_name)
             )
             
             # Send admin notification

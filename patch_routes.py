@@ -22,7 +22,12 @@ def _mysql_get_settings_dict(prefix=None):
 from inventory_fifo import get_fifo_valuation
 
 def _map_booking_row(row: dict) -> dict:
-    """Map MySQL snake_case columns to camelCase for admin_bookings compatibility."""
+    """Map MySQL snake_case columns to camelCase for admin_bookings compatibility.
+    
+    IMPORTANT: For pending bookings from customer bot, customerName is in staff_name column
+    because the customer bot INSERT maps customer_name → staff_name in MySQL.
+    For staff bookings, member_id holds the actual member ID.
+    """
     if not row:
         return row
     mapping = {
@@ -33,7 +38,6 @@ def _map_booking_row(row: dict) -> dict:
         "start_time": "startTime",
         "end_time": "endTime",
         "status": "status",
-        "member_id": "customerName",
         "notes": "notes",
         "telegram_chat_id": "telegramChatId",
         "duration_mins": "durationMins",
@@ -44,6 +48,19 @@ def _map_booking_row(row: dict) -> dict:
     for db_key, bk_key in mapping.items():
         if db_key in row and row[db_key] is not None:
             result[bk_key] = row[db_key]
+    
+    # customerName: handle both customer bot (pending) and staff formats
+    if row.get("status") == "pending":
+        # Customer bot stores the customer name in staff_name
+        result["customerName"] = row.get("staff_name", "") or row.get("member_id", "Unknown")
+    else:
+        # Staff-created bookings: member_id is the actual member ID (e.g., PSV_A_001)
+        result["customerName"] = row.get("member_id", "") or row.get("staff_name", "Unknown")
+    
+    # consoleType: if console_id is empty (customer bot), provide a sensible fallback
+    if not str(result.get("consoleType", "")).strip():
+        result["consoleType"] = "PS5"
+    
     if "start_time" in row and row["start_time"]:
         try:
             result["timeSlot"] = row["start_time"].strftime("%H:%M")
@@ -54,7 +71,6 @@ def _map_booking_row(row: dict) -> dict:
             result["endTime"] = row["end_time"].strftime("%H:%M")
         except:
             pass
-    # Also keep staff_name as-is
     if "staff_name" in row and row["staff_name"]:
         result["staffName"] = row["staff_name"]
 
@@ -827,18 +843,31 @@ async def api_bookings_update_status(booking_id: int, req: dict, auth=Depends(ve
         
         staff_note = req.get("staffNote", "")
         console_id = req.get("consoleId", "")
+        staff_name_val = req.get("staff_name", "").strip() or req.get("staffName", "").strip()
         
         # Update status
         if console_id and new_status == "confirmed":
-            _mysql_exec(
-                "UPDATE console_booking SET status=%s, staff_name=%s, notes=CONCAT(IFNULL(notes,''), %s), console_id=%s WHERE id=%s",
-                (new_status, req.get("staff_name", ""), staff_note, console_id, booking_id)
-            )
+            if staff_name_val:
+                _mysql_exec(
+                    "UPDATE console_booking SET status=%s, staff_name=%s, notes=CONCAT(IFNULL(notes,''), %s), console_id=%s WHERE id=%s",
+                    (new_status, staff_name_val, staff_note, console_id, booking_id)
+                )
+            else:
+                _mysql_exec(
+                    "UPDATE console_booking SET status=%s, notes=CONCAT(IFNULL(notes,''), %s), console_id=%s WHERE id=%s",
+                    (new_status, staff_note, console_id, booking_id)
+                )
         else:
-            _mysql_exec(
-                "UPDATE console_booking SET status=%s, staff_name=%s, notes=CONCAT(IFNULL(notes,''), %s) WHERE id=%s",
-                (new_status, req.get("staff_name", ""), staff_note, booking_id)
-            )
+            if staff_name_val:
+                _mysql_exec(
+                    "UPDATE console_booking SET status=%s, staff_name=%s, notes=CONCAT(IFNULL(notes,''), %s) WHERE id=%s",
+                    (new_status, staff_name_val, staff_note, booking_id)
+                )
+            else:
+                _mysql_exec(
+                    "UPDATE console_booking SET status=%s, notes=CONCAT(IFNULL(notes,''), %s) WHERE id=%s",
+                    (new_status, staff_note, booking_id)
+                )
 
         # --- Booking <-> Console Status Link ---
         # When confirmed: mark assigned console as Reserved
