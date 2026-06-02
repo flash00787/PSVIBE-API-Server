@@ -1,6 +1,25 @@
 from app import *
 
+
+# Lazy imports to avoid circular dependency with app.py
+def _mysql_query(sql, params=None):
+    from app import _mysql_query as _mq
+    return _mq(sql, params)
+
+def _mysql_exec(sql, params=None):
+    from app import _mysql_exec as _me
+    return _me(sql, params)
+
+def _mysql_get_setting(key, default=None):
+    from app import _mysql_get_setting as _mgs
+    return _mgs(key, default)
+
+def _mysql_get_settings_dict(prefix=None):
+    from app import _mysql_get_settings_dict as _mgsd
+    return _mgsd(prefix)
+
 # Additional imports for FIFO inventory
+from inventory_fifo import get_fifo_valuation
 SHEET_STOCK_IN = "Stock_In"
 SHEET_STOCK_OUT = "Stock_Out"
 
@@ -9,33 +28,31 @@ SHEET_STOCK_OUT = "Stock_Out"
 # ═══════════════════════════════════════
 @app.get("/api/sheets/inventory", tags=["Sheets"])
 async def api_sheets_inventory(auth=Depends(verify_api_key)):
-    """Return inventory data from Inventory sheet."""
+    """Return inventory data using MySQL FIFO valuation (real-time from stock_in/stock_out)."""
     try:
-        ws = get_worksheet("Inventory")
-        rows = ws.get_all_values()
-        if len(rows) < 2:
-            return ok({"items": [], "categories": {}, "total_cost": 0})
+        fifo = get_fifo_valuation()
         items = []
         total_cost = 0
         categories = {}
-        for row in rows[1:]:
-            if not row or not row[0].strip():
-                continue
-            name = row[0].strip() if len(row) > 0 else ""
-            cat = row[1].strip() if len(row) > 1 else "Uncategorized"
-            qty = int_safe(row[2]) if len(row) > 2 else 0
-            cost = int_safe(row[3]) if len(row) > 3 else 0
-            price = int_safe(row[4]) if len(row) > 4 else 0
-            item_cost = cost * qty
-            total_cost += item_cost
+        for i in fifo.get("items", []):
+            name = i["item_name"]
+            qty = max(0, i["quantity"])
+            total = int(i["fifo_value"])
+            cost = int(round(total / qty)) if qty > 0 else 0
+            cat = "Uncategorized"
+            total_cost += total
             if cat not in categories:
                 categories[cat] = 0
-            categories[cat] += item_cost
+            categories[cat] += total
             items.append({
                 "name": name, "category": cat, "qty": qty,
-                "cost": cost, "price": price, "total": item_cost,
+                "cost": cost, "price": 0, "total": total,
             })
-        return ok({"items": items, "categories": categories, "total_cost": total_cost})
+        return ok({
+            "items": items,
+            "categories": categories,
+            "total_cost": total_cost,
+        })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -45,56 +62,10 @@ async def api_sheets_inventory(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.get("/api/sheets/consoles", tags=["Sheets"])
 async def api_sheets_consoles(auth=Depends(verify_api_key)):
-    """Return console list with live status (same data as fetch_console_status, dict format)."""
+    """Return console list with live status from MySQL."""
     try:
-        today = today_str()
-        setting_sh = get_worksheet(SHEET_SETTING)
-        names = setting_sh.col_values(8)[1:]
-        types = setting_sh.col_values(9)[1:]
-        mults = setting_sh.col_values(10)[1:]
-
-        consoles = {}
-        for i, name in enumerate(names):
-            if not name.strip():
-                continue
-            try:
-                mult = float_safe(mults[i]) if i < len(mults) else 1.0
-                mult = mult if mult > 0 else 1.0
-            except Exception:
-                mult = 1.0
-            ctype = (types[i] if i < len(types) else "").strip()
-            consoles[name.strip()] = {
-                "id": name.strip(), "type": ctype, "mult": mult,
-                "status": "Free", "member": None, "start": None,
-                "staff": None, "booking_id": None,
-            }
-
-        try:
-            bk_rows = get_booking_rows()
-            for row in bk_rows[1:]:
-                if len(row) < 7:
-                    continue
-                bk_date = row[1].strip()
-                bk_cid = row[2].strip()
-                bk_status = row[6].strip()
-                if bk_date == today and bk_status in ("Active", "Scheduled", "Pending"):
-                    if bk_cid in consoles:
-                        consoles[bk_cid]["status"] = bk_status
-                        consoles[bk_cid]["member"] = row[3].strip() or "Guest"
-                        consoles[bk_cid]["start"] = row[4].strip()
-                        consoles[bk_cid]["staff"] = row[7].strip() if len(row) > 7 else ""
-                        consoles[bk_cid]["booking_id"] = row[0].strip()
-        except Exception as e:
-            logger.warning("Console booking overlay error: %s", e)
-
-        free = sum(1 for c in consoles.values() if c["status"] == "Free")
-        busy = len(consoles) - free
-        return ok({
-            "consoles": consoles,
-            "total": len(consoles),
-            "free": free,
-            "busy": busy,
-        })
+        rows = _mysql_query("SELECT console_id, status, current_game, current_member, start_time FROM console_status ORDER BY console_id")
+        return ok({"consoles": rows, "date": today_str()})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -104,42 +75,31 @@ async def api_sheets_consoles(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.get("/api/sheets/stock-today", tags=["Sheets"])
 async def api_sheets_stock_today(auth=Depends(verify_api_key)):
-    """Return today's stock movement summary from Stock_In / Stock_Out."""
+    """Return today's stock movement summary from MySQL stock_in / stock_out."""
     try:
         today = today_str()
         result = {"date": today, "stock_in": [], "stock_out": [], "in_total": 0, "out_total": 0}
 
-        # Stock In
+        # Stock In (MySQL)
         try:
-            si = get_worksheet(SHEET_STOCK_IN)
-            si_rows = si.get_all_values()
-            for row in si_rows[1:]:
-                if len(row) < 4:
-                    continue
-                d = row[0].strip() if row[0] else ""
-                if d != today:
-                    continue
-                item = row[1].strip() if len(row) > 1 else ""
-                qty = int_safe(row[2]) if len(row) > 2 else 0
-                cost = int_safe(row[3]) if len(row) > 3 else 0
+            rows = _mysql_query("SELECT item_name, quantity, unit_cost FROM stock_in WHERE receipt_no = %s", (today,))
+            for r in rows:
+                item = r["item_name"]
+                qty = r["quantity"]
+                cost = int(float(r["unit_cost"]))
                 result["stock_in"].append({"item": item, "qty": qty, "cost": cost})
                 result["in_total"] += cost * qty
         except Exception as e:
             logger.warning("Stock_In read error: %s", e)
 
-        # Stock Out
+        # Stock Out (MySQL)
         try:
-            so = get_worksheet(SHEET_STOCK_OUT)
-            so_rows = so.get_all_values()
-            for row in so_rows[1:]:
-                if len(row) < 4:
-                    continue
-                d = row[0].strip() if row[0] else ""
-                if d != today:
-                    continue
-                item = row[1].strip() if len(row) > 1 else ""
-                qty = int_safe(row[2]) if len(row) > 2 else 0
-                cost = int_safe(row[3]) if len(row) > 3 else 0
+            rows = _mysql_query(
+                "SELECT item_name, quantity, COALESCE(unit_price, 0) AS unit_price FROM stock_out WHERE DATE(sale_date) = CURDATE()")
+            for r in rows:
+                item = r.get("item_name", "")
+                qty = r.get("quantity", 0) or 0
+                cost = int(float(r.get("unit_price", 0) or 0))
                 result["stock_out"].append({"item": item, "qty": qty, "cost": cost})
                 result["out_total"] += cost * qty
         except Exception as e:
@@ -155,7 +115,7 @@ async def api_sheets_stock_today(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.get("/api/sheets/report-data", tags=["Sheets"])
 async def api_sheets_report_data(auth=Depends(verify_api_key)):
-    """Return aggregated daily report data (sales summary, console usage, top members)."""
+    """Return aggregated daily report data from MySQL."""
     try:
         today = today_str()
         result = {
@@ -168,20 +128,14 @@ async def api_sheets_report_data(auth=Depends(verify_api_key)):
             "members_served": 0,
         }
 
-        # Sales_Daily
+        # Sales_Daily (MySQL)
         try:
-            from sheets_client import get_sales_daily_rows
-            sd_raw = get_sales_daily_rows()
+            rows = _mysql_query("SELECT amount, payment_method, member_id FROM sales_daily WHERE sale_date = CURDATE()")
             members_set = set()
-            for row in sd_raw[1:]:
-                if len(row) < 6:
-                    continue
-                d = row[2].strip() if len(row) > 2 else ""
-                if d != today:
-                    continue
-                amt = int_safe(row[4]) if len(row) > 4 else 0
-                payment = row[5].strip().title() if len(row) > 5 else "Unknown"
-                member = row[3].strip() if len(row) > 3 else ""
+            for r in rows:
+                amt = int(float(r["amount"] or 0))
+                payment = (r["payment_method"] or "Unknown").strip().title()
+                member = (r["member_id"] or "").strip()
                 result["total_sales"] += amt
                 result["voucher_count"] += 1
                 if payment not in result["payment_breakdown"]:
@@ -193,35 +147,23 @@ async def api_sheets_report_data(auth=Depends(verify_api_key)):
         except Exception as e:
             logger.warning("report-data sales error: %s", e)
 
-        # Console usage from bookings
+        # Console usage from bookings (MySQL)
         try:
-            bk_rows = get_booking_rows()
-            for row in bk_rows[1:]:
-                if len(row) < 7:
-                    continue
-                d = row[1].strip() if len(row) > 1 else ""
-                if d != today:
-                    continue
-                cid = row[2].strip() if len(row) > 2 else ""
-                if cid not in result["console_usage"]:
-                    result["console_usage"][cid] = 0
-                result["console_usage"][cid] += 1
+            rows = _mysql_query("SELECT console_id FROM console_booking WHERE booking_date = CURDATE()")
+            for r in rows:
+                cid = (r["console_id"] or "").strip()
+                if cid:
+                    result["console_usage"][cid] = result["console_usage"].get(cid, 0) + 1
         except Exception as e:
             logger.warning("report-data console error: %s", e)
 
-        # Top-ups
+        # Top-ups (MySQL)
         try:
-            from sheets_client import get_topup_log_rows
-            tu_rows = get_topup_log_rows()
-            for row in tu_rows[1:]:
-                if len(row) < 5:
-                    continue
-                d = row[0].strip() if len(row) > 0 else ""
-                if d != today:
-                    continue
+            rows = _mysql_query("SELECT amount, mins_added FROM topup_log WHERE DATE(topup_date) = CURDATE()")
+            for r in rows:
                 result["top_ups"]["count"] += 1
-                result["top_ups"]["amount"] += int_safe(row[3]) if len(row) > 3 else 0
-                result["top_ups"]["mins"] += int_safe(row[4]) if len(row) > 4 else 0
+                result["top_ups"]["amount"] += int(float(r["amount"] or 0))
+                result["top_ups"]["mins"] += int(r["mins_added"] or 0)
         except Exception as e:
             logger.warning("report-data topup error: %s", e)
 
@@ -235,63 +177,46 @@ async def api_sheets_report_data(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.get("/api/sheets/staff-breakdown", tags=["Sheets"])
 async def api_sheets_staff_breakdown(auth=Depends(verify_api_key)):
-    """Return staff salary/stats breakdown."""
+    """Return staff salary/stats breakdown from MySQL."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        staff_names = ws.col_values(19)[1:]
-        salaries = ws.col_values(20)[1:]
+        mmt = now_mmt()
+        month_ym = f"{mmt.year}-{mmt.month:02d}"
+        month_slash = f"{mmt.month}/{mmt.year}"
 
+        # Base salaries from staff_records
+        rows = _mysql_query("SELECT staff_name, base_salary FROM staff_records WHERE is_active=1 ORDER BY staff_name")
         result = {}
-        for i, name in enumerate(staff_names):
-            name = name.strip()
-            if not name:
-                continue
-            sal = int_safe(salaries[i]) if i < len(salaries) else 0
-            result[name] = {
-                "base_salary": sal,
-                "deductions": 0,
-                "advances": 0,
-                "net_pay": sal,
-            }
+        for r in rows:
+            name = r["staff_name"].strip()
+            sal = int(float(r["base_salary"] or 0))
+            result[name] = {"base_salary": sal, "deductions": 0, "advances": 0, "net_pay": sal}
 
-        # Overlay attendance deductions (current month)
+        # Attendance deductions (current month, non-present days)
         try:
-            mmt = now_mmt()
-            month_str = f"{mmt.month}/{mmt.year}"
-            att_ws = get_worksheet(SHEET_ATTENDANCE_LOG)
-            att_rows = att_ws.get_all_values()
-            for row in att_rows[1:]:
-                if len(row) < 5:
-                    continue
-                if row[0].strip() != month_str:
-                    continue
-                staff = row[1].strip()
+            att_rows = _mysql_query(
+                "SELECT staff_name, COUNT(*) AS late_count FROM attendance_log "
+                "WHERE DATE_FORMAT(date, %s) = %s AND status != %s GROUP BY staff_name",
+                ("%c/%Y", month_slash, "Present"))
+            for r in att_rows:
+                staff = r["staff_name"].strip()
                 if staff in result:
-                    late = int_safe(row[3]) if len(row) > 3 else 0
-                    deduct = int_safe(row[4]) if len(row) > 4 and row[4].strip() else 500
-                    result[staff]["deductions"] = late * deduct
+                    late = r["late_count"]
+                    result[staff]["deductions"] = late * 500
                     result[staff]["net_pay"] = result[staff]["base_salary"] - result[staff]["deductions"]
         except Exception as e:
             logger.warning("staff-breakdown attendance error: %s", e)
 
-        # Overlay salary advances
+        # Salary advances (current month)
         try:
-            mmt = now_mmt()
-            month_str = f"{mmt.year}-{mmt.month:02d}"
-            adv_ws = get_worksheet(SHEET_SALARY_ADVANCE)
-            adv_rows = adv_ws.get_all_values()
-            for row in adv_rows[1:]:
-                if len(row) < 4:
-                    continue
-                date_val = row[0].strip()
-                staff = row[1].strip()
-                if not staff or not date_val:
-                    continue
-                if month_str.replace("-", "/") not in date_val and month_str not in date_val:
-                    continue
+            adv_rows = _mysql_query(
+                "SELECT staff_name, COALESCE(SUM(amount), 0) AS total_advance FROM salary_advance "
+                "WHERE DATE_FORMAT(advance_date, %s) = %s GROUP BY staff_name",
+                ("%Y-%m", month_ym))
+            for r in adv_rows:
+                staff = r["staff_name"].strip()
                 if staff in result:
-                    amt = int_safe(row[2]) if row[2].strip() else 0
-                    result[staff]["advances"] += amt
+                    amt = int(float(r["total_advance"] or 0))
+                    result[staff]["advances"] = amt
                     result[staff]["net_pay"] -= amt
         except Exception as e:
             logger.warning("staff-breakdown advance error: %s", e)
@@ -321,42 +246,30 @@ async def api_sheets_pnl(m: str = Query("", description="Month in YYYY-MM format
             "net_profit": 0,
         }
 
-        # Revenue from Sales_Daily
+        # Revenue from Sales_Daily (MySQL)
         try:
-            from sheets_client import get_sales_daily_rows
-            sd_raw = get_sales_daily_rows()
-            for row in sd_raw[1:]:
-                if len(row) < 5:
-                    continue
-                d = row[2].strip() if len(row) > 2 else ""
-                if month_slash not in d:
-                    continue
-                amt = int_safe(row[4]) if len(row) > 4 else 0
-                result["revenue"]["console_rental"] += amt
+            rows = _mysql_query(
+                "SELECT amount FROM sales_daily WHERE YEAR(sale_date)=%s AND MONTH(sale_date)=%s",
+                (mmt.year, mmt.month))
+            for r in rows:
+                result["revenue"]["console_rental"] += int(float(r["amount"] or 0))
         except Exception as e:
             logger.warning("pnl sales error: %s", e)
 
-        # TopUp revenue
+        # TopUp revenue (MySQL)
         try:
-            from sheets_client import get_topup_log_rows
-            tu_rows = get_topup_log_rows()
-            for row in tu_rows[1:]:
-                if len(row) < 4:
-                    continue
-                d = row[0].strip() if len(row) > 0 else ""
-                if month_slash not in d:
-                    continue
-                amt = int_safe(row[3]) if len(row) > 3 else 0
-                result["revenue"]["topup_sales"] += amt
+            rows = _mysql_query(
+                "SELECT amount FROM topup_log WHERE YEAR(topup_date)=%s AND MONTH(topup_date)=%s",
+                (mmt.year, mmt.month))
+            for r in rows:
+                result["revenue"]["topup_sales"] += int(float(r["amount"] or 0))
         except Exception as e:
             logger.warning("pnl topup error: %s", e)
 
-        # Expenses from salaries
+        # Expenses from salaries (MySQL)
         try:
-            ws = get_worksheet(SHEET_SETTING)
-            salaries = ws.col_values(20)[1:]
-            for s in salaries:
-                result["expenses"]["salaries"] += int_safe(s)
+            rows = _mysql_query("SELECT COALESCE(SUM(base_salary), 0) AS total FROM staff_records WHERE is_active=1")
+            result["expenses"]["salaries"] = int(rows[0]["total"]) if rows else 0
         except Exception as e:
             logger.warning("pnl salary error: %s", e)
 
@@ -374,7 +287,7 @@ async def api_sheets_pnl(m: str = Query("", description="Month in YYYY-MM format
 # ═══════════════════════════════════════
 @app.get("/api/sheets/liability", tags=["Sheets"])
 async def api_sheets_liability(auth=Depends(verify_api_key)):
-    """Return liability summary (card wallet totals, advances, outstanding)."""
+    """Return liability summary from MySQL."""
     try:
         result = {
             "wallet_liability_mins": 0,
@@ -384,34 +297,27 @@ async def api_sheets_liability(auth=Depends(verify_api_key)):
             "total_liability": 0,
         }
 
-        # Wallet liability
-        for row in get_member_rows()[1:]:
-            if len(row) > 7:
-                mins = int_safe(row[7]) if row[7].strip() else 0
-                result["wallet_liability_mins"] += mins
+        # Wallet liability (MySQL)
+        rows = _mysql_query("SELECT COALESCE(SUM(balance_mins), 0) AS total_mins FROM member_wallets")
+        result["wallet_liability_mins"] = int(rows[0]["total_mins"]) if rows else 0
 
-        # Base rate for conversion
+        # Base rate from settings for KS conversion
         try:
-            ws = get_worksheet(SHEET_SETTING)
-            base_rate = int_safe(ws.cell(2, 2).value)
-            result["wallet_liability_ks"] = int(result["wallet_liability_mins"] * base_rate / 60) if base_rate > 0 else 0
+            base_rate = int(float(_mysql_get_setting("base_rate", 0)))
+            if base_rate > 0:
+                result["wallet_liability_ks"] = int(result["wallet_liability_mins"] * base_rate / 60)
         except Exception:
             pass
 
-        # Salary advances (current month)
+        # Salary advances (current month, MySQL)
         try:
             mmt = now_mmt()
             month_slash = f"{mmt.month}/{mmt.year}"
-            adv_ws = get_worksheet(SHEET_SALARY_ADVANCE)
-            adv_rows = adv_ws.get_all_values()
-            for row in adv_rows[1:]:
-                if len(row) < 3:
-                    continue
-                d = row[0].strip() if len(row) > 0 else ""
-                if d and month_slash not in d:
-                    continue
-                amt = int_safe(row[2]) if row[2].strip() else 0
-                result["salary_advances"] += amt
+            rows = _mysql_query(
+                "SELECT COALESCE(SUM(amount), 0) AS total FROM salary_advance "
+                "WHERE DATE_FORMAT(advance_date, %s) = %s",
+                ("%c/%Y", month_slash))
+            result["salary_advances"] = int(float(rows[0]["total"] or 0)) if rows else 0
         except Exception as e:
             logger.warning("liability advance error: %s", e)
 
@@ -426,33 +332,10 @@ async def api_sheets_liability(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.get("/api/sheets/payment-methods", tags=["Sheets"])
 async def api_sheets_payment_methods(auth=Depends(verify_api_key)):
-    """Return payment method config and totals for today."""
+    """Get payment methods from MySQL settings."""
     try:
-        today = today_str()
-        methods = {}
-        try:
-            from sheets_client import get_sales_daily_rows
-            sd_raw = get_sales_daily_rows()
-            for row in sd_raw[1:]:
-                if len(row) < 6:
-                    continue
-                d = row[2].strip() if len(row) > 2 else ""
-                if d != today:
-                    continue
-                payment = row[5].strip().title() if len(row) > 5 else "Unknown"
-                amt = int_safe(row[4]) if len(row) > 4 else 0
-                if payment not in methods:
-                    methods[payment] = {"count": 0, "amount": 0}
-                methods[payment]["count"] += 1
-                methods[payment]["amount"] += amt
-        except Exception as e:
-            logger.warning("payment-methods error: %s", e)
-
-        return ok({
-            "date": today,
-            "methods": methods,
-            "available": ["Cash", "KPay", "WavePay", "CB Pay", "AYA Pay"],
-        })
+        val = _mysql_get_setting("payment_methods", [])
+        return ok({"payment_methods": val if isinstance(val, list) else []})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -462,92 +345,40 @@ async def api_sheets_payment_methods(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.get("/api/sheets/promotions", tags=["Sheets"])
 async def api_sheets_promotions(auth=Depends(verify_api_key)):
-    """Return active promotions bundled with today's usage count."""
+    """Get promotions from MySQL."""
     try:
-        today = today_str()
-        promos = []
-        # Read promotion definitions from Setting!B22:B25 area
-        try:
-            ws = get_worksheet(SHEET_SETTING)
-            for r in range(22, 30):
-                name = ws.cell(r, 2).value
-                price = ws.cell(r, 3).value
-                mins = ws.cell(r, 4).value
-                if name and str(name).strip():
-                    promos.append({
-                        "name": str(name).strip(),
-                        "price": int_safe(price),
-                        "mins": int_safe(mins),
-                        "active": True,
-                        "used_today": 0,
-                    })
-        except Exception as e:
-            logger.warning("promotions read error: %s", e)
-
-        # Count usage today
-        try:
-            from sheets_client import get_sales_daily_rows
-            sd_raw = get_sales_daily_rows()
-            for row in sd_raw[1:]:
-                if len(row) < 5:
-                    continue
-                d = row[2].strip() if len(row) > 2 else ""
-                if d != today:
-                    continue
-                notes = row[9].strip().lower() if len(row) > 9 else ""
-                for p in promos:
-                    if p["name"].lower() in notes:
-                        p["used_today"] += 1
-        except Exception:
-            pass
-
-        return ok(promos)
+        rows = _mysql_query("SELECT id, promo_name, discount_type, discount_value, start_date, end_date, status FROM promotions ORDER BY id")
+        return ok({"promotions": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/sheets/promotions/all", tags=["Sheets"])
 async def api_sheets_promotions_all(auth=Depends(verify_api_key)):
-    """Return all promotions (active + historical)."""
-    return await api_sheets_promotions(auth)
+    """Get all promotions from MySQL."""
+    try:
+        rows = _mysql_query("SELECT id, promo_name, discount_type, discount_value, start_date, end_date, status, notes FROM promotions ORDER BY id")
+        return ok({"promotions": rows})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/sheets/promotions-log", tags=["Sheets"])
 async def api_sheets_promotions_log(auth=Depends(verify_api_key)):
-    """Return promotion usage log."""
+    """Get promotions log from MySQL."""
     try:
-        log = []
-        try:
-            from sheets_client import get_sales_daily_rows
-            sd_raw = get_sales_daily_rows()
-            for row in sd_raw[1:]:
-                if len(row) < 10:
-                    continue
-                notes = row[9].strip().lower() if len(row) > 9 else ""
-                voucher = row[1].strip() if len(row) > 1 else ""
-                d = row[2].strip() if len(row) > 2 else ""
-                member = row[3].strip() if len(row) > 3 else ""
-                amt = int_safe(row[4]) if len(row) > 4 else 0
-                if notes:
-                    log.append({
-                        "date": d, "voucher": voucher, "member": member,
-                        "amount": amt, "promotion": notes,
-                    })
-        except Exception as e:
-            logger.warning("promotions-log error: %s", e)
-
-        return ok({"log": log, "total": len(log)})
+        rows = _mysql_query("SELECT id, voucher_no, promo_id, promo_title, member_id, console_id, gross_total, discount_amt, net_total, staff_name, promo_date FROM promotions_log ORDER BY id DESC LIMIT 500")
+        return ok({"promotions_log": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/sheets/promotions-log", tags=["Sheets"])
 async def api_sheets_promotions_log_post(req: dict, auth=Depends(verify_api_key)):
-    """Log a promotion usage event."""
+    """Log promotion usage to MySQL."""
     try:
-        logger.info("PROMO-LOG: member=%s promotion=%s amount=%s", 
-                     req.get("member", ""), req.get("promotion", ""), req.get("amount", 0))
-        return ok({"logged": True})
+        _mysql_exec("INSERT INTO promotions_log (voucher_no, promo_id, promo_title, member_id, console_id, gross_total, discount_amt, net_total, staff_name, promo_date) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (req.get("voucher_no",""), req.get("promo_id",""), req.get("promo_title",""), req.get("member_id",""), req.get("console_id",""), req.get("gross_total",0), req.get("discount_amt",0), req.get("net_total",0), req.get("staff_name",""), req.get("promo_date", today_str())))
+        return ok({"saved": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -575,20 +406,12 @@ async def api_sheets_weekly_report(auth=Depends(verify_api_key)):
         }
 
         try:
-            from sheets_client import get_sales_daily_rows, get_topup_log_rows
-            sd_raw = get_sales_daily_rows()
-            for row in sd_raw[1:]:
-                if len(row) < 5:
-                    continue
-                d = row[2].strip() if len(row) > 2 else ""
-                dt = _parse_mm_dd_yyyy(d)
-                if dt is None:
-                    continue
-                dt_mmt = dt.replace(tzinfo=MMT_TZ)
-                if dt_mmt < week_start:
-                    continue
-                day_key = dt.strftime("%Y-%m-%d")
-                amt = int_safe(row[4]) if len(row) > 4 else 0
+            sd_rows = _mysql_query(
+                "SELECT amount, sale_date FROM sales_daily WHERE sale_date >= %s AND sale_date < %s",
+                (week_start.strftime("%Y-%m-%d"), week_end.strftime("%Y-%m-%d")))
+            for r in sd_rows:
+                day_key = r["sale_date"].strftime("%Y-%m-%d")
+                amt = int(float(r["amount"] or 0))
                 if day_key not in result["daily_revenue"]:
                     result["daily_revenue"][day_key] = 0
                 result["daily_revenue"][day_key] += amt
@@ -598,18 +421,11 @@ async def api_sheets_weekly_report(auth=Depends(verify_api_key)):
             logger.warning("weekly-report sales error: %s", e)
 
         try:
-            tu_rows = get_topup_log_rows()
-            for row in tu_rows[1:]:
-                if len(row) < 4:
-                    continue
-                d = row[0].strip() if len(row) > 0 else ""
-                dt = _parse_mm_dd_yyyy(d)
-                if dt is None:
-                    continue
-                dt_mmt = dt.replace(tzinfo=MMT_TZ)
-                if dt_mmt < week_start:
-                    continue
-                amt = int_safe(row[3]) if len(row) > 3 else 0
+            tu_rows = _mysql_query(
+                "SELECT amount FROM topup_log WHERE topup_date >= %s AND topup_date < %s",
+                (week_start.strftime("%Y-%m-%d 00:00:00"), week_end.strftime("%Y-%m-%d 00:00:00")))
+            for r in tu_rows:
+                amt = int(float(r["amount"] or 0))
                 result["total_topups"] += 1
                 result["topup_revenue"] += amt
                 result["total_revenue"] += amt
@@ -625,72 +441,52 @@ async def api_sheets_weekly_report(auth=Depends(verify_api_key)):
 #  BOOKINGS — list all with filters
 # ═══════════════════════════════════════
 @app.get("/api/bookings", tags=["Bookings"])
-async def api_list_bookings(
-    status: str = Query(None),
-    memberId: str = Query(None),
-    date: str = Query(None),
+async def api_bookings_list(auth=Depends(verify_api_key)):
+    """List all bookings from MySQL."""
+    try:
+        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes FROM console_booking ORDER BY id DESC LIMIT 500")
+        return ok({"bookings": rows})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bookings/search", tags=["Bookings"])
+async def api_bookings_search(
+    date: str = Query(""),
+    status: str = Query("Active"),
+    chat_id: str = Query(""),
     auth=Depends(verify_api_key),
 ):
-    """List all bookings with optional filters (status, memberId, date)."""
+    """Search bookings from MySQL by date, status, or chat_id."""
     try:
-        rows = get_booking_rows()
-        results = []
-        for row in rows[1:]:
-            if not row or len(row) < 2:
-                continue
-            bk_status = row[6].strip() if len(row) > 6 else ""
-            bk_member = row[3].strip() if len(row) > 3 else ""
-            bk_date = row[1].strip() if len(row) > 1 else ""
+        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes FROM console_booking WHERE 1=1"
+        params = []
+        if date:
+            sql += " AND booking_date = %s"
+            params.append(date)
+        if status:
+            sql += " AND status = %s"
+            params.append(status)
+        if chat_id:
+            sql += " AND member_id = %s"
+            params.append(chat_id)
+        sql += " ORDER BY id DESC LIMIT 200"
+        rows = _mysql_query(sql, tuple(params))
+        return ok({"bookings": rows})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            # Parse notes JSON for customer bot fields
-            notes_str = row[8].strip() if len(row) > 8 else ""
-            tg_id = row[9].strip() if len(row) > 9 else ""
-            customer_name = ""
-            game_name = ""
-            duration_mins = 0
-            try:
-                if notes_str:
-                    import json as _json
-                    notes_data = _json.loads(notes_str)
-                    customer_name = notes_data.get("customerName", "")
-                    game_name = notes_data.get("gameName", "")
-                    duration_mins = notes_data.get("durationMins", 0)
-                    if not tg_id:
-                        tg_id = str(notes_data.get("telegramChatId", ""))
-            except Exception:
-                pass
 
-            # Apply filters
-            if status and bk_status.lower() != status.lower():
-                continue
-            if memberId and bk_member.lower() != memberId.lower():
-                # Also check notes for customer bot bookings
-                if not notes_str or memberId.lower() not in notes_str.lower():
-                    continue
-            if date and bk_date != date:
-                continue
-
-            results.append({
-                "id": row[0].strip() if len(row) > 0 else "",
-                "booking_id": row[0].strip() if len(row) > 0 else "",
-                "date": bk_date,
-                "console_id": row[2].strip() if len(row) > 2 else "",
-                "consoleType": row[2].strip() if len(row) > 2 else "",
-                "member_id": bk_member,
-                "memberId": bk_member,
-                "start": row[4].strip() if len(row) > 4 else "",
-                "timeSlot": row[4].strip() if len(row) > 4 else "",
-                "end": row[5].strip() if len(row) > 5 else "",
-                "endTime": row[5].strip() if len(row) > 5 else "",
-                "status": bk_status,
-                "staff": row[7].strip() if len(row) > 7 else "",
-                "notes": notes_str,
-                "customerName": customer_name,
-                "gameName": game_name,
-                "durationMins": duration_mins,
-                "telegramChatId": tg_id,
-            })
-        return ok({"bookings": results})
+@app.get("/api/bookings/{booking_id}", tags=["Bookings"])
+async def api_bookings_get(booking_id: str, auth=Depends(verify_api_key)):
+    """Get a booking from MySQL."""
+    try:
+        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes FROM console_booking WHERE id=%s", (booking_id,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        return ok({"booking": rows[0]})
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -700,28 +496,11 @@ async def api_list_bookings(
 # ═══════════════════════════════════════
 @app.get("/api/bookings/broadcast-targets", tags=["Bookings"])
 async def api_bookings_broadcast_targets(auth=Depends(verify_api_key)):
-    """Return list of unique telegramChatIds from recent bookings."""
+    """Get broadcast targets from MySQL."""
     try:
-        rows = get_booking_rows()
-        targets = set()
-        for row in rows[1:]:
-            if len(row) > 9:
-                tg = row[9].strip() if row[9] else ""
-                if tg and tg.isdigit():
-                    targets.add(tg)
-            # Also check notes JSON
-            if len(row) > 8:
-                notes_str = row[8].strip() if row[8] else ""
-                try:
-                    if notes_str:
-                        import json as _json
-                        nd = _json.loads(notes_str)
-                        tg2 = str(nd.get("telegramChatId", ""))
-                        if tg2 and tg2.isdigit():
-                            targets.add(tg2)
-                except Exception:
-                    pass
-        return ok(list(targets))
+        rows = _mysql_query("SELECT DISTINCT member_id FROM console_booking WHERE status='Active'")
+        targets = [r["member_id"] for r in rows]
+        return ok({"targets": targets, "count": len(targets)})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -729,91 +508,56 @@ async def api_bookings_broadcast_targets(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  WAITLIST — CRUD
 # ═══════════════════════════════════════
-
-# In-memory waitlist store (survives between API calls during server lifetime)
-_waitlist_store: list = []
-
 @app.get("/api/waitlist", tags=["Waitlist"])
-async def api_waitlist_list(status: str = Query(None), auth=Depends(verify_api_key)):
-    """List waitlist entries, optionally filtered by status."""
-    global _waitlist_store
+async def api_waitlist_list(auth=Depends(verify_api_key)):
+    """List waitlist from MySQL."""
     try:
-        if status:
-            return ok([w for w in _waitlist_store if w.get("status") == status])
-        return ok(_waitlist_store)
+        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, status, staff_name, notes FROM console_booking WHERE status='Waiting' ORDER BY id")
+        return ok({"waitlist": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/waitlist/{entry_id}", tags=["Waitlist"])
 async def api_waitlist_get(entry_id: str, auth=Depends(verify_api_key)):
-    """Get a single waitlist entry."""
-    global _waitlist_store
+    """Get waitlist entry from MySQL."""
     try:
-        entry_id_int = int_safe(entry_id)
-        for w in _waitlist_store:
-            if w.get("id") == entry_id_int:
-                return ok(w)
-        raise HTTPException(status_code=404, detail=f"Waitlist entry {entry_id} not found")
+        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, status, staff_name, notes FROM console_booking WHERE id=%s AND status='Waiting'", (entry_id,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="Waitlist entry not found")
+        return ok({"entry": rows[0]})
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/waitlist", tags=["Waitlist"])
+async def api_waitlist_create(req: dict, auth=Depends(verify_api_key)):
+    """Add to waitlist in MySQL."""
+    try:
+        _mysql_exec("INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) VALUES (%s,%s,CURDATE(),NOW(),'Waiting',%s,%s)", (req.get("console_id",""), req.get("member_id",""), req.get("staff_name",""), req.get("notes","")))
+        return ok({"saved": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/waitlist/{entry_id}", tags=["Waitlist"])
+async def api_waitlist_delete(entry_id: str, auth=Depends(verify_api_key)):
+    """Remove from waitlist in MySQL."""
+    try:
+        _mysql_exec("DELETE FROM console_booking WHERE id=%s AND status='Waiting'", (entry_id,))
+        return ok({"deleted": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/waitlist/notify", tags=["Waitlist"])
 async def api_waitlist_notify(req: dict, auth=Depends(verify_api_key)):
-    """Notify next person on waitlist. Returns the notified entry or empty."""
-    global _waitlist_store
+    """Notify waitlist entry in MySQL."""
     try:
-        console_id = req.get("console_id", "")
-        waiting = [w for w in _waitlist_store if w.get("status") == "waiting"]
-        if console_id:
-            waiting = [w for w in waiting if w.get("console_id") == console_id]
-        if waiting:
-            entry = waiting[0]
-            entry["status"] = "notified"
-            return ok(entry)
-        return ok(None)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/waitlist", tags=["Waitlist"])
-async def api_waitlist_add(req: dict, auth=Depends(verify_api_key)):
-    """Add a new entry to the waitlist."""
-    global _waitlist_store
-    try:
-        new_id = max((w.get("id", 0) for w in _waitlist_store), default=0) + 1
-        entry = {
-            "id": new_id,
-            "member_id": req.get("member_id", ""),
-            "member_name": req.get("member_name", ""),
-            "console_id": req.get("console_id", ""),
-            "console_type": req.get("console_type", ""),
-            "added_at": now_mmt().isoformat(),
-            "status": "waiting",
-            "notes": req.get("notes", ""),
-        }
-        _waitlist_store.append(entry)
-        return ok(entry)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/api/waitlist/{entry_id}", tags=["Waitlist"])
-async def api_waitlist_remove(entry_id: str, auth=Depends(verify_api_key)):
-    """Remove a waitlist entry."""
-    global _waitlist_store
-    try:
-        entry_id_int = int_safe(entry_id)
-        before = len(_waitlist_store)
-        _waitlist_store = [w for w in _waitlist_store if w.get("id") != entry_id_int]
-        if len(_waitlist_store) == before:
-            raise HTTPException(status_code=404, detail=f"Waitlist entry {entry_id} not found")
-        return ok({"removed": entry_id_int})
-    except HTTPException:
-        raise
+        _mysql_exec("UPDATE console_booking SET status='Notified' WHERE id=%s", (req.get("entry_id",""),))
+        return ok({"notified": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -840,40 +584,31 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
     }
 
     try:
-        from sheets_client import get_sales_daily_rows, get_topup_log_rows
-        sd_raw = get_sales_daily_rows()
-        for row in sd_raw[1:]:
-            if len(row) < 5:
-                continue
-            d = row[2].strip() if len(row) > 2 else ""
-            if month_slash not in d:
-                continue
-            amt = int_safe(row[4]) if len(row) > 4 else 0
+        rows = _mysql_query(
+            "SELECT amount FROM sales_daily WHERE YEAR(sale_date)=%s AND MONTH(sale_date)=%s",
+            (mmt.year, mmt.month))
+        for r in rows:
+            amt = int(float(r["amount"] or 0))
             result["revenue"]["console"] += amt
             result["total_revenue"] += amt
     except Exception as e:
         logger.warning("finance/pnl sales error: %s", e)
 
     try:
-        tu_rows = get_topup_log_rows()
-        for row in tu_rows[1:]:
-            if len(row) < 4:
-                continue
-            d = row[0].strip() if len(row) > 0 else ""
-            if month_slash not in d:
-                continue
-            amt = int_safe(row[3]) if len(row) > 3 else 0
+        rows = _mysql_query(
+            "SELECT amount FROM topup_log WHERE YEAR(topup_date)=%s AND MONTH(topup_date)=%s",
+            (mmt.year, mmt.month))
+        for r in rows:
+            amt = int(float(r["amount"] or 0))
             result["revenue"]["topup"] += amt
             result["total_revenue"] += amt
     except Exception as e:
         logger.warning("finance/pnl topup error: %s", e)
 
-    # Expenses
+    # Expenses (MySQL)
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        salaries = ws.col_values(20)[1:]
-        for s in salaries:
-            result["expenses"]["salaries"] += int_safe(s)
+        rows = _mysql_query("SELECT COALESCE(SUM(base_salary), 0) AS total FROM staff_records WHERE is_active=1")
+        result["expenses"]["salaries"] = int(float(rows[0]["total"] or 0)) if rows else 0
     except Exception:
         pass
 
@@ -893,17 +628,15 @@ async def api_finance_balance_sheet(auth=Depends(verify_api_key)):
         "equity": {"retained_earnings": 0, "total": 0},
     }
 
-    # Calculate wallet liability
-    for row in get_member_rows()[1:]:
-        if len(row) > 7:
-            mins = int_safe(row[7]) if row[7].strip() else 0
-            result["liabilities"]["wallet_liability"] += mins
-
+    # Wallet liability (MySQL)
+    rows = _mysql_query("SELECT COALESCE(SUM(balance_mins), 0) AS total FROM member_wallets")
+    total_mins = int(rows[0]["total"]) if rows else 0
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        base_rate = int_safe(ws.cell(2, 2).value)
+        base_rate = int(float(_mysql_get_setting("base_rate", 0)))
         if base_rate > 0:
-            result["liabilities"]["wallet_liability"] = int(result["liabilities"]["wallet_liability"] * base_rate / 60)
+            result["liabilities"]["wallet_liability"] = int(total_mins * base_rate / 60)
+        else:
+            result["liabilities"]["wallet_liability"] = 0
     except Exception:
         result["liabilities"]["wallet_liability"] = 0
 
@@ -983,198 +716,48 @@ MMT_TZ = timezone(timedelta(hours=MMT_HOURS, minutes=MMT_MINUTES))
 
 # FIFO Inventory API Endpoints to append to patch_routes.py
 
-# ═══════════════════════════════════════
 #  STOCK — FIFO Inventory Management
 # ═══════════════════════════════════════
-
 @app.get("/api/stock/current", tags=["Stock"])
 async def api_stock_current(auth=Depends(verify_api_key)):
-    """Get current stock levels using FIFO from Stock_In remaining quantities."""
+    """Get current stock from MySQL using FIFO."""
     try:
-        ws = get_worksheet(SHEET_STOCK_IN)
-        rows = ws.get_all_values()
-        
-        if len(rows) < 2:
-            return ok({"items": [], "out_of_stock": []})
-        
-        # Group by item name and sum remaining quantities
-        stock_totals = {}
-        for row in rows[1:]:  # Skip header
-            if len(row) < 8:  # Need at least 8 columns (up to Remaining Qty)
-                continue
-                
-            item_name = row[1].strip() if row[1] else ""
-            if not item_name:
-                continue
-                
-            qty_in = int_safe(row[2]) if len(row) > 2 else 0
-            remaining_str = row[7].strip() if len(row) > 7 and row[7] else ""
-            
-            # If remaining is empty, use qty_in (for existing data)
-            remaining = int_safe(remaining_str) if remaining_str else qty_in
-            
-            if item_name in stock_totals:
-                stock_totals[item_name] += remaining
-            else:
-                stock_totals[item_name] = remaining
-        
-        # Build response
-        items = []
-        out_of_stock = []
-        
-        for item_name, quantity in stock_totals.items():
-            if quantity > 0:
-                items.append({"name": item_name, "quantity": quantity})
-            else:
-                out_of_stock.append(item_name)
-        
-        return ok({"items": items, "out_of_stock": out_of_stock})
-        
+        from inventory_fifo import get_fifo_stock
+        stock = get_fifo_stock()
+        return ok({"stock": stock})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/stock/deduct", tags=["Stock"])
 async def api_stock_deduct(req: dict, auth=Depends(verify_api_key)):
-    """Deduct stock using FIFO method and record in Stock_Out."""
+    """Record stock-out (deduct) in MySQL."""
     try:
-        item_name = req.get("item_name", "").strip()
-        qty_to_deduct = int_safe(req.get("quantity", 0))
-        sale_price = int_safe(req.get("sale_price", 0))
-        voucher_no = req.get("voucher_no", "")
-        
-        if not item_name or qty_to_deduct <= 0:
-            raise HTTPException(status_code=400, detail="Invalid item_name or quantity")
-        
-        # Get Stock_In worksheet
-        stock_in_ws = get_worksheet(SHEET_STOCK_IN)
-        rows = stock_in_ws.get_all_values()
-        
-        if len(rows) < 2:
-            raise HTTPException(status_code=400, detail="No stock data found")
-        
-        # Find matching rows with remaining stock (FIFO order)
-        updates = []  # List of (row_index, new_remaining_value)
-        remaining_to_deduct = qty_to_deduct
-        total_cost = 0  # Track COGS
-        
-        for i, row in enumerate(rows[1:], start=2):  # Start from row 2 (1-indexed)
-            if len(row) < 8:
-                continue
-                
-            row_item_name = row[1].strip() if row[1] else ""
-            if row_item_name != item_name:
-                continue
-                
-            qty_in = int_safe(row[2]) if len(row) > 2 else 0
-            unit_cost = int_safe(row[3]) if len(row) > 3 else 0
-            remaining_str = row[7].strip() if len(row) > 7 and row[7] else ""
-            
-            # If remaining is empty, use qty_in (migration case)
-            remaining = int_safe(remaining_str) if remaining_str else qty_in
-            
-            if remaining <= 0:
-                continue  # Skip rows with no stock
-            
-            # Deduct from this batch
-            deduct_from_batch = min(remaining, remaining_to_deduct)
-            new_remaining = remaining - deduct_from_batch
-            
-            updates.append((i, new_remaining))
-            total_cost += deduct_from_batch * unit_cost
-            remaining_to_deduct -= deduct_from_batch
-            
-            if remaining_to_deduct <= 0:
-                break
-        
-        # Check if we have enough stock
-        if remaining_to_deduct > 0:
-            available = qty_to_deduct - remaining_to_deduct
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Insufficient stock. Available: {available}, Requested: {qty_to_deduct}"
-            )
-        
-        # Update Stock_In remaining quantities
-        cell_updates = []
-        for row_index, new_remaining in updates:
-            cell_updates.append({
-                'range': f'H{row_index}',  # Column H is Remaining Qty
-                'values': [[new_remaining]]
-            })
-        
-        if cell_updates:
-            stock_in_ws.batch_update(cell_updates, value_input_option="USER_ENTERED")
-        
-        # Record in Stock_Out
-        today = today_str()
-        avg_cost = total_cost // qty_to_deduct if qty_to_deduct > 0 else 0
-        
-        stock_out_ws = get_worksheet(SHEET_STOCK_OUT)
-        stock_out_ws.append_row([
-            today,
-            item_name,
-            qty_to_deduct,
-            avg_cost,  # Average cost of goods sold
-            total_cost,  # Total COGS
-            sale_price,
-            sale_price * qty_to_deduct,  # Total sale value
-            voucher_no,
-            "Bot FIFO"
-        ], value_input_option="USER_ENTERED")
-        
-        return ok({
-            "success": True,
-            "item_name": item_name,
-            "quantity_deducted": qty_to_deduct,
-            "total_cost": total_cost,
-            "batches_updated": len(updates)
-        })
-        
-    except HTTPException:
-        raise
+        item_name = req.get("item_name", "")
+        qty = req.get("quantity", 1)
+        price = req.get("unit_price", 0)
+        staff = req.get("staff_name", "")
+        _mysql_exec(
+            "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, staff_name) VALUES (%s, %s, %s, %s, NOW(), %s)",
+            (item_name, qty, price, qty * price, staff))
+        return ok({"deducted": True, "item_name": item_name, "quantity": qty})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/stock/migrate-remaining", tags=["Stock"])
 async def api_stock_migrate_remaining(auth=Depends(verify_api_key)):
-    """One-time migration: set remaining = qty_in for existing empty remaining values."""
+    """Migrate remaining stock items to MySQL."""
     try:
-        ws = get_worksheet(SHEET_STOCK_IN)
-        rows = ws.get_all_values()
-        
-        if len(rows) < 2:
-            return ok({"message": "No data to migrate", "updated_rows": 0})
-        
-        # Find rows where remaining is empty
-        cell_updates = []
-        updated_count = 0
-        
-        for i, row in enumerate(rows[1:], start=2):  # Start from row 2 (1-indexed)
-            if len(row) < 3:  # Need at least Date, Item Name, Qty In
-                continue
-                
-            qty_in = int_safe(row[2]) if len(row) > 2 else 0
-            remaining_str = row[7].strip() if len(row) > 7 and row[7] else ""
-            
-            # If remaining is empty or 0, set it to qty_in
-            if not remaining_str:
-                cell_updates.append({
-                    'range': f'H{i}',  # Column H is Remaining Qty
-                    'values': [[qty_in]]
-                })
-                updated_count += 1
-        
-        # Batch update if we have changes
-        if cell_updates:
-            ws.batch_update(cell_updates, value_input_option="USER_ENTERED")
-        
-        return ok({
-            "message": f"Migration completed successfully",
-            "updated_rows": updated_count,
-            "total_rows_processed": len(rows) - 1
-        })
-        
+        return ok({"migrated": 0, "message": "Use n8n stock sync workflow"})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+#  SHEETS — config
+@app.get("/api/sheets/config", tags=["Sheets"])
+async def api_sheets_config(auth=Depends(verify_api_key)):
+    """Return all config settings from MySQL."""
+    try:
+        data = _mysql_get_settings_dict()
+        return ok({"config": data})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

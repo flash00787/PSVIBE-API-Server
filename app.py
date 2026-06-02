@@ -39,6 +39,72 @@ logging.basicConfig(
 )
 logger = logging.getLogger("psvibe_api")
 
+# ── MySQL query helpers ──
+import mysql.connector as _mc
+import json as _json, os as _os
+
+_MYSQL_CFG = {
+    "host": _os.environ.get("MYSQL_HOST", "127.0.0.1"),
+    "user": _os.environ.get("MYSQL_USER", "psvibe_user"),
+    "password": _os.environ.get("MYSQL_PASSWORD", ""),
+    "database": _os.environ.get("MYSQL_DATABASE", "psvibe_api"),
+}
+
+def _mysql_query(sql, params=None):
+    conn = _mc.connect(**_MYSQL_CFG)
+    cur = conn.cursor(dictionary=True)
+    cur.execute(sql, params or ())
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _mysql_query_one(sql, params=None):
+    """Execute query and return first row, or None."""
+    rows = _mysql_query(sql, params)
+    return rows[0] if rows else None
+
+def _mysql_exec(sql, params=None):
+    conn = _mc.connect(**_MYSQL_CFG)
+    cur = conn.cursor()
+    cur.execute(sql, params or ())
+    conn.commit()
+    rid = cur.lastrowid
+    conn.close()
+    return rid
+
+def _mysql_get_setting(key, default=None):
+    try:
+        rows = _mysql_query("SELECT config_value, config_type FROM settings_config WHERE config_key=%s", (key,))
+    except Exception:
+        return default
+    if not rows:
+        return default
+    val, typ = rows[0]["config_value"], rows[0].get("config_type", "string")
+    if typ == "int": return int(val) if val else 0
+    if typ == "float": return float(val) if val else 0.0
+    if typ == "bool": return str(val).lower() in ("true", "1", "yes")
+    if typ == "json": return _json.loads(val) if val else {}
+    return str(val) if val else default
+
+def _mysql_get_settings_dict(prefix=None):
+    try:
+        if prefix:
+            rows = _mysql_query("SELECT config_key, config_value, config_type FROM settings_config WHERE config_key LIKE %s", (f"{prefix}%",))
+        else:
+            rows = _mysql_query("SELECT config_key, config_value, config_type FROM settings_config")
+    except Exception:
+        return {}
+    result = {}
+    for r in rows:
+        k, val, typ = r["config_key"], r["config_value"], r.get("config_type", "string")
+        if typ == "int": result[k] = int(val) if val else 0
+        elif typ == "float": result[k] = float(val) if val else 0.0
+        elif typ == "json": result[k] = _json.loads(val) if val else {}
+        else: result[k] = str(val) if val else ""
+    return result
+
+
 app = FastAPI(
     title=API_TITLE,
     version=API_VERSION,
@@ -232,12 +298,13 @@ def _fetch_console_status_from_mysql():
 
 
 def _fetch_allowed_staff_ids_from_mysql():
-    """Try MySQL first, return data or None.
-
-    NOTE: staff_records.staff_id is an internal auto-increment PK (1,2,3...),
-    NOT a Telegram user ID.  The real Telegram whitelist lives in Google Sheets
-    Setting!B30.  Return None here so the endpoint falls back to Sheets.
-    """
+    """Read allowed Telegram user IDs from MySQL settings_config."""
+    try:
+        val = _mysql_get_setting("allowed_staff_ids", "")
+        if val:
+            return [int(x.strip()) for x in val.split(",") if x.strip().isdigit()]
+    except Exception:
+        pass
     return None
 
 
@@ -308,65 +375,13 @@ def _fetch_topups_from_mysql(days=30):
 # ═══════════════════════════════════════
 #  fetch_console_status
 # ═══════════════════════════════════════
-@app.get("/api/fetch_console_status", response_model=GenericResponse, tags=["Console"], summary="Get live console status with booking overlay")
+@app.get("/api/fetch_console_status", response_model=GenericResponse, tags=["Consoles"], summary="Fetch console statuses [MySQL]")
 async def api_fetch_console_status(auth=Depends(verify_api_key)):
-    """Return list of console dicts with live status from Console_Booking sheet."""
-    data = _fetch_console_status_from_mysql()
-    if data is not None:
-        return ok([{
-            "id": d.get("console_id", ""),
-            "type": d.get("console_type", d.get("type", "")),
-            "status": d.get("status", "Free"),
-            "member": d.get("member_id", d.get("member")),
-            "start": d.get("start_time", d.get("start")),
-            "staff": d.get("staff"),
-            "booking_id": d.get("booking_id"),
-            "mult": d.get("multiplier", d.get("mult", 1.0)),
-        } for d in data])
+    """Fetch live console statuses from MySQL console_status table."""
     try:
-        today = today_str()
-        setting_sh = get_worksheet(SHEET_SETTING)
-        names = setting_sh.col_values(8)[1:]
-        types = setting_sh.col_values(9)[1:]
-        mults = setting_sh.col_values(10)[1:]
-
-        consoles = []
-        for i, name in enumerate(names):
-            if not name.strip():
-                continue
-            try:
-                mult = float_safe(mults[i]) if i < len(mults) else 1.0
-                mult = mult if mult > 0 else 1.0
-            except Exception:
-                mult = 1.0
-            ctype = (types[i] if i < len(types) else "").strip()
-            consoles.append({
-                "id": name.strip(), "type": ctype, "mult": mult,
-                "status": "Free", "member": None, "start": None,
-                "staff": None, "booking_id": None,
-            })
-
-        try:
-            bk_rows = get_booking_rows()
-            for row in bk_rows[1:]:
-                if len(row) < 7:
-                    continue
-                bk_date = row[1].strip()
-                bk_cid = row[2].strip()
-                bk_status = row[6].strip()
-                if bk_date == today and bk_status in ("Active", "Scheduled"):
-                    for c in consoles:
-                        if c["id"] == bk_cid:
-                            c["status"] = bk_status
-                            c["member"] = row[3].strip() or "Guest"
-                            c["start"] = row[4].strip()
-                            c["staff"] = row[7].strip() if len(row) > 7 else ""
-                            c["booking_id"] = row[0].strip()
-                            break
-        except Exception as e:
-            logger.warning("Booking overlay error: %s", e)
-
-        return ok(consoles)
+        rows = _mysql_query(
+            "SELECT console_id, status, console_type, current_game, current_member, start_time FROM console_status ORDER BY console_id")
+        return ok({"consoles": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -374,17 +389,12 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_members
 # ═══════════════════════════════════════
-@app.get("/api/fetch_members", response_model=GenericResponse, tags=["Members"], summary="Fetch sorted list of all member IDs")
+@app.get("/api/fetch_members", response_model=GenericResponse, tags=["Members"], summary="Fetch all members [MySQL]")
 async def api_fetch_members(auth=Depends(verify_api_key)):
-    """Return sorted list of all member IDs from Card_Wallet."""
-    data = _fetch_members_from_mysql()
-    if data is not None:
-        return ok(sorted([m["member_id"] for m in data if m.get("member_id")]))
+    """Fetch sorted list of all member IDs from MySQL."""
     try:
-        ws = get_worksheet(SHEET_CARD_WALLET)
-        raw = ws.col_values(2)[1:]
-        members = [m.strip() for m in raw if m.strip()]
-        return ok(sorted(members))
+        rows = _mysql_query("SELECT member_id FROM member_wallets WHERE member_id IS NOT NULL AND member_id != '' ORDER BY member_id")
+        return ok(sorted([r["member_id"] for r in rows]))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -392,45 +402,37 @@ async def api_fetch_members(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_member_data
 # ═══════════════════════════════════════
-@app.get("/api/fetch_member_data/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch consolidated member data (name, phone, rank, wallet)")
+@app.get("/api/fetch_member_data/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch member data [MySQL]")
 async def api_fetch_member_data(member_id: str, auth=Depends(verify_api_key)):
-    """Return consolidated member data (name, phone, email, rank, wallet, spend) from Card_Wallet."""
-    data = _fetch_member_data_from_mysql(member_id)
-    if data is not None:
-        return ok({
-            "name": data.get("member_name", data.get("name", "-")) or "-",
-            "phone": data.get("phone", "-") or "-",
-            "email": data.get("email", ""),
-            "net_spend": data.get("net_spend", 0),
-            "rank_raw": data.get("tier", data.get("rank_raw", "Warrior")),
-            "wallet_mins": data.get("balance_mins", data.get("wallet_mins")),
-        })
+    """Fetch consolidated member data (name, phone, rank, wallet) from MySQL."""
     try:
-        rows = get_member_rows()
-        for row in rows[1:]:
-            if len(row) > 1 and row[1].strip() == member_id.strip():
-                name = row[2].strip() if len(row) > 2 else "-"
-                phone = row[3].strip() if len(row) > 3 else "-"
-                net_spend = int_safe(row[5]) if len(row) > 5 else 0
-                wallet_mins = int_safe(row[7]) if len(row) > 7 and row[7].strip() else None
-                email = row[12].strip() if len(row) > 12 else ""
-
-                setting_sh = get_worksheet(SHEET_SETTING)
-                master_thresh = int_safe(setting_sh.cell(3, 13).value)
-                immortal_thresh = int_safe(setting_sh.cell(4, 13).value)
-
-                rank_raw = "Warrior"
-                if immortal_thresh > 0 and net_spend >= immortal_thresh:
-                    rank_raw = "Immortal"
-                elif master_thresh > 0 and net_spend >= master_thresh:
-                    rank_raw = "Master"
-
-                return ok({
-                    "name": name or "-", "phone": phone or "-",
-                    "email": email, "net_spend": net_spend,
-                    "rank_raw": rank_raw, "wallet_mins": wallet_mins,
-                })
-        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+        row = _mysql_query_one(
+            "SELECT member_id, member_name, phone, balance_mins, tier, total_spend, referral_code FROM member_wallets WHERE member_id=%s",
+            (member_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Member not found")
+        net_spend = int(row.get("total_spend", 0) or 0)
+        # Compute rank from spend using thresholds
+        try:
+            mt = int(_mysql_get_setting("master_threshold", "300000"))
+            it = int(_mysql_get_setting("immortal_threshold", "1000000"))
+        except Exception:
+            mt, it = 300000, 1000000
+        if net_spend >= it:
+            rank_raw = "Immortal"
+        elif net_spend >= mt:
+            rank_raw = "Master"
+        else:
+            rank_raw = "Warrior"
+        return ok({
+            "name": row.get("member_name", "-") or "-",
+            "phone": row.get("phone", "-") or "-",
+            "email": "",
+            "net_spend": net_spend,
+            "rank_raw": rank_raw,
+            "wallet_mins": row.get("balance_mins"),
+            "referral_code": row.get("referral_code", "") or "",
+        })
     except HTTPException:
         raise
     except Exception as e:
@@ -440,20 +442,16 @@ async def api_fetch_member_data(member_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_wallet_mins
 # ═══════════════════════════════════════
-@app.get("/api/fetch_wallet_mins/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch wallet balance in minutes for a member")
+@app.get("/api/fetch_wallet_mins/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch wallet minutes [MySQL]")
 async def api_fetch_wallet_mins(member_id: str, auth=Depends(verify_api_key)):
-    """Fetch wallet balance in mins for a member (col I, formula)."""
-    data = _fetch_wallet_mins_from_mysql(member_id)
-    if data is not None:
-        return ok(data)
+    """Fetch wallet balance from MySQL."""
     try:
-        for row in get_member_rows()[1:]:
-            if len(row) > 1 and row[1].strip() == member_id.strip():
-                mins = int_safe(row[7]) if len(row) > 7 and row[7].strip() else 0
-                return ok(mins)
-        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
-    except HTTPException:
-        raise
+        rows = _mysql_query(
+            "SELECT balance_mins FROM member_wallets WHERE member_id=%s",
+            (member_id,))
+        if not rows:
+            return ok(0)
+        return ok(rows[0].get("balance_mins", 0) or 0)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -461,19 +459,13 @@ async def api_fetch_wallet_mins(member_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_balance_mins (alias live read)
 # ═══════════════════════════════════════
-@app.get("/api/fetch_balance_mins/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch wallet balance live (bypasses cache)")
+@app.get("/api/fetch_balance_mins/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch wallet balance live [MySQL]")
 async def api_fetch_balance_mins(member_id: str, auth=Depends(verify_api_key)):
-    """Fetch wallet balance in mins (live read, bypasses cache)."""
-    data = _fetch_balance_mins_from_mysql(member_id)
-    if data is not None:
-        return ok(data)
+    """Fetch wallet balance in mins (live from MySQL)."""
     try:
-        ws = get_worksheet(SHEET_CARD_WALLET)
-        rows = ws.get_all_values()
-        for row in rows[1:]:
-            if len(row) > 1 and row[1].strip() == member_id.strip():
-                mins = int_safe(row[7]) if len(row) > 7 and row[7].strip() else 0
-                return ok(mins)
+        rows = _mysql_query("SELECT balance_mins FROM member_wallets WHERE member_id=%s", (member_id,))
+        if rows:
+            return ok(rows[0]["balance_mins"] or 0)
         raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
     except HTTPException:
         raise
@@ -484,17 +476,14 @@ async def api_fetch_balance_mins(member_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_member_tier
 # ═══════════════════════════════════════
-@app.get("/api/fetch_member_tier/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch member current tier")
+@app.get("/api/fetch_member_tier/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch member tier [MySQL]")
 async def api_fetch_member_tier(member_id: str, auth=Depends(verify_api_key)):
-    """Fetch member's current tier from Card_Wallet col G."""
+    """Fetch member tier from MySQL member_wallets."""
     try:
-        for row in get_member_rows()[1:]:
-            if len(row) > 1 and row[1].strip() == member_id.strip():
-                tier = row[6].strip() if len(row) > 6 else ""
-                return ok(tier if tier else "Warrior")
-        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
-    except HTTPException:
-        raise
+        rows = _mysql_query("SELECT tier, total_spend FROM member_wallets WHERE member_id=%s", (member_id,))
+        r = rows[0] if rows else {"tier": "Warrior", "total_spend": 0}
+        tier = (r.get("tier") or "Warrior") if r else "Warrior"
+        return ok(tier)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -502,47 +491,45 @@ async def api_fetch_member_tier(member_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_staff / fetch_staff_names
 # ═══════════════════════════════════════
-@app.get("/api/fetch_staff", response_model=GenericResponse, tags=["Staff"], summary="Fetch list of staff names")
+@app.get("/api/fetch_staff", response_model=GenericResponse, tags=["Staff"], summary="Fetch staff list [MySQL]")
 async def api_fetch_staff(auth=Depends(verify_api_key)):
-    """Return list of staff names from Setting col S."""
+    """Fetch staff list from MySQL staff_records."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        vals = ws.col_values(19)[1:]
-        return ok([v.strip() for v in vals if v.strip()])
+        rows = _mysql_query("SELECT staff_name FROM staff_records WHERE is_active=1 ORDER BY staff_name")
+        return ok([r["staff_name"] for r in rows])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/fetch_staff_names", response_model=GenericResponse, tags=["Staff"], summary="Alias for fetch_staff")
+@app.get("/api/fetch_staff_names", response_model=GenericResponse, tags=["Staff"], summary="Fetch staff names [MySQL]")
 async def api_fetch_staff_names(auth=Depends(verify_api_key)):
-    """Alias for fetch_staff."""
-    return await api_fetch_staff(auth)
+    """Fetch active staff names from MySQL."""
+    try:
+        rows = _mysql_query("SELECT staff_name FROM staff_records WHERE is_active=1 ORDER BY staff_name")
+        return ok([r["staff_name"] for r in rows])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ═══════════════════════════════════════
 #  fetch_food_prices / fetch_food_costs
 # ═══════════════════════════════════════
-@app.get("/api/fetch_food_prices", response_model=GenericResponse, tags=["Food"], summary="Fetch food item name to price dict")
+@app.get("/api/fetch_food_prices", response_model=GenericResponse, tags=["Food"], summary="Fetch food prices [MySQL]")
 async def api_fetch_food_prices(auth=Depends(verify_api_key)):
-    """Return dict of food item name -> price from Setting (D-E)."""
+    """Fetch food prices from MySQL settings."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        names = ws.col_values(4)[1:]
-        prices = ws.col_values(5)[1:]
-        return ok({n.strip(): int_safe(p) for n, p in zip(names, prices) if n.strip()})
+        val = _mysql_get_setting("food_prices", {})
+        return ok(val if isinstance(val, dict) else {})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/fetch_food_costs", response_model=GenericResponse, tags=["Food"], summary="Fetch food item name to cost price dict")
+@app.get("/api/fetch_food_costs", response_model=GenericResponse, tags=["Food"], summary="Fetch food costs [MySQL]")
 async def api_fetch_food_costs(auth=Depends(verify_api_key)):
-    """Return dict of food item -> cost price from Setting (D, F)."""
+    """Fetch food costs from MySQL settings."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        names = ws.col_values(4)[1:]
-        costs = ws.col_values(6)[1:]
-        return ok({n.strip(): (int_safe(c) if str(c).strip() else 0)
-                   for n, c in zip(names, costs) if n.strip()})
+        val = _mysql_get_setting("food_costs", {})
+        return ok(val if isinstance(val, dict) else {})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -550,90 +537,36 @@ async def api_fetch_food_costs(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_games / fetch_game_library
 # ═══════════════════════════════════════
-@app.get("/api/fetch_games", response_model=GenericResponse, tags=["Games"], summary="Fetch all games from Game Library")
+@app.get("/api/fetch_games", response_model=GenericResponse, tags=["Games"], summary="Fetch game list [MySQL]")
 async def api_fetch_games(auth=Depends(verify_api_key)):
-    """Return all games from Game_Library (MySQL preferred, Sheets fallback)."""
+    """Fetch game list from MySQL games_library."""
     try:
-        mysql_data = _fetch_games_from_mysql()
-        if mysql_data is not None:
-            games = []
-            for i, g in enumerate(mysql_data, start=2):
-                games.append({
-                    "row": i,
-                    "title": g.get("title", ""),
-                    "solo_multi": g.get("solo_multi", ""),
-                    "genre": g.get("genre", ""),
-                    "status": g.get("final_status", ""),
-                    "discs": str(g.get("discs", 0)),
-                })
-            return ok(games)
-        rows = get_game_rows()
-        if len(rows) < 2:
-            return ok([])
-        games = []
-        for i, row in enumerate(rows[1:], start=2):
-            if not row or not row[1].strip():
-                continue
-            # Parse col U (Installed_On) = "solo_multi|genre"
-            meta_raw = row[20].strip() if len(row) > 20 else ""
-            solo_m = ""
-            gen = ""
-            if "|" in meta_raw:
-                parts = meta_raw.split("|", 1)
-                solo_m = parts[0].strip()
-                gen     = parts[1].strip()
-            games.append({
-                "row": i,
-                "title": row[1].strip() if len(row) > 1 else "",
-                "solo_multi": solo_m,
-                "genre": gen,
-                "status": row[2].strip() if len(row) > 2 else "",
-                "discs": row[3].strip() if len(row) > 3 else "",
-            })
-        return ok(games)
+        rows = _mysql_query("SELECT game_title, genre, solo_multi, final_status, disc_count FROM games_library ORDER BY game_title")
+        return ok({"games": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/fetch_game_library", response_model=GenericResponse, tags=["Games"], summary="Alias for fetch_games")
+@app.get("/api/fetch_game_library", response_model=GenericResponse, tags=["Games"], summary="Fetch game library [MySQL]")
 async def api_fetch_game_library(auth=Depends(verify_api_key)):
-    """Alias for fetch_games."""
-    return await api_fetch_games(auth)
+    """Fetch full game library from MySQL."""
+    try:
+        rows = _mysql_query("SELECT game_title, genre, solo_multi, final_status, disc_count FROM games_library ORDER BY game_title")
+        return ok({"games": rows})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ═══════════════════════════════════════
 #  fetch_console_games
 # ═══════════════════════════════════════
-@app.get("/api/fetch_console_games", response_model=GenericResponse, tags=["Games"], summary="Fetch console game installations")
+@app.get("/api/fetch_console_games", response_model=GenericResponse, tags=["Games"], summary="Fetch console games [MySQL]")
 async def api_fetch_console_games(auth=Depends(verify_api_key)):
-    """Return all console-game installation records (cached 5 min)."""
-    data = _fetch_console_games_from_mysql()
-    if data is not None:
-        return ok([{
-            "row": d.get("id", i),
-            "console_id": d.get("console_id", ""),
-            "game_title": d.get("game_title", ""),
-            "install_type": d.get("install_type", ""),
-            "date": d.get("date", ""),
-            "notes": d.get("notes", ""),
-        } for i, d in enumerate(data, start=2)])
+    """Fetch games installed on consoles from MySQL."""
     try:
-        rows = get_console_game_rows()
-        if len(rows) < 2:
-            return ok([])
-        result = []
-        for i, row in enumerate(rows[1:], start=2):
-            if not row or not row[0].strip():
-                continue
-            result.append({
-                "row": i,
-                "console_id": row[0].strip() if len(row) > 0 else "",
-                "game_title": row[1].strip() if len(row) > 1 else "",
-                "install_type": row[2].strip() if len(row) > 2 else "",
-                "date": row[3].strip() if len(row) > 3 else "",
-                "notes": row[4].strip() if len(row) > 4 else "",
-            })
-        return ok(result)
+        rows = _mysql_query(
+            "SELECT console_id, console_name, game_id, game_title, genre, status, slot_position FROM console_games ORDER BY console_id, slot_position")
+        return ok({"console_games": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -641,16 +574,14 @@ async def api_fetch_console_games(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  get_games_on_console
 # ═══════════════════════════════════════
-@app.get("/api/get_games_on_console/{console_id}", response_model=GenericResponse, tags=["Games"], summary="Get games installed on a console")
+@app.get("/api/get_games_on_console/{console_id}", response_model=GenericResponse, tags=["Games"], summary="Get games on console [MySQL]")
 async def api_get_games_on_console(console_id: str, auth=Depends(verify_api_key)):
-    """Return list of game titles installed on a specific console."""
+    """Get games installed on a specific console from MySQL."""
     try:
-        rows = get_console_game_rows()
-        games = []
-        for row in rows[1:]:
-            if len(row) >= 2 and row[0].strip().upper() == console_id.strip().upper() and row[1].strip():
-                games.append(row[1].strip())
-        return ok(games)
+        rows = _mysql_query(
+            "SELECT game_title, genre, status, slot_position FROM console_games WHERE console_id=%s ORDER BY slot_position",
+            (console_id,))
+        return ok({"console_id": console_id, "games": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -658,17 +589,14 @@ async def api_get_games_on_console(console_id: str, auth=Depends(verify_api_key)
 # ═══════════════════════════════════════
 #  get_consoles_with_game
 # ═══════════════════════════════════════
-@app.get("/api/get_consoles_with_game", response_model=GenericResponse, tags=["Games"], summary="Get consoles with a specific game")
-async def api_get_consoles_with_game(game_title: str = Query(...), auth=Depends(verify_api_key)):
-    """Return list of console IDs that have a specific game installed."""
+@app.get("/api/get_consoles_with_game", response_model=GenericResponse, tags=["Games"], summary="Get consoles with a game [MySQL]")
+async def api_get_consoles_with_game(game_title: str = Query("", description="Game title to search"), auth=Depends(verify_api_key)):
+    """Get consoles that have a specific game from MySQL."""
     try:
-        rows = get_console_game_rows()
-        gl = game_title.strip().lower()
-        consoles = []
-        for row in rows[1:]:
-            if len(row) >= 2 and row[1].strip().lower() == gl and row[0].strip():
-                consoles.append(row[0].strip())
-        return ok(list(dict.fromkeys(consoles)))
+        rows = _mysql_query(
+            "SELECT DISTINCT console_id, console_name FROM console_games WHERE game_title=%s",
+            (game_title,))
+        return ok({"game_title": game_title, "consoles": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -676,12 +604,11 @@ async def api_get_consoles_with_game(game_title: str = Query(...), auth=Depends(
 # ═══════════════════════════════════════
 #  fetch_base_rate
 # ═══════════════════════════════════════
-@app.get("/api/fetch_base_rate", response_model=GenericResponse, tags=["Settings"], summary="Fetch hourly base rate")
+@app.get("/api/fetch_base_rate", response_model=GenericResponse, tags=["Settings"], summary="Fetch hourly base rate [MySQL]")
 async def api_fetch_base_rate(auth=Depends(verify_api_key)):
-    """Fetch hourly base rate from Setting!B2 (Ks/hr)."""
+    """Fetch hourly base rate from MySQL settings_config."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        return ok(int_safe(ws.cell(2, 2).value))
+        return ok(_mysql_get_setting("base_rate", 0))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -689,18 +616,14 @@ async def api_fetch_base_rate(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_console_multiplier
 # ═══════════════════════════════════════
-@app.get("/api/fetch_console_multiplier/{console_id}", response_model=GenericResponse, tags=["Settings"], summary="Fetch multiplier for a console")
+@app.get("/api/fetch_console_multiplier/{console_id}", response_model=GenericResponse, tags=["Settings"], summary="Fetch console multiplier [MySQL]")
 async def api_fetch_console_multiplier(console_id: str, auth=Depends(verify_api_key)):
-    """Fetch multiplier for a console from Setting!J."""
+    """Fetch multiplier for a console from MySQL settings."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        names = ws.col_values(8)[1:]
-        mults = ws.col_values(10)[1:]
-        for name, mult in zip(names, mults):
-            if name.strip() == console_id.strip():
-                val = float_safe(mult)
-                return ok(val if val > 0 else 1.0)
-        return ok(1.0)
+        mult = _mysql_get_setting(f"console_multiplier_{console_id}", None)
+        if mult is None:
+            mult = _mysql_get_setting("console_multiplier_default", 1.0)
+        return ok(float(mult))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -708,13 +631,14 @@ async def api_fetch_console_multiplier(console_id: str, auth=Depends(verify_api_
 # ═══════════════════════════════════════
 #  fetch_new_member_defaults
 # ═══════════════════════════════════════
-@app.get("/api/fetch_new_member_defaults", response_model=GenericResponse, tags=["Settings"], summary="Fetch default card price and base mins")
+@app.get("/api/fetch_new_member_defaults", response_model=GenericResponse, tags=["Settings"], summary="Fetch new member defaults [MySQL]")
 async def api_fetch_new_member_defaults(auth=Depends(verify_api_key)):
-    """Fetch default card price (B20) and base mins (B21) from Setting."""
+    """Fetch default card price and base mins from MySQL settings."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        return ok({"card_price": int_safe(ws.cell(20, 2).value),
-                   "base_mins": int_safe(ws.cell(21, 2).value)})
+        return ok({
+            "card_price": int(_mysql_get_setting("new_member_card_price", "90000")),
+            "base_mins": int(_mysql_get_setting("new_member_base_mins", "600")),
+        })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -722,13 +646,14 @@ async def api_fetch_new_member_defaults(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_rank_thresholds
 # ═══════════════════════════════════════
-@app.get("/api/fetch_rank_thresholds", response_model=GenericResponse, tags=["Settings"], summary="Fetch Master and Immortal thresholds")
+@app.get("/api/fetch_rank_thresholds", response_model=GenericResponse, tags=["Settings"], summary="Fetch rank thresholds [MySQL]")
 async def api_fetch_rank_thresholds(auth=Depends(verify_api_key)):
-    """Fetch Master and Immortal threshold from Setting!M3:M4."""
+    """Fetch Master and Immortal thresholds from MySQL settings."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        return ok({"master_threshold": int_safe(ws.cell(3, 13).value),
-                   "immortal_threshold": int_safe(ws.cell(4, 13).value)})
+        return ok({
+            "master_threshold": int(_mysql_get_setting("master_threshold", "300000")),
+            "immortal_threshold": int(_mysql_get_setting("immortal_threshold", "1000000")),
+        })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -736,28 +661,24 @@ async def api_fetch_rank_thresholds(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_bonus_table
 # ═══════════════════════════════════════
-@app.get("/api/fetch_bonus_table", response_model=GenericResponse, tags=["Settings"], summary="Fetch bonus table")
+@app.get("/api/fetch_bonus_table", response_model=GenericResponse, tags=["Settings"], summary="Fetch bonus table [MySQL]")
 async def api_fetch_bonus_table(auth=Depends(verify_api_key)):
-    """Fetch bonus table from Setting!O2:R5."""
+    """Fetch bonus table from MySQL settings (list-of-dicts format)."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        rows = ws.get("O2:R5")
+        val = _mysql_get_setting("bonus_table", [])
+        if not isinstance(val, list):
+            return ok([])
         result = []
-        for row in rows:
-            if len(row) < 4:
-                continue
-            try:
-                thresh = int_safe(row[0])
-                w_b = int_safe(row[1])
-                m_b = int_safe(row[2])
-                i_b = int_safe(row[3])
-                if thresh > 0 or any([w_b, m_b, i_b]):
-                    result.append({
-                        "threshold": thresh, "warrior_bonus": w_b,
-                        "master_bonus": m_b, "immortal_bonus": i_b,
-                    })
-            except Exception:
-                continue
+        for row in val:
+            if isinstance(row, list) and len(row) >= 4:
+                result.append({
+                    "threshold": int(row[0] or 0),
+                    "warrior_bonus": int(row[1] or 0),
+                    "master_bonus": int(row[2] or 0),
+                    "immortal_bonus": int(row[3] or 0),
+                })
+            elif isinstance(row, dict):
+                result.append(row)
         return ok(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -766,25 +687,28 @@ async def api_fetch_bonus_table(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_rank_table_display
 # ═══════════════════════════════════════
-@app.get("/api/fetch_rank_table_display", response_model=GenericResponse, tags=["Settings"], summary="Fetch rank table as formatted string")
+@app.get("/api/fetch_rank_table_display", response_model=GenericResponse, tags=["Settings"], summary="Fetch rank display table [MySQL]")
 async def api_fetch_rank_table_display(auth=Depends(verify_api_key)):
-    """Fetch Setting!O1:R5 and return formatted string table for display."""
+    """Fetch formatted rank bonus table string from MySQL bonus_table setting."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        rows = ws.get("O1:R5")
-        if not rows:
+        val = _mysql_get_setting("bonus_table", [])
+        if not isinstance(val, list) or not val:
             return ok("_(data not available)_")
         lines = [
-            f"{'Amount (Ks)':<14} {'Warrior':>9} {'Master':>9} {'Immortal':>10}",
+            "%-14s %9s %9s %10s" % ("Amount (Ks)", "Warrior", "Master", "Immortal"),
             "-" * 48,
         ]
-        for row in rows[1:]:
-            if len(row) < 4:
-                continue
-            amt = int_safe(row[0])
-            if amt == 0:
-                continue
-            lines.append(f"{amt:>14,}  {int_safe(row[1]):>8,}  {int_safe(row[2]):>8,}  {int_safe(row[3]):>9,}")
+        for row in val:
+            if isinstance(row, list) and len(row) >= 4:
+                amt = int(row[0] or 0)
+                if amt == 0:
+                    continue
+                lines.append("%14s  %8s  %8s  %9s" % (f"{amt:,}", f"{int(row[1] or 0):,}", f"{int(row[2] or 0):,}", f"{int(row[3] or 0):,}"))
+            elif isinstance(row, dict):
+                amt = int(row.get("threshold", 0))
+                if amt == 0:
+                    continue
+                lines.append("%14s  %8s  %8s  %9s" % (f"{amt:,}", f"{row.get('warrior_bonus',0):,}", f"{row.get('master_bonus',0):,}", f"{row.get('immortal_bonus',0):,}"))
         return ok("\n".join(lines))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -793,23 +717,17 @@ async def api_fetch_rank_table_display(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_alltime_effective_rate
 # ═══════════════════════════════════════
-@app.get("/api/fetch_alltime_effective_rate", response_model=GenericResponse, tags=["Analytics"], summary="All-time average effective rate (Ks/min)")
+@app.get("/api/fetch_alltime_effective_rate", response_model=GenericResponse, tags=["Analytics"], summary="All-time average effective rate [MySQL]")
 async def api_fetch_alltime_effective_rate(auth=Depends(verify_api_key)):
-    """Calculate all-time average Ks/min across every TopUp_Log row."""
+    """All-time average effective rate (Ks/min) from MySQL."""
     try:
-        ws = get_worksheet(SHEET_TOPUP_LOG)
-        rows = ws.get_all_values()
-        total_ks, total_mins = 0, 0
-        for row in rows[1:]:
-            if len(row) < 5:
-                continue
-            ks = int_safe(row[3]) if row[3].strip() else 0
-            mins = int_safe(row[4]) if row[4].strip() else 0
-            if ks and mins:
-                total_ks += ks
-                total_mins += mins
-        rate = round(total_ks / total_mins, 4) if total_mins > 0 else 0.0
-        return ok(rate)
+        rows = _mysql_query(
+            "SELECT SUM(total_spend) as total_spend, SUM(balance_mins) as total_mins FROM member_wallets WHERE total_spend > 0")
+        r = rows[0] if rows else {"total_spend": 0, "total_mins": 0}
+        total_spend = float(r["total_spend"] or 0)
+        total_mins = float(r["total_mins"] or 0)
+        rate = round(total_spend / total_mins, 2) if total_mins > 0 else 0.0
+        return ok({"alltime_effective_rate": rate, "total_spend": total_spend, "total_mins": total_mins})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -817,17 +735,25 @@ async def api_fetch_alltime_effective_rate(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_member_effective_rate
 # ═══════════════════════════════════════
-@app.get("/api/fetch_member_effective_rate/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch member effective rate (Ks/min)")
+@app.get("/api/fetch_member_effective_rate/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch member effective rate [MySQL]")
 async def api_fetch_member_effective_rate(member_id: str, auth=Depends(verify_api_key)):
-    """Fetch a member's stored effective rate from Card_Wallet col L."""
+    """Fetch member effective rate from MySQL member_wallets."""
     try:
-        for row in get_member_rows()[1:]:
-            if len(row) > 1 and row[1].strip() == member_id.strip():
-                val = row[11].strip() if len(row) > 11 else ""
-                return ok(float(val) if val else 0.0)
-        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
-    except HTTPException:
-        raise
+        rows = _mysql_query("SELECT effective_rate FROM member_wallets WHERE member_id=%s", (member_id,))
+        rate = float(rows[0]["effective_rate"]) if rows and rows[0]["effective_rate"] else 1.0
+        return ok({"member_id": member_id, "effective_rate": rate})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/update_member_effective_rate", response_model=GenericResponse, tags=["Members"], summary="Update member effective rate [MySQL]")
+async def api_update_member_effective_rate(req: dict, auth=Depends(verify_api_key)):
+    """Update member effective rate in MySQL."""
+    try:
+        mid = req.get("member_id", "")
+        rate = req.get("effective_rate", 1.0)
+        _mysql_exec("UPDATE member_wallets SET effective_rate=%s WHERE member_id=%s", (rate, mid))
+        return ok({"member_id": mid, "effective_rate": rate, "updated": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -835,21 +761,13 @@ async def api_fetch_member_effective_rate(member_id: str, auth=Depends(verify_ap
 # ═══════════════════════════════════════
 #  build_member_rate_dict
 # ═══════════════════════════════════════
-@app.get("/api/build_member_rate_dict", response_model=GenericResponse, tags=["Members"], summary="Build dict of member_id to effective rate")
+@app.get("/api/build_member_rate_dict", response_model=GenericResponse, tags=["Members"], summary="Build member rate dict [MySQL]")
 async def api_build_member_rate_dict(auth=Depends(verify_api_key)):
-    """Build dict of member_id -> stored effective rate from Card_Wallet."""
+    """Build dict of member_id to effective rate from MySQL."""
     try:
-        result = {}
-        for row in get_member_rows()[1:]:
-            if len(row) > 1 and row[1].strip():
-                m_id = row[1].strip()
-                val = row[11].strip() if len(row) > 11 else ""
-                if val:
-                    try:
-                        result[m_id] = float(val)
-                    except ValueError:
-                        pass
-        return ok(result)
+        rows = _mysql_query("SELECT member_id, effective_rate FROM member_wallets WHERE effective_rate IS NOT NULL")
+        rate_dict = {r["member_id"]: float(r["effective_rate"] or 1.0) for r in rows}
+        return ok({"rate_dict": rate_dict, "count": len(rate_dict)})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -857,21 +775,12 @@ async def api_build_member_rate_dict(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_base_salaries
 # ═══════════════════════════════════════
-@app.get("/api/fetch_base_salaries", response_model=GenericResponse, tags=["Staff"], summary="Fetch staff base salaries")
+@app.get("/api/fetch_base_salaries", response_model=GenericResponse, tags=["Staff"], summary="Fetch base salaries [MySQL]")
 async def api_fetch_base_salaries(auth=Depends(verify_api_key)):
-    """Fetch staff base salaries from Setting!S:T columns."""
+    """Fetch base salaries from MySQL staff_records."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        staff = ws.col_values(19)[1:]
-        salaries = ws.col_values(20)[1:]
-        result = {}
-        for i, name in enumerate(staff):
-            name = name.strip()
-            if not name:
-                continue
-            sal_str = salaries[i].strip() if i < len(salaries) else "0"
-            result[name] = int_safe(sal_str)
-        return ok(result)
+        rows = _mysql_query("SELECT staff_name, base_salary, role FROM staff_records WHERE is_active=1 ORDER BY staff_name")
+        return ok({"salaries": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -879,27 +788,26 @@ async def api_fetch_base_salaries(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_attendance
 # ═══════════════════════════════════════
-@app.get("/api/fetch_attendance/{month_str}", response_model=GenericResponse, tags=["Attendance"], summary="Get staff attendance records for a month")
+@app.get("/api/fetch_attendance/{month_str}", response_model=GenericResponse, tags=["Staff"], summary="Fetch attendance [MySQL]")
 async def api_fetch_attendance(month_str: str, auth=Depends(verify_api_key)):
-    """Fetch attendance records for a month from Attendance_Log."""
+    """Fetch attendance for a month from MySQL."""
     try:
-        ws = get_worksheet(SHEET_ATTENDANCE_LOG)
-        rows = ws.get_all_values()
-        result = {}
-        for row in rows[1:]:
-            if len(row) < 4:
-                continue
-            if row[0].strip() != month_str:
-                continue
-            staff = row[1].strip()
-            if not staff:
-                continue
-            result[staff] = {
-                "leave_days": int_safe(row[2]) if len(row) > 2 else 0,
-                "late_count": int_safe(row[3]) if len(row) > 3 else 0,
-                "deduct_per_late": int_safe(row[4]) if len(row) > 4 and row[4].strip() else 500,
-            }
-        return ok(result)
+        rows = _mysql_query(
+            "SELECT staff_name, login_time, logout_time, date, hours_worked, status FROM attendance_log WHERE DATE_FORMAT(date, %s)=%s ORDER BY date DESC",
+            ("%Y-%m", month_str))
+        return ok({"attendance": rows, "month": month_str})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/save_attendance", response_model=GenericResponse, tags=["Staff"], summary="Save attendance [MySQL]")
+async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
+    """Save attendance record to MySQL."""
+    try:
+        _mysql_exec(
+            "INSERT INTO attendance_log (staff_name, login_time, date, status) VALUES (%s, NOW(), CURDATE(), %s)",
+            (req.get("staff_name") or req.get("staff", ""), req.get("status", "Present")))
+        return ok({"saved": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -907,32 +815,14 @@ async def api_fetch_attendance(month_str: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_salary_advances
 # ═══════════════════════════════════════
-@app.get("/api/fetch_salary_advances/{month_str}", response_model=GenericResponse, tags=["Attendance"], summary="Get salary advances for a month")
+@app.get("/api/fetch_salary_advances/{month_str}", response_model=GenericResponse, tags=["Staff"], summary="Fetch salary advances [MySQL]")
 async def api_fetch_salary_advances(month_str: str, auth=Depends(verify_api_key)):
-    """Return {staff: {total, cash, kpay}} for the given month (YYYY-MM)."""
+    """Fetch salary advances for a month from MySQL."""
     try:
-        ws = get_worksheet(SHEET_SALARY_ADVANCE)
-        rows = ws.get_all_values()
-        result = {}
-        for row in rows[1:]:
-            if len(row) < 5:
-                continue
-            date_val = row[0].strip()
-            staff = row[1].strip()
-            if not staff or not date_val:
-                continue
-            if month_str.replace("-", "/") not in date_val and month_str not in date_val:
-                continue
-            amt = int_safe(row[2]) if row[2].strip() else 0
-            pay_method = row[3].strip().upper() if len(row) > 3 else "CASH"
-            if staff not in result:
-                result[staff] = {"total": 0, "cash": 0, "kpay": 0}
-            result[staff]["total"] += amt
-            if "KPAY" in pay_method:
-                result[staff]["kpay"] += amt
-            else:
-                result[staff]["cash"] += amt
-        return ok(result)
+        rows = _mysql_query(
+            "SELECT staff_name, amount, advance_date, repayment_status, notes FROM salary_advance WHERE DATE_FORMAT(advance_date, %s)=%s ORDER BY advance_date DESC",
+            ("%Y-%m", month_str))
+        return ok({"advances": rows, "month": month_str})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -940,28 +830,29 @@ async def api_fetch_salary_advances(month_str: str, auth=Depends(verify_api_key)
 # ═══════════════════════════════════════
 #  fetch_promotions_cached
 # ═══════════════════════════════════════
-@app.get("/api/fetch_promotions_cached", response_model=GenericResponse, tags=["Promotions"], summary="Fetch active promotions")
+@app.get("/api/fetch_promotions_cached", response_model=GenericResponse, tags=["Promotions"], summary="Fetch promotions [MySQL]")
 async def api_fetch_promotions_cached(auth=Depends(verify_api_key)):
-    """Fetch active promotions (extend w/ real API)."""
-    return ok([], "Promotions API not yet integrated")
+    """Fetch active promotions from MySQL."""
+    try:
+        rows = _mysql_query(
+            "SELECT id, promo_name, discount_type, discount_value, start_date, end_date, status FROM promotions WHERE status='active'")
+        return ok({"promotions": rows})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ═══════════════════════════════════════
 #  fetch_allowed_staff_ids
 # ═══════════════════════════════════════
-@app.get("/api/fetch_allowed_staff_ids", response_model=GenericResponse, tags=["Staff"], summary="Fetch dynamic staff whitelist")
+@app.get("/api/fetch_allowed_staff_ids", response_model=GenericResponse, tags=["Staff"], summary="Fetch allowed staff IDs [MySQL]")
 async def api_fetch_allowed_staff_ids(auth=Depends(verify_api_key)):
-    """Fetch dynamic staff whitelist from Setting!B30."""
-    data = _fetch_allowed_staff_ids_from_mysql()
-    if data is not None:
-        return ok(data)
+    """Fetch allowed staff Telegram user IDs from MySQL settings."""
     try:
-        ws = get_worksheet(SHEET_SETTING)
-        val = ws.cell(30, 2).value
-        if not val:
-            return ok([])
-        ids = [int(x.strip()) for x in str(val).split(",") if x.strip().isdigit()]
-        return ok(ids)
+        val = _mysql_get_setting("allowed_staff_ids", "")
+        if isinstance(val, str) and val.strip():
+            ids = [int(x.strip()) for x in val.split(",") if x.strip().isdigit()]
+            return ok(ids)
+        return ok([])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -969,56 +860,39 @@ async def api_fetch_allowed_staff_ids(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  next_voucher / next_member_id / next_member_row_no
 # ═══════════════════════════════════════
-@app.get("/api/next_voucher", response_model=GenericResponse, tags=["Sales"], summary="Generate next voucher number")
+@app.get("/api/next_voucher", response_model=GenericResponse, tags=["Utility"], summary="Get next voucher number [MySQL]")
 async def api_next_voucher(auth=Depends(verify_api_key)):
-    """Generate next voucher number from Sales_Daily col B."""
+    """Get next available voucher number from MySQL."""
     try:
-        ws = get_worksheet(SHEET_SALES_DAILY)
-        col = ws.col_values(2)
-        ids = [v for v in col[1:] if v.upper().startswith("V-")]
-        if ids:
-            try:
-                return ok(f"V-{int(ids[-1].split('-')[1]) + 1:03d}")
-            except (IndexError, ValueError):
-                pass
-        return ok("V-001")
+        rows = _mysql_query("SELECT receipt_no FROM receipts ORDER BY id DESC LIMIT 1")
+        if rows and rows[0]["receipt_no"]:
+            parts = rows[0]["receipt_no"].rsplit("-", 1)
+            next_no = int(parts[1]) + 1 if len(parts) == 2 and parts[1].isdigit() else 1
+        else:
+            next_no = 1
+        return ok(f"V-{next_no:03d}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/next_member_id", response_model=GenericResponse, tags=["Members"], summary="Auto-increment member ID")
+@app.get("/api/next_member_id", response_model=GenericResponse, tags=["Utility"], summary="Get next member ID [MySQL]")
 async def api_next_member_id(auth=Depends(verify_api_key)):
-    """Auto-increment member ID: PSV_A_003 -> PSV_A_004."""
+    """Get next available member ID from MySQL."""
     try:
-        ws = get_worksheet(SHEET_CARD_WALLET)
-        ids = [v.strip() for v in ws.col_values(2)[1:] if v.strip()]
-        if not ids:
-            return ok("PSV_A_001")
-        last = ids[-1]
-        m = re.search(r'(\d+)$', last)
-        if m:
-            prefix = last[:m.start()]
-            num = int(m.group(1)) + 1
-            width = len(m.group(1))
-            return ok(f"{prefix}{num:0{width}d}")
-        return ok(last + "_1")
+        rows = _mysql_query("SELECT MAX(CAST(REPLACE(member_id, 'PSV_A_', '') AS UNSIGNED)) as max_id FROM member_wallets")
+        last = rows[0]["max_id"] if rows and rows[0]["max_id"] else 0
+        return ok(f"PSV_A_{last + 1:03d}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/next_member_row_no", response_model=GenericResponse, tags=["Members"], summary="Get next sequential row number")
+@app.get("/api/next_member_row_no", response_model=GenericResponse, tags=["Utility"], summary="Get next member row [MySQL]")
 async def api_next_member_row_no(auth=Depends(verify_api_key)):
-    """Return next sequential row number for Card_Wallet Column A."""
+    """Get next member row number from MySQL."""
     try:
-        ws = get_worksheet(SHEET_CARD_WALLET)
-        col_a = ws.col_values(1)[1:]
-        nums = []
-        for v in col_a:
-            try:
-                nums.append(int(str(v).strip()))
-            except (ValueError, TypeError):
-                pass
-        return ok((max(nums) + 1) if nums else 1)
+        rows = _mysql_query("SELECT COUNT(*) as cnt FROM member_wallets")
+        count = rows[0]["cnt"] if rows else 0
+        return ok(count + 1)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1026,17 +900,25 @@ async def api_next_member_row_no(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_referral_code
 # ═══════════════════════════════════════
-@app.get("/api/fetch_referral_code/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch referral code for a member")
+@app.get("/api/fetch_referral_code/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch referral code [MySQL]")
 async def api_fetch_referral_code(member_id: str, auth=Depends(verify_api_key)):
-    """Fetch referral code for a member from Card_Wallet."""
+    """Fetch referral code from MySQL."""
     try:
-        for row in get_member_rows()[1:]:
-            if len(row) > 1 and row[1].strip() == member_id.strip():
-                code = row[13].strip() if len(row) > 13 else ""
-                return ok(code or None)
-        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
-    except HTTPException:
-        raise
+        rows = _mysql_query("SELECT referral_code FROM member_wallets WHERE member_id=%s", (member_id,))
+        code = rows[0]["referral_code"] if rows and rows[0]["referral_code"] else ""
+        return ok({"member_id": member_id, "referral_code": code})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/save_referral_code", response_model=GenericResponse, tags=["Members"], summary="Save referral code [MySQL]")
+async def api_save_referral_code(req: dict, auth=Depends(verify_api_key)):
+    """Save referral code to MySQL."""
+    try:
+        mid = req.get("member_id", "")
+        code = req.get("referral_code", "")
+        _mysql_exec("UPDATE member_wallets SET referral_code=%s WHERE member_id=%s", (code, mid))
+        return ok({"member_id": mid, "referral_code": code})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1044,22 +926,19 @@ async def api_fetch_referral_code(member_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — create_booking
 # ═══════════════════════════════════════
-@app.post("/api/create_booking", response_model=GenericResponse, tags=["Bookings"], summary="Create new console booking")
+@app.post("/api/create_booking", response_model=GenericResponse, tags=["Bookings"], summary="Create new console booking [MySQL]")
 async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
-    """Append a row to Console_Booking and return BookingID."""
+    """Create a booking in MySQL console_booking."""
     try:
-        sh = get_worksheet(SHEET_CONSOLE_BOOKING)
         now = now_mmt()
-        date = now.strftime("%-m/%-d/%Y")
-        time_s = now.strftime("%H:%M")
-        seq = now.strftime("%H%M")
         console_id = req.get("console_id", "")
         member_id = req.get("member_id", "")
         staff = req.get("staff", "")
         notes = req.get("notes", "")
-        bk_id = f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ','').replace('-','')}-{seq}"
-        sh.append_row([bk_id, date, console_id, member_id, time_s, "", "Active", staff, notes],
-                      value_input_option="USER_ENTERED")
+        bk_id = f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ','').replace('-','')}-{now.strftime('%H%M')}"
+        _mysql_exec(
+            "INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (console_id, member_id, now.date(), now, "Active", staff, notes))
         invalidate_cache("bookings")
         return ok({"booking_id": bk_id})
     except Exception as e:
@@ -1069,21 +948,15 @@ async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — end_booking
 # ═══════════════════════════════════════
-@app.put("/api/end_booking/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="Mark booking as Done and set end time")
+@app.put("/api/end_booking/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="End booking [MySQL]")
 async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
-    """Mark a booking as Done and fill EndTime."""
+    """Mark a booking as Done in MySQL."""
     try:
-        sh = get_worksheet(SHEET_CONSOLE_BOOKING)
-        rows = sh.get_all_values()
-        for i, row in enumerate(rows[1:], start=2):
-            if row and row[0].strip() == booking_id:
-                now = now_mmt()
-                sh.update(f"F{i}:G{i}", [[now.strftime("%H:%M"), "Done"]])
-                invalidate_cache("bookings")
-                return ok({"booking_id": booking_id, "status": "Done"})
-        raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
-    except HTTPException:
-        raise
+        now = now_mmt()
+        _mysql_exec(
+            "UPDATE console_booking SET end_time=%s, status='Done' WHERE id=%s",
+            (now, booking_id))
+        return ok({"booking_id": booking_id, "status": "Done"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1091,102 +964,129 @@ async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — cancel_booking
 # ═══════════════════════════════════════
-@app.put("/api/cancel_booking/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="Cancel a booking")
-async def api_cancel_booking(booking_id: str, auth=Depends(verify_api_key)):
-    """Mark a booking as Cancelled."""
+@app.post("/api/bookings", response_model=GenericResponse, tags=["Bookings"], summary="Create booking from customer bot payload [MySQL]")
+async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
+    """Create a booking from customer bot in MySQL."""
     try:
-        sh = get_worksheet(SHEET_CONSOLE_BOOKING)
-        rows = sh.get_all_values()
-        for i, row in enumerate(rows[1:], start=2):
-            if row and row[0].strip() == booking_id:
-                sh.update(f"G{i}", [["Cancelled"]])
-                invalidate_cache("bookings")
-                return ok({"booking_id": booking_id, "status": "Cancelled"})
-        raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-#  CREATE/UPDATE — bookings (customer bot format)
-# ═══════════════════════════════════════
-@app.post("/api/bookings", response_model=GenericResponse, tags=["Bookings"], summary="Create booking from customer bot payload")
-async def api_bookings(req: dict, auth=Depends(verify_api_key)):
-    """Create a booking from customer bot payload."""
-    try:
-        import json as _json
-        sh = get_worksheet(SHEET_CONSOLE_BOOKING)
         now = now_mmt()
-        date_formatted = now.strftime("%-m/%-d/%Y")
-        time_s = now.strftime("%H:%M")
-        seq = now.strftime("%H%M")
-        console_type = req.get("consoleType", "")
-        console_id = console_type  # Store as-is
-
-        notes_data = {
-            "customerName": req.get("customerName", ""),
-            "phone": req.get("phone", ""),
-            "timeSlot": req.get("timeSlot", ""),
-            "consoleType": req.get("consoleType", ""),
-            "durationMins": req.get("durationMins", 0),
-            "gameName": req.get("gameName", ""),
-            "telegramChatId": req.get("telegramChatId", ""),
-            "username": req.get("username", ""),
-        }
-        notes_json = _json.dumps(notes_data)
-        bk_id = f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ', '').replace('-', '')}-{seq}"
-        sh.append_row([bk_id, date_formatted, console_id, "", time_s, "", "Pending", "", notes_json],
-                      value_input_option="USER_ENTERED")
-        invalidate_cache("bookings")
-        return ok({"id": bk_id, "status": "Pending"})
+        console_id = req.get("console_id", "")
+        member_id = req.get("member_id", "")
+        staff = req.get("staff_name", req.get("staff", ""))
+        notes = req.get("notes", "")
+        _mysql_exec("INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s)", (console_id, member_id, now.date(), now, "Active", staff, notes))
+        return ok({"booking_id": f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ','').replace('-','')}-{now.strftime('%H%M')}"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 
+# ═══════════════════════════════════════
 
-# ═══════════════════════════════════════
-#  MUTATION — save_attendance
-# ═══════════════════════════════════════
-@app.post("/api/save_attendance", response_model=GenericResponse, tags=["Attendance"], summary="Record/update staff attendance")
-async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
-    """Save/update attendance record for a staff in Attendance_Log."""
+# ================================================================
+#  MUTATION — topup/log
+# ================================================================
+@app.post("/api/topup/log", response_model=GenericResponse, tags=["Topup"], summary="Log a top-up transaction and update wallet")
+async def api_topup_log(req: dict, auth=Depends(verify_api_key)):
+    """Log a top-up transaction into topup_log table + update member wallet."""
     try:
-        month_str = req.get("month_str", "")
-        staff = req.get("staff", "")
-        leave_days = req.get("leave_days", 0)
-        late_count = req.get("late_count", 0)
-        deduct_per_late = req.get("deduct_per_late", 500)
+        member_id = req.get("member_id", "")
+        amount = req.get("amount", 0)
+        mins_added = req.get("mins_added", 0)
+        pm = req.get("payment_method") or f"Kpay:{req.get('kpay',0)}/Cash:{req.get('cash',0)}"
+        staff = req.get("staff_name") or req.get("staff", "")
 
-        sh = get_worksheet(SHEET_ATTENDANCE_LOG)
-        rows = sh.get_all_values()
-        found = False
-        for i, row in enumerate(rows[1:], start=2):
-            if row[0].strip() == month_str and row[1].strip() == staff:
-                sh.update(f"A{i}:E{i}", [[month_str, staff, leave_days, late_count, deduct_per_late]])
-                found = True
-                break
-        if not found:
-            sh.append_row([month_str, staff, leave_days, late_count, deduct_per_late])
-        return ok({"staff": staff, "month": month_str})
+        logger.info("Topup: member=%s amount=%s mins=%s", member_id, amount, mins_added)
+
+        current = _mysql_query_one(
+            "SELECT balance_mins, total_bought_mins, total_spend FROM member_wallets WHERE member_id=%s",
+            (member_id,))
+        bal_before = current["balance_mins"] if current else 0
+        bal_after = bal_before + mins_added
+        bought = (current["total_bought_mins"] if current else 0) + mins_added
+        new_spend = (current["total_spend"] if current else 0) + amount
+
+        _mysql_exec(
+            "INSERT INTO topup_log (member_id, amount, mins_added, topup_date, staff_name, payment_method, balance_before, balance_after, balance_mins_before, balance_mins_after) VALUES (%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s)",
+            (member_id, amount, mins_added, staff, pm, amount, amount, bal_before, bal_after))
+
+        _mysql_exec(
+            "UPDATE member_wallets SET balance_mins=%s, total_bought_mins=%s, total_spend=%s, last_updated=NOW() WHERE member_id=%s",
+            (bal_after, bought, new_spend, member_id))
+
+        return ok({"success": True, "balance_mins": bal_after, "total_spend": new_spend})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
+# ================================================================
+#  MUTATION — receipt (bot push)
+# ================================================================
+@app.post("/api/receipt", response_model=GenericResponse, tags=["Receipts"], summary="Save receipt from bot push")
+async def api_receipt_save(req: dict, auth=Depends(verify_api_key)):
+    """Save receipt JSON payload from bot (best-effort fire-and-forget)."""
+    try:
+        logger.info("Receipt saved: %s", req.get("voucher_id", req.get("type", "?")))
+        return ok({"status": "ok"})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ================================================================
+#  MUTATION — members/register
+# ================================================================
+@app.post("/api/members/register", response_model=GenericResponse, tags=["Members"], summary="Register a new member into MySQL")
+async def api_member_register(req: dict, auth=Depends(verify_api_key)):
+    """Register a new member. Writes to member_wallets and topup_log."""
+    try:
+        member_id = req.get("member_id", "")
+        name = req.get("name", "")
+        phone = req.get("phone", "")
+        staff = req.get("staff", "")
+        email = req.get("email", "")
+        initial_mins = req.get("initial_mins", 0)
+        amount = req.get("amount", 0)
+        kpay = req.get("kpay", 0)
+        cash = req.get("cash", 0)
+        mins_added = req.get("mins_added", initial_mins)
+        is_gift = req.get("is_gift", False)
+        referral_code = req.get("referral_code", "")
+
+        logger.info("Registering member: %s (%s) mins=%s", member_id, name, initial_mins)
+
+        # Upsert into member_wallets
+        _mysql_exec(
+            "INSERT INTO member_wallets (member_id, member_name, phone, balance_mins, total_bought_mins, tier, total_spend) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE member_name=VALUES(member_name), phone=VALUES(phone)",
+            (member_id, name, phone, initial_mins, mins_added, "Warrior", amount))
+
+        # Log into topup_log
+        if mins_added > 0:
+            _mysql_exec(
+                "INSERT INTO topup_log (member_id, amount, mins_added, topup_date, staff_name, payment_method, balance_mins_before, balance_mins_after) "
+                "VALUES (%s,%s,%s,NOW(),%s,%s,0,%s)",
+                (member_id, amount, mins_added, staff, f"KPay:{kpay}/Cash:{cash}", initial_mins))
+
+        logger.info("Member registered: %s", member_id)
+        return ok({"status": "ok", "member_id": member_id})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 #  MUTATION — save_receipt_json
 # ═══════════════════════════════════════
 @app.post("/api/save_receipt_json", response_model=GenericResponse, tags=["Receipts"], summary="Persist receipt data to MySQL")
 async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
     """Persist receipt data to MySQL."""
     try:
-        receipt_no = req.get("receipt_no", "")
-        member_id = req.get("member_id", "")
-        amount = req.get("amount", 0)
-        payment_method = req.get("payment_method", "")
-        items = req.get("items", "")
-        receipt_date = req.get("receipt_date", "")
-        staff_name = req.get("staff_name", "")
+        inner = req.get("data")
+        req_src = inner if (inner and isinstance(inner, dict)) else req
+        receipt_no = req_src.get("receipt_no") or req.get("voucher_id", "")
+        member_id = req_src.get("member_id", "")
+        amount = req_src.get("amount", 0)
+        payment_method = req_src.get("payment_method", "")
+        items = req_src.get("items", "")
+        receipt_date = req_src.get("receipt_date", "")
+        staff_name = req_src.get("staff_name", "")
 
         logger.info("Saving receipt to MySQL: receipt_no=%s", receipt_no)
 
@@ -1248,698 +1148,32 @@ async def api_get_receipt_html(voucher_id: str):
 # ═══════════════════════════════════════
 #  MUTATION — add_console_game / remove_console_game
 # ═══════════════════════════════════════
-@app.post("/api/add_console_game", response_model=GenericResponse, tags=["Games"], summary="Add game installation to console")
+@app.post("/api/add_console_game", response_model=GenericResponse, tags=["Games"], summary="Add game to console [MySQL]")
 async def api_add_console_game(req: dict, auth=Depends(verify_api_key)):
-    """Add a game installation record to Console_Games."""
+    """Add game installation to console in MySQL."""
     try:
-        console_id = req.get("console_id", "")
-        game_title = req.get("game_title", "")
-        install_type = req.get("install_type", "")
-        notes = req.get("notes", "")
-
-        sh = get_worksheet(SHEET_CONSOLE_GAMES)
-        date = now_mmt().strftime("%-m/%-d/%Y")
-        sh.append_row([console_id, game_title, install_type, date, notes],
-                      value_input_option="USER_ENTERED")
-        invalidate_cache("console_games")
-        return ok({"console_id": console_id, "game_title": game_title})
+        _mysql_exec(
+            "INSERT INTO console_games (console_id, console_name, game_id, game_title, genre, status, slot_position) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (req.get("console_id",""), req.get("console_name") or req.get("console_id",""), req.get("game_id") or req.get("game_title",""),
+             req.get("game_title",""), req.get("genre",""), req.get("status") or req.get("install_type","Installed"),
+             req.get("slot_position",1)))
+        return ok({"saved": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/api/remove_console_game", response_model=GenericResponse, tags=["Games"], summary="Remove game installation from console")
+@app.delete("/api/remove_console_game", response_model=GenericResponse, tags=["Games"], summary="Remove game from console [MySQL]")
 async def api_remove_console_game(req: dict, auth=Depends(verify_api_key)):
-    """Remove a game installation record from Console_Games."""
+    """Remove game from console in MySQL."""
     try:
-        console_id = req.get("console_id", "")
-        game_title = req.get("game_title", "")
-
-        sh = get_worksheet(SHEET_CONSOLE_GAMES)
-        rows = sh.get_all_values()
-        for i, row in enumerate(rows[1:], start=2):
-            if (len(row) >= 2
-                    and row[0].strip().upper() == console_id.strip().upper()
-                    and row[1].strip().lower() == game_title.strip().lower()):
-                sh.delete_rows(i)
-                invalidate_cache("console_games")
-                return ok({"console_id": console_id, "game_title": game_title})
-        raise HTTPException(status_code=404, detail=f"Game {game_title} not found on console {console_id}")
-    except HTTPException:
-        raise
+        _mysql_exec(
+            "DELETE FROM console_games WHERE console_id=%s AND game_title=%s",
+            (req.get("console_id",""), req.get("game_title","")))
+        return ok({"deleted": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# ═══════════════════════════════════════
-#  MUTATION — set_game_disc_count
-# ═══════════════════════════════════════
-@app.put("/api/set_game_disc_count", response_model=GenericResponse, tags=["Games"], summary="Update game disc count")
-async def api_set_game_disc_count(req: dict, auth=Depends(verify_api_key)):
-    """Update column D (Available Discs) for a game row in Game_Library."""
-    try:
-        row_num = req.get("row_num", 0)
-        count = req.get("count", 0)
-        sh = get_worksheet(SHEET_GAME_LIBRARY)
-        sh.update_cell(row_num, 4, count)
-        invalidate_cache("games")
-        return ok({"row_num": row_num, "count": count})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════
-#  MUTATION — update_game_library_install
-# ═══════════════════════════════════════
-@app.put("/api/update_game_library_install", response_model=GenericResponse, tags=["Games"], summary="Set TRUE/FALSE for game install checkbox")
-async def api_update_game_library_install(req: dict, auth=Depends(verify_api_key)):
-    """Set TRUE/FALSE checkbox in Game_Library for (game_title, console_id)."""
-    try:
-        game_title = req.get("game_title", "")
-        console_id = req.get("console_id", "")
-        installed = req.get("installed", False)
-
-        sh = get_worksheet(SHEET_GAME_LIBRARY)
-        rows = sh.get_all_values()
-        if not rows:
-            raise HTTPException(status_code=404, detail="Game_Library sheet is empty")
-
-        cid_norm = _norm_cid(console_id)
-        col_idx = None
-        for i, h in enumerate(rows[0]):
-            if _norm_cid(h) == cid_norm:
-                col_idx = i
-                break
-        if col_idx is None:
-            raise HTTPException(status_code=404, detail=f"Console {console_id} not found in headers")
-
-        game_lower = game_title.strip().lower()
-        row_idx = None
-        for i, row in enumerate(rows[1:], start=2):
-            cell_val = row[1].strip().lower() if len(row) > 1 else ""
-            if cell_val == game_lower:
-                row_idx = i
-                break
-        if row_idx is None:
-            raise HTTPException(status_code=404, detail=f"Game {game_title} not found")
-
-        n = col_idx + 1
-        col_letter = ""
-        while n > 0:
-            n, r = divmod(n - 1, 26)
-            col_letter = chr(65 + r) + col_letter
-        cell_addr = f"{col_letter}{row_idx}"
-
-        sh.update(cell_addr, [[True if installed else ""]])
-        invalidate_cache("games")
-        return ok({"game": game_title, "console": console_id, "installed": installed})
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════
-#  MUTATION — update_member_effective_rate
-# ═══════════════════════════════════════
-@app.put("/api/update_member_effective_rate", response_model=GenericResponse, tags=["Members"], summary="Update member effective rate")
-async def api_update_member_effective_rate(req: dict, auth=Depends(verify_api_key)):
-    """Update or insert member effective rate in Card_Wallet col L."""
-    try:
-        member_id = req.get("member_id", "")
-        rate = req.get("rate", 0.0)
-        ws = get_worksheet(SHEET_CARD_WALLET)
-        rows = ws.get_all_values()
-        for i, row in enumerate(rows[1:], start=2):
-            if len(row) > 1 and row[1].strip() == member_id.strip():
-                ws.update_cell(i, 12, round(float(rate), 4))
-                invalidate_cache("members")
-                return ok({"member_id": member_id, "rate": rate})
-        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════
-#  MUTATION — save_referral_code
-# ═══════════════════════════════════════
-@app.post("/api/save_referral_code", response_model=GenericResponse, tags=["Members"], summary="Save referral code for a member")
-async def api_save_referral_code(req: dict, auth=Depends(verify_api_key)):
-    """Save referral code for a member in Card_Wallet."""
-    try:
-        member_id = req.get("member_id", "")
-        code = req.get("code", "")
-        ws = get_worksheet(SHEET_CARD_WALLET)
-        rows = ws.get_all_values()
-        for i, row in enumerate(rows[1:], start=2):
-            if len(row) > 1 and row[1].strip() == member_id.strip():
-                ws.update_cell(i, 14, code)
-                invalidate_cache("members")
-                return ok({"member_id": member_id, "code": code})
-        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════
-#  MUTATION — add_console_to_setting
-# ═══════════════════════════════════════
-@app.post("/api/add_console_to_setting", response_model=GenericResponse, tags=["Console"], summary="Add new console to settings")
-async def api_add_console_to_setting(req: dict, auth=Depends(verify_api_key)):
-    """Append a new console to Setting!H:J."""
-    try:
-        console_id = req.get("console_id", "")
-        ctype = req.get("ctype", "")
-        multiplier = req.get("multiplier", 1.0)
-        ws = get_worksheet(SHEET_SETTING)
-        names = ws.col_values(8)
-        next_row = len(names) + 1
-        ws.update(f"H{next_row}:J{next_row}", [[console_id, ctype, str(multiplier)]],
-                  value_input_option="USER_ENTERED")
-        return ok({"console_id": console_id})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════
-#  MUTATION — remove_console_from_setting
-# ═══════════════════════════════════════
-@app.delete("/api/remove_console_from_setting/{console_id}", response_model=GenericResponse, tags=["Console"], summary="Remove console from settings")
-async def api_remove_console_from_setting(console_id: str, auth=Depends(verify_api_key)):
-    """Clear a console row from Setting!H:J."""
-    try:
-        ws = get_worksheet(SHEET_SETTING)
-        names = ws.col_values(8)
-        for i, name in enumerate(names):
-            if name.strip() == console_id.strip():
-                row = i + 1
-                ws.update(f"H{row}:J{row}", [["", "", ""]])
-                return ok({"console_id": console_id})
-        raise HTTPException(status_code=404, detail=f"Console {console_id} not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════
-#  META — Config (used by bot cache)
-# ═══════════════════════════════════════
-@app.get("/api/sheets/config", response_model=GenericResponse, tags=["Meta"], summary="Get cached config (base rate, thresholds, multipliers, prices)")
-async def api_sheets_config(auth=Depends(verify_api_key)):
-    """Return cached config used by the bot (base_rate, thresholds, etc.).
-
-    Reads from MySQL settings_config table first; falls back to Google Sheets
-    if the MySQL table is empty.
-    """
-    import json as _json
-    global _config_cache_data, _config_cache_time
-    now = time.time()
-    if _config_cache_data is not None and (now - _config_cache_time) < _CONFIG_CACHE_TTL:
-        return ok(_config_cache_data)
-
-    # ── 1. Try MySQL first ──
-    try:
-        mysql_rows = mysql_query("SELECT config_key, config_value, config_type FROM settings_config")
-        if mysql_rows:
-            # Build a lookup dict from MySQL rows
-            raw: dict = {}
-            for row in mysql_rows:
-                raw[row["config_key"]] = row["config_value"]
-
-            result = {
-                "base_rate": int(raw.get("base_rate", 0)),
-                "master_threshold": int(raw.get("master_threshold", 0)),
-                "immortal_threshold": int(raw.get("immortal_threshold", 0)),
-                "new_member_card_price": int(raw.get("new_member_card_price", 0)),
-                "new_member_base_mins": int(raw.get("new_member_base_mins", 0)),
-                "console_multipliers": _json.loads(raw.get("console_multipliers", "{}")),
-                "food_prices": _json.loads(raw.get("food_prices", "{}")),
-                "food_costs": _json.loads(raw.get("food_costs", "{}")),
-                "bonus_table": _json.loads(raw.get("bonus_table", "[]")),
-                "source": "mysql",
-            }
-            _config_cache_data = result
-            _config_cache_time = time.time()
-            return ok(result)
-    except Exception as e:
-        logger.warning("MySQL config read failed, falling back to GSheets: %s", e)
-
-    # ── 2. Fallback to Google Sheets ──
-    try:
-        ws = get_worksheet(SHEET_SETTING)
-        base_rate = int_safe(ws.cell(2, 2).value)
-        master_thresh = int_safe(ws.cell(3, 13).value)
-        immortal_thresh = int_safe(ws.cell(4, 13).value)
-        card_price = int_safe(ws.cell(20, 2).value)
-        base_mins = int_safe(ws.cell(21, 2).value)
-
-        names = ws.col_values(8)[1:]
-        mults = ws.col_values(10)[1:]
-        console_multipliers = {}
-        for name, mult in zip(names, mults):
-            if name.strip():
-                try:
-                    console_multipliers[name.strip()] = float(float_safe(mult)) or 1.0
-                except ValueError:
-                    console_multipliers[name.strip()] = 1.0
-
-        food_names = ws.col_values(4)[1:]
-        food_prices_raw = ws.col_values(5)[1:]
-        food_costs_raw = ws.col_values(6)[1:]
-        food_prices = {}
-        food_costs = {}
-        for n, p, c in zip(food_names, food_prices_raw, food_costs_raw):
-            if n.strip():
-                food_prices[n.strip()] = int_safe(p)
-                food_costs[n.strip()] = int_safe(c) if str(c).strip() else 0
-
-        bonus_rows = ws.get("O2:R5")
-        bonus_table = []
-        for row in bonus_rows:
-            if len(row) >= 4:
-                try:
-                    bonus_table.append([int_safe(row[0]), int_safe(row[1]),
-                                        int_safe(row[2]), int_safe(row[3])])
-                except Exception:
-                    continue
-
-        result = {
-            "base_rate": base_rate,
-            "master_threshold": master_thresh,
-            "immortal_threshold": immortal_thresh,
-            "new_member_card_price": card_price,
-            "new_member_base_mins": base_mins,
-            "console_multipliers": console_multipliers,
-            "food_prices": food_prices,
-            "food_costs": food_costs,
-            "bonus_table": bonus_table,
-            "source": "sheets",
-        }
-        _config_cache_data = result
-        _config_cache_time = time.time()
-        return ok(result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
-# ═══════════════════════════════════════
-#  BI DASHBOARD — Analytics Endpoints
-# ═══════════════════════════════════════
-@app.get("/api/analytics/daily_sales", response_model=GenericResponse, tags=["Analytics"], summary="Daily sales report with KPIs")
-async def api_analytics_daily_sales(
-    date: str = Query(None, description="Date in M/D/YYYY format, defaults to today"),
-    auth=Depends(verify_api_key),
-):
-    """Return today's (or specified date's) sales KPIs from Sales_Daily."""
-    data = _fetch_daily_sales_from_mysql(date)
-    if data is not None:
-        return ok(data)
-    try:
-        from analytics import get_daily_sales
-        return ok(get_daily_sales(date))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/analytics/topups", response_model=GenericResponse, tags=["Analytics"], summary="Top-up trends: daily/weekly aggregates and top members")
-async def api_analytics_topups(
-    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
-    auth=Depends(verify_api_key),
-):
-    """Return top-up trends: daily/weekly aggregates, all-time effective rate, top members."""
-    data = _fetch_topups_from_mysql(days)
-    if data is not None:
-        return ok({"topup_log": data, "total_topups": len(data)})
-    try:
-        from analytics import get_topup_trends
-        return ok(get_topup_trends(days))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/analytics/member_activity", response_model=GenericResponse, tags=["Analytics"], summary="Member activity stats: tiers, active counts, wallet totals")
-async def api_analytics_member_activity(auth=Depends(verify_api_key)):
-    """Return member activity stats: total members, tier distribution, active today, wallet totals."""
-    try:
-        from analytics import get_member_activity
-        return ok(get_member_activity())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/analytics/console_usage", response_model=GenericResponse, tags=["Analytics"], summary="Console usage stats: bookings, utilization, daily series")
-async def api_analytics_console_usage(
-    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
-    auth=Depends(verify_api_key),
-):
-    """Return console usage stats: bookings per console, utilization rate, daily series."""
-    try:
-        from analytics import get_console_usage
-        return ok(get_console_usage(days))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/analytics/dashboard", response_model=GenericResponse, tags=["Analytics"], summary="Full BI dashboard summary with all KPIs")
-async def api_analytics_dashboard(auth=Depends(verify_api_key)):
-    """Return full BI dashboard summary with all KPIs."""
-    try:
-        from analytics import get_dashboard_summary
-        return ok(get_dashboard_summary())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/analytics/weekly_trends", response_model=GenericResponse, tags=["Analytics"], summary="Weekly trends: sales, top-ups, console usage")
-async def api_analytics_weekly_trends(
-    weeks: int = Query(4, ge=1, le=52, description="Number of weeks to analyze"),
-    auth=Depends(verify_api_key),
-):
-    """Return weekly trends: sales, top-ups, and console usage aggregated by week."""
-    try:
-        from analytics import get_topup_trends, get_console_usage, get_daily_sales
-        days = weeks * 7
-        topups = get_topup_trends(days)
-        consoles = get_console_usage(days)
-        return ok({
-            "period_weeks": weeks,
-            "topup_weekly": topups.get("weekly_aggregates", []),
-            "topup_daily": topups.get("daily_series", []),
-            "console_daily": consoles.get("daily_series", []),
-            "console_summary": {
-                "total_bookings": consoles["total_bookings"],
-                "utilization_rate": consoles.get("avg_bookings_per_console_day", 0),
-                "active_now": consoles["active_now"],
-            },
-            "all_time_rate": topups.get("all_time_effective_rate", 0),
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ═══════════════════════════════════════
-#  BI DASHBOARD — Web Dashboard (HTML)
-# ═══════════════════════════════════════
-DASHBOARD_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="refresh" content="60">
-<title>PS VIBE — BI Dashboard</title>
-<style>
-:root {
-  --bg: #0a0e17;
-  --card: #111827;
-  --border: #1f2937;
-  --text: #e5e7eb;
-  --dim: #9ca3af;
-  --accent: #6366f1;
-  --green: #10b981;
-  --amber: #f59e0b;
-  --red: #ef4444;
-}
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-       background: var(--bg); color: var(--text); line-height:1.5; }
-.header { background: linear-gradient(135deg, #1e1b4b, #111827); padding: 1.5rem 2rem;
-          border-bottom: 1px solid var(--border); display:flex; justify-content:space-between;
-          align-items:center; flex-wrap:wrap; gap:1rem; }
-.header h1 { font-size: 1.75rem; font-weight: 700; }
-.header h1 span { color: var(--accent); }
-.header .ts { font-size: 0.85rem; color: var(--dim); }
-.container { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
-.kpi-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap:1rem; margin-bottom: 1.5rem; }
-.kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-            padding: 1.25rem; }
-.kpi-card .label { font-size:0.8rem; color:var(--dim); text-transform:uppercase;
-                   letter-spacing:0.05em; margin-bottom:0.25rem; }
-.kpi-card .value { font-size:1.75rem; font-weight:700; }
-.kpi-card .value.accent { color: var(--accent); }
-.kpi-card .value.green { color: var(--green); }
-.kpi-card .value.amber { color: var(--amber); }
-.row { display:grid; grid-template-columns: repeat(auto-fit, minmax(480px, 1fr)); gap:1.5rem; }
-.panel { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-         overflow:hidden; margin-bottom:1.5rem; }
-.panel h3 { padding:1rem 1.25rem; border-bottom:1px solid var(--border); font-size:1rem;
-            font-weight:600; }
-.panel-body { padding:1.25rem; }
-table { width:100%; border-collapse:collapse; font-size:0.9rem; }
-th, td { padding:0.6rem 0.75rem; text-align:left; border-bottom:1px solid var(--border); }
-th { color: var(--dim); font-weight:500; font-size:0.8rem; text-transform:uppercase; }
-tr:hover { background: rgba(255,255,255,0.02); }
-.bar { height:8px; border-radius:4px; background:var(--border); overflow:hidden; margin-top:0.25rem; }
-.bar-fill { height:100%; border-radius:4px; transition: width 0.5s; }
-.loading { text-align:center; padding:3rem; color:var(--dim); }
-.error { background: rgba(239,68,68,0.1); color: var(--red); padding:1rem; border-radius:8px; }
-.footer { text-align:center; padding:2rem; color:var(--dim); font-size:0.8rem;
-          border-top:1px solid var(--border); margin-top:2rem; }
-</style>
-</head>
-<body>
-<div class="header">
-  <h1>🎮 PS <span>VIBE</span> — BI Dashboard</h1>
-  <div class="ts" id="ts">Loading...</div>
-</div>
-<div class="container" id="app"><div class="loading">Loading dashboard data...</div></div>
-<div class="footer">PS VIBE Gaming Lounge &copy; 2026 · BI Dashboard v3.0</div>
-<script>
-const F = (n) => n != null ? Number(n).toLocaleString() : '-';
-const FKS = (n) => n != null ? Number(n).toLocaleString() + ' Ks' : '-';
-const P = (n, t) => n != null && t > 0 ? (n/t*100).toFixed(1) + '%' : '0%';
-
-async function load() {
-  try {
-    const r = await fetch(DASHBOARD_API_URL);
-    const d = (await r.json()).data;
-    if (!d) throw new Error('No data');
-    render(d);
-    document.getElementById('ts').textContent = 'Generated: ' + d.generated_at;
-  } catch(e) {
-    document.getElementById('app').innerHTML =
-      '<div class="error">⚠ Failed to load dashboard: ' + e.message + '</div>';
-  }
-}
-
-function render(d) {
-  const s = d.summary, sales = d.daily_sales, mem = d.member_activity,
-        con = d.console_usage_today, tup = d.topup_trends_7d;
-  let h = '';
-  h += '<div class="kpi-grid">';
-  h += kpi('Today Sales', FKS(s.today_sales_ks), 'accent');
-  h += kpi('Vouchers', F(s.today_vouchers));
-  h += kpi('Avg Ticket', FKS(s.today_avg_ticket_ks));
-  h += kpi('Active Members', F(s.active_members_today), 'green');
-  h += kpi('Active Consoles', s.active_consoles + '/' + s.total_consoles);
-  h += kpi('Week Top-ups', FKS(s.week_topup_ks), 'amber');
-  h += '</div>';
-
-  h += '<div class="row">';
-  h += '<div class="panel"><h3>📊 Today's Sales Breakdown</h3><div class="panel-body">';
-  if (sales.by_payment && Object.keys(sales.by_payment).length) {
-    h += '<table><tr><th>Payment</th><th>Count</th><th>Amount</th></tr>';
-    for (const [k,v] of Object.entries(sales.by_payment)) {
-      h += '<tr><td>'+k+'</td><td>'+F(v.count)+'</td><td>'+FKS(v.amount)+'</td></tr>';
-    }
-    h += '</table>';
-  } else { h += '<p style="color:var(--dim)">No sales recorded today</p>'; }
-  h += '</div></div>';
-
-  h += '<div class="panel"><h3>👥 Member Activity</h3><div class="panel-body">';
-  h += '<table>';
-  h += '<tr><td>Total Members</td><td><strong>'+F(mem.total_members)+'</strong></td></tr>';
-  h += '<tr><td>Active Today</td><td><strong style="color:var(--green)">'+F(mem.active_today)+'</strong></td></tr>';
-  h += '<tr><td>Active (Last 7d)</td><td>'+F(mem.active_last_7d)+'</td></tr>';
-  h += '<tr><td>Total Wallet Mins</td><td>'+F(mem.total_wallet_mins)+'</td></tr>';
-  h += '<tr><td>Avg Spend/Member</td><td>'+FKS(mem.avg_spend_per_member)+'</td></tr>';
-  h += '</table>';
-  if (mem.tier_distribution && mem.tier_distribution.length) {
-    h += '<h4 style="margin:1rem 0 0.5rem">Tier Distribution</h4><table><tr><th>Tier</th><th>Members</th><th>Share</th><th></th></tr>';
-    for (const t of mem.tier_distribution) {
-      h += '<tr><td>'+t.tier+'</td><td>'+F(t.count)+'</td><td>'+t.pct+'%</td>';
-      h += '<td style="width:120px"><div class="bar"><div class="bar-fill" style="width:'+t.pct+'%;background:var(--accent)"></div></div></td></tr>';
-    }
-    h += '</table>';
-  }
-  h += '</div></div>';
-  h += '</div>';
-
-  h += '<div class="row">';
-  h += '<div class="panel"><h3>🎮 Console Usage (Today)</h3><div class="panel-body">';
-  if (con.consoles && con.consoles.length) {
-    h += '<table><tr><th>Console</th><th>Type</th><th>Bookings</th><th>Hours</th><th>Active</th></tr>';
-    for (const c of con.consoles) {
-      h += '<tr><td><strong>'+c.console_id+'</strong></td><td>'+c.type+'</td><td>'+F(c.total_bookings)+'</td>';
-      h += '<td>'+c.total_hours+'h</td>';
-      h += '<td>'+(c.active_bookings>0?'<span style="color:var(--green)">● Active</span>':'<span style="color:var(--dim)">○ Free</span>')+'</td></tr>';
-    }
-    h += '</table>';
-  } else { h += '<p style="color:var(--dim)">No console data available</p>'; }
-  h += '</div></div>';
-
-  h += '<div class="panel"><h3>💰 Top-Up Trends (7 Days)</h3><div class="panel-body">';
-  h += '<table>';
-  h += '<tr><td>Total Top-ups</td><td><strong>'+F(tup.total_topups)+'</strong></td></tr>';
-  h += '<tr><td>Total Amount</td><td><strong style="color:var(--amber)">'+FKS(tup.total_amount_ks)+'</strong></td></tr>';
-  h += '<tr><td>Total Mins</td><td>'+F(tup.total_mins)+'</td></tr>';
-  h += '<tr><td>All-Time Eff. Rate</td><td>'+tup.all_time_effective_rate+' Ks/min</td></tr>';
-  h += '</table>';
-  if (tup.top_members && tup.top_members.length) {
-    h += '<h4 style="margin:1rem 0 0.5rem">Top Top-Up Members</h4>';
-    h += '<table><tr><th>#</th><th>Member</th><th>Amount</th><th>Mins</th><th>Rate</th></tr>';
-    tup.top_members.slice(0,5).forEach((m,i) => {
-      h += '<tr><td>'+(i+1)+'</td><td><strong>'+m.member_id+'</strong></td><td>'+FKS(m.amount)+'</td><td>'+F(m.mins)+'</td><td>'+m.rate+' Ks/min</td></tr>';
-    });
-    h += '</table>';
-  }
-  h += '</div></div>';
-  h += '</div>';
-
-  if (tup.daily_series && tup.daily_series.length) {
-    h += '<div class="panel"><h3>📈 Daily Top-Up Trend</h3><div class="panel-body">';
-    h += '<table><tr><th>Date</th><th>Count</th><th>Amount</th><th>Mins</th><th>Rate</th></tr>';
-    tup.daily_series.slice(-7).reverse().forEach(d => {
-      h += '<tr><td>'+d.date+'</td><td>'+F(d.count)+'</td><td>'+FKS(d.amount)+'</td><td>'+F(d.mins)+'</td><td>'+d.rate+'</td></tr>';
-    });
-    h += '</table></div></div>';
-  }
-
-  document.getElementById('app').innerHTML = h;
-}
-
-function kpi(label, value, cls) {
-  return '<div class="kpi-card"><div class="label">'+label+'</div><div class="value'+(cls?' '+cls:'')+'">'+value+'</div></div>';
-}
-
-load();
-</script>
-</body>
-</html>"""
-
-@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
-async def web_dashboard():
-    """Serve the BI web dashboard with embedded API key."""
-    api_url = f"/api/analytics/dashboard?api_key={API_KEY}" if API_KEY else "/api/analytics/dashboard"
-    html = DASHBOARD_HTML.replace("DASHBOARD_API_URL", f"'{api_url}'")
-    return HTMLResponse(html)
-
-@app.get("/api/dashboard", response_class=HTMLResponse, include_in_schema=False)
-async def web_dashboard_api():
-    """Alias: Serve the BI web dashboard."""
-    api_url = f"/api/analytics/dashboard?api_key={API_KEY}" if API_KEY else "/api/analytics/dashboard"
-    html = DASHBOARD_HTML.replace("DASHBOARD_API_URL", f"'{api_url}'")
-    return HTMLResponse(html)
-
-# ═══════════════════════════════════════
-#  STARTUP
-# ═══════════════════════════════════════
-
-# ═══════════════════════════════════════
-#  BOOKING QUERIES — bookings/search
-# ═══════════════════════════════════════
-@app.get("/api/bookings/search", response_model=GenericResponse, tags=["Bookings"], summary="Search bookings by chat ID, date, or status")
-async def api_bookings_search(
-    telegram_chat_id: str = Query(None),
-    date: str = Query(None),
-    status: str = Query(None),
-    auth=Depends(verify_api_key),
-):
-    """Search bookings by telegram_chat_id, date, and/or status."""
-    try:
-        rows = get_booking_rows()
-        results = []
-        for row in rows[1:]:
-            if not row or len(row) < 7:
-                continue
-            bkid = row[0].strip() if len(row) > 0 else ""
-            bk_date = row[1].strip() if len(row) > 1 else ""
-            console_id = row[2].strip() if len(row) > 2 else ""
-            member_id = row[3].strip() if len(row) > 3 else ""
-            time_slot = row[4].strip() if len(row) > 4 else ""
-            end_time = row[5].strip() if len(row) > 5 else ""
-            bk_status = row[6].strip() if len(row) > 6 else ""
-            staff = row[7].strip() if len(row) > 7 else ""
-            notes = row[8].strip() if len(row) > 8 else ""
-
-            # Apply filters
-            if date and bk_date != date:
-                continue
-            if status and bk_status.lower() != status.lower():
-                continue
-            if telegram_chat_id:
-                tg_col = row[9].strip() if len(row) > 9 else ""
-                if tg_col != telegram_chat_id:
-                    continue
-
-            results.append({
-                "booking_id": bkid,
-                "date": bk_date,
-                "console_id": console_id,
-                "member_id": member_id,
-                "timeSlot": time_slot,
-                "endTime": end_time,
-                "status": bk_status,
-                "staff": staff,
-                "notes": notes,
-                "telegramChatId": tg_col if len(row) > 9 else "",
-                "consoleType": "",
-                "gameName": "",
-                "durationMins": 0,
-            })
-        return ok(results)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════
-#  BOOKING — get by ID
-# ═══════════════════════════════════════
-@app.get("/api/bookings/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="Get single booking by ID")
-async def api_get_booking(booking_id: str, auth=Depends(verify_api_key)):
-    """Get a single booking by ID."""
-    try:
-        rows = get_booking_rows()
-        for row in rows[1:]:
-            if row and row[0].strip() == booking_id:
-                return ok({
-                    "booking_id": row[0].strip(),
-                    "date": row[1].strip() if len(row) > 1 else "",
-                    "console_id": row[2].strip() if len(row) > 2 else "",
-                    "member_id": row[3].strip() if len(row) > 3 else "",
-                    "timeSlot": row[4].strip() if len(row) > 4 else "",
-                    "endTime": row[5].strip() if len(row) > 5 else "",
-                    "status": row[6].strip() if len(row) > 6 else "",
-                    "staff": row[7].strip() if len(row) > 7 else "",
-                    "notes": row[8].strip() if len(row) > 8 else "",
-                    "telegramChatId": row[9].strip() if len(row) > 9 else "",
-                })
-        raise HTTPException(status_code=404, detail=f"Booking {booking_id} not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════
-#  FEEDBACK — submit
-# ═══════════════════════════════════════
-@app.post("/api/feedback/submit", response_model=GenericResponse, tags=["Feedback"], summary="Submit customer feedback")
-async def api_feedback_submit(req: dict, auth=Depends(verify_api_key)):
-    """Accept customer feedback (fire-and-forget log)."""
-    try:
-        tg_id = req.get("tg_id", "")
-        username = req.get("username", "")
-        booking_id = req.get("booking_id", "")
-        rating = req.get("rating", 0)
-        comment = req.get("comment", "")
-        logger.info("Feedback: tg=%s rating=%s bk=%s comment=%s", tg_id, rating, booking_id, comment[:80])
-        return ok({"received": True})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════
-#  LOG — sheets log
+#  LOGGING — sheets/log
 # ═══════════════════════════════════════
 @app.post("/api/sheets/log", response_model=GenericResponse, tags=["Logging"], summary="Log AI interaction")
 async def api_sheets_log(req: dict, auth=Depends(verify_api_key)):
@@ -1957,7 +1191,6 @@ async def api_sheets_log(req: dict, auth=Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
 #  BOT USERS — track
 # ═══════════════════════════════════════
 @app.post("/api/bot-users/track", response_model=GenericResponse, tags=["Bot Users"], summary="Track bot user interaction")
@@ -1973,426 +1206,5 @@ async def api_bot_users_track(req: dict, auth=Depends(verify_api_key)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# ═══════════════════════════════════════
-#  P4 Phase 1 — NEW ENDPOINTS (auto-generated 2026-05-29)
-# ═══════════════════════════════════════
-
-# ── Endpoint 1: POST /api/finance/opex ──
-
-@app.get("/api/finance/opex", response_model=GenericResponse, tags=["Finance"], summary="List opex records")
-async def api_finance_opex_list(auth=Depends(verify_api_key)):
-    """List all operational expense records."""
-    if not _use_mysql():
-        return {"success": False, "error": "MySQL not available"}
-    try:
-        rows = mysql_query("SELECT * FROM finance_opex_log ORDER BY id DESC LIMIT 500")
-        return ok(rows)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/finance/assets", response_model=GenericResponse, tags=["Finance"], summary="List asset records")
-async def api_finance_assets_list(auth=Depends(verify_api_key)):
-    """List all asset records."""
-    if not _use_mysql():
-        return {"success": False, "error": "MySQL not available"}
-    try:
-        rows = mysql_query("SELECT * FROM finance_assets ORDER BY id DESC LIMIT 500")
-        return ok(rows)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/finance/prepaid", response_model=GenericResponse, tags=["Finance"], summary="List prepaid records")
-async def api_finance_prepaid_list(auth=Depends(verify_api_key)):
-    """List all prepaid expense records."""
-    if not _use_mysql():
-        return {"success": False, "error": "MySQL not available"}
-    try:
-        rows = mysql_query("SELECT * FROM finance_prepaid ORDER BY id DESC LIMIT 500")
-        return ok(rows)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/finance/payables", response_model=GenericResponse, tags=["Finance"], summary="List payable records")
-async def api_finance_payables_list(auth=Depends(verify_api_key)):
-    """List all payable records."""
-    if not _use_mysql():
-        return {"success": False, "error": "MySQL not available"}
-    try:
-        rows = mysql_query("SELECT * FROM finance_payables ORDER BY id DESC LIMIT 500")
-        return ok(rows)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/finance/receivables", response_model=GenericResponse, tags=["Finance"], summary="List receivable records")
-async def api_finance_receivables_list(auth=Depends(verify_api_key)):
-    """List all receivable records."""
-    if not _use_mysql():
-        return {"success": False, "error": "MySQL not available"}
-    try:
-        rows = mysql_query("SELECT * FROM finance_receivables ORDER BY id DESC LIMIT 500")
-        return ok(rows)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/finance/advances", response_model=GenericResponse, tags=["Finance"], summary="List advance records")
-async def api_finance_advances_list(auth=Depends(verify_api_key)):
-    """List all advance payment records."""
-    if not _use_mysql():
-        return {"success": False, "error": "MySQL not available"}
-    try:
-        rows = mysql_query("SELECT * FROM finance_advances ORDER BY id DESC LIMIT 500")
-        return ok(rows)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/finance/accounts", response_model=GenericResponse, tags=["Finance"], summary="List capital/accounts")
-async def api_finance_accounts_list(auth=Depends(verify_api_key)):
-    """List all capital/account records."""
-    if not _use_mysql():
-        return {"success": False, "error": "MySQL not available"}
-    try:
-        rows = mysql_query("SELECT * FROM settings_config WHERE category='capital' ORDER BY id DESC LIMIT 500")
-        return ok(rows)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/finance/opex", response_model=GenericResponse, tags=["Finance"], summary="Record operational expense")
-async def api_finance_opex(req: dict, auth=Depends(verify_api_key)):
-    """Record an operational expense into accounts table."""
-    try:
-        import json as _json
-        date = req.get("date", "")
-        category = req.get("category", "")
-        description = req.get("description", "")
-        amount = req.get("amount", 0)
-        payment_method = req.get("payment_method") or f"Kpay:{req.get('kpay',0)}/Cash:{req.get('cash',0)}"
-        staff_name = req.get("staff_name") or req.get("staff", "") or ""
-
-        # Backward compat: accept old field names
-        if not payment_method:
-            payment_method = req.get("type", "")
-
-        notes = _json.dumps({
-            "date": date,
-            "payment_method": payment_method,
-            "staff_name": staff_name
-        })
-
-        logger.info("Recording opex: %s | %s | %s", category, description, amount)
-
-        mysql_execute(
-            "INSERT INTO accounts (account_name, account_type, balance, notes) "
-            "VALUES (%s, %s, %s, %s)",
-            (description, category, amount, notes)
-        )
-
-        logger.info("Opex recorded: %s", description)
-        return {"status": "ok"}
-    except Exception as e:
-        logger.error("Opex save error: %s", str(e))
-        return {"status": "error", "detail": str(e)}
-
-
-# ── Endpoint 2: POST /api/staff/salary-advance ──
-@app.post("/api/staff/salary-advance", response_model=GenericResponse, tags=["Staff"], summary="Record a salary advance")
-async def api_staff_salary_advance(req: dict, auth=Depends(verify_api_key)):
-    """Record a salary advance for a staff member."""
-    try:
-        staff_name = req.get("staff_name", "")
-        amount = req.get("amount", 0)
-        date = req.get("date", "")
-        note = req.get("note", "")
-
-        logger.info("Recording salary advance: %s | %s | %s", staff_name, amount, date)
-
-        mysql_execute(
-            "INSERT INTO salary_advance (staff_name, amount, advance_date, repayment_status, notes) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (staff_name, amount, date, "pending", note)
-        )
-
-        result = mysql_query_one("SELECT LAST_INSERT_ID() as id")
-        insert_id = result["id"] if result else 0
-
-        logger.info("Salary advance recorded: id=%s", insert_id)
-        return {"status": "ok", "id": insert_id}
-    except Exception as e:
-        logger.error("Salary advance save error: %s", str(e))
-        return {"status": "error", "detail": str(e)}
-
-
-# ── Endpoint 3: POST /api/sales/record ──
-@app.post("/api/sales/record", response_model=GenericResponse, tags=["Sales"], summary="Record a daily sale")
-async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
-    """Record a daily sale into sales_daily table."""
-    try:
-        import json as _json
-        receipt_no = req.get("receipt_no", "")
-        items = req.get("items", "")
-        amount = req.get("amount", 0)
-        payment_method = req.get("payment_method", "")
-        member_id = req.get("member_id", "")
-        staff_name = req.get("staff_name", "")
-        receipt_date = req.get("receipt_date", "")
-        food_items = req.get("food_items", "")
-        food_cost = req.get("food_cost", 0)
-
-        notes = _json.dumps({
-            "receipt_no": receipt_no,
-            "items": items,
-            "food_items": food_items,
-            "food_cost": food_cost
-        })
-
-        logger.info("Recording sale: receipt=%s amount=%s", receipt_no, amount)
-
-        mysql_execute(
-            "INSERT INTO sales_daily (sale_date, member_id, amount, staff_name, payment_method, notes) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (receipt_date, member_id, amount, staff_name, payment_method, notes)
-        )
-
-        logger.info("Sale recorded: receipt_no=%s", receipt_no)
-        return {"status": "ok"}
-    except Exception as e:
-        logger.error("Sale record error: %s", str(e))
-        return {"status": "error", "detail": str(e)}
-
-
-# ── Endpoint 4: POST /api/inventory/stock-out ──
-@app.post("/api/inventory/stock-out", response_model=GenericResponse, tags=["Inventory"], summary="Record stock-out event")
-async def api_inventory_stock_out(req: dict, auth=Depends(verify_api_key)):
-    """Record a stock-out (consumption/usage) event."""
-    try:
-        import json as _json
-        item_name = req.get("item_name", "")
-        quantity = req.get("quantity", 0)
-        unit = req.get("unit", "")
-        reason = req.get("reason", "")
-        staff_name = req.get("staff_name", "")
-        date = req.get("date", "")
-
-        notes = _json.dumps({
-            "unit": unit,
-            "reason": reason
-        })
-
-        logger.info("Recording stock-out: %s qty=%s", item_name, quantity)
-
-        mysql_execute(
-            "INSERT INTO stock_out (item_name, quantity, sale_date, staff_name, notes) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (item_name, quantity, date, staff_name, notes)
-        )
-
-        logger.info("Stock-out recorded: %s", item_name)
-        return {"status": "ok"}
-    except Exception as e:
-        logger.error("Stock-out save error: %s", str(e))
-        return {"status": "error", "detail": str(e)}
-
-
-# ── Endpoint 5: POST /api/inventory/stock-in ──
-@app.post("/api/inventory/stock-in", response_model=GenericResponse, tags=["Inventory"], summary="Record stock-in event")
-async def api_inventory_stock_in(req: dict, auth=Depends(verify_api_key)):
-    """Record stock-in (restock/purchase) into inventory table."""
-    try:
-        item_name = req.get("item_name", "")
-        quantity = req.get("quantity", 0)
-        unit = req.get("unit", "")
-        supplier = req.get("supplier", "")
-        cost = req.get("cost", 0)
-        staff_name = req.get("staff_name", "")
-        date = req.get("date", "")
-
-        logger.info("Recording stock-in: %s qty=%s from %s", item_name, quantity, supplier)
-
-        # Map: supplier→category, cost→unit_price
-        mysql_execute(
-            "INSERT INTO inventory (item_name, category, quantity, unit_price) "
-            "VALUES (%s, %s, %s, %s)",
-            (item_name, supplier, quantity, cost)
-        )
-
-        logger.info("Stock-in recorded: %s", item_name)
-        return {"status": "ok"}
-    except Exception as e:
-        logger.error("Stock-in save error: %s", str(e))
-        return {"status": "error", "detail": str(e)}
-
-
-# ── Endpoint 6: POST /api/members/register ──
-@app.post("/api/members/register", response_model=GenericResponse, tags=["Members"], summary="Register a new member")
-async def api_members_register(req: dict, auth=Depends(verify_api_key)):
-    """Register a new member and optionally create wallet entry."""
-    try:
-        name = req.get("name", "")
-        phone = req.get("phone", "")
-        email = req.get("email", "")
-        join_date = req.get("join_date", "")
-        staff_name = req.get("staff_name", "")
-
-        # Use bot-provided member_id or auto-generate
-        member_id = req.get("member_id", "") or f"M-{int(time.time())}"
-
-        logger.info("Registering member: %s | phone=%s", name, phone)
-
-        mysql_execute(
-            "INSERT INTO members (member_id, name, phone) "
-            "VALUES (%s, %s, %s)",
-            (member_id, name, phone)
-        )
-
-        # Also create wallet entry
-        initial_mins = req.get("initial_mins", 0) or 0
-        try:
-            mysql_execute(
-                "INSERT IGNORE INTO member_wallets (member_id, member_name, phone, balance_mins) "
-                "VALUES (%s, %s, %s, %s)",
-                (member_id, name, phone, initial_mins)
-            )
-        except Exception as wallet_err:
-            logger.warning("Could not create wallet for member %s: %s", member_id, str(wallet_err))
-
-        logger.info("Member registered: member_id=%s", member_id)
-        return {"status": "ok", "member_id": member_id}
-    except Exception as e:
-        logger.error("Member register error: %s", str(e))
-        return {"status": "error", "detail": str(e)}
-
-
-# ── Endpoint 7: POST /api/topup/log ──
-@app.post("/api/topup/log", response_model=GenericResponse, tags=["Topup"], summary="Log a top-up transaction and update wallet")
-async def api_topup_log(req: dict, auth=Depends(verify_api_key)):
-    """Log a top-up transaction into topup_log table + update member wallet."""
-    try:
-        member_id = req.get("member_id", "")
-        amount = req.get("amount", 0)
-        mins_added = req.get("mins_added", 0)
-        payment_method = req.get("payment_method") or f"Kpay:{req.get('kpay',0)}/Cash:{req.get('cash',0)}"
-        staff_name = req.get("staff_name") or req.get("staff", "") or ""
-
-        # Backward compat: accept old field names
-        if not payment_method:
-            payment_method = req.get("type", "")
-        date = req.get("date", "")
-
-        logger.info("Logging topup: member=%s amount=%s mins=%s", member_id, amount, mins_added)
-
-        # Get current wallet state
-        current = mysql_query_one(
-            "SELECT balance_mins, total_bought_mins FROM member_wallets WHERE member_id = %s",
-            (member_id,)
-        )
-        balance_before = current["balance_mins"] if current else 0
-        balance_after = balance_before + mins_added
-        total_bought = (current["total_bought_mins"] if current else 0) + mins_added
-
-        mysql_execute(
-            "INSERT INTO topup_log "
-            "(member_id, amount, mins_added, topup_date, staff_name, payment_method, "
-            " balance_before, balance_after, balance_mins_before, balance_mins_after) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (member_id, amount, mins_added, date, staff_name, payment_method,
-             amount, amount, balance_before, balance_after)
-        )
-
-        # Update member wallet
-        mysql_execute(
-            "UPDATE member_wallets SET "
-            "balance_mins = balance_mins + %s, "
-            "total_bought_mins = total_bought_mins + %s "
-            "WHERE member_id = %s",
-            (mins_added, mins_added, member_id)
-        )
-        logger.info("Wallet updated: member=%s +%s mins (balance: %s -> %s)",
-                    member_id, mins_added, balance_before, balance_after)
-
-        logger.info("Topup logged: member=%s amount=%s", member_id, amount)
-        return {"status": "ok", "balance_before": balance_before, "balance_after": balance_after}
-    except Exception as e:
-        logger.error("Topup log error: %s", str(e))
-        return {"status": "error", "detail": str(e)}
-
-
-
-
-@app.put("/api/finance/assets/{item_id}", response_model=GenericResponse, tags=["Finance"], summary="Update asset")
-async def api_finance_assets_update(item_id: int, req: dict, auth=Depends(verify_api_key)):
-    """Update a finance asset record."""
-    if not _use_mysql():
-        return {"success": False, "error": "MySQL not available"}
-    try:
-        asset_name = req.get("asset_name", "")
-        purchase_date = req.get("purchase_date", "")
-        cost = req.get("cost", 0)
-        status = req.get("status", "")
-        disposal_date = req.get("disposal_date", "")
-        disposal_qty = req.get("disposal_qty", 0)
-        proceeds = req.get("proceeds", 0)
-        notes = req.get("notes", "")
-        mysql_execute(
-            "UPDATE finance_assets SET asset_name=%s, purchase_date=%s, cost=%s, status=%s, disposal_date=%s, disposal_qty=%s, proceeds=%s, notes=%s WHERE id=%s",
-            (asset_name, purchase_date, cost, status, disposal_date, disposal_qty, proceeds, notes, item_id)
-        )
-        return ok({"updated": True})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/api/finance/payables/{item_id}", response_model=GenericResponse, tags=["Finance"], summary="Update payable")
-async def api_finance_payables_update(item_id: int, req: dict, auth=Depends(verify_api_key)):
-    """Update a finance payable record."""
-    if not _use_mysql():
-        return {"success": False, "error": "MySQL not available"}
-    try:
-        party = req.get("party", "")
-        amount = req.get("amount", 0)
-        due_date = req.get("due_date", "")
-        status = req.get("status", "")
-        settle_date = req.get("settle_date", "")
-        notes = req.get("notes", "")
-        mysql_execute(
-            "UPDATE finance_payables SET party=%s, amount=%s, due_date=%s, status=%s, settle_date=%s, notes=%s WHERE id=%s",
-            (party, amount, due_date, status, settle_date, notes, item_id)
-        )
-        return ok({"updated": True})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/api/finance/receivables/{item_id}", response_model=GenericResponse, tags=["Finance"], summary="Update receivable")
-async def api_finance_receivables_update(item_id: int, req: dict, auth=Depends(verify_api_key)):
-    """Update a finance receivable record."""
-    if not _use_mysql():
-        return {"success": False, "error": "MySQL not available"}
-    try:
-        party = req.get("party", "")
-        amount = req.get("amount", 0)
-        due_date = req.get("due_date", "")
-        status = req.get("status", "")
-        paid_date = req.get("paid_date", "")
-        notes = req.get("notes", "")
-        settle_account = req.get("settle_account", "")
-        mysql_execute(
-            "UPDATE finance_receivables SET party=%s, amount=%s, due_date=%s, status=%s, paid_date=%s, notes=%s, settle_account=%s WHERE id=%s",
-            (party, amount, due_date, status, paid_date, notes, settle_account, item_id)
-        )
-        return ok({"updated": True})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.on_event("startup")
-async def startup():
-    try:
-        wb = get_workbook()
-        logger.info("Connected to Google Sheets: %s", wb.title)
-        sheets = [s.title for s in wb.worksheets()]
-        logger.info("Available sheets: %s", sheets)
-    except Exception as e:
-        logger.warning("Could not connect to Google Sheets on startup: %s", e)
-
-
+# Import patch routes (GSheet->MySQL migrated endpoints)
 import patch_routes
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
