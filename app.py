@@ -27,6 +27,8 @@ from sheets_client import (
     invalidate_cache, int_safe, float_safe,
 )
 from mysql_db import query as mysql_query, query_one as mysql_query_one, execute as mysql_execute
+from auth import register_auth_routes
+from dashboard_routes import router as dashboard_router
 from models import (
     GameResponse, ConfigResponse, MemberResponse,
     BookingResponse, HealthResponse, GenericResponse
@@ -121,6 +123,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Dashboard Auth & Routes ──
+register_auth_routes(app)
+app.include_router(dashboard_router)
 
 # ── Config Cache ──
 _config_cache_data = None
@@ -381,7 +387,7 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)):
     """Fetch live console statuses from MySQL console_status table."""
     try:
         rows = _mysql_query(
-            "SELECT console_id, status, console_type, current_game, current_member, start_time FROM console_status ORDER BY console_id")
+            "SELECT cs.console_id, cs.status, cs.console_type, cs.current_game, cs.current_member, DATE_FORMAT(cs.start_time, '%H:%i') as start_time, cb.id as booking_id, cb.staff_name FROM console_status cs LEFT JOIN console_booking cb ON cb.console_id LIKE CONCAT(cs.console_id, '%') AND cb.status = 'Active' ORDER BY cs.console_id")
         return ok({"consoles": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -977,6 +983,10 @@ async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
         _mysql_exec(
             "INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (console_id, member_id, now.date(), now, "Active", staff, notes))
+        # Sync console_status: mark console as Active (prevent duplicate sessions)
+        _mysql_exec(
+            "UPDATE console_status SET status='Active', current_member=%s, current_game='', start_time=NOW() WHERE console_id=%s",
+            (member_id, console_id))
         invalidate_cache("bookings")
         return ok({"booking_id": bk_id})
     except Exception as e:
@@ -994,6 +1004,11 @@ async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
         _mysql_exec(
             "UPDATE console_booking SET end_time=%s, status='Done' WHERE id=%s",
             (now, booking_id))
+        # Sync console_status: free up the console
+        row = _mysql_query_one("SELECT console_id FROM console_booking WHERE id=%s", (booking_id,))
+        if row:
+            _mysql_exec("UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s", (row["console_id"],))
+        invalidate_cache("bookings")
         return ok({"booking_id": booking_id, "status": "Done"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1077,6 +1092,8 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
             staff = req.get("staff_name", req.get("staff", ""))
             notes = req.get("notes", "")
             _mysql_exec("INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s)", (console_id, member_id, now.date(), now, "Active", staff, notes))
+            # Sync console_status: mark console as Active (prevent duplicate sessions)
+            _mysql_exec("UPDATE console_status SET status='Active', current_member=%s, current_game='', start_time=NOW() WHERE console_id=%s", (member_id, console_id))
             return ok({"booking_id": f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ','').replace('-','')}-{now.strftime('%H%M')}"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1489,6 +1506,41 @@ async def api_coupons_redeem(req: dict, auth=Depends(verify_api_key)):
         })
     except Exception as e:
         return error_response(message=str(e))
+
+# ── Serve Dashboard SPA (with fallback routing) ──
+try:
+    from fastapi.staticfiles import StaticFiles
+    from starlette.responses import FileResponse
+    import os
+    dashboard_dir = os.path.join(os.path.dirname(__file__), "dashboard-dist")
+    if os.path.isdir(dashboard_dir):
+        # Serve static assets directly
+        app.mount("/admin/assets", StaticFiles(directory=os.path.join(dashboard_dir, "assets")), name="dashboard_assets")
+        
+        # Serve favicon
+        @app.get("/admin/favicon.svg")
+        async def dashboard_favicon():
+            return FileResponse(os.path.join(dashboard_dir, "favicon.svg"))
+        
+        # Catch-all for SPA routes (serve index.html for all /admin/* paths)
+        @app.get("/admin/{full_path:path}")
+        async def serve_dashboard(full_path: str):
+            idx = os.path.join(dashboard_dir, "index.html")
+            if os.path.isfile(idx):
+                return FileResponse(idx, media_type="text/html")
+            return HTMLResponse("<h1>Dashboard not built</h1>", status_code=404)
+        
+        # Also serve /admin/ root
+        @app.get("/admin")
+        async def dashboard_root():
+            idx = os.path.join(dashboard_dir, "index.html")
+            if os.path.isfile(idx):
+                return FileResponse(idx, media_type="text/html")
+            return HTMLResponse("<h1>Dashboard not built</h1>", status_code=404)
+
+        logger.info("Dashboard SPA mounted at /admin with fallback routing")
+except Exception as e:
+    logger.warning(f"Could not mount dashboard: {e}")
 
 # Import patch routes (GSheet->MySQL migrated endpoints)
 import patch_routes
