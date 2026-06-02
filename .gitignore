@@ -9,3 +9,6 @@ cache/
 server.log
 logo_from_drive.jpg
 backups/
+node_modules/
+dist/
+dashboard-dist/
