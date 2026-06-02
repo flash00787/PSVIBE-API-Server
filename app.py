@@ -42,6 +42,7 @@ logger = logging.getLogger("psvibe_api")
 # ── MySQL query helpers ──
 import mysql.connector as _mc
 import json as _json, os as _os
+import random, string
 
 _MYSQL_CFG = {
     "host": _os.environ.get("MYSQL_HOST", "127.0.0.1"),
@@ -923,6 +924,43 @@ async def api_save_referral_code(req: dict, auth=Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+@app.post("/api/bookings/checkin", response_model=GenericResponse, tags=["Bookings"], summary="Check in a customer [MySQL]")
+async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
+    """Mark a confirmed booking as checked in (Active). Updates booking status and console."""
+    try:
+        booking_id = req.get("id") or req.get("booking_id")
+        if not booking_id:
+            return error_response(message="booking id required")
+        
+        rows = _mysql_query("SELECT * FROM console_booking WHERE id=%s", (booking_id,))
+        if not rows:
+            return error_response(message="Booking not found")
+        
+        booking = rows[0]
+        console_id = booking.get("console_id", "")
+        telegram_chat_id = booking.get("telegram_chat_id", "")
+        
+        # Update booking status to Active
+        _mysql_exec("UPDATE console_booking SET status='Active', start_time=NOW() WHERE id=%s", (booking_id,))
+        
+        # Set console to Active
+        if console_id:
+            member_name = booking.get("staff_name") or booking.get("member_id", "")
+            _mysql_exec(
+                "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=NOW() WHERE console_id=%s",
+                (booking.get("member_id", ""), booking.get("game_name", ""), console_id)
+            )
+        
+        return ok({
+            "message": "Customer checked in",
+            "booking_id": booking_id,
+            "console_id": console_id,
+            "telegram_chat_id": telegram_chat_id,
+        })
+    except Exception as e:
+        return error_response(message=str(e))
+
 # ═══════════════════════════════════════
 #  MUTATION — create_booking
 # ═══════════════════════════════════════
@@ -962,6 +1000,36 @@ async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
 
 
 # ═══════════════════════════════════════
+
+@app.post("/api/bookings/cancel", response_model=GenericResponse, tags=["Bookings"], summary="Cancel a booking by ID [MySQL]")
+async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
+    """Cancel a booking. Frees console if reserved."""
+    try:
+        booking_id = req.get("id") or req.get("booking_id")
+        if not booking_id:
+            return error_response(message="booking id required")
+        
+        rows = _mysql_query("SELECT * FROM console_booking WHERE id=%s", (booking_id,))
+        if not rows:
+            return error_response(message="Booking not found")
+        
+        booking = rows[0]
+        console_id = booking.get("console_id", "")
+        telegram_chat_id = booking.get("telegram_chat_id", "")
+        
+        _mysql_exec("UPDATE console_booking SET status='cancelled' WHERE id=%s", (booking_id,))
+        
+        if console_id:
+            _mysql_exec("UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s", (console_id,))
+        
+        return ok({
+            "message": "Booking cancelled",
+            "booking_id": booking_id,
+            "telegram_chat_id": telegram_chat_id,
+        })
+    except Exception as e:
+        return error_response(message=str(e))
+
 #  MUTATION — cancel_booking
 # ═══════════════════════════════════════
 @app.post("/api/bookings", response_model=GenericResponse, tags=["Bookings"], summary="Create booking from customer bot payload [MySQL]")
@@ -1264,5 +1332,164 @@ async def api_bot_users_track(req: dict, auth=Depends(verify_api_key)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ═══════════════════════════════════════
+#  PROMOTIONS — cashback coupon
+# ═══════════════════════════════════════
+@app.get("/api/promotions/active", response_model=GenericResponse, tags=["Promotions"])
+async def api_promotions_active(auth=Depends(verify_api_key)):
+    try:
+        rows = _mysql_query("SELECT * FROM promotions WHERE promo_type='cashback_coupon' AND start_date <= CURDATE() AND end_date >= CURDATE() ORDER BY id DESC LIMIT 1")
+        if rows:
+            row = rows[0]
+            return ok({"promotion": {
+                "id": row["id"],
+                "name": row["name"],
+                "promo_type": row["promo_type"],
+                "start_date": str(row["start_date"]),
+                "end_date": str(row["end_date"]),
+                "coupon_expiry_date": str(row["coupon_expiry_date"])
+            }})
+        return ok({"promotion": None})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.post("/api/coupons/generate", response_model=GenericResponse, tags=["Coupons"])
+async def api_coupons_generate(req: dict, auth=Depends(verify_api_key)):
+    try:
+        member_id = req.get("member_id", "")
+        session_minutes = int(req.get("session_minutes", 0))
+        session_id = req.get("session_id", 0)
+        
+        if not member_id or session_minutes <= 0:
+            return error_response(message="member_id and session_minutes required")
+        
+        # Check active promotion
+        rows = _mysql_query("SELECT id, coupon_expiry_date FROM promotions WHERE promo_type='cashback_coupon' AND start_date <= CURDATE() AND end_date >= CURDATE() LIMIT 1")
+        if not rows:
+            return ok({"coupon": None, "message": "No active promotion"})
+        
+        promo = rows[0]
+        promo_id = promo["id"]
+        expiry_date = str(promo["coupon_expiry_date"]) + " 23:59:59"
+        
+        # Generate unique code: CB + 6 random alphanumeric chars
+        code = "CB" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        
+        # Check uniqueness
+        existing = _mysql_query("SELECT id FROM member_coupons WHERE coupon_code=%s", (code,))
+        retries = 0
+        while existing and retries < 5:
+            code = "CB" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+            existing = _mysql_query("SELECT id FROM member_coupons WHERE coupon_code=%s", (code,))
+            retries += 1
+        
+        bk_id = _mysql_exec(
+            "INSERT INTO member_coupons (coupon_code, member_id, original_minutes, balance_minutes, issued_date, expiry_date, status, promo_id, source_session_id) VALUES (%s, %s, %s, %s, NOW(), %s, 'active', %s, %s)",
+            (code, member_id, session_minutes, session_minutes, expiry_date, promo_id, session_id)
+        )
+        
+        return ok({"coupon": {
+            "id": bk_id,
+            "code": code,
+            "member_id": member_id,
+            "minutes": session_minutes,
+            "expiry": expiry_date
+        }})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.get("/api/coupons/list", response_model=GenericResponse, tags=["Coupons"])
+async def api_coupons_list(member_id: str, auth=Depends(verify_api_key)):
+    try:
+        rows = _mysql_query(
+            "SELECT id, coupon_code, original_minutes, balance_minutes, issued_date, expiry_date, status FROM member_coupons WHERE member_id=%s ORDER BY issued_date DESC",
+            (member_id,))
+        coupons = []
+        for r in rows:
+            coupons.append({
+                "id": r["id"],
+                "code": r["coupon_code"],
+                "original_minutes": r["original_minutes"],
+                "balance_minutes": r["balance_minutes"],
+                "issued_date": str(r["issued_date"]),
+                "expiry_date": str(r["expiry_date"]),
+                "status": r["status"]
+            })
+        return ok({"coupons": coupons})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.post("/api/coupons/validate", response_model=GenericResponse, tags=["Coupons"])
+async def api_coupons_validate(req: dict, auth=Depends(verify_api_key)):
+    try:
+        code = req.get("code", "").strip().upper()
+        if not code:
+            return error_response(message="coupon code required")
+        
+        rows = _mysql_query(
+            "SELECT id, coupon_code, member_id, original_minutes, balance_minutes, expiry_date, status FROM member_coupons WHERE coupon_code=%s",
+            (code,))
+        if not rows:
+            return error_response(message="Coupon not found")
+        
+        coupon = rows[0]
+        if coupon["status"] != "active":
+            return error_response(message=f"Coupon status: {coupon['status']}")
+        if coupon["expiry_date"] and coupon["expiry_date"] < datetime.now():
+            return error_response(message="Coupon has expired")
+        if coupon["balance_minutes"] <= 0:
+            return error_response(message="Coupon has no remaining balance")
+        
+        return ok({"coupon": {
+            "id": coupon["id"],
+            "code": coupon["coupon_code"],
+            "member_id": coupon["member_id"],
+            "balance_minutes": coupon["balance_minutes"],
+            "expiry_date": str(coupon["expiry_date"])
+        }})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.post("/api/coupons/redeem", response_model=GenericResponse, tags=["Coupons"])
+async def api_coupons_redeem(req: dict, auth=Depends(verify_api_key)):
+    try:
+        code = req.get("code", "").strip().upper()
+        minutes_to_deduct = int(req.get("minutes", 0))
+        
+        if not code or minutes_to_deduct <= 0:
+            return error_response(message="code and minutes required")
+        
+        rows = _mysql_query("SELECT id, balance_minutes, status, expiry_date FROM member_coupons WHERE coupon_code=%s", (code,))
+        if not rows:
+            return error_response(message="Coupon not found")
+        
+        coupon = rows[0]
+        if coupon["status"] != "active":
+            return error_response(message=f"Coupon status: {coupon['status']}")
+        if coupon["balance_minutes"] < minutes_to_deduct:
+            return error_response(message=f"Insufficient balance. Available: {coupon['balance_minutes']} mins")
+        if coupon["expiry_date"] and coupon["expiry_date"] < datetime.now():
+            return error_response(message="Coupon has expired")
+        
+        new_balance = coupon["balance_minutes"] - minutes_to_deduct
+        new_status = "used" if new_balance <= 0 else "active"
+        
+        _mysql_exec(
+            "UPDATE member_coupons SET balance_minutes=%s, status=%s, redeemed_at=NOW() WHERE id=%s",
+            (new_balance, new_status, coupon["id"]))
+        
+        return ok({
+            "remaining_minutes": new_balance,
+            "deducted_minutes": minutes_to_deduct,
+            "status": new_status
+        })
+    except Exception as e:
+        return error_response(message=str(e))
+
 # Import patch routes (GSheet->MySQL migrated endpoints)
 import patch_routes
+
