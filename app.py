@@ -2194,10 +2194,10 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
         _wallet_deduct = int(req.get("wallet_deduct", 0))
         if _wallet_deduct > 0 and member_id and member_id.strip() not in ("", "0 (Guest)", "-"):
             _mysql_exec(
-                "UPDATE member_wallets SET balance_mins = GREATEST(0, COALESCE(balance_mins, 0) - %s) WHERE member_id=%s",
-                (_wallet_deduct, member_id)
+                "UPDATE member_wallets SET balance_mins = GREATEST(0, COALESCE(balance_mins, 0) - %s), total_used_mins = COALESCE(total_used_mins, 0) + %s WHERE member_id=%s",
+                (_wallet_deduct, _wallet_deduct, member_id)
             )
-            logger.info("Wallet deducted: %s mins for member %s", _wallet_deduct, member_id)
+            logger.info("Wallet deducted: %s mins for member %s (total_used +%s)", _wallet_deduct, member_id, _wallet_deduct)
 
         logger.info("Sales record saved: voucher=%s member=%s console=%s net=%s", voucher_no, member_id, console_id, net_total)
         return ok({"voucher_no": voucher_no, "success": True})
