@@ -1235,116 +1235,6 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
 
 
 # ── GET /api/bookings/{booking_id} ──
-@app.get("/api/bookings/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="Get single booking by ID [MySQL]")
-async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
-    """Fetch a single booking's full details."""
-    try:
-        row = _mysql_query_one(
-            "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE id=%s",
-            (booking_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Booking not found")
-        start = row.get("start_time")
-        time_slot = ""
-        if start:
-            try:
-                from datetime import datetime as _dt
-                start_dt = _dt.fromisoformat(start) if isinstance(start, str) else start
-                time_slot = start_dt.strftime("%H:%M")
-            except:
-                time_slot = str(start)[:5] if start else ""
-        bd = row.get("booking_date")
-        bd_str = str(bd)[:10] if bd else ""
-        _cid = row.get("console_id", "")
-        _ctype = _cid
-        if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
-            try:
-                _crows = _mysql_query("SELECT console_type FROM console_status WHERE console_id=%s LIMIT 1", (_cid,))
-                if _crows and _crows[0].get("console_type"):
-                    _ctype = _crows[0]["console_type"]
-            except Exception:
-                pass
-        return ok({
-            "booking": {
-                "id": row.get("id"),
-                "customerName": row.get("staff_name", ""),
-                "phone": row.get("phone", ""),
-                "date": bd_str,
-                "timeSlot": time_slot,
-                "consoleType": _ctype,
-                "durationMins": row.get("duration_mins", 60),
-                "gameName": row.get("game_name", ""),
-                "console_id": row.get("console_id", ""),
-                "status": row.get("status", ""),
-                "notes": row.get("notes", ""),
-                "telegramChatId": row.get("telegram_chat_id", ""),
-            }
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-#  GET /api/bookings - list bookings by status
-# ================================================================
-@app.get("/api/bookings", response_model=GenericResponse, tags=["Bookings"], summary="List bookings by status [MySQL]")
-async def api_get_bookings(status: str = "", auth=Depends(verify_api_key)):
-    try:
-        if status:
-            rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE status=%s ORDER BY booking_date DESC, start_time DESC", (status,))
-        else:
-            rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking ORDER BY booking_date DESC, start_time DESC")
-        from datetime import datetime as _dt
-        normalized = []
-        for r in rows:
-            # Derive consoleType from console_id
-            _cid = r.get("console_id", "")
-            _ctype = _cid
-            if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
-                try:
-                    _crows = _mysql_query("SELECT console_type FROM console_status WHERE console_id=%s LIMIT 1", (_cid,))
-                    if _crows and _crows[0].get("console_type"):
-                        _ctype = _crows[0]["console_type"]
-                except Exception:
-                    pass
-            start = r.get("start_time")
-            time_slot = ""
-            if start:
-                try:
-                    start_dt = _dt.fromisoformat(start) if isinstance(start, str) else start
-                    time_slot = start_dt.strftime("%H:%M")
-                except:
-                    time_slot = str(start)[:5] if start else ""
-            bd = r.get("booking_date")
-            if bd:
-                try:
-                    bd_o = _dt.fromisoformat(bd) if isinstance(bd, str) else bd
-                    bd_str = bd_o.strftime("%Y-%m-%d")
-                except:
-                    bd_str = str(bd)[:10]
-            else:
-                bd_str = ""
-            # Derive consoleType from console_id: if console_id is a specific ID (C-01, etc),
-            # try to match against console_status; otherwise use console_id as the type name
-            _cid = r.get("console_id", "")
-            _ctype = _cid  # default: use console_id as display type (works for "PS5", "PS5 Pro")
-            # If console_id looks like a specific console ID (e.g., "C - 01", "C-01"),
-            # try to resolve to a type name from console_status
-            if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
-                try:
-                    _crows = _mysql_query("SELECT console_type FROM console_status WHERE console_id=%s LIMIT 1", (_cid,))
-                    if _crows and _crows[0].get("console_type"):
-                        _ctype = _crows[0]["console_type"]
-                except Exception:
-                    pass
-            normalized.append({"id": r.get("id",""), "customerName": r.get("staff_name",""), "phone": r.get("phone","") or r.get("telegram_chat_id",""), "date": bd_str, "timeSlot": time_slot, "consoleType": _ctype, "durationMins": r.get("duration_mins",60), "gameName": r.get("game_name",""), "console_id": r.get("console_id",""), "consoleId": r.get("console_id",""), "member_id": r.get("member_id",""), "status": r.get("status","")})
-        return ok({"bookings": normalized})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-#  MUTATION — end_booking
-# ═══════════════════════════════════════
-
 
 @app.get("/api/bookings/search", response_model=GenericResponse, tags=["Bookings"], summary="Search bookings by telegram_chat_id [MySQL]")
 async def api_search_bookings(telegram_chat_id: str = Query("", description="Telegram chat ID of customer"), auth=Depends(verify_api_key)):
@@ -1407,6 +1297,61 @@ async def api_search_bookings(telegram_chat_id: str = Query("", description="Tel
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
+
+@app.get("/api/bookings/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="Get single booking by ID [MySQL]")
+async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
+    """Fetch a single booking's full details."""
+    try:
+        row = _mysql_query_one(
+            "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE id=%s",
+            (booking_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        start = row.get("start_time")
+        time_slot = ""
+        if start:
+            try:
+                from datetime import datetime as _dt
+                start_dt = _dt.fromisoformat(start) if isinstance(start, str) else start
+                time_slot = start_dt.strftime("%H:%M")
+            except:
+                time_slot = str(start)[:5] if start else ""
+        bd = row.get("booking_date")
+        bd_str = str(bd)[:10] if bd else ""
+        _cid = row.get("console_id", "")
+        _ctype = _cid
+        if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
+            try:
+                _crows = _mysql_query("SELECT console_type FROM console_status WHERE console_id=%s LIMIT 1", (_cid,))
+                if _crows and _crows[0].get("console_type"):
+                    _ctype = _crows[0]["console_type"]
+            except Exception:
+                pass
+        return ok({
+            "booking": {
+                "id": row.get("id"),
+                "customerName": row.get("staff_name", ""),
+                "phone": row.get("phone", ""),
+                "date": bd_str,
+                "timeSlot": time_slot,
+                "consoleType": _ctype,
+                "durationMins": row.get("duration_mins", 60),
+                "gameName": row.get("game_name", ""),
+                "console_id": row.get("console_id", ""),
+                "status": row.get("status", ""),
+                "notes": row.get("notes", ""),
+                "telegramChatId": row.get("telegram_chat_id", ""),
+            }
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+#  GET /api/bookings - list bookings by status
+# ================================================================
+
 @app.put("/api/end_booking/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="End booking [MySQL]")
 async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
     """Mark a booking as Done in MySQL."""
@@ -1420,6 +1365,44 @@ async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
         if row:
             _mysql_exec("UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s", (row["console_id"],))
         invalidate_cache("bookings")
+
+# Notify customer via customer bot
+        if telegram_chat_id:
+            _CUSTOMER_BOT_TOKEN = os.environ.get("CUSTOMER_BOT_TOKEN", "")
+            if _CUSTOMER_BOT_TOKEN:
+                _bk_date = str(booking.get("booking_date", ""))[:10]
+                _bk_time = ""
+                _start = booking.get("start_time")
+                if _start:
+                    try:
+                        from datetime import datetime as __dt
+                        _start_dt = __dt.fromisoformat(str(_start)) if isinstance(_start, str) else _start
+                        _bk_time = _start_dt.strftime("%H:%M")
+                    except:
+                        _bk_time = str(_start)[:5] if _start else ""
+                _console = booking.get("console_id") or "—"
+                _game = booking.get("game_name") or "—"
+                _duration = booking.get("duration_mins") or ""
+                _cust_msg = "❌ <b>Booking #" + str(booking_id) + " Cancelled</b>\n\n"
+                _cust_msg += "📅 " + _bk_date + "  🕐 " + _bk_time + "\n"
+                _cust_msg += "🎮 " + _console + "  ⏱️ " + str(_duration) + " mins\n"
+                _cust_msg += "🕹️ " + _game + "\n\n"
+                _cust_msg += "ဆက်သက္လာရှန္: @psvibeofficial"
+                try:
+                    _tel_payload = json.dumps({
+                        "chat_id": telegram_chat_id,
+                        "text": _cust_msg,
+                        "parse_mode": "HTML"
+                    }).encode()
+                    _tel_url = "https://api.telegram.org/bot" + _CUSTOMER_BOT_TOKEN + "/sendMessage"
+                    _tel_req = urllib.request.Request(
+                        _tel_url, data=_tel_payload,
+                        headers={"Content-Type": "application/json"}, method="POST"
+                    )
+                    urllib.request.urlopen(_tel_req, timeout=5)
+                except Exception as _e:
+                    logger.warning("Cancel notification failed: %s", _e)
+
         return ok({"booking_id": booking_id, "status": "Done"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
