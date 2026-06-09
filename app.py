@@ -1562,6 +1562,47 @@ def _notify_booking_received(name, date, time_slot, console_type, duration, game
 
 
 # ================================================================
+
+def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, staff_name: str) -> None:
+    """Parse payment method string (e.g. 'KPay:31000|Cash:20000' or 'KPay:90000/Cash:0')
+    and inject cash_movements entries for each account."""
+    if not payment_method or float(total_amount) <= 0:
+        return
+    import re
+    # Handle both | and / separators
+    parts = re.split(r'[|/]', payment_method)
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            method, _, val_str = part.partition(":")
+            val = float(val_str.strip() or 0) if val_str.strip() else 0
+        else:
+            method = part
+            val = float(total_amount) / len(parts)
+        method = method.strip()
+        val = float(val)
+        # Map internal method names to cash_movements account names
+        acct_map = {
+            "cash": "Cash",
+            "kpay": "KPay",
+            "wavepay": "WavePay",
+            "aya pay": "AYA Pay",
+            "aya_pay": "AYA Pay",
+            "kbz bank": "KBZ Bank",
+            "kbz_bank": "KBZ Bank",
+            "acm acc": "ACM's Acc",
+            "acm_acc": "ACM's Acc",
+        }
+        account = acct_map.get(method.strip().lower().replace("  ", " "), method)
+        if val > 0:
+            _mysql_exec(
+                "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) VALUES (%s, %s, %s, %s, %s, NOW())",
+                ("inject", account, val, note, staff_name)
+            )
+            logger.info("Cash movement inject: %s +%.0f Ks (%s)", account, val, note)
+
 #  MUTATION — topup/log
 # ================================================================
 @app.post("/api/topup/log", response_model=GenericResponse, tags=["Topup"], summary="Log a top-up transaction and update wallet")
@@ -1591,6 +1632,13 @@ async def api_topup_log(req: dict, auth=Depends(verify_api_key)):
         _mysql_exec(
             "INSERT INTO member_wallets (member_id, balance_mins, total_bought_mins, total_spend) VALUES (%s,%s,%s,%s) ON DUPLICATE KEY UPDATE balance_mins=%s, total_bought_mins=%s, total_spend=%s, last_updated=NOW()",
             (member_id, bal_after, bought, new_spend, bal_after, bought, new_spend))
+
+        # 🆕 Record cash_movements for top-up income
+        if float(amount) > 0:
+            try:
+                _parse_pm_and_inject(amount, pm, f"Topup {member_id} + {mins_added} mins", staff)
+            except Exception as _e:
+                logger.warning("Topup cash_movements failed: %s", _e)
 
         return ok({"success": True, "balance_mins": bal_after, "total_spend": new_spend})
     except Exception as e:
@@ -1638,6 +1686,13 @@ async def api_member_register(req: dict, auth=Depends(verify_api_key)):
             "VALUES (%s,%s,%s,%s,%s,%s,%s) "
             "ON DUPLICATE KEY UPDATE member_name=VALUES(member_name), phone=VALUES(phone)",
             (member_id, name, phone, initial_mins, mins_added, "Warrior", 0))
+
+        # 🆕 Record cash_movements for member registration income
+        if float(amount) > 0:
+            try:
+                _parse_pm_and_inject(amount, f"KPay:{kpay}/Cash:{cash}", f"New member {member_id} + {mins_added} mins", staff)
+            except Exception as _e:
+                logger.warning("Reg cash_movements failed: %s", _e)
 
         # Log into topup_log
         if mins_added > 0:

@@ -1995,7 +1995,7 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         except Exception:
             _fr = {"consumed": 0}
         wallet_consumed = float(_fr.get("consumed", 0))
-        total_revenue = game_rev + food_rev + wallet_consumed
+        total_revenue = game_rev + food_rev + topup_rev + wallet_consumed
         gross_profit = total_revenue - cogs
         # Depreciation expense for this month
         _dep_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0")
@@ -2083,6 +2083,28 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
                 if method == "wavepay": method = "wave"
                 if method in income_by_account:
                     income_by_account[method] += val
+
+        # 🆕 ADD topup_log income (member card purchases were MISSING!)
+        trows = _mq("SELECT payment_method, amount FROM topup_log WHERE amount > 0 AND payment_method IS NOT NULL")
+        for _tr in trows:
+            _pm = (_tr.get("payment_method") or "").strip()
+            _amt = float(_tr.get("amount") or 0)
+            if not _pm or _amt <= 0:
+                continue
+            # Topup PM format: "KPay:90000/Cash:0" (pipe-delimited with :amount)
+            for _part in _pm.split("/"):
+                _part = _part.strip()
+                if ":" in _part:
+                    _method, _, _val = _part.partition(":")
+                    _method = _method.strip().lower().replace(" ", "_")
+                    _val = float(_val.strip() or 0) if _val.strip() else 0
+                else:
+                    _method = _part.lower().replace(" ", "_")
+                    _val = _amt
+                if _method == "wavepay":
+                    _method = "wave"
+                if _method in income_by_account:
+                    income_by_account[_method] += _val
 
         for a in accounts:
             key = a["key"]
