@@ -2098,9 +2098,10 @@ async def api_delete_game(title: str):
 @app.delete("/api/delete_session_game/{console_id}")
 async def api_delete_session_game(console_id: str):
     try:
+        _cid = console_id.replace(" ", "")
         _mysql_exec(
-            "DELETE FROM console_games WHERE console_id=%s AND status='Session'",
-            (console_id,))
+            "DELETE FROM console_games WHERE REPLACE(console_id, ' ', '')=%s AND status='Session'",
+            (_cid,))
         return ok({"console_id": console_id, "deleted": True})
     except Exception as e:
         return error_response(message=str(e))
