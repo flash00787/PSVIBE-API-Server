@@ -1338,7 +1338,7 @@ async def api_get_bookings(status: str = "", auth=Depends(verify_api_key)):
                         _ctype = _crows[0]["console_type"]
                 except Exception:
                     pass
-            normalized.append({"id": r.get("id",""), "customerName": r.get("staff_name",""), "phone": r.get("phone","") or r.get("telegram_chat_id",""), "date": bd_str, "timeSlot": time_slot, "consoleType": _ctype, "durationMins": r.get("duration_mins",60), "gameName": r.get("game_name",""), "console_id": r.get("console_id",""), "consoleId": r.get("console_id",""), "member_id": r.get("member_id",""), "status": r.get("status","")})
+            normalized.append({"id": r.get("id",""), "customerName": r.get("staff_name",""), "phone": r.get("phone","") or r.get("telegram_chat_id",""), "date": bd_str, "timeSlot": time_slot, "consoleType": _ctype, "durationMins": r.get("duration_mins",60), "gameName": r.get("game_name",""), "console_id": r.get("console_id",""), "consoleId": r.get("console_id",""), "member_id": r.get("member_id",""), "telegram_chat_id": r.get("telegram_chat_id",""), "telegramChatId": r.get("telegram_chat_id",""), "status": r.get("status","")})
         return ok({"bookings": normalized})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
