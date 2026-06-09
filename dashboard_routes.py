@@ -1965,18 +1965,24 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
     from mysql_db import query as _mq, query_one as _mqo
     ym = f"{year:04d}-{month:02d}"
     try:
-        rev_rows = _mq("SELECT net, gross, amount FROM sales_daily WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s AND gross > 0", (ym,))
-        game_rev = 0.0; food_rev = 0.0; discounts = 0.0
+        rev_rows = _mq("SELECT net, gross, amount, notes FROM sales_daily WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s AND gross > 0", (ym,))
+        game_rev = 0.0; food_rev = 0.0; discounts = 0.0; topup_sales = 0.0
         for r in rev_rows:
             g = float(r.get("gross") or 0)
             n = float(r.get("net") or 0)
             a = float(r.get("amount") or 0)
+            notes = (r.get("notes") or "")
             discounts += (g - n)
             # Food has NO discount: food_rev = min(gross - amount, net)
             food_amt = max(g - a, 0)
             food_rev += min(food_amt, n)
-            # Game gets the remaining after food: game_rev = max(net - food_amt, 0)
-            game_rev += max(n - food_amt, 0)
+            # Exclude topup entries from game_rev (topups are deferred revenue)
+            # Only wallet_consumed (FIFO) counts as topup-derived revenue
+            if notes.startswith("Topup") or notes.startswith("New member"):
+                topup_sales += max(n - food_amt, 0)
+            else:
+                # Game gets the remaining after food: game_rev = max(net - food_amt, 0)
+                game_rev += max(n - food_amt, 0)
         trows = _mq("SELECT COALESCE(SUM(amount),0) as t FROM topup_log WHERE DATE_FORMAT(topup_date, '%%Y-%%m') = %s", (ym,))
         topup_rev = float(trows[0]["t"] or 0) if trows else 0
         import stock_fifo, pymysql
@@ -1995,7 +2001,7 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         except Exception:
             _fr = {"consumed": 0}
         wallet_consumed = float(_fr.get("consumed", 0))
-        total_revenue = game_rev + food_rev + topup_rev + wallet_consumed
+        total_revenue = game_rev + food_rev + wallet_consumed
         gross_profit = total_revenue - cogs
         # Depreciation expense for this month
         _dep_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0")
@@ -2004,7 +2010,7 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         net_profit = gross_profit - total_expense_all
         return {"success": True, "data": {
             "period": ym,
-            "revenue": {"game_revenue": round(game_rev,0), "food_revenue": round(food_rev,0), "topup_revenue": round(topup_rev,0), "wallet_consumed": round(wallet_consumed,0), "discounts": round(discounts,0), "total_revenue": round(total_revenue,0)},
+            "revenue": {"game_revenue": round(game_rev,0), "food_revenue": round(food_rev,0), "topup_revenue": round(topup_rev,0), "wallet_consumed": round(wallet_consumed,0), "topup_deferred": round(topup_sales,0), "discounts": round(discounts,0), "total_revenue": round(total_revenue,0)},
             "cogs": round(cogs,0), "gross_profit": round(gross_profit,0),
             "expenses": {"by_category": expenses_by_cat, "total": round(total_expense,0), "depreciation": round(depreciation_exp,0), "total_with_depreciation": round(total_expense_all,0)},
             "operating_profit": round(gross_profit - total_expense,0),
