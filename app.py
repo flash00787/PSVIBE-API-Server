@@ -1683,7 +1683,7 @@ async def api_remove_console_game(req: dict, auth=Depends(verify_api_key)):
     try:
         _cid = req.get("console_id","").replace(" ", "")
         _mysql_exec(
-            "DELETE FROM console_games WHERE console_id=%s AND game_title=%s",
+            "DELETE FROM console_games WHERE REPLACE(console_id, ' ', '')=%s AND game_title=%s",
             (_cid, req.get("game_title","")))
         return ok({"deleted": True})
     except Exception as e:
@@ -2114,11 +2114,13 @@ async def api_move_console_game(req: dict, auth=Depends(verify_api_key)):
             return error_response(message="game_title, from_console, to_console required")
         if from_console == to_console:
             return error_response(message="source and destination must be different")
-        _mysql_exec("DELETE FROM console_games WHERE console_id=%s AND game_title=%s", (from_console, game_title))
-        _mysql_exec("DELETE FROM console_games WHERE console_id=%s AND game_title=%s AND install_type NOT IN ('Session')", (to_console, game_title))
+        # Normalize console_id by removing spaces for matching
+        norm = lambda cid: cid.replace(" ", "")
+        _mysql_exec("DELETE FROM console_games WHERE REPLACE(console_id, ' ', '')=%s AND game_title=%s", (norm(from_console), game_title))
+        _mysql_exec("DELETE FROM console_games WHERE REPLACE(console_id, ' ', '')=%s AND game_title=%s AND install_type NOT IN ('Session')", (norm(to_console), game_title))
         _mysql_exec(
             "INSERT INTO console_games (console_id, console_name, game_id, game_title, status, install_type, slot_position) VALUES (%s, %s, %s, %s, 'Installed', 'Moved', 0)",
-            (to_console, to_console, game_title, game_title))
+            (norm(to_console), norm(to_console), game_title, game_title))
         has_installed = _mysql_query_one(
             "SELECT COUNT(*) as cnt FROM console_games WHERE game_title=%s AND status='Installed'",
             (game_title,))
