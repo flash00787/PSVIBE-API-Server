@@ -1213,6 +1213,79 @@ async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
 
 
 # ================================================================
+
+
+# ── PATCH /api/bookings/{booking_id}/status ──
+@app.patch("/api/bookings/{booking_id}/status", response_model=GenericResponse, tags=["Bookings"], summary="Update booking status (approve/reject) [MySQL]")
+async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(verify_api_key)):
+    """Update a booking's status and optionally assign a console."""
+    try:
+        status = req.get("status", "")
+        if status not in ("pending", "confirmed", "rejected", "pending_check_in", "Active", "cancelled", "Done"):
+            return error_response(message=f"Invalid status: {status}")
+        _mysql_exec(
+            "UPDATE console_booking SET status=%s, staff_name=COALESCE(%s, staff_name), notes=COALESCE(%s, notes) WHERE id=%s",
+            (status, req.get("staffName", ""), req.get("staffNote", ""), booking_id))
+        if req.get("consoleId"):
+            _mysql_exec("UPDATE console_booking SET console_id=%s WHERE id=%s", (req["consoleId"], booking_id))
+        invalidate_cache("bookings")
+        return ok({"booking_id": booking_id, "status": status})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── GET /api/bookings/{booking_id} ──
+@app.get("/api/bookings/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="Get single booking by ID [MySQL]")
+async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
+    """Fetch a single booking's full details."""
+    try:
+        row = _mysql_query_one(
+            "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE id=%s",
+            (booking_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        start = row.get("start_time")
+        time_slot = ""
+        if start:
+            try:
+                from datetime import datetime as _dt
+                start_dt = _dt.fromisoformat(start) if isinstance(start, str) else start
+                time_slot = start_dt.strftime("%H:%M")
+            except:
+                time_slot = str(start)[:5] if start else ""
+        bd = row.get("booking_date")
+        bd_str = str(bd)[:10] if bd else ""
+        _cid = row.get("console_id", "")
+        _ctype = _cid
+        if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
+            try:
+                _crows = _mysql_query("SELECT console_type FROM console_status WHERE console_id=%s LIMIT 1", (_cid,))
+                if _crows and _crows[0].get("console_type"):
+                    _ctype = _crows[0]["console_type"]
+            except Exception:
+                pass
+        return ok({
+            "booking": {
+                "id": row.get("id"),
+                "customerName": row.get("staff_name", ""),
+                "phone": row.get("phone", ""),
+                "date": bd_str,
+                "timeSlot": time_slot,
+                "consoleType": _ctype,
+                "durationMins": row.get("duration_mins", 60),
+                "gameName": row.get("game_name", ""),
+                "console_id": row.get("console_id", ""),
+                "status": row.get("status", ""),
+                "notes": row.get("notes", ""),
+                "telegramChatId": row.get("telegram_chat_id", ""),
+            }
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 #  GET /api/bookings - list bookings by status
 # ================================================================
 @app.get("/api/bookings", response_model=GenericResponse, tags=["Bookings"], summary="List bookings by status [MySQL]")
