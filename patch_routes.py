@@ -883,10 +883,9 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
         
         # 4. Also add topup_log income
         topup_rows = _mysql_query("""
-            SELECT payment_method, SUM(amount) as total
+            SELECT payment_method, amount
             FROM topup_log
             WHERE topup_date >= '2026-01-01'
-            GROUP BY payment_method
         """)
         
         for r in topup_rows:
