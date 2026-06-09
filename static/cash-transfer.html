@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PS VIBE - Account Transfer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#0d1117;color:#e6edf3;min-height:100vh}
+.login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+.login-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:40px;max-width:400px;width:100%;text-align:center}
+.login-card h1{color:#3fb950;margin-bottom:8px;font-size:1.5rem}
+.login-card p{color:#8b949e;margin-bottom:24px;font-size:.9rem}
+.login-card input{width:100%;padding:12px;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#e6edf3;font-size:1rem;margin-bottom:12px;outline:none}
+.login-card input:focus{border-color:#3fb950}
+.login-card button{width:100%;padding:12px;background:#238636;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer;font-weight:600}
+.login-card button:hover{background:#2ea043}
+.login-error{color:#f85149;font-size:.85rem;margin-top:8px;display:none}
+.dashboard{padding:20px;max-width:1200px;margin:0 auto;display:none}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid #30363d}
+header h1{color:#3fb950;font-size:1.3rem}
+header h1 span{color:#e6edf3;font-weight:400}
+header .user-info{color:#8b949e;font-size:.85rem;display:flex;align-items:center;gap:12px}
+header .logout-btn{background:transparent;border:1px solid #30363d;color:#f85149;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:.8rem}
+header .logout-btn:hover{background:#f8514911;border-color:#f85149}
+.balances{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:24px}
+.balance-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px;text-align:center}
+.balance-card .icon{font-size:1.4rem}
+.balance-card .name{color:#8b949e;font-size:.8rem;margin:4px 0}
+.balance-card .amount{font-size:1.4rem;font-weight:700;color:#e6edf3}
+.balance-card .amount.pos{color:#3fb950}
+.balance-card .type{border-top:1px solid #21262d;margin-top:8px;padding-top:6px;font-size:.7rem;color:#484f58;text-transform:uppercase}
+.main-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:24px;margin-bottom:16px}
+.main-card h2{color:#3fb950;font-size:1.1rem;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.form-row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+.form-group{flex:1;min-width:160px}
+.form-group label{display:block;color:#8b949e;font-size:.8rem;margin-bottom:4px}
+.form-group select,.form-group input{width:100%;padding:10px;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#e6edf3;font-size:.9rem;outline:none}
+.form-group select:focus,.form-group input:focus{border-color:#3fb950}
+.btn-transfer{padding:10px 28px;background:#238636;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:.9rem;white-space:nowrap;min-width:100px}
+.btn-transfer:hover{background:#2ea043}
+.btn-transfer:disabled{opacity:.5;cursor:not-allowed}
+.status-msg{padding:12px;border-radius:8px;margin-top:12px;display:none;font-size:.9rem}
+.status-msg.success{background:#23863622;color:#3fb950;border:1px solid #23863644;display:block}
+.status-msg.error{background:#f8514911;color:#f85149;border:1px solid #f8514933;display:block}
+.transaction-table{width:100%;border-collapse:collapse;font-size:.85rem}
+.transaction-table th{text-align:left;padding:10px 12px;color:#8b949e;font-weight:600;border-bottom:1px solid #21262d;white-space:nowrap}
+.transaction-table td{padding:10px 12px;border-bottom:1px solid #21262d}
+.transaction-table tr:hover{background:#161b2244}
+.amt{font-family:monospace;text-align:right}
+.amt-out{color:#f85149}
+.amt-in{color:#3fb950}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:600}
+.tag-cash{background:#d2992233;color:#d29922}
+.tag-kpay{background:#58a6ff33;color:#58a6ff}
+.tag-wave{background:#a371f733;color:#a371f7}
+.tag-aya{background:#f7816633;color:#f78166}
+.tag-bank{background:#3fb95033;color:#3fb950}
+.no-data{color:#484f58;font-style:italic;padding:20px;text-align:center}
+.tabs{display:flex;gap:0;margin-bottom:0;border-bottom:1px solid #30363d}
+.tab{padding:10px 20px;cursor:pointer;color:#8b949e;border-bottom:2px solid transparent;font-size:.9rem;font-weight:500}
+.tab.active{color:#3fb950;border-bottom-color:#3fb950}
+.tab:hover{color:#e6edf3}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.loading{text-align:center;padding:40px;color:#8b949e}
+.mt-4{margin-top:16px}
+@media(max-width:640px){.form-row{flex-direction:column}.form-group{min-width:100%}.balances{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+
+<div id="loginScreen" class="login-screen">
+  <div class="login-card">
+    <h1>PS VIBE</h1>
+    <p>Account Transfer System</p>
+    <input type="password" id="pinInput" placeholder="Admin PIN" maxlength="6" autocomplete="off">
+    <button onclick="loginWithPin()">Login</button>
+    <div id="loginError" class="login-error">Incorrect PIN</div>
+  </div>
+</div>
+
+<div id="dashboard" class="dashboard">
+  <header>
+    <h1>Account Transfer</h1>
+    <div class="user-info">
+      <span>Admin</span>
+      <button class="logout-btn" onclick="logout()">Logout</button>
+    </div>
+  </header>
+
+  <!-- Balance Cards -->
+  <div id="balancesRow" class="balances"></div>
+
+  <!-- Main Card with Tabs -->
+  <div class="main-card">
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('transfer',this)">Transfer</div>
+      <div class="tab" onclick="switchTab('movements',this)">History</div>
+    </div>
+
+    <div id="tab-transfer" class="tab-content active mt-4">
+      <div class="form-row">
+        <div class="form-group">
+          <label>From Account</label>
+          <select id="fromAccount"><option value="">-- Select --</option></select>
+        </div>
+        <div class="form-group">
+          <label>To Account</label>
+          <select id="toAccount"><option value="">-- Select --</option></select>
+        </div>
+        <div class="form-group">
+          <label>Amount (Ks)</label>
+          <input type="number" id="amountInput" placeholder="Amount" min="1" autocomplete="off">
+        </div>
+        <div class="form-group" style="flex:1.5">
+          <label>Note</label>
+          <input type="text" id="noteInput" placeholder="e.g. Cash collection / Bank deposit" autocomplete="off">
+        </div>
+        <div class="form-group" style="display:flex;align-items:flex-end">
+          <button class="btn-transfer" onclick="submitTransfer()">Submit</button>
+        </div>
+      </div>
+      <div id="transferStatus" class="status-msg"></div>
+    </div>
+
+    <div id="tab-movements" class="tab-content mt-4">
+      <table class="transaction-table">
+        <thead><tr><th>Date</th><th>From</th><th>To</th><th style="text-align:right">Amount</th><th>Note</th><th>By</th></tr></thead>
+        <tbody id="movementsBody"><tr><td colspan="6" class="no-data">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+// Config
+const API_BASE = '';
+const VALID_PIN = '481999';
+const API_KEY = 'JWIErd82Apo3j-KKWW8HjOjfizo9s_tpJZhcSb7D-AQ';
+
+// Login
+function loginWithPin() {
+  const pin = document.getElementById('pinInput').value.trim();
+  if (pin === VALID_PIN) {
+    sessionStorage.setItem('cash_admin_logged_in', 'true');
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    document.getElementById('loginError').style.display = 'none';
+    loadData();
+  } else {
+    document.getElementById('loginError').style.display = 'block';
+  }
+}
+
+document.getElementById('pinInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') loginWithPin();
+});
+
+function logout() {
+  sessionStorage.removeItem('cash_admin_logged_in');
+  document.getElementById('dashboard').style.display = 'none';
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('pinInput').value = '';
+}
+
+(function() {
+  if (sessionStorage.getItem('cash_admin_logged_in') === 'true') {
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    loadData();
+  }
+})();
+
+function switchTab(tabId, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-' + tabId).classList.add('active');
+}
+
+async function loadData() {
+  await loadBalances();
+  await loadMovements();
+}
+
+// Fetch with API key included
+async function apiFetch(path) {
+  try {
+    const url = API_BASE + '/api' + path;
+    const r = await fetch(url, {headers: {'X-API-Key': API_KEY}});
+    const j = await r.json();
+    if (!j.success) {
+      console.error('API error:', j.error);
+      return null;
+    }
+    return j.data;
+  } catch(e) {
+    console.error('Fetch error:', e);
+    return null;
+  }
+}
+
+// POST with API key included
+async function apiPost(path, body) {
+  try {
+    const url = API_BASE + '/api' + path;
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-API-Key': API_KEY},
+      body: JSON.stringify(body)
+    });
+    const j = await r.json();
+    return j;
+  } catch(e) {
+    console.error('POST error:', e);
+    return {success: false, error: 'Network error: ' + e.message};
+  }
+}
+
+async function loadBalances() {
+  const data = await apiFetch('/finance/account-balances');
+  if (!data) return;
+
+  const container = document.getElementById('balancesRow');
+
+  // Build accounts map
+  const accounts = {};
+  const allAccounts = (data.operating || []).concat(data.capital || []);
+  allAccounts.forEach(function(a) {
+    accounts[a.name] = a.balance;
+  });
+
+  // Sorted display order
+  const sorted = ['Cash', 'KPay', 'Wave', 'AYA Pay', 'KBZ Bank', "ACM's Acc"];
+
+  // Build balance cards HTML
+  var html = '';
+  for (var i = 0; i < sorted.length; i++) {
+    var name = sorted[i];
+    if (accounts[name] === undefined) continue;
+    var amt = accounts[name];
+    var icons = {Cash:'💵', KPay:'📱', Wave:'🌊', 'AYA Pay':'💳', 'KBZ Bank':'🏦', "ACM's Acc":'💰'};
+    var icon = icons[name] || '💰';
+    var type = (name === 'KBZ Bank' || name === "ACM's Acc") ? 'SPECIAL' : 'OPERATING';
+    html += '<div class="balance-card"><div class="icon">' + icon + '</div><div class="name">' + name + '</div><div class="amount">' + amt.toLocaleString() + ' Ks</div><div class="type">' + type + '</div></div>';
+  }
+  container.innerHTML = html;
+
+  // Populate dropdowns
+  var selectors = ['fromAccount', 'toAccount'];
+  for (var si = 0; si < selectors.length; si++) {
+    var sel = document.getElementById(selectors[si]);
+    var currentVal = sel.value;
+    sel.innerHTML = '<option value="">-- Select --</option>';
+    for (var j = 0; j < sorted.length; j++) {
+      var name = sorted[j];
+      if (accounts[name] === undefined) continue;
+      var opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    }
+    if (currentVal) sel.value = currentVal;
+  }
+}
+
+async function loadMovements() {
+  const data = await apiFetch('/finance/transfer-history?limit=50');
+  if (!data || !data.transfers) return;
+  var tbody = document.getElementById('movementsBody');
+  if (data.transfers.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="no-data">No history yet</td></tr>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < data.transfers.length; i++) {
+    var t = data.transfers[i];
+    var amt = parseInt(t.amount) || 0;
+    var fromName = t.from_account || '-';
+    var toName = t.to_account || '-';
+    html += '<tr>';
+    html += '<td style="white-space:nowrap">' + (t.created_at || '') + '</td>';
+    html += '<td>' + fromName + '</td>';
+    html += '<td>' + toName + '</td>';
+    html += '<td class="amt">' + amt.toLocaleString() + ' Ks</td>';
+    html += '<td>' + (t.note || '-') + '</td>';
+    html += '<td style="color:#8b949e;font-size:.8rem">' + (t.created_by || '-') + '</td>';
+    html += '</tr>';
+  }
+  tbody.innerHTML = html;
+}
+
+async function submitTransfer() {
+  const from = document.getElementById('fromAccount').value;
+  const to = document.getElementById('toAccount').value;
+  const amount = parseInt(document.getElementById('amountInput').value);
+  const note = document.getElementById('noteInput').value.trim();
+  const statusEl = document.getElementById('transferStatus');
+
+  statusEl.className = 'status-msg';
+  statusEl.style.display = 'none';
+
+  if (!from) { showStatus('error', 'Please select From account'); return; }
+  if (!to) { showStatus('error', 'Please select To account'); return; }
+  if (from === to) { showStatus('error', 'Cannot transfer to same account'); return; }
+  if (!amount || amount < 1) { showStatus('error', 'Invalid amount'); return; }
+  if (!note) { showStatus('error', 'Please add a note'); return; }
+
+  const btn = document.querySelector('.btn-transfer');
+  btn.disabled = true;
+  btn.textContent = 'Processing...';
+
+  try {
+    const result = await apiPost('/finance/cash-transfer', {
+      from_account: from,
+      to_account: to,
+      amount: amount,
+      note: note
+    });
+
+    if (result.success) {
+      showStatus('success', 'Transfer complete: ' + from + ' -> ' + to + ' : ' + amount.toLocaleString() + ' Ks');
+      document.getElementById('amountInput').value = '';
+      document.getElementById('noteInput').value = '';
+      await loadBalances();
+      await loadMovements();
+    } else {
+      showStatus('error', 'Error: ' + (result.error || 'Transfer failed'));
+    }
+  } catch(e) {
+    showStatus('error', 'Error: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Submit';
+  }
+}
+
+function showStatus(type, msg) {
+  const el = document.getElementById('transferStatus');
+  el.className = 'status-msg ' + type;
+  el.textContent = msg;
+  el.style.display = 'block';
+  setTimeout(function() {
+    el.style.display = 'none';
+  }, 5000);
+}
+</script>
+</body>
+</html>

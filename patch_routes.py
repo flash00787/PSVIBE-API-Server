@@ -48,6 +48,16 @@ def _map_booking_row(row: dict) -> dict:
     for db_key, bk_key in mapping.items():
         if db_key in row and row[db_key] is not None:
             result[bk_key] = row[db_key]
+    # timeSlot: extract HH:MM from start_time for customer bot conflict checks
+    if row.get("start_time"):
+        st = row["start_time"]
+        if isinstance(st, str) and len(st) >= 16:
+            result["timeSlot"] = st[11:16]
+        elif hasattr(st, 'strftime'):
+            result["timeSlot"] = st.strftime("%H:%M")
+    # consoleId: raw console_id for conflict detection
+    if row.get("console_id"):
+        result["consoleId"] = row["console_id"]
     
     # customerName: handle both customer bot (pending) and staff formats
     if row.get("status") == "pending":
@@ -119,9 +129,26 @@ async def api_sheets_inventory(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.get("/api/sheets/consoles", tags=["Sheets"])
 async def api_sheets_consoles(auth=Depends(verify_api_key)):
-    """Return console list with live status from MySQL."""
+    """Return console list with live status from MySQL. Marks Reserved if confirmed booking within 2 hours."""
     try:
         rows = _mysql_query("SELECT console_id, status, current_game, current_member, start_time FROM console_status ORDER BY console_id")
+        
+        # Check for confirmed bookings whose time slot includes NOW
+        try:
+            upcoming = _mysql_query(
+                "SELECT console_id, start_time, end_time FROM console_booking "
+                "WHERE status IN ('confirmed', 'pending_check_in') "
+                "AND start_time <= NOW() AND end_time > NOW()"
+            )
+            reserved_consoles = {r["console_id"].strip() for r in upcoming}
+        except Exception:
+            reserved_consoles = set()
+        
+        for r in rows:
+            cid = r["console_id"].strip()
+            if r["status"] == "Free" and cid in reserved_consoles:
+                r["status"] = "Reserved"
+        
         return ok({"consoles": rows, "date": today_str()})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -733,6 +760,257 @@ async def api_finance_accounts(auth=Depends(verify_api_key)):
     })
 
 
+
+@app.get("/api/finance/account-balances", tags=["Finance"])
+async def api_finance_account_balances(auth=Depends(verify_api_key)):
+    """Return real-time account balances calculated from transactions."""
+    try:
+        # 1. Get initial balances from accounts table
+        rows = _mysql_query("""
+            SELECT a.account_name, a.account_type, a.balance, a.notes
+            FROM accounts a
+            INNER JOIN (
+                SELECT account_name, MAX(id) AS max_id
+                FROM accounts
+                GROUP BY account_name
+            ) latest ON a.id = latest.max_id
+            ORDER BY FIELD(a.account_type, 'Cash', 'Digital', 'Bank', 'Capital'), a.account_name
+        """)
+        
+        # Map account names to payment method keywords for aggregation
+        account_map = {
+            "Cash": "cash",
+            "KPay": "kpay",
+            "Wave": "wave",
+            "AYA Pay": "aya",
+            "KBZ Bank": None,  # Capital - skip in real-time calc
+        }
+        
+        # Initialize balances with existing account values as base
+        operating = []
+        capital = []
+        total_op = 0.0
+        total_cap = 0.0
+        base_by_acct = {}
+        
+        for r in rows:
+            bal = float(r["balance"] or 0)
+            acct = {
+                "name": r["account_name"],
+                "type": r["account_type"],
+                "balance": bal,
+                "notes": r.get("notes", "") or "",
+            }
+            if r["account_type"] == "Capital":
+                capital.append(acct)
+                total_cap += bal
+            else:
+                base_by_acct[r["account_name"]] = bal
+        
+        # 2. Calculate incoming money from sales_daily
+        sale_rows = _mysql_query("""
+            SELECT payment_method
+            FROM sales_daily
+            WHERE sale_date >= '2026-01-01'
+        """)
+        
+        # Parse payment_method field (format: "KPay:amount|Cash:amount") and aggregate
+        income_by_acct = {"cash": 0.0, "kpay": 0.0, "wave": 0.0, "aya": 0.0, "acm": 0.0, "kbz": 0.0}
+        
+        for r in sale_rows:
+            pm = r["payment_method"] or ""
+
+            if "|" in pm:
+                # Parse each segment
+                segments = pm.split("|")
+                for seg in segments:
+                    seg = seg.strip()
+                    if ":" in seg:
+                        method, amt_str = seg.split(":", 1)
+                        try:
+                            amt = float(amt_str)
+                        except:
+                            amt = 0
+                        method_lower = method.lower().strip()
+                        if method_lower == "cash":
+                            income_by_acct["cash"] += amt
+                        elif method_lower == "kpay":
+                            income_by_acct["kpay"] += amt
+                        elif method_lower in ("wave", "wavepay"):
+                            income_by_acct["wave"] += amt
+                        elif method_lower in ("aya", "aya pay"):
+                            income_by_acct["aya"] += amt
+                        elif "transfer" in method_lower or "bank" in method_lower:
+                            income_by_acct["kpay"] += amt
+                        elif method_lower == "wave":
+                            income_by_acct["wave"] += amt
+                        elif method_lower == "aya" or method_lower == "aya pay":
+                            income_by_acct["aya"] += amt
+            elif ":" in pm:
+                # Single method format
+                method, amt_str = pm.split(":", 1)
+                try:
+                    amt = float(amt_str)
+                except:
+                    amt = total  # fallback: use total
+                method_lower = method.lower().strip()
+                if method_lower == "cash":
+                    income_by_acct["cash"] += amt
+                elif method_lower == "kpay":
+                    income_by_acct["kpay"] += amt
+                elif method_lower in ("wave", "wavepay"):
+                    income_by_acct["wave"] += amt
+                elif method_lower in ("aya", "aya pay"):
+                    income_by_acct["aya"] += amt
+        
+        # 3. Include cash_movements (inject adds, eject subtracts)
+        cm_rows = _mysql_query("SELECT movement_type, account, SUM(amount) as total FROM cash_movements GROUP BY movement_type, account")
+        for r in cm_rows:
+            acct_key = r["account"].strip().lower()
+            if acct_key == "kpay": acct_key = "kpay"
+            elif acct_key == "cash": acct_key = "cash"
+            elif acct_key in ("wave", "wavepay"): acct_key = "wave"
+            elif acct_key in ("aya", "aya pay"): acct_key = "aya"
+            elif acct_key in ("acm", "acm\'s acc"): acct_key = "acm"
+            else: continue
+            amt = float(r["total"] or 0)
+            if r["movement_type"] in ("inject", "transfer_in"):
+                income_by_acct[acct_key] += amt
+            elif r["movement_type"] == "eject":
+                income_by_acct[acct_key] -= amt
+            elif r["movement_type"] == "transfer_out":
+                income_by_acct[acct_key] += amt  # negative amount = subtract
+        
+        # 4. Also add topup_log income
+        topup_rows = _mysql_query("""
+            SELECT payment_method, SUM(amount) as total
+            FROM topup_log
+            WHERE topup_date >= '2026-01-01'
+            GROUP BY payment_method
+        """)
+        
+        for r in topup_rows:
+            pm = r["payment_method"] or ""
+
+            if "/" in pm:
+                segments = pm.split("/")
+                for seg in segments:
+                    seg = seg.strip()
+                    if ":" in seg:
+                        method, amt_str = seg.split(":", 1)
+                        try:
+                            amt = float(amt_str)
+                        except:
+                            amt = 0
+                        method_lower = method.lower().strip()
+                        if method_lower == "cash":
+                            income_by_acct["cash"] += amt
+                        elif method_lower == "kpay":
+                            income_by_acct["kpay"] += amt
+                        elif method_lower in ("wave", "wavepay"):
+                            income_by_acct["wave"] += amt
+                        elif method_lower in ("aya", "aya pay"):
+                            income_by_acct["aya"] += amt
+                        elif "transfer" in method_lower or "bank" in method_lower:
+                            income_by_acct["kpay"] += amt
+                        elif method_lower == "wave":
+                            income_by_acct["wave"] += amt
+                        elif method_lower == "aya" or method_lower == "aya pay":
+                            income_by_acct["aya"] += amt
+        
+        # 4. Subtract OPEX expenses by payment method
+        opex_rows = _mysql_query("SELECT payment_method, SUM(amount) as total FROM opex GROUP BY payment_method")
+        for r in opex_rows:
+            pm = (r["payment_method"] or "").lower().strip()
+            amt = float(r["total"] or 0)
+            if pm == "cash":
+                income_by_acct["cash"] -= amt
+            elif pm == "kpay":
+                income_by_acct["kpay"] -= amt
+            elif pm in ("wave", "wavepay"):
+                income_by_acct["wave"] -= amt
+            elif pm in ("aya", "aya pay"):
+                income_by_acct["aya"] -= amt
+            elif pm in ("kbz", "kbz bank"):
+                income_by_acct["kbz"] = income_by_acct.get("kbz", 0) - amt
+
+        # 5. Build final operating list with real-time balances
+        operating_names = ["Cash", "KPay", "Wave", "AYA Pay", "ACM\'s Acc"]
+        for name in operating_names:
+            base = base_by_acct.get(name, 0)
+            keyword = name.lower()
+            # ACM's Acc is stored as "acm" in income_by_acct
+            if keyword in ("acm's acc",):
+                keyword = "acm"
+            income = income_by_acct.get(keyword, 0)
+            # Real-time balance = base (from accounts table) + income from transactions
+            final_bal = base + income
+            icon_notes = {"Cash": "ေငြသား", "KPay": "KPay", "Wave": "Wave", "AYA Pay": "AYA Pay"}
+            operating.append({
+                "name": name,
+                "type": "Cash" if name == "Cash" else "Digital",
+                "balance": final_bal,
+                "notes": icon_notes.get(name, ""),
+            })
+            total_op += final_bal
+        
+        # Capital accounts: KBZ Bank real balance from transactions
+        kbz_base = 0.0
+        for c in capital:
+            if c["name"] == "KBZ Bank":
+                kbz_base = c["balance"]
+                break
+        
+        # income_by_acct["kbz"] includes opex deductions
+        kbz_balance = kbz_base + income_by_acct.get("kbz", 0)
+        
+        # Stock-in deductions for KBZ Bank (not in cash_movements normalizer)
+        si_rows = _mysql_query("SELECT COALESCE(SUM(quantity*unit_cost),0) as t FROM stock_in WHERE payment_method = 'KBZ Bank'")
+        kbz_stock_in = float(si_rows[0]["t"] or 0)
+        kbz_balance = kbz_balance - kbz_stock_in
+        
+        # Deduct capital expenditures from KBZ Bank
+        a_rows = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM finance_assets WHERE status='active'")
+        av_rows = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances")
+        pr_rows = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid")
+        d_rows = _mysql_query("SELECT COALESCE(SUM(disposal_amount),0) as t FROM finance_assets WHERE status='disposed' AND disposal_amount>0")
+        asset_ded = float(a_rows[0]["t"] or 0) + float(av_rows[0]["t"] or 0) + float(pr_rows[0]["t"] or 0)
+        disposal_add = float(d_rows[0]["t"] or 0)
+        kbz_balance = kbz_balance - asset_ded + disposal_add
+        
+        for c in capital:
+            if c["name"] == "KBZ Bank":
+                c["balance"] = round(kbz_balance, 0)
+                break
+        total_cap = sum(c["balance"] for c in capital)
+        
+        # Separate ACM's Acc from store total
+        acm_balance = 0.0
+        store_balance = 0.0
+        for o in operating:
+            if o["name"] == "ACM's Acc":
+                acm_balance = o["balance"]
+            else:
+                store_balance += o["balance"]
+        
+        # Include ACM in grand total but show separate store_total
+        return ok({
+            "operating": operating,
+            "capital": capital,
+            "store_total": round(store_balance, 0),
+            "acm_total": round(acm_balance, 0),
+            "total_capital": total_cap,
+            "grand_total": round(store_balance + acm_balance + total_cap, 0),
+        })
+    except Exception as e:
+        logger.error(f"api_finance_account_balances: {e}")
+        return ok({"operating": [], "capital": [], "total_operating": 0, "total_capital": 0, "grand_total": 0})
+
+
+
+
+
+
 @app.get("/api/finance/depreciation", tags=["Finance"])
 async def api_finance_depreciation(year: str = Query(""), auth=Depends(verify_api_key)):
     """Return equipment depreciation schedule for a year."""
@@ -919,3 +1197,121 @@ async def api_bookings_update_status(booking_id: int, req: dict, auth=Depends(ve
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/telegram/callback", response_model=GenericResponse, tags=["Telegram"], summary="Handle Telegram callback query")
+async def api_telegram_callback_route(req: dict):
+    """Handle Telegram inline button callback for session extend/end."""
+    from session_timer import api_telegram_callback
+    return await api_telegram_callback(req)
+
+
+
+@app.post("/api/finance/cash-movement", tags=["Finance"])
+async def api_cash_movement(data: dict, auth=Depends(verify_api_key)):
+    try:
+        mtype = data.get("type", "").strip().lower()
+        if mtype not in ("inject", "eject"):
+            return error("Type must be 'inject' or 'eject'")
+        account = data.get("account", "").strip()
+        if account not in ("Cash", "KPay", "Wave", "AYA Pay"):
+            return error(f"Account must be Cash/KPay/Wave/AYA Pay")
+        try:
+            amount = float(data.get("amount", 0))
+        except:
+            return error("Invalid amount")
+        if amount <= 0:
+            return error("Amount must be positive")
+        note = data.get("note", "")
+        staff = data.get("staff_name", "Boss")
+        _mysql_exec(
+            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name) VALUES (%s,%s,%s,%s,%s)",
+            (mtype, account, amount, note, staff)
+        )
+        return ok({
+            "message": f"{'Injected' if mtype=='inject' else 'Ejected'} {amount:,.0f} Ks to {account}",
+        })
+    except Exception as e:
+        logger.error("cash-movement error: %s", e)
+        return error(str(e))
+
+@app.get("/admin/cash", tags=["Admin"])
+async def admin_cash_page():
+    from fastapi.responses import HTMLResponse
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "static", "cash-admin.html")) as f:
+            html = f.read()
+        return HTMLResponse(content=html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Page not found</h1>", status_code=404)
+
+
+@app.get("/api/finance/cash-movements", tags=["Finance"])
+async def api_cash_movements_list(limit: int = 20, auth=Depends(verify_api_key)):
+    try:
+        rows = _mysql_query("SELECT id, movement_type, account, amount, note, staff_name, created_at FROM cash_movements ORDER BY id DESC LIMIT %s", (limit,))
+        return ok({"movements": rows})
+    except Exception as e:
+        return error(str(e))
+
+
+# -- Cash Transfer Endpoints --
+@app.post("/api/finance/cash-transfer", tags=["Finance"])
+async def api_cash_transfer(data: dict, auth=Depends(verify_api_key)):
+    """Transfer money between accounts."""
+    from_account = data.get("from_account", "").strip()
+    to_account = data.get("to_account", "").strip()
+    amount = int(data.get("amount", 0))
+    note = data.get("note", "").strip()
+    created_by = data.get("created_by", "web")
+    if not from_account or not to_account:
+        return error_response("from_account and to_account are required")
+    if from_account == to_account:
+        return error_response("Cannot transfer to the same account")
+    if amount < 1:
+        return error_response("Amount must be at least 1 Ks")
+    if not note:
+        return error_response("Note is required")
+    try:
+        _mysql_exec(
+            "INSERT INTO cash_transfers (from_account, to_account, amount, note, created_by) VALUES (%s, %s, %s, %s, %s)",
+            (from_account, to_account, amount, note, created_by)
+        )
+        _mysql_exec(
+            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name) VALUES (%s, %s, %s, %s, %s)",
+            ("transfer_out", from_account, -amount, "Transfer to " + to_account + ": " + note, created_by)
+        )
+        _mysql_exec(
+            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name) VALUES (%s, %s, %s, %s, %s)",
+            ("transfer_in", to_account, amount, "Transfer from " + from_account + ": " + note, created_by)
+        )
+        logger.info("Cash transfer: %s -> %s : %s Ks (%s)", from_account, to_account, amount, note)
+        return ok({"message": f"Transferred {amount:,} Ks from {from_account} to {to_account}"})
+    except Exception as e:
+        logger.error("Cash transfer failed: %s", e)
+        return error_response(str(e))
+
+
+@app.get("/api/finance/transfer-history", tags=["Finance"])
+async def api_transfer_history(limit: int = 50, auth=Depends(verify_api_key)):
+    """Get recent transfer history."""
+    try:
+        rows = _mysql_query(
+            "SELECT id, from_account, to_account, amount, note, created_by, created_at FROM cash_transfers ORDER BY id DESC LIMIT %s",
+            (limit,)
+        )
+        return ok({"transfers": rows})
+    except Exception as e:
+        return error_response(str(e))
+
+
+@app.get("/admin/transfer", tags=["Admin"])
+async def admin_transfer_page():
+    from fastapi.responses import HTMLResponse
+    try:
+        import os
+        fpath = os.path.join(os.path.dirname(__file__), "static", "cash-transfer.html")
+        with open(fpath) as f:
+            html = f.read()
+        return HTMLResponse(content=html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Page not found</h1>", status_code=404)

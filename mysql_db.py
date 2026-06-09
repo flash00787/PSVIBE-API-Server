@@ -48,6 +48,18 @@ def execute(sql: str, args: tuple = ()) -> int:
     try:
         with conn.cursor() as cur:
             cur.execute(sql, args)
+            conn.commit()
+            return cur.lastrowid
+    finally:
+        conn.commit()
+
+def delete_rows(sql: str, args: tuple = ()) -> int:
+    """Execute DELETE/UPDATE and return affected row count."""
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, args)
+            conn.commit()
             return cur.rowcount
     finally:
         conn.commit()

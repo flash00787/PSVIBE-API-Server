@@ -219,6 +219,14 @@
   // ── Default: Gaming Session Receipt ──
   document.getElementById('nmSections').style.display = 'none';
   document.getElementById('receiptPayment').style.display = 'block';
+  // ── Coupon display ──
+  var cpnCode = data.coupon_code||'';
+  var cpnMins = data.coupon_mins||0;
+  if(cpnCode){
+    document.getElementById('couponSection').style.display = 'block';
+    document.getElementById('couponCode').textContent = cpnCode;
+    document.getElementById('couponMins').textContent = cpnMins;
+  }
   document.getElementById('receiptDate').textContent = data.date||'-';
   document.getElementById('consoleId').textContent = data.console_id||'-';
   document.getElementById('memberId').textContent = data.is_guest ? '👤 Guest' : (data.member_id||'👤 Guest');

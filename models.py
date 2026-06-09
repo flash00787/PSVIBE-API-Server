@@ -53,6 +53,7 @@ class GenericResponse(BaseModel):
     success: bool = True
     message: Optional[str] = None
     data: Optional[Any] = None
+    error: Optional[str] = None
 
 
 class OkResponse(BaseModel):

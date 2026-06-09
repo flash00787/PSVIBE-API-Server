@@ -8,8 +8,17 @@ import logging
 import re
 import time
 from datetime import datetime, timezone, timedelta
+import os
+import asyncio
+import urllib.request
+import urllib.error
 
-from fastapi import FastAPI, HTTPException, Query, Depends, Request
+# Telegram notifications (direct, no n8n needed)
+# Session timer module for 5-min-before-end reminder
+from session_timer import schedule_session_timer, resume_active_timers
+
+
+from fastapi import FastAPI, HTTPException, Query, Depends, Request, Body
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -27,7 +36,7 @@ from sheets_client import (
     invalidate_cache, int_safe, float_safe,
 )
 from mysql_db import query as mysql_query, query_one as mysql_query_one, execute as mysql_execute
-from auth import register_auth_routes
+from auth import register_auth_routes, get_current_user
 from dashboard_routes import router as dashboard_router
 from models import (
     GameResponse, ConfigResponse, MemberResponse,
@@ -133,6 +142,27 @@ _config_cache_data = None
 _config_cache_time = 0
 _CONFIG_CACHE_TTL = 60  # seconds
 
+
+
+@app.get("/api/debug_auth")
+async def debug_api_key(
+    api_key_query: str = Query(None, alias="api_key"),
+    request: Request = None,
+):
+    import os
+    env_key = os.environ.get("API_KEY", "")
+    header_key = request.headers.get("X-API-Key", "") if request else ""
+    return {
+        "query_param": api_key_query or "(none)",
+        "header_key": header_key[:8] + "..." if header_key and len(header_key) > 8 else header_key or "(none)",
+        "env_key": env_key[:8] + "..." if env_key and len(env_key) > 8 else env_key or "(not set)",
+        "header_matches_env": (header_key == env_key) if header_key and env_key else "one_or_both_empty",
+        "query_matches_env": (api_key_query == env_key) if api_key_query and env_key else "one_or_both_empty",
+        "env_key_len": len(env_key),
+        "header_key_len": len(header_key),
+        "env_key_repr": repr(env_key[:50]),
+        "header_key_repr": repr(header_key[:50]) if header_key else "",
+    }
 
 async def verify_api_key(
     api_key: str = Query(None, alias="api_key"),
@@ -387,7 +417,24 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)):
     """Fetch live console statuses from MySQL console_status table."""
     try:
         rows = _mysql_query(
-            "SELECT cs.console_id, cs.status, cs.console_type, cs.current_game, cs.current_member, DATE_FORMAT(cs.start_time, '%H:%i') as start_time, cb.id as booking_id, cb.staff_name FROM console_status cs LEFT JOIN console_booking cb ON cb.console_id LIKE CONCAT(cs.console_id, '%') AND cb.status = 'Active' ORDER BY cs.console_id")
+            "SELECT cs.console_id, cs.status, cs.console_type, cs.current_game, cs.current_member, DATE_FORMAT(cs.start_time, '%H:%i') as start_time, cb.id as booking_id, cb.staff_name FROM console_status cs LEFT JOIN (    SELECT cb1.id, cb1.console_id, cb1.staff_name     FROM console_booking cb1     INNER JOIN (        SELECT console_id, MAX(id) as max_id         FROM console_booking WHERE status = 'Active' GROUP BY console_id    ) cb2 ON cb1.id = cb2.max_id) cb ON cb.console_id LIKE CONCAT(cs.console_id, '%') ORDER BY cs.console_id")
+        # Add id alias for backward compat — bot code uses c["id"] everywhere
+        for r in rows:
+            if "id" not in r:
+                r["id"] = r.get("console_id", "")
+        # Mark Free consoles as Reserved if booking time slot includes NOW
+        try:
+            upcoming = _mysql_query(
+                "SELECT console_id FROM console_booking "
+                "WHERE status IN ('confirmed', 'pending_check_in') "
+                "AND start_time <= NOW() AND end_time > NOW()"
+            )
+            reserved_ids = {r["console_id"].strip() for r in upcoming}
+        except Exception:
+            reserved_ids = set()
+        for r in rows:
+            if r.get("status") == "Free" and r["console_id"].strip() in reserved_ids:
+                r["status"] = "Reserved"
         return ok({"consoles": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -483,6 +530,45 @@ async def api_fetch_balance_mins(member_id: str, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_member_tier
 # ═══════════════════════════════════════
+
+#  wallet_deduct (after sale)
+@app.post("/api/wallet/deduct", response_model=GenericResponse, tags=["Members"], summary="Deduct wallet balance after sale [MySQL]")
+async def api_wallet_deduct(req: dict, auth=Depends(verify_api_key)):
+    """Deduct wallet balance_mins after a gaming session sale."""
+    try:
+        member_id = req.get("member_id", "")
+        deduct_mins = int(req.get("deduct_mins", 0))
+        total_mins = int(req.get("total_mins", 0))
+
+        if not member_id or deduct_mins <= 0:
+            return error_response(message="member_id and deduct_mins > 0 required")
+
+        rows = _mysql_query(
+            "SELECT balance_mins, total_spend, total_bought_mins FROM member_wallets WHERE member_id=%s",
+            (member_id,))
+        if not rows:
+            return error_response(message=f"Member {member_id} not found in wallet")
+
+        cur = rows[0]
+        old_bal = cur.get("balance_mins", 0) or 0
+        new_bal = max(0, old_bal - deduct_mins)
+        new_spend = (cur.get("total_spend", 0) or 0) + int(total_mins)
+
+        _mysql_exec(
+            "UPDATE member_wallets SET balance_mins=%s, total_spend=%s, last_updated=NOW() WHERE member_id=%s",
+            (new_bal, new_spend, member_id))
+
+        return ok({
+            "success": True,
+            "member_id": member_id,
+            "balance_before": old_bal,
+            "balance_after": new_bal,
+            "deducted": deduct_mins,
+            "total_spend": new_spend
+        })
+    except Exception as e:
+        return error_response(message=str(e))
+
 @app.get("/api/fetch_member_tier/{member_id}", response_model=GenericResponse, tags=["Members"], summary="Fetch member tier [MySQL]")
 async def api_fetch_member_tier(member_id: str, auth=Depends(verify_api_key)):
     """Fetch member tier from MySQL member_wallets."""
@@ -520,25 +606,83 @@ async def api_fetch_staff_names(auth=Depends(verify_api_key)):
 
 # ═══════════════════════════════════════
 #  fetch_food_prices / fetch_food_costs
-# ═══════════════════════════════════════
+# ==============================================
 @app.get("/api/fetch_food_prices", response_model=GenericResponse, tags=["Food"], summary="Fetch food prices [MySQL]")
 async def api_fetch_food_prices(auth=Depends(verify_api_key)):
-    """Fetch food prices from MySQL settings."""
+    """Fetch food prices from inventory table WHERE category=Food AND quantity > 0."""
     try:
-        val = _mysql_get_setting("food_prices", {})
-        return ok(val if isinstance(val, dict) else {})
+        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s) AND quantity > 0", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other"))
+        result = {}
+        for r in rows:
+            name = r["item_name"]
+            price = int(float(r["unit_price"])) if r["unit_price"] else 0
+            result[name] = price
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/fetch_food_menu", response_model=GenericResponse, tags=["Food"], summary="Fetch food menu grouped by category [MySQL]")
+async def api_fetch_food_menu(auth=Depends(verify_api_key)):
+    """Fetch food items grouped by category from inventory."""
+    try:
+        rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s) AND quantity > 0 ORDER BY category, item_name", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other"))
+        result = {}
+        for r in rows:
+            cat = r["category"]
+            name = r["item_name"]
+            price = int(float(r["unit_price"])) if r["unit_price"] else 0
+            if cat not in result:
+                result[cat] = {}
+            result[cat][name] = price
+        return ok(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/fetch_food_costs", response_model=GenericResponse, tags=["Food"], summary="Fetch food costs [MySQL]")
 async def api_fetch_food_costs(auth=Depends(verify_api_key)):
-    """Fetch food costs from MySQL settings."""
+    """Fetch food costs from inventory table WHERE category='Food' AND quantity > 0."""
     try:
-        val = _mysql_get_setting("food_costs", {})
-        return ok(val if isinstance(val, dict) else {})
+        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s) AND quantity > 0", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other"))
+        result = {}
+        for r in rows:
+            name = r["item_name"]
+            price = int(float(r["unit_price"])) if r["unit_price"] else 0
+            result[name] = price
+        return ok(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/inventory/stock-out", response_model=GenericResponse, tags=["Inventory"], summary="Record stock-out (sale) and update inventory [MySQL]")
+async def api_inventory_stock_out(req: dict, auth=Depends(verify_api_key)):
+    """Record a stock-out from a food sale and decrement inventory quantity."""
+    try:
+        item_name = req.get("item_name", "")
+        qty = int(req.get("qty", 0))
+        unit_price = float(req.get("unit_price", 0))
+        subtotal = float(req.get("subtotal", 0))
+        sale_date = req.get("date", "")
+        voucher_no = req.get("voucher_no", "")
+
+        if not item_name or qty <= 0:
+            return error_response(message="item_name and qty > 0 required")
+
+        # Insert into stock_out table
+        _mysql_exec(
+            "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, notes) VALUES (%s, %s, %s, %s, %s, %s)",
+            (item_name, qty, unit_price, subtotal, sale_date, f"Voucher: {voucher_no}")
+        )
+
+        # Decrement inventory quantity (best-effort)
+        _mysql_exec(
+            "UPDATE inventory SET quantity = GREATEST(0, quantity - %s), last_updated = NOW() WHERE item_name = %s",
+            (qty, item_name)
+        )
+
+        return ok({"success": True, "item_name": item_name, "qty_deducted": qty})
+    except Exception as e:
+        return error_response(message=str(e))
 
 
 # ═══════════════════════════════════════
@@ -572,7 +716,7 @@ async def api_fetch_console_games(auth=Depends(verify_api_key)):
     """Fetch games installed on consoles from MySQL."""
     try:
         rows = _mysql_query(
-            "SELECT console_id, console_name, game_id, game_title, genre, status, slot_position FROM console_games ORDER BY console_id, slot_position")
+            "SELECT console_id, console_name, game_id, game_title, genre, status, install_type, slot_position, created_at, created_at AS `date` FROM console_games ORDER BY console_id, slot_position")
         return ok({"console_games": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -586,7 +730,7 @@ async def api_get_games_on_console(console_id: str, auth=Depends(verify_api_key)
     """Get games installed on a specific console from MySQL."""
     try:
         rows = _mysql_query(
-            "SELECT game_title, genre, status, slot_position FROM console_games WHERE console_id=%s ORDER BY slot_position",
+            "SELECT game_title, genre, status, install_type, slot_position, created_at, created_at AS `date` FROM console_games WHERE console_id=%s ORDER BY slot_position",
             (console_id,))
         return ok({"console_id": console_id, "games": rows})
     except Exception as e:
@@ -625,12 +769,15 @@ async def api_fetch_base_rate(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.get("/api/fetch_console_multiplier/{console_id}", response_model=GenericResponse, tags=["Settings"], summary="Fetch console multiplier [MySQL]")
 async def api_fetch_console_multiplier(console_id: str, auth=Depends(verify_api_key)):
-    """Fetch multiplier for a console from MySQL settings."""
+    """Fetch multiplier for a console from MySQL settings JSON blob."""
     try:
-        mult = _mysql_get_setting(f"console_multiplier_{console_id}", None)
-        if mult is None:
-            mult = _mysql_get_setting("console_multiplier_default", 1.0)
-        return ok(float(mult))
+        mults = _mysql_get_setting("console_multipliers", None)
+        if isinstance(mults, dict):
+            cid = console_id.replace(" ", "").upper()
+            norm = {k.replace(" ", "").upper(): v for k, v in mults.items()}
+            if cid in norm:
+                return ok(float(norm[cid]))
+        return ok(1.0)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -958,9 +1105,48 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
                 (booking.get("member_id", ""), booking.get("game_name", ""), console_id)
             )
         
+        # ⏰ Schedule session timer for 5-min-before-end reminder
+        try:
+            duration_mins = booking.get("duration_mins") or 60
+            member_id = booking.get("member_id") or booking.get("staff_name") or "Unknown"
+            schedule_session_timer(
+                booking_id=booking_id,
+                console_id=console_id,
+                member_id=member_id,
+                start_time=datetime.now(timezone.utc),
+                duration_mins=duration_mins
+            )
+            logger.info("Session timer scheduled for booking %s (console=%s, %d min)", booking_id, console_id, duration_mins)
+        except Exception as e:
+            logger.error("Failed to schedule session timer for booking %s: %s", booking_id, e)
+        
+        # 📢 Send Telegram notification to admin group
+        STAFF_NOTIFY_CHAT = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
+        BOT_TOKEN = os.environ.get("BOT_TOKEN", "8545665013:AAFgEuw4V_715Q9yzGOYloinIdbdYXYb8zU")
+        try:
+            _session_msg = (
+                "🎮 *Session Started!*\n━━━━━━━━━━━━━━━━━━\n"
+                f"👤 Member: `{booking.get('member_id', '')}`\n"
+                f"🎮 Console: `{console_id}`\n"
+                f"⏱ Time: `{datetime.now(timezone.utc).strftime('%H:%M')} MMT`\n"
+                f"━━━━━━━━━━━━━━━━━━"
+            )
+            _tel_payload = json.dumps({
+                "chat_id": STAFF_NOTIFY_CHAT,
+                "text": _session_msg,
+                "parse_mode": "Markdown"
+            }).encode()
+            _tel_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            _tel_req = urllib.request.Request(
+                _tel_url, data=_tel_payload,
+                headers={"Content-Type": "application/json"}, method="POST"
+            )
+            urllib.request.urlopen(_tel_req, timeout=5)
+            logger.info("Session notification sent for booking %s", booking_id)
+        except Exception as e:
+            logger.warning("Session notification error: %s", e)
+        
         return ok({
-            "message": "Customer checked in",
-            "booking_id": booking_id,
             "console_id": console_id,
             "telegram_chat_id": telegram_chat_id,
         })
@@ -983,10 +1169,40 @@ async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
         _mysql_exec(
             "INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (console_id, member_id, now.date(), now, "Active", staff, notes))
+        # Extract game name from notes (format: "GameName" or "GameName [BK#123]")
+        _game_name = notes
+        if " [BK#" in _game_name:
+            _game_name = _game_name.split(" [BK#")[0]
         # Sync console_status: mark console as Active (prevent duplicate sessions)
         _mysql_exec(
-            "UPDATE console_status SET status='Active', current_member=%s, current_game='', start_time=NOW() WHERE console_id=%s",
-            (member_id, console_id))
+            "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=%s WHERE console_id=%s",
+            (member_id, _game_name, now, console_id))
+        # 📢 Send Telegram booking notification to admin group
+        STAFF_NOTIFY_CHAT = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
+        BOT_TOKEN = os.environ.get("BOT_TOKEN", "8545665013:AAFgEuw4V_715Q9yzGOYloinIdbdYXYb8zU")
+        try:
+            _bk_msg = (
+                "📅 *New Booking Created!*\n━━━━━━━━━━━━━━━━━━\n"
+                f"👤 Member: `{member_id}`\n"
+                f"🎮 Console: `{console_id}`\n"
+                f"⏰ Time: `{now.strftime('%H:%M')} MMT`\n"
+                f"━━━━━━━━━━━━━━━━━━"
+            )
+            _bk_payload = json.dumps({
+                "chat_id": STAFF_NOTIFY_CHAT,
+                "text": _bk_msg,
+                "parse_mode": "Markdown"
+            }).encode()
+            _bk_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            _bk_req = urllib.request.Request(
+                _bk_url, data=_bk_payload,
+                headers={"Content-Type": "application/json"}, method="POST"
+            )
+            urllib.request.urlopen(_bk_req, timeout=5)
+            logger.info("Booking notification sent for %s", bk_id)
+        except Exception as e:
+            logger.warning("Booking notification error: %s", e)
+        
         invalidate_cache("bookings")
         return ok({"booking_id": bk_id})
     except Exception as e:
@@ -994,8 +1210,96 @@ async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
 
 
 # ═══════════════════════════════════════
+
+
+# ================================================================
+#  GET /api/bookings - list bookings by status
+# ================================================================
+@app.get("/api/bookings", response_model=GenericResponse, tags=["Bookings"], summary="List bookings by status [MySQL]")
+async def api_get_bookings(status: str = "", auth=Depends(verify_api_key)):
+    try:
+        if status:
+            rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE status=%s ORDER BY booking_date DESC, start_time DESC", (status,))
+        else:
+            rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking ORDER BY booking_date DESC, start_time DESC")
+        from datetime import datetime as _dt
+        normalized = []
+        for r in rows:
+            start = r.get("start_time")
+            time_slot = ""
+            if start:
+                try:
+                    start_dt = _dt.fromisoformat(start) if isinstance(start, str) else start
+                    time_slot = start_dt.strftime("%H:%M")
+                except:
+                    time_slot = str(start)[:5] if start else ""
+            bd = r.get("booking_date")
+            if bd:
+                try:
+                    bd_o = _dt.fromisoformat(bd) if isinstance(bd, str) else bd
+                    bd_str = bd_o.strftime("%Y-%m-%d")
+                except:
+                    bd_str = str(bd)[:10]
+            else:
+                bd_str = ""
+            normalized.append({"id": r.get("id",""), "customerName": r.get("staff_name",""), "phone": r.get("phone","") or r.get("telegram_chat_id",""), "date": bd_str, "timeSlot": time_slot, "consoleType": "PS5", "durationMins": r.get("duration_mins",60), "gameName": r.get("game_name",""), "console_id": r.get("console_id",""), "consoleId": r.get("console_id",""), "member_id": r.get("member_id",""), "status": r.get("status","")})
+        return ok({"bookings": normalized})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 #  MUTATION — end_booking
 # ═══════════════════════════════════════
+
+
+@app.get("/api/bookings/search", response_model=GenericResponse, tags=["Bookings"], summary="Search bookings by telegram_chat_id [MySQL]")
+async def api_search_bookings(telegram_chat_id: str = Query("", description="Telegram chat ID of customer"), auth=Depends(verify_api_key)):
+    """Search bookings by telegram chat ID."""
+    try:
+        if telegram_chat_id:
+            rows = _mysql_query(
+                "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE telegram_chat_id=%s ORDER BY booking_date DESC, start_time DESC",
+                (telegram_chat_id,)
+            )
+        else:
+            rows = _mysql_query(
+                "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking ORDER BY booking_date DESC, start_time DESC"
+            )
+        from datetime import datetime as _dt
+        normalized = []
+        for r in rows:
+            start = r.get("start_time")
+            time_slot = ""
+            if start:
+                try:
+                    start_dt = _dt.fromisoformat(str(start)) if isinstance(start, str) else start
+                    time_slot = start_dt.strftime("%H:%M")
+                except (ValueError, TypeError):
+                    time_slot = str(start)[:5] if start else ""
+            duration = r.get("duration_mins") or ""
+            game_name = r.get("game_name") or ""
+            normalized.append({
+                "id": r.get("id"),
+                "console_id": r.get("console_id"),
+                "member_id": r.get("member_id"),
+                "booking_date": str(r.get("booking_date", "")),
+                "timeSlot": time_slot,
+                "startTime": str(r.get("start_time", "")),
+                "endTime": str(r.get("end_time", "")),
+                "status": r.get("status", "pending"),
+                "staff_name": r.get("staff_name"),
+                "notes": r.get("notes"),
+                "telegram_chat_id": r.get("telegram_chat_id"),
+                "durationMins": duration,
+                "duration_mins": duration,
+                "gameName": game_name,
+                "game_name": game_name,
+                "phone": r.get("phone"),
+            })
+        return JSONResponse(content={"success": True, "data": {"bookings": normalized, "total": len(normalized)}})
+    except Exception as e:
+        logger.error("api_search_bookings: %s", e, exc_info=True)
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
 @app.put("/api/end_booking/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="End booking [MySQL]")
 async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
     """Mark a booking as Done in MySQL."""
@@ -1052,9 +1356,12 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
     """Create a booking - supports both customer bot and staff formats."""
     try:
         now = now_mmt()
+        logging.warning("api_bookings_create: req keys=%s", list(req.keys()))
         
         # Detect customer bot format (has customerName)
         customer_name = req.get("customerName", "")
+        logging.warning("api_bookings_create: customer_name=%s date=%s time=%s console=%s", 
+                        customer_name, req.get("date","?"), req.get("timeSlot","?"), req.get("console_id","?"))
         if customer_name:
             # Customer bot format
             telegram_chat_id = req.get("telegramChatId", "")
@@ -1068,18 +1375,40 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
             username = req.get("username", "")
             
             from datetime import datetime, timedelta
+            # Handle multiple date formats (bot sends M/D/YYYY, API expects YYYY-MM-DD)
+            _parsed_date = booking_date_str
+            for _fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+                try:
+                    _parsed_date = datetime.strptime(booking_date_str, _fmt).strftime("%Y-%m-%d")
+                    break
+                except:
+                    continue
             try:
-                start_dt = datetime.strptime(f"{booking_date_str} {time_slot}", "%Y-%m-%d %H:%M")
+                start_dt = datetime.strptime(f"{_parsed_date} {time_slot}", "%Y-%m-%d %H:%M")
             except:
                 start_dt = now
             end_dt = start_dt + timedelta(minutes=duration_mins)
             
+            # ── Slot conflict check ──
+            if console_id:
+                _conflicts = _mysql_query(
+                    "SELECT id, start_time, end_time FROM console_booking WHERE console_id=%s AND status IN ('pending','confirmed','pending_check_in','Active') AND ((start_time <= %s AND end_time > %s) OR (start_time < %s AND end_time >= %s) OR (start_time >= %s AND end_time <= %s)) LIMIT 1",
+                    (console_id, start_dt, start_dt, end_dt, end_dt, start_dt, end_dt)
+                )
+                if _conflicts:
+                    _existing = _conflicts[0]
+                    return error_response(message=f"⏰ Console {console_id} သည် {_parsed_date} {time_slot} တွင် ကြိုတင်စာရင်းရှိပြီးဖြစ်ပါသည် (Booking #{_existing['id']})")
+            
             notes = f"Game: {game_name} | Phone: {phone} | User: {username}"
+            
+            # Staff bookings auto-confirm; customer bookings need approval
+            _bk_status = "confirmed" if req.get("source") == "staff" else "pending"
             
             bk_id = _mysql_exec(
                 "INSERT INTO console_booking (console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (console_id, telegram_chat_id, booking_date_str, start_dt, end_dt, "pending", customer_name, notes, telegram_chat_id, duration_mins, phone, game_name)
+                (console_id, telegram_chat_id, _parsed_date, start_dt, end_dt, _bk_status, customer_name, notes, telegram_chat_id, duration_mins, phone, game_name)
             )
+            
             
             # Send admin notification
             _notify_booking_received(customer_name, booking_date_str, time_slot, console_type, duration_mins, game_name, phone, bk_id)
@@ -1153,8 +1482,8 @@ async def api_topup_log(req: dict, auth=Depends(verify_api_key)):
             (member_id, amount, mins_added, staff, pm, amount, amount, bal_before, bal_after))
 
         _mysql_exec(
-            "UPDATE member_wallets SET balance_mins=%s, total_bought_mins=%s, total_spend=%s, last_updated=NOW() WHERE member_id=%s",
-            (bal_after, bought, new_spend, member_id))
+            "INSERT INTO member_wallets (member_id, balance_mins, total_bought_mins, total_spend) VALUES (%s,%s,%s,%s) ON DUPLICATE KEY UPDATE balance_mins=%s, total_bought_mins=%s, total_spend=%s, last_updated=NOW()",
+            (member_id, bal_after, bought, new_spend, bal_after, bought, new_spend))
 
         return ok({"success": True, "balance_mins": bal_after, "total_spend": new_spend})
     except Exception as e:
@@ -1201,7 +1530,7 @@ async def api_member_register(req: dict, auth=Depends(verify_api_key)):
             "INSERT INTO member_wallets (member_id, member_name, phone, balance_mins, total_bought_mins, tier, total_spend) "
             "VALUES (%s,%s,%s,%s,%s,%s,%s) "
             "ON DUPLICATE KEY UPDATE member_name=VALUES(member_name), phone=VALUES(phone)",
-            (member_id, name, phone, initial_mins, mins_added, "Warrior", amount))
+            (member_id, name, phone, initial_mins, mins_added, "Warrior", 0))
 
         # Log into topup_log
         if mins_added > 0:
@@ -1295,10 +1624,19 @@ async def api_get_receipt_html(voucher_id: str):
 async def api_add_console_game(req: dict, auth=Depends(verify_api_key)):
     """Add game installation to console in MySQL."""
     try:
+        _cid = req.get("console_id","").replace(" ", "")
+        _cname = (req.get("console_name") or _cid).replace(" ", "")
+        _game = req.get("game_title","")
+        # ── Duplicate check ──
+        dup = _mysql_query_one(
+            "SELECT COUNT(*) as cnt FROM console_games WHERE console_id=%s AND game_title=%s AND install_type != 'Session'",
+            (_cid, _game))
+        if dup and dup["cnt"] > 0:
+            return ok({"saved": True, "duplicate": True, "message": f"{_game} already on {_cid}"})
         _mysql_exec(
-            "INSERT INTO console_games (console_id, console_name, game_id, game_title, genre, status, slot_position) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (req.get("console_id",""), req.get("console_name") or req.get("console_id",""), req.get("game_id") or req.get("game_title",""),
-             req.get("game_title",""), req.get("genre",""), req.get("status") or req.get("install_type","Installed"),
+            "INSERT INTO console_games (console_id, console_name, game_id, game_title, genre, status, install_type, slot_position) VALUES (%s, %s, %s, %s, %s, 'Installed', %s, %s)",
+            (_cid, _cname, req.get("game_id") or _game,
+             _game, req.get("genre",""), req.get("install_type",""),
              req.get("slot_position",1)))
         return ok({"saved": True})
     except Exception as e:
@@ -1309,9 +1647,10 @@ async def api_add_console_game(req: dict, auth=Depends(verify_api_key)):
 async def api_remove_console_game(req: dict, auth=Depends(verify_api_key)):
     """Remove game from console in MySQL."""
     try:
+        _cid = req.get("console_id","").replace(" ", "")
         _mysql_exec(
             "DELETE FROM console_games WHERE console_id=%s AND game_title=%s",
-            (req.get("console_id",""), req.get("game_title","")))
+            (_cid, req.get("game_title","")))
         return ok({"deleted": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1320,7 +1659,7 @@ async def api_remove_console_game(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.post("/api/sheets/log", response_model=GenericResponse, tags=["Logging"], summary="Log AI interaction")
 async def api_sheets_log(req: dict, auth=Depends(verify_api_key)):
-    """Fire-and-forget: log an AI interaction row."""
+    """Fire-and-forget: log an AI interaction row to Bot_Users sheet."""
     try:
         tg_id = req.get("tg_id", "")
         username = req.get("username", "")
@@ -1329,29 +1668,41 @@ async def api_sheets_log(req: dict, auth=Depends(verify_api_key)):
         response = req.get("response", "")[:500]
         sentiment = req.get("sentiment", "neutral")
         logger.info("AI-LOG: user=%s query=%s sentiment=%s", user_name, query[:60], sentiment)
+        try:
+            from sheets_client import get_worksheet
+            ws = get_worksheet("Input_Log")
+            from datetime import datetime, timezone
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            ws.append_row([ts, str(tg_id), username or '', user_name or '', 'ai_chat', '', '', query, response, sentiment])
+        except Exception as se:
+            logger.warning("Input_Log sheet write failed: %s", se)
         return ok({"logged": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-#  BOT USERS — track
-# ═══════════════════════════════════════
 @app.post("/api/bot-users/track", response_model=GenericResponse, tags=["Bot Users"], summary="Track bot user interaction")
 async def api_bot_users_track(req: dict, auth=Depends(verify_api_key)):
-    """Fire-and-forget: upsert bot user tracking row."""
+    """Fire-and-forget: upsert bot user tracking row to Bot_Users sheet."""
     try:
         tg_id = req.get("tg_id", "")
         username = req.get("username", "")
         user_name = req.get("user_name", "")
         action = req.get("action", "")
+        member_id = req.get("member_id", "")
+        phone = req.get("phone", "")
         logger.info("BOT-USER: tg=%s user=%s action=%s", tg_id, user_name, action)
+        try:
+            from sheets_client import get_worksheet
+            ws = get_worksheet("Bot_Users")
+            from datetime import datetime, timezone
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            ws.append_row([ts, str(tg_id), username or '', user_name or '', action or '', member_id or '', phone or ''])
+        except Exception as se:
+            logger.warning("Bot_Users sheet write failed: %s", se)
         return ok({"tracked": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ═══════════════════════════════════════
-#  PROMOTIONS — cashback coupon
-# ═══════════════════════════════════════
 @app.get("/api/promotions/active", response_model=GenericResponse, tags=["Promotions"])
 async def api_promotions_active(auth=Depends(verify_api_key)):
     try:
@@ -1507,41 +1858,652 @@ async def api_coupons_redeem(req: dict, auth=Depends(verify_api_key)):
     except Exception as e:
         return error_response(message=str(e))
 
-# ── Serve Dashboard SPA (with fallback routing) ──
+# ── Serve Dashboard SPA ──
 try:
     from fastapi.staticfiles import StaticFiles
     from starlette.responses import FileResponse
     import os
     dashboard_dir = os.path.join(os.path.dirname(__file__), "dashboard-dist")
     if os.path.isdir(dashboard_dir):
-        # Serve static assets directly
-        app.mount("/admin/assets", StaticFiles(directory=os.path.join(dashboard_dir, "assets")), name="dashboard_assets")
+        # Serve static assets directly (with hash-based routing, no base path needed)
+        @app.get("/assets/FoodMenuRegister-{rest:path}", include_in_schema=False)
+        async def serve_food_menu_js(rest: str):
+            """Serve FoodMenuRegister JS with no-cache headers to bypass CDN/browser cache."""
+            from starlette.responses import FileResponse
+            import os
+            fpath = os.path.join(dashboard_dir, "assets", f"FoodMenuRegister-{rest}")
+            if os.path.isfile(fpath):
+                resp = FileResponse(fpath, media_type="application/javascript")
+                resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                resp.headers["Pragma"] = "no-cache"
+                resp.headers["Expires"] = "0"
+                return resp
+            return Response(status_code=404)
+
+        app.mount("/assets", StaticFiles(directory=os.path.join(dashboard_dir, "assets")), name="dashboard_assets")
         
         # Serve favicon
-        @app.get("/admin/favicon.svg")
+        @app.get("/favicon.svg")
         async def dashboard_favicon():
             return FileResponse(os.path.join(dashboard_dir, "favicon.svg"))
         
-        # Catch-all for SPA routes (serve index.html for all /admin/* paths)
-        @app.get("/admin/{full_path:path}")
-        async def serve_dashboard(full_path: str):
-            idx = os.path.join(dashboard_dir, "index.html")
-            if os.path.isfile(idx):
-                return FileResponse(idx, media_type="text/html")
-            return HTMLResponse("<h1>Dashboard not built</h1>", status_code=404)
-        
-        # Also serve /admin/ root
-        @app.get("/admin")
-        async def dashboard_root():
+        # Serve index.html for root - hash routing handles the rest client-side
+        @app.get("/")
+        async def serve_dashboard_root():
             idx = os.path.join(dashboard_dir, "index.html")
             if os.path.isfile(idx):
                 return FileResponse(idx, media_type="text/html")
             return HTMLResponse("<h1>Dashboard not built</h1>", status_code=404)
 
-        logger.info("Dashboard SPA mounted at /admin with fallback routing")
+        logger.info("Dashboard SPA mounted at /")
 except Exception as e:
     logger.warning(f"Could not mount dashboard: {e}")
 
 # Import patch routes (GSheet->MySQL migrated endpoints)
+"""PS VIBE API — New Game/Console Management Endpoints (MySQL)"""
+
+
+# ═══════════════════════════════════════
+#  CONSOLE SETTINGS — add/remove/update console multipliers
+# ═══════════════════════════════════════
+@app.post("/api/add_console_to_setting")
+async def api_add_console_to_setting(req: dict):
+    try:
+        console_id = req.get("console_id", "").strip()
+        multiplier = float(req.get("multiplier", 1.0))
+        if not console_id:
+            return error_response(message="console_id required")
+        multipliers = _mysql_get_setting("console_multipliers", {})
+        if not isinstance(multipliers, dict):
+            multipliers = {}
+        multipliers[console_id] = multiplier
+        _mysql_exec(
+            "INSERT INTO settings_config (config_key, config_value, config_type, category, description) "
+            "VALUES ('console_multipliers', %s, 'json', 'console', 'Console multiplier mapping') "
+            "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
+            (_json.dumps(multipliers),))
+        return ok({"console_id": console_id, "multiplier": multiplier, "all_multipliers": multipliers})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.delete("/api/remove_console_from_setting/{console_id}")
+async def api_remove_console_from_setting(console_id: str):
+    try:
+        multipliers = _mysql_get_setting("console_multipliers", {})
+        if not isinstance(multipliers, dict):
+            multipliers = {}
+        removed = multipliers.pop(console_id, None)
+        _mysql_exec(
+            "INSERT INTO settings_config (config_key, config_value, config_type, category, description) "
+            "VALUES ('console_multipliers', %s, 'json', 'console', 'Console multiplier mapping') "
+            "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
+            (_json.dumps(multipliers),))
+        return ok({"removed": removed is not None, "console_id": console_id})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.put("/api/update_console_multiplier/{console_id}")
+async def api_update_console_multiplier(console_id: str, req: dict):
+    try:
+        multiplier = float(req.get("multiplier", 1.0))
+        multipliers = _mysql_get_setting("console_multipliers", {})
+        if not isinstance(multipliers, dict):
+            multipliers = {}
+        multipliers[console_id] = multiplier
+        _mysql_exec(
+            "INSERT INTO settings_config (config_key, config_value, config_type, category, description) "
+            "VALUES ('console_multipliers', %s, 'json', 'console', 'Console multiplier mapping') "
+            "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
+            (_json.dumps(multipliers),))
+        return ok({"console_id": console_id, "multiplier": multiplier})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+# ═══════════════════════════════════════
+#  GAME LIBRARY CRUD
+# ═══════════════════════════════════════
+@app.put("/api/set_game_disc_count")
+async def api_set_game_disc_count(req: dict):
+    try:
+        game_title = req.get("game_title", "").strip()
+        discs = int(req.get("discs", 0))
+        if not game_title:
+            return error_response(message="game_title required")
+        _mysql_exec("UPDATE games_library SET disc_count=%s WHERE game_title=%s", (discs, game_title))
+        return ok({"game_title": game_title, "discs": discs, "updated": True})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.put("/api/update_game_library_install")
+async def api_update_game_library_install(req: dict):
+    try:
+        game_title = req.get("game_title", "").strip()
+        console_id = req.get("console_id", "").replace(" ", "")
+        installed = req.get("installed", True)
+        status_val = "Installed" if installed else "Not Installed"
+        if not game_title or not console_id:
+            return error_response(message="game_title and console_id required")
+        existing = _mysql_query_one(
+            "SELECT id FROM console_games WHERE console_id=%s AND game_title=%s",
+            (console_id, game_title))
+        if existing:
+            _mysql_exec(
+                "UPDATE console_games SET status=%s, updated_at=NOW() WHERE console_id=%s AND game_title=%s",
+                (status_val, console_id, game_title))
+        else:
+            _mysql_exec(
+                "INSERT INTO console_games (console_id, console_name, game_id, game_title, status) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (console_id, console_id, game_title, game_title, status_val))
+        # Update games_library.final_status based on console_games
+        has_installed = _mysql_query_one(
+            "SELECT COUNT(*) as cnt FROM console_games WHERE game_title=%s AND status='Installed'",
+            (game_title,))
+        new_final = "Installed" if (has_installed and has_installed.get("cnt", 0) > 0) else "Not Installed"
+        _mysql_exec("UPDATE games_library SET final_status=%s WHERE game_title=%s", (new_final, game_title))
+        
+        return ok({"game_title": game_title, "console_id": console_id, "installed": installed})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.post("/api/add_game")
+async def api_add_game(req: dict):
+    try:
+        title = req.get("title", "").strip()
+        solo_multi = req.get("solo_multi", "").strip()
+        genre = req.get("genre", "").strip()
+        copies = int(req.get("copies", 1))
+        if not title:
+            return error_response(message="title required")
+        _mysql_exec(
+            "INSERT INTO games_library (game_title, genre, solo_multi, disc_count, final_status) "
+            "VALUES (%s, %s, %s, %s, 'Not Installed') "
+            "ON DUPLICATE KEY UPDATE genre=VALUES(genre), solo_multi=VALUES(solo_multi), disc_count=VALUES(disc_count)",
+            (title, genre, solo_multi, copies))
+        return ok({"title": title, "genre": genre, "solo_multi": solo_multi, "copies": copies, "saved": True})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.put("/api/edit_game")
+async def api_edit_game(req: dict):
+    try:
+        title = req.get("title", "").strip()
+        field = req.get("field", "").strip()
+        value = req.get("value", "").strip()
+        if not title or not field:
+            return error_response(message="title and field required")
+        tag = field
+        if tag == "solo_multi":
+            _mysql_exec("UPDATE games_library SET solo_multi=%s WHERE game_title=%s", (value, title))
+        elif tag == "genre":
+            _mysql_exec("UPDATE games_library SET genre=%s WHERE game_title=%s", (value, title))
+        elif tag == "disc_count":
+            _mysql_exec("UPDATE games_library SET disc_count=%s WHERE game_title=%s", (int(value), title))
+        else:
+            return error_response(message="Invalid field: " + field)
+        return ok({"title": title, "field": field, "value": value, "updated": True})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.delete("/api/delete_game/{title}")
+async def api_delete_game(title: str):
+    try:
+        _mysql_exec("DELETE FROM games_library WHERE game_title=%s", (title,))
+        return ok({"title": title, "deleted": True})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.delete("/api/delete_session_game/{console_id}")
+async def api_delete_session_game(console_id: str):
+    try:
+        _mysql_exec(
+            "DELETE FROM console_games WHERE console_id=%s AND status='Session'",
+            (console_id,))
+        return ok({"console_id": console_id, "deleted": True})
+    except Exception as e:
+        return error_response(message=str(e))
+@app.post("/api/move_console_game", response_model=GenericResponse, tags=["Games"], summary="Move game between console/SSD [MySQL]")
+async def api_move_console_game(req: dict, auth=Depends(verify_api_key)):
+    try:
+        game_title = req.get("game_title", "").strip()
+        from_console = req.get("from_console", "").replace(" ", "")
+        to_console = req.get("to_console", "").replace(" ", "")
+        if not game_title or not from_console or not to_console:
+            return error_response(message="game_title, from_console, to_console required")
+        if from_console == to_console:
+            return error_response(message="source and destination must be different")
+        _mysql_exec("DELETE FROM console_games WHERE console_id=%s AND game_title=%s", (from_console, game_title))
+        _mysql_exec("DELETE FROM console_games WHERE console_id=%s AND game_title=%s AND install_type NOT IN ('Session')", (to_console, game_title))
+        _mysql_exec(
+            "INSERT INTO console_games (console_id, console_name, game_id, game_title, status, install_type, slot_position) VALUES (%s, %s, %s, %s, 'Installed', 'Moved', 0)",
+            (to_console, to_console, game_title, game_title))
+        has_installed = _mysql_query_one(
+            "SELECT COUNT(*) as cnt FROM console_games WHERE game_title=%s AND status='Installed'",
+            (game_title,))
+        new_final = "Installed" if (has_installed and has_installed.get("cnt", 0) > 0) else "Not Installed"
+        _mysql_exec("UPDATE games_library SET final_status=%s WHERE game_title=%s", (new_final, game_title))
+        return ok({"game_title": game_title, "from": from_console, "to": to_console, "moved": True})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+
+
+# ═══════════════════════════════════════
+#  NEW API ENDPOINTS — Direct GSheets → MySQL migration
+# ═══════════════════════════════════════
+
+@app.post("/api/sales/record", response_model=GenericResponse, tags=["Sales"], summary="Save sales record [MySQL]")
+async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
+    """Save a sales record to MySQL sales_daily table (replaces direct GSheets write)."""
+    try:
+        voucher_no = req.get("voucher_no", "")
+        member_id = req.get("member_id", "")
+        console_id = req.get("console_id", "")
+        mins = req.get("mins", 0)
+        base_rate = float(req.get("base_rate", 0))
+        multiplier = float(req.get("multiplier", 1.0))
+        game_amt = float(req.get("game_amt", 0))
+        food_items = req.get("food_items", "")
+        food_total = float(req.get("food_total", 0))
+        discount = float(req.get("discount", 0))
+        net_total = float(req.get("net_total", 0))
+        payment_method = req.get("payment_method", "")
+        staff = req.get("staff", "")
+        created_at = req.get("created_at", "")
+        notes = req.get("notes", "")
+        promotion_name = req.get("promotion_name", "")
+        coupon_code = req.get("coupon_code", "")
+
+        if not voucher_no:
+            return error_response(message="voucher_no required")
+
+        # Build enriched notes with extended fields
+        extra_notes = []
+        if promotion_name:
+            extra_notes.append(f"Promotion: {promotion_name}")
+        if coupon_code:
+            extra_notes.append(f"Coupon: {coupon_code}")
+        if mins:
+            extra_notes.append(f"Mins: {mins}")
+        if base_rate:
+            extra_notes.append(f"BaseRate: {base_rate}")
+        if multiplier and multiplier != 1.0:
+            extra_notes.append(f"Multiplier: {multiplier}")
+        if food_items:
+            extra_notes.append(f"Food: {food_items}")
+        combined_notes = notes
+        if extra_notes:
+            combined_notes = (notes + " | " if notes else "") + " | ".join(extra_notes)
+
+        sale_date = created_at if created_at else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        gross = game_amt + food_total
+
+        _mysql_exec(
+            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, payment_method, notes) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (voucher_no, sale_date, console_id, member_id, game_amt, gross, discount, net_total, staff, payment_method, combined_notes)
+        )
+
+        logger.info("Sales record saved: voucher=%s member=%s console=%s net=%s", voucher_no, member_id, console_id, net_total)
+        return ok({"voucher_no": voucher_no, "success": True})
+    except Exception as e:
+        logger.error(f"api_sales_record: {e}")
+        return error_response(str(e))
+
+
+@app.post("/api/stock-out/log", response_model=GenericResponse, tags=["Stock"], summary="Log stock-out record [MySQL]")
+async def api_stock_out_log(req: dict, auth=Depends(verify_api_key)):
+    """Insert a stock-out record into stock_out table (replaces direct GSheets append)."""
+    try:
+        item_name = req.get("item_name", "")
+        qty = int(req.get("qty", 0))
+        unit_cost = float(req.get("unit_cost", 0))
+        total_cost = float(req.get("total_cost", 0))
+        staff = req.get("staff", "")
+        notes = req.get("notes", "")
+        created_at = req.get("created_at", "")
+
+        if not item_name or qty <= 0:
+            return error_response(message="item_name and qty > 0 required")
+
+        sale_date = created_at if created_at else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        _mysql_exec(
+            "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, staff_name, notes) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (item_name, qty, unit_cost, total_cost, sale_date, staff, notes)
+        )
+
+        logger.info("Stock-out logged: item=%s qty=%s staff=%s", item_name, qty, staff)
+        return ok({"item_name": item_name, "qty": qty, "success": True})
+    except Exception as e:
+        logger.error(f"api_stock_out_log: {e}")
+        return error_response(str(e))
+
+
+@app.post("/api/stock-in/log", response_model=GenericResponse, tags=["Stock"], summary="Log stock-in record [MySQL]")
+async def api_stock_in_log(req: dict, auth=Depends(verify_api_key)):
+    """Insert a stock-in record into stock_in table (replaces direct GSheets append)."""
+    try:
+        item_name = req.get("item_name", "")
+        qty = int(req.get("qty", 0))
+        unit_cost = float(req.get("unit_cost", 0))
+        staff = req.get("staff", "")
+        supplier = req.get("supplier", "")
+        notes = req.get("notes", "")
+        created_at = req.get("created_at", "")
+
+        if not item_name or qty <= 0:
+            return error_response(message="item_name and qty > 0 required")
+
+        batch_id = f"IN-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{item_name[:20].replace(' ', '_')}"
+
+        # Note: total_cost is STORED GENERATED column (= quantity * unit_cost), do not insert
+        _mysql_exec(
+            "INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, staff_name) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (batch_id, item_name, qty, unit_cost, supplier or "Manual", notes or "", staff)
+        )
+
+        logger.info("Stock-in logged: batch=%s item=%s qty=%s", batch_id, item_name, qty)
+        return ok({"batch_id": batch_id, "item_name": item_name, "qty": qty, "success": True})
+    except Exception as e:
+        logger.error(f"api_stock_in_log: {e}")
+        return error_response(str(e))
+
+
+@app.post("/api/stock/in", response_model=GenericResponse, tags=["Stock"], summary="Stock-in purchase with payment deduction [MySQL]")
+async def api_stock_in(req: dict, auth=Depends(verify_api_key)):
+    """Record stock-in purchase AND deduct from payment account balance.
+
+    Creates a stock_in record and corresponding cash_movements eject entry.
+    Supports both single-payment (Cash/KPay) and split-payment (Cash/KPay combo).
+    """
+    try:
+        item_name = req.get("item_name", "")
+        quantity = int(req.get("quantity", 0))
+        unit_cost = float(req.get("unit_cost", 0))
+        payment_method = req.get("payment_method", "")  # display string, may be composite
+        paid_by = req.get("paid_by", "")
+        staff_name = req.get("staff_name", "")
+        source = req.get("source", "")
+        receipt_no = req.get("receipt_no", "")
+        # Split-payment amounts (optional — used when payment_method is composite like "Cash X / KPay Y")
+        cash_amount = req.get("cash_amount")
+        kpay_amount = req.get("kpay_amount")
+
+        if not item_name or quantity <= 0:
+            return error_response(message="item_name and quantity > 0 required")
+
+        import uuid
+        batch_id = "SI-" + uuid.uuid4().hex[:12].upper()
+        total_amount = quantity * unit_cost
+
+        # Insert into stock_in
+        _mysql_exec(
+            """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (batch_id, item_name, quantity, unit_cost, source or "", receipt_no or "", payment_method, paid_by, staff_name)
+        )
+
+        # Create cash_movements entries to deduct from account balance
+        note = f"Stock In: {item_name} x{quantity}"
+        if cash_amount is not None and kpay_amount is not None:
+            # Split payment: create separate eject entries for Cash and KPay
+            if float(cash_amount) > 0:
+                _mysql_exec(
+                    """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    ("eject", "Cash", float(cash_amount), note, staff_name)
+                )
+            if float(kpay_amount) > 0:
+                _mysql_exec(
+                    """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    ("eject", "KPay", float(kpay_amount), note, staff_name)
+                )
+        elif payment_method:
+            # Single payment: one eject entry for the payment method
+            _mysql_exec(
+                """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                ("eject", payment_method, total_amount, note, staff_name)
+            )
+
+        logger.info(
+            "Stock-in via /api/stock/in: batch=%s item=%s qty=%s cost=%s payment=%s amount=%s split=Cash%s/KPay%s",
+            batch_id, item_name, quantity, unit_cost, payment_method, total_amount,
+            cash_amount or 0, kpay_amount or 0
+        )
+        return ok({
+            "batch_id": batch_id,
+            "item_name": item_name,
+            "qty": quantity,
+            "unit_cost": unit_cost,
+            "total": total_amount,
+            "payment_method": payment_method,
+            "success": True
+        })
+    except Exception as e:
+        logger.error(f"api_stock_in: {e}")
+        return error_response(str(e))
+
+
+@app.post("/api/settings/console", response_model=GenericResponse, tags=["Settings"], summary="Add/update console in settings [MySQL]")
+async def api_settings_console(req: dict, auth=Depends(verify_api_key)):
+    """Add or update console settings (type and multiplier) in settings_config."""
+    try:
+        console_id = req.get("console_id", "").strip()
+        console_type = req.get("console_type", "")
+        multiplier = float(req.get("multiplier", 1.0))
+
+        if not console_id:
+            return error_response(message="console_id required")
+
+        # Update multiplier mapping
+        multipliers = _mysql_get_setting("console_multipliers", {})
+        if not isinstance(multipliers, dict):
+            multipliers = {}
+        multipliers[console_id] = multiplier
+        _mysql_exec(
+            "INSERT INTO settings_config (config_key, config_value, config_type, category, description) "
+            "VALUES ('console_multipliers', %s, 'json', 'console', 'Console multiplier mapping') "
+            "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
+            (_json.dumps(multipliers),))
+
+        # Update console type mapping if provided
+        if console_type:
+            types = _mysql_get_setting("console_types", {})
+            if not isinstance(types, dict):
+                types = {}
+            types[console_id] = console_type
+            _mysql_exec(
+                "INSERT INTO settings_config (config_key, config_value, config_type, category, description) "
+                "VALUES ('console_types', %s, 'json', 'console', 'Console type mapping') "
+                "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
+                (_json.dumps(types),))
+
+        logger.info("Console setting updated: id=%s type=%s multiplier=%s", console_id, console_type, multiplier)
+        return ok({"console_id": console_id, "multiplier": multiplier, "console_type": console_type, "success": True})
+    except Exception as e:
+        logger.error(f"api_settings_console: {e}")
+        return error_response(str(e))
+
+
+@app.post("/api/member/wallet/update", response_model=GenericResponse, tags=["Members"], summary="Update member wallet balance [MySQL]")
+async def api_member_wallet_update(req: dict, auth=Depends(verify_api_key)):
+    """Update member wallet balance_mins, total_spend, and optional bonus_mins."""
+    try:
+        member_id = req.get("member_id", "")
+        balance_mins = req.get("balance_mins")
+        total_spend = req.get("total_spend")
+        bonus_mins = req.get("bonus_mins")
+        deduct_mins = req.get("deduct_mins")
+
+        if not member_id:
+            return error_response(message="member_id required")
+
+        # Build dynamic UPDATE
+        updates = []
+        params = []
+
+        if balance_mins is not None:
+            updates.append("balance_mins=%s")
+            params.append(int(balance_mins))
+        if deduct_mins is not None:
+            updates.append("balance_mins = balance_mins - %s")
+            params.append(int(deduct_mins))
+        if total_spend is not None:
+            updates.append("total_spend=%s")
+            params.append(float(total_spend))
+        if bonus_mins is not None:
+            # Bonus mins: add to total_bought_mins and balance_mins
+            updates.append("total_bought_mins = total_bought_mins + %s")
+            updates.append("balance_mins = balance_mins + %s")
+            params.append(int(bonus_mins))
+            params.append(int(bonus_mins))
+
+        if updates:
+            updates.append("last_updated=NOW()")
+            params.append(member_id)
+            _mysql_exec(
+                f"UPDATE member_wallets SET {', '.join(updates)} WHERE member_id=%s",
+                tuple(params))
+
+        # Read back current state
+        row = _mysql_query_one(
+            "SELECT balance_mins, total_spend, total_bought_mins FROM member_wallets WHERE member_id=%s",
+            (member_id,))
+
+        return ok({
+            "member_id": member_id,
+            "balance_mins": row["balance_mins"] if row else 0,
+            "total_spend": row["total_spend"] if row else 0,
+            "total_bought_mins": row["total_bought_mins"] if row else 0,
+            "success": True
+        })
+    except Exception as e:
+        logger.error(f"api_member_wallet_update: {e}")
+        return error_response(str(e))
+
+
+# ── OPEX / Operating Expenses ─────────────────────────────────────────────────
+@app.get("/api/opex/list", tags=["OPEX"], summary="List expenses")
+async def api_opex_list(
+    date_from: str = "", date_to: str = "",
+    category: str = "", limit: int = 100,
+    user: dict = Depends(get_current_user),
+):
+    sql = "SELECT * FROM opex WHERE 1=1"
+    params = []
+    if date_from:
+        sql += " AND expense_date >= %s"
+        params.append(date_from)
+    if date_to:
+        sql += " AND expense_date <= %s"
+        params.append(date_to)
+    if category:
+        sql += " AND category = %s"
+        params.append(category)
+    sql += " ORDER BY expense_date DESC, created_at DESC LIMIT %s"
+    params.append(limit)
+    rows = mysql_query(sql, tuple(params))
+    return GenericResponse(success=True, data=list(rows))
+
+
+@app.post("/api/opex/add", tags=["OPEX"], summary="Add expense")
+async def api_opex_add(body: dict = Body(...), user: dict = Depends(get_current_user)):
+    cat = body.get("category", "").strip()
+    desc = body.get("description", "").strip()
+    amt = int(body.get("amount", 0))
+    pmt = body.get("payment_method", "Cash").strip()
+    by = body.get("recorded_by", "").strip()
+    dt = body.get("expense_date", now_mmt().strftime("%Y-%m-%d")).strip()
+    if not cat or amt <= 0:
+        return GenericResponse(success=False, error="Category and amount required")
+    mysql_execute("INSERT INTO opex (category,description,amount,payment_method,recorded_by,expense_date) VALUES (%s,%s,%s,%s,%s,%s)", (cat, desc, amt, pmt, by, dt))
+    return GenericResponse(success=True, data={"msg": f"{cat}: {amt:,} Ks recorded"})
+@app.get("/api/opex/summary", tags=["OPEX"], summary="Expense summary by category + date")
+async def api_opex_summary(
+    date_from: str = "", date_to: str = "",
+    user: dict = Depends(get_current_user),
+):
+    sql = "SELECT category, SUM(amount) as total, COUNT(*) as count FROM opex WHERE 1=1"
+    params = []
+    if date_from:
+        sql += " AND expense_date >= %s"
+        params.append(date_from)
+    if date_to:
+        sql += " AND expense_date <= %s"
+        params.append(date_to)
+    sql += " GROUP BY category ORDER BY total DESC"
+    rows = mysql_query(sql, tuple(params))
+    grand_total = sum(r["total"] for r in rows) if rows else 0
+    return GenericResponse(success=True, data={"categories": list(rows), "grand_total": grand_total})
+
+
+
+
+
+# ================================================================
+#  WALLET — deduct/bonus (Sale Bot calls this when member plays)
+# ================================================================
+@app.post("/api/member/wallet/update", response_model=GenericResponse, tags=["Members"], summary="Update member wallet (deduct mins / add bonus)")
+async def api_wallet_update(req: dict, auth=Depends(verify_api_key)):
+    """Deduct or add bonus minutes to a member's wallet."""
+    try:
+        member_id = req.get("member_id", "")
+        deduct_mins = int(req.get("deduct_mins", 0))
+        bonus_mins = int(req.get("bonus_mins", 0))
+        total_mins = int(req.get("total_mins", 0))
+
+        if not member_id:
+            return ok({"success": False, "error": "member_id required"})
+
+        # Get current wallet
+        cur = _mysql_query_one("SELECT balance_mins FROM member_wallets WHERE member_id=%s", (member_id,))
+        if not cur:
+            return ok({"success": False, "error": f"Member {member_id} not found"})
+
+        current_bal = int(cur["balance_mins"] or 0)
+        new_bal = current_bal
+
+        if deduct_mins > 0:
+            new_bal = max(0, current_bal - deduct_mins)
+            _mysql_exec("UPDATE member_wallets SET balance_mins=%s, last_updated=NOW() WHERE member_id=%s", (new_bal, member_id))
+            logger.info("Wallet deduct: %s -%d mins (bal: %d→%d)", member_id, deduct_mins, current_bal, new_bal)
+        elif bonus_mins > 0:
+            new_bal = current_bal + bonus_mins
+            _mysql_exec("UPDATE member_wallets SET balance_mins=%s, last_updated=NOW() WHERE member_id=%s", (new_bal, member_id))
+            logger.info("Wallet bonus: %s +%d mins (bal: %d→%d)", member_id, bonus_mins, current_bal, new_bal)
+
+        return ok({
+            "success": True,
+            "member_id": member_id,
+            "balance_before": current_bal,
+            "deduct_mins": deduct_mins,
+            "bonus_mins": bonus_mins,
+            "balance_after": new_bal,
+        })
+    except Exception as e:
+        logger.exception("wallet/update error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 import patch_routes
+
+# Resume active session timers on startup
+try:
+    resume_active_timers()
+except Exception:
+    pass
 

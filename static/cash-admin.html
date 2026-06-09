@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PS VIBE — Cash Manager</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:system-ui,-apple-system,sans-serif}
+body{background:#0f172a;color:#e2e8f0;padding:20px;max-width:900px;margin:0 auto}
+h1{color:#f59e0b;font-size:1.8em;margin-bottom:4px}
+.sub{color:#94a3b8;font-size:0.9em;margin-bottom:24px}
+.card{background:#1e293b;border-radius:12px;padding:20px;margin-bottom:16px;border:1px solid #334155}
+.card h2{font-size:1.2em;margin-bottom:16px;color:#f59e0b}
+.bal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.bal-item{background:#334155;border-radius:8px;padding:14px;text-align:center}
+.bal-item .label{font-size:0.85em;color:#94a3b8;margin-bottom:4px}
+.bal-item .value{font-size:1.5em;font-weight:700}
+.bal-item.cash .value{color:#10b981}
+.bal-item.kpay .value{color:#6366f1}
+.bal-item.wave .value{color:#06b6d4}
+.bal-item.aya .value{color:#f97316}
+form{display:flex;flex-direction:column;gap:12px}
+.row{display:flex;gap:12px;flex-wrap:wrap}
+.row>*{flex:1;min-width:140px}
+input,select,textarea{padding:10px 14px;border-radius:8px;border:1px solid #475569;background:#334155;color:#e2e8f0;font-size:1em}
+input:focus,select:focus,textarea:focus{outline:2px solid #f59e0b;border-color:transparent}
+textarea{resize:vertical;min-height:60px}
+.btn-group{display:flex;gap:12px}
+.btn{padding:10px 20px;border:none;border-radius:8px;font-size:1em;font-weight:600;cursor:pointer;flex:1;transition:.15s}
+.btn-inject{background:#059669;color:#fff}
+.btn-inject:hover{background:#047857}
+.btn-eject{background:#dc2626;color:#fff}
+.btn-eject:hover{background:#b91c1c}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+table{width:100%;border-collapse:collapse;font-size:0.9em}
+th{text-align:left;padding:10px 8px;color:#94a3b8;font-weight:500;border-bottom:2px solid #334155}
+td{padding:10px 8px;border-bottom:1px solid #1e293b}
+.type-inject{color:#10b981;font-weight:600}
+.type-eject{color:#ef4444;font-weight:600}
+.amt{text-align:right;font-weight:600}
+.amt-inject{color:#10b981}
+.amt-eject{color:#ef4444}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.8em}
+.empty{text-align:center;color:#64748b;padding:30px}
+.loading{text-align:center;padding:20px;color:#94a3b8}
+.msg{padding:12px;border-radius:8px;margin-bottom:12px;display:none}
+.msg.success{background:#065f46;color:#a7f3d0;display:block}
+.msg.error{background:#7f1d1d;color:#fecaca;display:block}
+@media(max-width:600px){.row{flex-direction:column}}
+</style>
+</head>
+<body>
+<h1>🏦 Cash Manager</h1>
+<p class="sub">PS VIBE — ဆိုင်ငွေ စီမံခန့်ခွဲမှု</p>
+
+<div class="card">
+  <h2>💰 လက်ရှိဆိုင်ငွေ</h2>
+  <div class="bal-grid" id="balances">
+    <div class="bal-item"><div class="label">Loading...</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>📝 Inject / Eject</h2>
+  <div id="msg"></div>
+  <form id="cashForm" onsubmit="return submitMovement(event)">
+    <div class="row">
+      <select id="type" required>
+        <option value="">အမျိုးအစားရွေးပါ</option>
+        <option value="inject">💰 Inject (ငွေထည့်)</option>
+        <option value="eject">💸 Eject (ငွေထုတ်)</option>
+      </select>
+      <select id="account" required>
+        <option value="">Account ရွေးပါ</option>
+        <option value="Cash">💵 Cash</option>
+        <option value="KPay">📱 KPay</option>
+        <option value="Wave">📱 Wave</option>
+        <option value="AYA Pay">📱 AYA Pay</option>
+      </select>
+    </div>
+    <div class="row">
+      <input type="number" id="amount" placeholder="ပမာဏ (Ks)" min="1" required>
+      <input type="text" id="note" placeholder="မှတ်ချက် (ဥပမာ - မီတာခ, ရင်းနှီးငွေ)">
+    </div>
+    <div class="btn-group">
+      <button type="submit" class="btn btn-inject" id="submitBtn">✅ Confirm</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>📋 မှတ်တမ်း</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>အမျိုးအစား</th>
+        <th>Account</th>
+        <th>ပမာဏ</th>
+        <th>မှတ်ချက်</th>
+        <th>ပြုလုပ်သူ</th>
+        <th>ရက်စွဲ</th>
+      </tr>
+    </thead>
+    <tbody id="movements">
+      <tr><td colspan="6" class="loading">Loading...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const API = '/api/finance';
+async function api(path, opts={}) {
+  const res = await fetch(API + path, {
+    headers: {'Content-Type': 'application/json', 'X-API-Key': ''},
+    ...opts
+  });
+  return res.json();
+}
+
+async function loadBalances() {
+  try {
+    const d = await api('/account-balances');
+    if (!d.success) throw new Error(d.error);
+    const ops = d.data.operating;
+    const icons = {Cash:'💵', KPay:'📱', Wave:'📱', 'AYA Pay':'📱'};
+    const cls = {Cash:'cash', KPay:'kpay', Wave:'wave', 'AYA Pay':'aya'};
+    document.getElementById('balances').innerHTML = ops.map(a =>
+      `<div class="bal-item ${cls[a.name]||''}">
+        <div class="label">${icons[a.name]||'💰'} ${a.name}</div>
+        <div class="value">${Number(a.balance).toLocaleString()}</div>
+      </div>`
+    ).join('');
+  } catch(e) {
+    document.getElementById('balances').innerHTML = `<div class="bal-item"><div class="label">Error: ${e.message}</div></div>`;
+  }
+}
+
+async function loadMovements() {
+  try {
+    const d = await api('/cash-movements?limit=50');
+    if (!d.success) throw new Error(d.error);
+    const tbody = document.getElementById('movements');
+    if (!d.data.movements.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">မှတ်တမ်းမရှိသေးပါ</td></tr>';
+      return;
+    }
+    tbody.innerHTML = d.data.movements.map(m => {
+      const dt = new Date(m.created_at + 'Z');
+      const dateStr = dt.toLocaleDateString('en-GB') + ' ' + dt.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'});
+      return `<tr>
+        <td><span class="type-${m.movement_type}">${m.movement_type === 'inject' ? '💰 Inject' : '💸 Eject'}</span></td>
+        <td>${m.account}</td>
+        <td class="amt amt-${m.movement_type}">${Number(m.amount).toLocaleString()} Ks</td>
+        <td>${m.note || '—'}</td>
+        <td>${m.staff_name || '—'}</td>
+        <td style="font-size:0.85em;color:#94a3b8">${dateStr}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('movements').innerHTML = `<tr><td colspan="6" class="empty">Error: ${e.message}</td></tr>`;
+  }
+}
+
+async function submitMovement(e) {
+  e.preventDefault();
+  const type = document.getElementById('type').value;
+  const account = document.getElementById('account').value;
+  const amount = parseInt(document.getElementById('amount').value);
+  const note = document.getElementById('note').value;
+  const btn = document.getElementById('submitBtn');
+  const msgEl = document.getElementById('msg');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Processing...';
+  msgEl.innerHTML = '';
+
+  try {
+    const d = await api('/cash-movement', {
+      method: 'POST',
+      body: JSON.stringify({type, account, amount, note, staff_name: 'Web Admin'})
+    });
+    if (d.success) {
+      msgEl.innerHTML = '<div class="msg success">✅ ' + d.data.message + '</div>';
+      document.getElementById('cashForm').reset();
+      await loadBalances();
+      await loadMovements();
+    } else {
+      msgEl.innerHTML = '<div class="msg error">❌ ' + (d.error || 'Failed') + '</div>';
+    }
+  } catch(err) {
+    msgEl.innerHTML = '<div class="msg error">❌ ' + err.message + '</div>';
+  }
+  btn.disabled = false;
+  btn.textContent = '✅ Confirm';
+}
+
+loadBalances();
+loadMovements();
+setInterval(loadBalances, 30000);
+</script>
+</body>
+</html>

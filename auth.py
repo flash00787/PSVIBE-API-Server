@@ -7,7 +7,7 @@ from typing import Optional
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from passlib.context import CryptContext
+import bcrypt  # direct bcrypt (no passlib - passlib+bcrypt4.x broken)
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,12 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE = timedelta(minutes=30)
 REFRESH_TOKEN_EXPIRE = timedelta(days=7)
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def _hash_pw(pw: str) -> str:
+    import bcrypt
+    return bcrypt.hashpw(pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+def _verify_pw(pw: str, h: str) -> bool:
+    import bcrypt
+    return bool(bcrypt.checkpw(pw.encode('utf-8'), h.encode('utf-8')))
 security = HTTPBearer(auto_error=False)
 
 
@@ -28,12 +33,12 @@ _creds_cache = None
 def _get_credentials():
     return {
         "admin": {
-            "password_hash": pwd_context.hash("admin123"),
+            "password_hash": _hash_pw("admin123"),
             "role": "admin",
             "name": "Admin"
         },
         "staff": {
-            "password_hash": pwd_context.hash("staff123"),
+            "password_hash": _hash_pw("staff123"),
             "role": "staff",
             "name": "Staff"
         }
@@ -63,7 +68,7 @@ class RefreshRequest(BaseModel):
 # --- Core Functions ---
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    return _verify_pw(plain_password, hashed_password)
 
 def get_user(username: str) -> Optional[dict]:
     user = get_credentials().get(username)

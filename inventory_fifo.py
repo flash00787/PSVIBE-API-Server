@@ -110,11 +110,11 @@ def get_batches(item_name):
         result.append({'id': b['id'], 'batch_id': b['batch_id'], 'item_name': b['item_name'], 'quantity': b['quantity'], 'unit_cost': float(b['unit_cost']), 'total_cost': float(b['total_cost']), 'source': b['source'] or '', 'receipt_no': b['receipt_no'] or '', 'created_at': b['created_at'].isoformat() if b['created_at'] else None})
     return result
 
-def add_stock_in(item_name, quantity, unit_cost, source='', receipt_no=''):
+def add_stock_in(item_name, quantity, unit_cost, source='', receipt_no='', payment_method='', paid_by='', staff_name=''):
     batch_id = 'SI-' + uuid.uuid4().hex[:12].upper()
     conn = _conn()
     cur = conn.cursor(dictionary=True)
-    cur.execute('INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no) VALUES (%s, %s, %s, %s, %s, %s)', (batch_id, item_name, quantity, unit_cost, source, receipt_no))
+    cur.execute('INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)', (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name))
     conn.commit()
     batch_id_ret = cur.lastrowid
     conn.close()
