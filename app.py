@@ -2190,6 +2190,15 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
             (voucher_no, sale_date, console_id, member_id, game_amt, gross, discount, net_total, staff, payment_method, combined_notes)
         )
 
+        # Deduct wallet balance for member sales
+        _wallet_deduct = int(req.get("wallet_deduct", 0))
+        if _wallet_deduct > 0 and member_id and member_id.strip() not in ("", "0 (Guest)", "-"):
+            _mysql_exec(
+                "UPDATE member_wallets SET balance_mins = GREATEST(0, COALESCE(balance_mins, 0) - %s) WHERE member_id=%s",
+                (_wallet_deduct, member_id)
+            )
+            logger.info("Wallet deducted: %s mins for member %s", _wallet_deduct, member_id)
+
         logger.info("Sales record saved: voucher=%s member=%s console=%s net=%s", voucher_no, member_id, console_id, net_total)
         return ok({"voucher_no": voucher_no, "success": True})
     except Exception as e:
