@@ -417,7 +417,7 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)):
     """Fetch live console statuses from MySQL console_status table."""
     try:
         rows = _mysql_query(
-            "SELECT cs.console_id, cs.status, cs.console_type, cs.current_game, cs.current_member, DATE_FORMAT(cs.start_time, '%H:%i') as start_time, cb.id as booking_id, cb.staff_name FROM console_status cs LEFT JOIN (    SELECT cb1.id, cb1.console_id, cb1.staff_name     FROM console_booking cb1     INNER JOIN (        SELECT console_id, MAX(id) as max_id         FROM console_booking WHERE status = 'Active' GROUP BY console_id    ) cb2 ON cb1.id = cb2.max_id) cb ON cb.console_id LIKE CONCAT(cs.console_id, '%') ORDER BY cs.console_id")
+            "SELECT cs.console_id, cs.status, cs.console_type, cs.current_game, cs.current_member, DATE_FORMAT(cs.start_time, '%H:%i') as start_time, cb.id as booking_id, cb.staff_name FROM console_status cs LEFT JOIN (    SELECT cb1.id, cb1.console_id, cb1.staff_name     FROM console_booking cb1     INNER JOIN (        SELECT console_id, MAX(id) as max_id         FROM console_booking WHERE status = 'Active' GROUP BY console_id    ) cb2 ON cb1.id = cb2.max_id) cb ON REPLACE(cb.console_id, ' ', '') LIKE CONCAT(REPLACE(cs.console_id, ' ', ''), '%') ORDER BY cs.console_id")
         # Add id alias for backward compat — bot code uses c["id"] everywhere
         for r in rows:
             if "id" not in r:
