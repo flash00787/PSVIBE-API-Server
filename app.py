@@ -1225,6 +1225,16 @@ async def api_get_bookings(status: str = "", auth=Depends(verify_api_key)):
         from datetime import datetime as _dt
         normalized = []
         for r in rows:
+            # Derive consoleType from console_id
+            _cid = r.get("console_id", "")
+            _ctype = _cid
+            if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
+                try:
+                    _crows = _mysql_query("SELECT console_type FROM console_status WHERE console_id=%s LIMIT 1", (_cid,))
+                    if _crows and _crows[0].get("console_type"):
+                        _ctype = _crows[0]["console_type"]
+                except Exception:
+                    pass
             start = r.get("start_time")
             time_slot = ""
             if start:
@@ -1242,7 +1252,20 @@ async def api_get_bookings(status: str = "", auth=Depends(verify_api_key)):
                     bd_str = str(bd)[:10]
             else:
                 bd_str = ""
-            normalized.append({"id": r.get("id",""), "customerName": r.get("staff_name",""), "phone": r.get("phone","") or r.get("telegram_chat_id",""), "date": bd_str, "timeSlot": time_slot, "consoleType": "PS5", "durationMins": r.get("duration_mins",60), "gameName": r.get("game_name",""), "console_id": r.get("console_id",""), "consoleId": r.get("console_id",""), "member_id": r.get("member_id",""), "status": r.get("status","")})
+            # Derive consoleType from console_id: if console_id is a specific ID (C-01, etc),
+            # try to match against console_status; otherwise use console_id as the type name
+            _cid = r.get("console_id", "")
+            _ctype = _cid  # default: use console_id as display type (works for "PS5", "PS5 Pro")
+            # If console_id looks like a specific console ID (e.g., "C - 01", "C-01"),
+            # try to resolve to a type name from console_status
+            if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
+                try:
+                    _crows = _mysql_query("SELECT console_type FROM console_status WHERE console_id=%s LIMIT 1", (_cid,))
+                    if _crows and _crows[0].get("console_type"):
+                        _ctype = _crows[0]["console_type"]
+                except Exception:
+                    pass
+            normalized.append({"id": r.get("id",""), "customerName": r.get("staff_name",""), "phone": r.get("phone","") or r.get("telegram_chat_id",""), "date": bd_str, "timeSlot": time_slot, "consoleType": _ctype, "durationMins": r.get("duration_mins",60), "gameName": r.get("game_name",""), "console_id": r.get("console_id",""), "consoleId": r.get("console_id",""), "member_id": r.get("member_id",""), "status": r.get("status","")})
         return ok({"bookings": normalized})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1266,6 +1289,16 @@ async def api_search_bookings(telegram_chat_id: str = Query("", description="Tel
         from datetime import datetime as _dt
         normalized = []
         for r in rows:
+            # Derive consoleType from console_id
+            _cid = r.get("console_id", "")
+            _ctype = _cid
+            if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
+                try:
+                    _crows = _mysql_query("SELECT console_type FROM console_status WHERE console_id=%s LIMIT 1", (_cid,))
+                    if _crows and _crows[0].get("console_type"):
+                        _ctype = _crows[0]["console_type"]
+                except Exception:
+                    pass
             start = r.get("start_time")
             time_slot = ""
             if start:
@@ -1279,6 +1312,7 @@ async def api_search_bookings(telegram_chat_id: str = Query("", description="Tel
             normalized.append({
                 "id": r.get("id"),
                 "console_id": r.get("console_id"),
+                "consoleType": _ctype,
                 "member_id": r.get("member_id"),
                 "booking_date": str(r.get("booking_date", "")),
                 "timeSlot": time_slot,
