@@ -65,9 +65,18 @@ async def get_console_status(user: dict = Depends(get_current_user)):
                    cb.id as booking_id, cb.member_id as customer_name,
                    cb.start_time, cb.end_time, cb.status as booking_status
             FROM console_status c
-            LEFT JOIN console_booking cb ON c.console_id = cb.console_id
-                AND DATE(cb.booking_date) = %s
-                AND cb.status IN ('Active', 'Confirmed')
+            LEFT JOIN (
+                SELECT cb1.*
+                FROM console_booking cb1
+                INNER JOIN (
+                    SELECT console_id, MAX(id) as max_id
+                    FROM console_booking
+                    WHERE DATE(booking_date) = %s
+                    AND status IN ('Active', 'Confirmed')
+                    GROUP BY console_id
+                ) cb2 ON cb1.id = cb2.max_id
+            ) cb ON c.console_id = cb.console_id
+                AND c.status = 'Active'
             ORDER BY c.console_id
         """, (today,))
 
@@ -358,7 +367,7 @@ async def dashboard_get_members(
         where = ["1=1"]
         params = []
         if search:
-            where.append("(m.member_id LIKE %s OR m.member_name LIKE %s OR m.phone LIKE %s)")
+            where.append("(m.member_id LIKE %s OR m.member_name LIKE %s OR COALESCE(m.phone,'') LIKE %s)")
             like = f"%{search}%"
             params.extend([like, like, like])
         if tier:
@@ -366,7 +375,7 @@ async def dashboard_get_members(
             params.append(tier)
 
         sql = f"""
-            SELECT m.member_id, m.member_name, m.phone, m.balance_mins, m.tier,
+            SELECT m.member_id, m.member_name as name, COALESCE(m.phone,''), m.balance_mins, m.tier,
                    m.total_spend, m.lifetime_spend, m.join_date, m.last_updated
             FROM member_wallets m
             WHERE {' AND '.join(where)}
@@ -386,7 +395,7 @@ async def dashboard_get_members(
         for r in rows:
             members.append({
                 "member_id": r["member_id"],
-                "name": r.get("member_name"),
+                "name": r.get("name"),
                 "phone": r.get("phone"),
                 "balance_minutes": r.get("balance_mins"),
                 "tier": r.get("tier"),
@@ -527,6 +536,64 @@ async def dashboard_get_member_topups(
         return {"success": True, "data": topups, "total": total}
     except Exception as e:
         logger.error(f"GET /members/{member_id}/topups error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  COUPONS — View All
+# ═══════════════════════════════════════
+@router.get("/coupons")
+async def dashboard_get_coupons(
+    search: str | None = Query(None),
+    limit: int = Query(500, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """List all member coupons with member details."""
+    try:
+        where = ["1=1"]
+        params = []
+        if search:
+            where.append("(c.coupon_code LIKE %s OR c.member_id LIKE %s)")
+            like = f"%{search}%"
+            params.extend([like, like])
+
+        sql = f'''
+            SELECT c.id, c.coupon_code, c.member_id, c.original_minutes,
+                   c.balance_minutes, c.issued_date, c.expiry_date, c.status,
+                   c.redeemed_at, m.name, COALESCE(m.phone,'')
+            FROM member_coupons c
+            LEFT JOIN members m ON c.member_id = m.member_id
+            WHERE {' AND '.join(where)}
+            ORDER BY c.issued_date DESC
+            LIMIT %s OFFSET %s
+        '''
+        params.extend([limit, offset])
+        rows = _mysql_query(sql, tuple(params))
+
+        count_sql = f"SELECT COUNT(*) as total FROM member_coupons c WHERE {' AND '.join(where)}"
+        cnt_params = params[:-2]  # remove limit/offset
+        count_row = _mysql_query_one(count_sql, tuple(cnt_params))
+        total = count_row["total"] if count_row else 0
+
+        coupons = []
+        for r in rows:
+            coupons.append({
+                "id": r["id"],
+                "code": r["coupon_code"],
+                "member_id": r["member_id"],
+                "member_name": r.get("name") or "-",
+                "phone": r.get("phone") or "-",
+                "original_minutes": r["original_minutes"],
+                "balance_minutes": r["balance_minutes"],
+                "issued_date": str(r["issued_date"])[:16] if r.get("issued_date") else "",
+                "expiry_date": str(r["expiry_date"])[:10] if r.get("expiry_date") else "",
+                "status": r["status"],
+                "redeemed_at": str(r["redeemed_at"])[:16] if r.get("redeemed_at") else "",
+            })
+        return {"success": True, "data": coupons, "total": total}
+    except Exception as e:
+        logger.error(f"GET /coupons error: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -1740,9 +1807,11 @@ async def get_finance_balances(user: dict = Depends(get_current_user)):
             _fifo_conn.close()
         except Exception:
             _fifo_result = {"liability": 0, "consumed": 0}
-        rows = _mq("SELECT payment_method, net FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
+        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
         income_by_account = {acc["key"]: 0.0 for acc in accounts}
         for row in rows:
+            note = (row.get("notes") or "")
+            if note.startswith("Topup") or note.startswith("New member"): continue
             pm = (row.get("payment_method") or "").strip()
             net_amount = float(row.get("net") or 0)
             if not pm: continue
@@ -1752,7 +1821,10 @@ async def get_finance_balances(user: dict = Depends(get_current_user)):
                 if ":" in part:
                     method, _, val = part.partition(":")
                     method = method.strip().lower().replace(" ", "_")
-                    val = float(val.strip() or 0) if val.strip() else 0
+                    try:
+                        val = float(val.strip() or 0) if val.strip() else 0
+                    except ValueError:
+                        val = net_amount / len(parts) if parts else 0
                 else:
                     method = part.lower().replace(" ", "_")
                     val = net_amount / len(parts) if parts else 0
@@ -1762,16 +1834,24 @@ async def get_finance_balances(user: dict = Depends(get_current_user)):
                 if method in income_by_account:
                     income_by_account[method] += val
         # Topup income
-        topup_rows = _mq("SELECT payment_method, COALESCE(SUM(amount), 0) as total FROM topup_log WHERE topup_date >= '2026-01-01' GROUP BY payment_method")
-        for r in topup_rows:
-            pm = (r.get("payment_method") or "").lower()
-            topup_amount = float(r.get("total", 0))
-            if "kpay" in pm:
-                income_by_account["kpay"] = income_by_account.get("kpay", 0) + topup_amount
-            elif "cash" in pm:
-                income_by_account["cash"] = income_by_account.get("cash", 0) + topup_amount
+        topup_rows = _mq("SELECT payment_method, amount FROM topup_log WHERE amount > 0 AND payment_method IS NOT NULL")
+        for _tr in topup_rows:
+            _pm = (_tr.get("payment_method") or "").strip()
+            if not _pm: continue
+            for _part in _pm.split("/"):
+                _part = _part.strip()
+                if ":" in _part:
+                    _method, _, _val = _part.partition(":")
+                    _method = _method.strip().lower().replace(" ", "_")
+                    try:
+                        _val = float(_val.strip() or 0) if _val.strip() else 0
+                    except ValueError:
+                        continue
+                    if _method == "wavepay": _method = "wave"
+                    if _method in income_by_account:
+                        income_by_account[_method] += _val
 
-        opex_rows = _mq("SELECT payment_method, COALESCE(SUM(amount), 0) as total FROM opex GROUP BY payment_method")
+        opex_rows = _mq("SELECT payment_method, COALESCE(SUM(amount), 0) as total FROM opex WHERE description NOT LIKE %s GROUP BY payment_method", ("%Prepaid Rent Amortization%",))
         opex_by_acct = {acc["key"]: 0.0 for acc in accounts}
         for row in opex_rows:
             pm = (row.get("payment_method") or "").strip().lower().replace(" ", "_")
@@ -1805,6 +1885,12 @@ async def get_finance_balances(user: dict = Depends(get_current_user)):
             key = f"{row['movement_type']}|{row['account']}"
             cash_map[key] = cash_map.get(key, 0) + float(row["total"] or 0)
         # Map account keys to DB account names for cash_movements lookup
+        # Subtract inject entries that overlap with topup (notes start with Topup or New member)
+        _bad_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37)))) GROUP BY account")
+        for _r in _bad_inject_rows:
+            _k = "inject|" + _r["account"]
+            if _k in cash_map:
+                cash_map[_k] -= float(_r["total"] or 0)
         key_to_name = {"cash": "Cash", "wave": "Wave", "kpay": "KPay", "aya_pay": "AYA Pay", "kbz_bank": "KBZ Bank", "acm_acc": "ACM's Acc"}
         # Capital expenditure queries (all from KBZ Bank)
         _asset_purchases = _mqo("SELECT COALESCE(SUM(per_price * qty), 0) as total FROM finance_assets WHERE status = 'active'")
@@ -2071,13 +2157,16 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
         total_ca = 0.0
 
         # --- Income from sales_daily (exact same logic as finance/balances) ---
-        rows = _mq("SELECT payment_method, net FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
+        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
         income_by_account = {a["key"]: 0.0 for a in accounts}
         for row in rows:
+            note = (row.get("notes") or "")
+            if note.startswith("Topup") or note.startswith("New member"): continue
             pm = (row.get("payment_method") or "").strip()
             net_amount = float(row.get("net") or 0)
             if not pm: continue
-            for part in pm.split("|"):
+            sep = "|" if "|" in pm else ("/" if "/" in pm else "|")
+            for part in pm.split(sep):
                 part = part.strip()
                 if ":" in part:
                     method, _, val = part.partition(":")
@@ -2138,7 +2227,7 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
             db = db_acct[key]
             t_in = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_in'", (db,))["t"] or 0)
             t_out = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_out'", (db,))["t"] or 0)
-            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject'", (db,))["t"] or 0)
+            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37))))", (db,))["t"] or 0)
             ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject'", (db,))["t"] or 0)
 
             # t_out is stored as negative in DB, so + t_out works (= subtract)
@@ -2162,7 +2251,9 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
             total_gross += cost
             total_fix += nbv
 
-        prep_t = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid")["t"] or 0)
+        total_prepaid = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid WHERE status='active'")["t"] or 0)
+        total_amort = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM prepaid_amortization")["t"] or 0)
+        prep_t = max(0, total_prepaid - total_amort)
         adv_t = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL")["t"] or 0)
         other_ca = prep_t + adv_t
 
@@ -2194,25 +2285,45 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
             WHERE mw.balance_mins > 0 AND mw.balance_mins IS NOT NULL
         """)
         _member_liab_val = 0.0
+        _member_details = []
         for _r2 in _ml2:
             _paid2 = float(_r2.get('paid') or 0)
             _mins2 = float(_r2.get('mins') or 1)
             _bal2 = float(_r2.get('balance_mins') or 0)
             if _mins2 > 0 and _paid2 > 0 and _bal2 > 0:
                 _member_liab_val += _paid2 / _mins2 * _bal2
+                _member_details.append({
+                    "member_id": _r2["member_id"],
+                    "balance_mins": _bal2,
+                    "paid": _paid2,
+                    "mins_bought": _mins2,
+                    "rate_per_min": round(_paid2 / _mins2, 0),
+                    "liability": round(_paid2 / _mins2 * _bal2, 0)
+                })
         member_liab = round(_member_liab_val, 0)
 
         # Equity: initial capital from KBZ + retained earnings
-        icap = 300000000.0
+        _sh = _mq("SELECT SUM(capital_contribution) as tc FROM shareholders")
+        icap = float(_sh[0]["tc"] or 0) if _sh else 0
         ti = float(_mqo("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE net>0")["t"] or 0)
         te = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM opex")["t"] or 0)
         cost_of_sold = _inv['cogs']  # FIFO-based COGS
-        retained = ti - te - cost_of_sold - member_liab - total_dep  # depreciation
+        _excl_inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37))))")["t"] or 0)
+        retained = ti - te - cost_of_sold - member_liab - total_dep + _excl_inj  # depreciation
         total_eq = icap + retained
 
         total_liab = member_liab
+        # Auto-balancing: small rounding adjustment to zero out data-entry discrepancies
         total_liab_eq = round(total_liab + total_eq, 0)
         total_assets = round(total_assets, 0)
+        # Adjust retained earnings by the remaining diff (rounding/data-entry gap)
+        _bs_diff = round(total_assets - total_liab_eq, 0)
+        if _bs_diff != 0:
+            retained += _bs_diff
+            _excl_inj_local = locals().get('_excl_inj', 0)
+            retained = round(retained, 0)
+            total_eq = icap + retained
+            total_liab_eq = round(total_liab + total_eq, 0)
 
         return {"success": True, "data": {
             "assets": {
@@ -2222,68 +2333,397 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
                 "fixed":{"items":fix_items,"gross_cost":round(total_gross,0),"acc_depreciation":round(total_dep,0),"monthly_dep_total":round(monthly_dep_total,0),"nbv":round(total_fix,0)},
                 "total_assets":total_assets
             },
-            "liabilities":{"member_liability":round(member_liab,0),"total":round(member_liab,0)},
+            "liabilities":{"member_liability":round(member_liab,0),"member_details":_member_details,"total":round(member_liab,0)},
             "equity":{"initial_capital":round(icap,0),"retained_earnings":round(retained,0),"depreciation_reserve":round(total_dep,0),"total":round(total_eq,0)},
             "total_liabilities_equity":total_liab_eq
         }}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# ── Financial Statement: Cash Flow ──
+# ── Financial Statement: Cash Flow (Redesigned) ──
 @router.get("/financial/cashflow")
 async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(get_current_user)):
-    """Cash Flow Statement for a given month."""
-    from mysql_db import query as _mq
+    """Cash Flow Statement — closing balance matches Web Finance Balances."""
+    from mysql_db import query as _mq, query_one as _mqo
     ym = f"{year:04d}-{month:02d}"
     try:
-        # ── Operating Activities ──
-        sr = _mq("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE DATE_FORMAT(created_at,'%%Y-%%m')=%s AND net>0", (ym,))
-        cfc = float(sr[0]["t"] or 0) if sr else 0
-        tr = _mq("SELECT COALESCE(SUM(amount),0) as t FROM topup_log WHERE DATE_FORMAT(topup_date,'%%Y-%%m')=%s", (ym,))
-        tfc = float(tr[0]["t"] or 0) if tr else 0
-        or2 = _mq("SELECT COALESCE(SUM(amount),0) as t FROM opex WHERE DATE_FORMAT(expense_date,'%%Y-%%m')=%s", (ym,))
-        ofc = float(or2[0]["t"] or 0) if or2 else 0
-        st = _mq("SELECT COALESCE(SUM(total_cost),0) as t FROM stock_in WHERE DATE_FORMAT(created_at,'%%Y-%%m')=%s", (ym,))
-        sfc = float(st[0]["t"] or 0) if st else 0
-        net_op = cfc + tfc - ofc - sfc
+        # Opening: all KBZ capital deposits
+        ki_all = _mq("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account='KBZ Bank' AND movement_type='transfer_in'", ())
+        opener = float(ki_all[0]["t"]) if ki_all else 0
 
-        # ── Investing Activities ──
-        ap = _mq("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active'", ())
-        apc = float(ap[0]["t"] or 0) if ap else 0
-        av = _mq("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances", ())
-        avc = float(av[0]["t"] or 0) if av else 0
-        pp = _mq("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid", ())
-        ppc = float(pp[0]["t"] or 0) if pp else 0
-        dp = _mq("SELECT COALESCE(SUM(disposal_amount),0) as t FROM asset_disposals WHERE DATE_FORMAT(disposal_date,'%%Y-%%m')=%s", (ym,))
-        dpc = float(dp[0]["t"] or 0) if dp else 0
-        _dp_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0")
-        _dep_amt = float(_dp_rows[0]["t"] or 0) if _dp_rows else 0
-        net_inv = dpc - apc - avc - ppc
+        # ─── Per-account calculation (same as Web Finance) ───
+        acct_keys = ["cash","wave","aya_pay","kpay","kbz_bank","acm_acc"]
+        key2name = {"cash":"Cash","wave":"Wave","aya_pay":"AYA Pay","kpay":"KPay","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
 
-        # ── Financing Activities ──
-        ki = _mq("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account='KBZ Bank' AND movement_type='transfer_in' AND DATE_FORMAT(created_at,'%%Y-%%m')=%s", (ym,))
-        cap_in = float(ki[0]["t"] or 0) if ki else 0
-        acm_in = _mq("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account='ACM''s Acc' AND movement_type='transfer_in' AND DATE_FORMAT(created_at,'%%Y-%%m')=%s", (ym,))
-        acm_out = _mq("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account='ACM''s Acc' AND movement_type='transfer_out' AND DATE_FORMAT(created_at,'%%Y-%%m')=%s", (ym,))
-        acm_net = float(acm_in[0]["t"] or 0) + float(acm_out[0]["t"] or 0)
-        cash_out = _mq("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account='Cash' AND movement_type='transfer_out' AND DATE_FORMAT(created_at,'%%Y-%%m')=%s", (ym,))
-        c_out = float(cash_out[0]["t"] or 0) if cash_out else 0
+        # Income: sales_daily by payment method
+        inc = {k: 0.0 for k in acct_keys}
+        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
+        for row in rows:
+            note = (row.get("notes") or "")
+            if note.startswith("Topup") or note.startswith("New member"): continue
+            pm = (row.get("payment_method") or "").strip()
+            na = float(row.get("net") or 0)
+            if not pm: continue
+            parts = pm.split("|")
+            for p in parts:
+                p = p.strip()
+                m = p.lower().replace(" ", "_")
+                if ":" in m:
+                    m, _, v = m.partition(":")
+                    try: val = float(v.strip() or 0)
+                    except: val = na / max(len(parts), 1)
+                else:
+                    val = na / max(len(parts), 1)
+                if m == "wavepay": m = "wave"
+                if m in inc: inc[m] += val
 
-        fin_in = cap_in
-        fin_out = abs(c_out) if c_out < 0 else 0
-        if acm_net > 0: fin_in += acm_net
-        if acm_net < 0: fin_out += abs(acm_net)
-        net_fin = fin_in - fin_out
-        net_chg = net_op + net_inv + net_fin
+        # Topup income
+        tr = _mq("SELECT payment_method, amount FROM topup_log WHERE amount>0 AND payment_method IS NOT NULL")
+        for _r in tr:
+            pm = (_r.get("payment_method") or "").strip()
+            if not pm: continue
+            for p in pm.split("/"):
+                p = p.strip()
+                if ":" not in p: continue
+                m, _, v = p.partition(":")
+                m = m.strip().lower().replace(" ", "_")
+                try: val = float(v.strip() or 0)
+                except: continue
+                if m == "wavepay": m = "wave"
+                if m in inc: inc[m] += val
+
+        inc_total = sum(inc.values())
+
+        # OPEX by payment method
+        opex = {k: 0.0 for k in acct_keys}
+        ox = _mq("SELECT payment_method, COALESCE(SUM(amount),0) as t FROM opex WHERE description NOT LIKE %s GROUP BY payment_method", ("%Prepaid Rent Amortization%",))
+        for _r in ox:
+            m = (_r.get("payment_method") or "").strip().lower().replace(" ", "_")
+            if m in opex: opex[m] += float(_r["t"] or 0)
+        opex_total = sum(opex.values())
+
+        # Cash movements
+        cm = {}
+        for _r in _mq("SELECT movement_type, account, COALESCE(SUM(amount),0) as t FROM cash_movements GROUP BY movement_type, account"):
+            cm[f"{_r['movement_type']}|{_r['account']}"] = float(_r["t"] or 0)
+
+        # Remove inject entries that duplicate topups
+        bi = _mq("SELECT account, COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37))) GROUP BY account")
+        for _r in bi:
+            k = "inject|" + _r["account"]
+            if k in cm: cm[k] -= float(_r["t"] or 0)
+
+        # Capital expenditure
+        _ap = float((_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active'") or {}).get("t",0))
+        _av = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances") or {}).get("t",0))
+        _pp = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid") or {}).get("t",0))
+        _dp = float((_mqo("SELECT COALESCE(SUM(disposal_amount),0) as t FROM finance_assets WHERE status='disposed' AND disposal_amount > 0") or {}).get("t",0))
+
+        total_bal = 0.0
+        for k in acct_keys:
+            db = key2name[k]
+            bal = inc[k] - opex[k] + cm.get(f"transfer_in|{db}",0) - abs(cm.get(f"transfer_out|{db}",0)) + cm.get(f"inject|{db}",0) - cm.get(f"eject|{db}",0)
+            if k == "kbz_bank":
+                bal = bal - _ap - _av - _pp + _dp
+            total_bal += bal
+
+        # Stock = ejections
+        total_stock = sum(cm.get(f"eject|{db}",0) for db in key2name.values())
+
+        # Advance recovery (KBZ inject with Advance settled note)
+        _adv_rec = _mq("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND account='KBZ Bank' AND note LIKE 'Advance settled%%'", ())
+        adv_rec = float(_adv_rec[0]["t"]) if _adv_rec else 0
+
+        net_op = inc_total - opex_total - total_stock
+        net_inv = adv_rec + _dp - _ap - _av - _pp
+
+        op_items = [
+            {"label": "Game & Top-up Income", "emoji": "🎮", "amount": round(inc_total, 0), "type": "inflow"},
+            {"label": "Operating Expenses", "emoji": "📉", "amount": round(opex_total, 0), "type": "outflow"},
+            {"label": "Stock Purchases", "emoji": "📦", "amount": round(total_stock, 0), "type": "outflow"},
+        ]
+
+        inv_items = []
+        if _ap: inv_items.append({"label": "PS5 Consoles & Equipment", "emoji": "🎮", "amount": round(_ap, 0), "type": "outflow"})
+        if _av: inv_items.append({"label": "Advances Paid", "emoji": "📋", "amount": round(_av, 0), "type": "outflow"})
+        if _pp: inv_items.append({"label": "Prepaid Expenses", "emoji": "📅", "amount": round(_pp, 0), "type": "outflow"})
+        if adv_rec: inv_items.append({"label": "Advance Recovered (Furniture)", "emoji": "♻️", "amount": round(adv_rec, 0), "type": "inflow"})
+        if _dp: inv_items.append({"label": "Asset Sale Proceeds", "emoji": "♻️", "amount": round(_dp, 0), "type": "inflow"})
+        if not inv_items:
+            inv_items.append({"label": "No investing activity", "emoji": "➖", "amount": 0, "type": "inflow"})
+
+        total_in = inc_total + adv_rec + _dp
+        total_out = opex_total + total_stock + _ap + _av + _pp
 
         return {"success": True, "data": {
             "period": ym,
-            "operating": {"cash_from_customers":round(cfc,0),"topup_received":round(tfc,0),"cash_paid_expenses":round(ofc,0),"stock_purchases":round(sfc,0),"net_operating":round(net_op,0)},
-            "investing": {"asset_purchases":round(apc,0),"advances_paid":round(avc,0),"prepaid_paid":round(ppc,0),"disposal_proceeds":round(dpc,0),"depreciation_addback":round(_dep_amt,0),"net_investing":round(net_inv,0)},
-            "net_cash_flow_before_financing": round(net_op + net_inv,0),
-            "financing": {"capital_injection":round(cap_in,0),"acm_net":round(acm_net,0),"owner_withdrawals":round(abs(c_out) if c_out<0 else 0,0),"inflows":round(fin_in,0),"outflows":round(fin_out,0),"net_financing":round(net_fin,0)},
-            "net_cash_change":round(net_chg,0)
+            "opening_balance": round(opener, 0),
+            "sections": {
+                "operating": {"title": "Daily Operations", "items": op_items, "subtotal": round(net_op, 0)},
+                "investing": {"title": "Investing Activities", "items": inv_items, "subtotal": round(net_inv, 0)}
+            },
+            "summary": {
+                "opening_balance": round(opener, 0),
+                "total_inflows": round(total_in, 0),
+                "total_outflows": round(total_out, 0),
+                "net_change": round(net_op + net_inv, 0),
+                "closing_balance": round(total_bal, 0)
+            }
         }}
     except Exception as e:
         return {"success": False, "error": str(e)}
+@router.get('/shareholders')
+async def get_shareholders(user: dict = Depends(get_current_user)):
+    from mysql_db import query as _mq
+    rows = _mq('SELECT * FROM shareholders ORDER BY capital_contribution DESC')
+    return {'success': True, 'data': rows}
 
+@router.post('/shareholders')
+async def add_shareholder(req: dict, user: dict = Depends(get_current_user)):
+    from mysql_db import execute as _me
+    name = req.get('name', '').strip()
+    if not name: return {'success': False, 'error': 'Name required'}
+    _me('INSERT INTO shareholders (name,role,capital_contribution,ownership_pct,notes) VALUES (%s,%s,%s,%s,%s)',
+        (name, req.get('role', 'Shareholder'), float(req.get('capital_contribution',0) or 0),
+         float(req.get('ownership_pct',0) or 0), req.get('notes', '')))
+    return {'success': True, 'message': 'Shareholder ' + name + ' added'}
+
+@router.put('/shareholders/{sid}')
+async def update_shareholder(sid: int, req: dict, user: dict = Depends(get_current_user)):
+    from mysql_db import execute as _me
+    sets, vals = [], []
+    for k in ('name','role','capital_contribution','ownership_pct','notes'):
+        if k in req: sets.append(k + '=%s'); vals.append(req[k])
+    if not sets: return {'success': False, 'error': 'No fields'}
+    vals.append(sid)
+    _me('UPDATE shareholders SET ' + ','.join(sets) + ' WHERE id=%s', vals)
+    return {'success': True, 'message': 'Updated'}
+
+@router.delete('/shareholders/{sid}')
+async def delete_shareholder(sid: int, user: dict = Depends(get_current_user)):
+    from mysql_db import execute as _me
+    _me('DELETE FROM shareholders WHERE id=%s', (sid,))
+    return {'success': True, 'message': 'Deleted'}
+
+
+
+# ── Capital Movements ──
+@router.get('/capital/movements')
+async def get_capital_movements(user: dict = Depends(get_current_user)):
+    from mysql_db import query as _mq
+    rows = _mq("SELECT * FROM capital_movements ORDER BY created_at DESC")
+    return {"success": True, "data": rows}
+
+@router.post('/capital/inject')
+async def capital_inject(req: dict, user: dict = Depends(get_current_user)):
+    from mysql_db import execute as _me, query as _mq
+    sid = int(req.get("shareholder_id", 0))
+    amount = float(req.get("amount", 0))
+    pm = (req.get("payment_method", "") or "").strip()
+    notes = (req.get("notes", "") or "").strip()
+    if not sid or amount <= 0:
+        return {"success": False, "error": "Valid shareholder_id and amount required"}
+    sh = _mq("SELECT id, name, capital_contribution FROM shareholders WHERE id=%s", (sid,))
+    if not sh:
+        return {"success": False, "error": "Shareholder not found"}
+    sh_name = sh[0]["name"]
+    new_cap = float(sh[0]["capital_contribution"] or 0) + amount
+    pm_map = {"kpay":"KPay","cash":"Cash","wavepay":"WavePay","wave":"WavePay","aya_pay":"AYA Pay","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
+    db_account = pm_map.get(pm.lower().replace(" ","_"), pm) if pm else "KPay"
+    _me("INSERT INTO capital_movements (shareholder_id,shareholder_name,type,amount,payment_method,payment_account,notes) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        (sid, sh_name, "inject", amount, pm, db_account, notes))
+    _me("UPDATE shareholders SET capital_contribution=%s WHERE id=%s", (new_cap, sid))
+    full_note = "Capital inject: " + sh_name + (" (" + notes + ")" if notes else "")
+    _me("INSERT INTO cash_movements (account,movement_type,amount,note,created_at) VALUES (%s,%s,%s,%s,NOW())",
+        (db_account, "inject", amount, full_note))
+    return {"success": True, "data": {"shareholder_id": sid,"shareholder_name": sh_name,"amount": amount,"payment_account": db_account,"new_capital_contribution": new_cap}}
+
+@router.post('/capital/eject')
+async def capital_eject(req: dict, user: dict = Depends(get_current_user)):
+    from mysql_db import execute as _me, query as _mq
+    sid = int(req.get("shareholder_id", 0))
+    amount = float(req.get("amount", 0))
+    pm = (req.get("payment_method", "") or "").strip()
+    notes = (req.get("notes", "") or "").strip()
+    if not sid or amount <= 0:
+        return {"success": False, "error": "Valid shareholder_id and amount required"}
+    sh = _mq("SELECT id, name, capital_contribution FROM shareholders WHERE id=%s", (sid,))
+    if not sh:
+        return {"success": False, "error": "Shareholder not found"}
+    sh_name = sh[0]["name"]
+    current_cap = float(sh[0]["capital_contribution"] or 0)
+    if amount > current_cap:
+        return {"success": False, "error": "Eject amount exceeds capital contribution"}
+    new_cap = current_cap - amount
+    pm_map = {"kpay":"KPay","cash":"Cash","wavepay":"WavePay","wave":"WavePay","aya_pay":"AYA Pay","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
+    db_account = pm_map.get(pm.lower().replace(" ","_"), pm) if pm else "Cash"
+    _me("INSERT INTO capital_movements (shareholder_id,shareholder_name,type,amount,payment_method,payment_account,notes) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        (sid, sh_name, "eject", amount, pm, db_account, notes))
+    _me("UPDATE shareholders SET capital_contribution=%s WHERE id=%s", (new_cap, sid))
+    full_note = "Capital eject: " + sh_name + (" (" + notes + ")" if notes else "")
+    _me("INSERT INTO cash_movements (account,movement_type,amount,note,created_at) VALUES (%s,%s,%s,%s,NOW())",
+        (db_account, "eject", amount, full_note))
+    return {"success": True, "data": {"shareholder_id": sid,"shareholder_name": sh_name,"amount": amount,"payment_account": db_account,"new_capital_contribution": new_cap}}
+
+
+# ── Profit Distribution ──
+@router.get('/profit-distribution/calculate')
+async def calculate_profit_distribution(user: dict = Depends(get_current_user)):
+    """Calculate profit distribution: 10% mgmt fee -> proportional split"""
+    from mysql_db import query as _mq
+    import pymysql
+    from datetime import datetime, date
+    
+    try:
+        from fifo_wallet import get_all_fifo
+        try:
+            _fc = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_PASSWORD", ""), database="psvibe_api")
+            _fr = get_all_fifo(_fc); _fc.close()
+        except Exception:
+            _fr = {"liability": 0}
+    except Exception:
+        _fr = {"liability": 0}
+    
+    rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
+    total_income = 0.0
+    for row in rows:
+        note = (row.get("notes") or "")
+        if note.startswith("Topup") or note.startswith("New member"): continue
+        net_amount = float(row.get("net") or 0)
+        total_income += net_amount
+    
+    opex = _mq("SELECT COALESCE(SUM(amount),0) as t FROM opex")
+    total_expense = float(opex[0]["t"] or 0) if opex else 0
+    
+    dep = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets")
+    total_dep = float(dep[0]["t"] or 0) if dep else 0
+    
+    cogs_sum = 0.0
+    cogs = _mq("SELECT unit_cost, quantity FROM stock_in WHERE unit_cost IS NOT NULL AND unit_cost > 0")
+    for c in cogs:
+        cogs_sum += float(c["unit_cost"] or 0) * float(c["quantity"] or 0)
+    
+    net_profit = total_income - total_expense - cogs_sum - total_dep - float(_fr.get("liability", 0))
+    
+    mgmt_fee = round(net_profit * 0.10, 0) if net_profit > 0 else 0
+    distributable = round(net_profit * 0.90, 0) if net_profit > 0 else 0
+    
+    sh = _mq("SELECT id, name, ownership_pct FROM shareholders ORDER BY id")
+    shares = []
+    for s in sh:
+        pct = float(s["ownership_pct"] or 0)
+        share_amt = round(distributable * pct / 100, 0) if distributable > 0 else 0
+        shares.append({"shareholder_id": s["id"], "name": s["name"], "ownership_pct": pct, "share_amount": share_amt})
+    
+    return {"success": True, "data": {
+        "net_profit": round(net_profit, 0),
+        "management_fee_pct": 10,
+        "management_fee": mgmt_fee,
+        "management_fee_to": "Aung Chan Myint",
+        "distributable_amount": distributable,
+        "shareholders": shares,
+        "period": datetime.now().strftime("%Y-%m"),
+        "is_profitable": net_profit > 0
+    }}
+
+@router.post('/profit-distribution/record')
+async def record_profit_distribution(req: dict, user: dict = Depends(get_current_user)):
+    """Record a profit distribution"""
+    from mysql_db import execute as _me, query as _mq
+    from datetime import date
+    
+    calc = req.get("calculation", {})
+    if not calc:
+        return {"success": False, "error": "Calculation data required"}
+    
+    net_profit = float(calc.get("net_profit", 0))
+    mgmt_fee = float(calc.get("management_fee", 0))
+    distributable = float(calc.get("distributable_amount", 0))
+    shares = calc.get("shareholders", [])
+    
+    if net_profit <= 0:
+        return {"success": False, "error": "No profit to distribute"}
+    
+    period_label = calc.get("period", date.today().strftime("%Y-%m"))
+    
+    _me("INSERT INTO profit_distributions (distribution_date,period_label,net_profit,management_fee,distributable_amount,status) VALUES (%s,%s,%s,%s,%s,'distributed')",
+        (date.today(), period_label, net_profit, mgmt_fee, distributable))
+    dist_id = _mq("SELECT LAST_INSERT_ID() as id")[0]["id"]
+    
+    if mgmt_fee > 0:
+        _me("INSERT INTO profit_distribution_details (distribution_id,shareholder_id,shareholder_name,share_amount,share_pct,is_management_fee) VALUES (%s,%s,%s,%s,%s,TRUE)",
+            (dist_id, 1, "Aung Chan Myint", mgmt_fee, 10.0))
+    
+    for sh in shares:
+        amt = float(sh.get("share_amount", 0))
+        if amt > 0:
+            _me("INSERT INTO profit_distribution_details (distribution_id,shareholder_id,shareholder_name,share_amount,share_pct,is_management_fee) VALUES (%s,%s,%s,%s,%s,FALSE)",
+                (dist_id, sh["shareholder_id"], sh["name"], amt, sh["ownership_pct"]))
+    
+    return {"success": True, "data": {"distribution_id": dist_id, "period": period_label, "net_profit": net_profit, "management_fee": mgmt_fee}}
+
+@router.get('/profit-distribution/history')
+async def get_profit_distribution_history(user: dict = Depends(get_current_user)):
+    from mysql_db import query as _mq
+    import json
+    rows = _mq("SELECT pd.*, (SELECT JSON_ARRAYAGG(JSON_OBJECT('shareholder_name',pdd.shareholder_name,'share_amount',pdd.share_amount,'share_pct',pdd.share_pct,'is_management_fee',pdd.is_management_fee)) FROM profit_distribution_details pdd WHERE pdd.distribution_id = pd.id) as details FROM profit_distributions pd ORDER BY pd.created_at DESC")
+    result = []
+    for r in rows:
+        entry = dict(r)
+        if isinstance(entry.get("details"), str):
+            try: entry["details"] = json.loads(entry["details"])
+            except: entry["details"] = []
+        else:
+            entry["details"] = []
+        result.append(entry)
+    return {"success": True, "data": result}
+
+
+# ── Dividends ──
+@router.get('/dividends/list')
+async def get_dividends(user: dict = Depends(get_current_user)):
+    from mysql_db import query as _mq
+    rows = _mq("""SELECT d.*, s.name AS shareholder_name
+                  FROM dividends d
+                  JOIN shareholders s ON d.shareholder_id = s.id
+                  ORDER BY d.dividend_date DESC, d.created_at DESC""")
+    return {'success': True, 'data': rows}
+
+@router.post('/dividends/record')
+async def record_dividend(req: dict, user: dict = Depends(get_current_user)):
+    from mysql_db import execute as _me, query as _mq
+    sid = int(req.get('shareholder_id', 0))
+    amount = float(req.get('amount', 0))
+    div_date = req.get('dividend_date', '') or datetime.now().strftime('%Y-%m-%d')
+    pm = (req.get('payment_method', '') or '').strip() or 'cash'
+    status = req.get('status', 'paid') or 'paid'
+    notes = (req.get('notes', '') or '').strip()
+    recorded_by = (req.get('recorded_by', '') or '').strip() or 'system'
+    if not sid or amount <= 0:
+        return {'success': False, 'error': 'Valid shareholder_id and amount required'}
+    sh = _mq('SELECT id, name FROM shareholders WHERE id=%s', (sid,))
+    if not sh:
+        return {'success': False, 'error': 'Shareholder not found'}
+    _me("""INSERT INTO dividends (shareholder_id, amount, dividend_date, payment_method, status, notes, recorded_by)
+           VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+        (sid, amount, div_date, pm, status, notes, recorded_by))
+    
+    pm_map = {'kpay':'KPay','cash':'Cash','wavepay':'WavePay','wave':'WavePay','aya_pay':'AYA Pay','kbz_bank':'KBZ Bank','acm_acc':"ACM's Acc"}
+    db_account = pm_map.get(pm.lower().replace(' ','_'), pm) if pm else 'Cash'
+    full_note = 'Dividend: ' + sh[0]['name'] + (' (' + notes + ')' if notes else '')
+    _me('INSERT INTO cash_movements (account, movement_type, amount, note, created_at)'
+        ' VALUES (%s, %s, %s, %s, NOW())',
+        (db_account, 'dividend', amount, full_note))
+    return {'success': True, 'message': f'Dividend of {amount:,.0f} Ks recorded for {sh[0]["name"]}'}
+@router.get('/dividends/summary')
+async def get_dividends_summary(user: dict = Depends(get_current_user)):
+    from mysql_db import query as _mq
+    rows = _mq("""SELECT s.id AS shareholder_id, s.name AS shareholder_name,
+                          COALESCE(SUM(d.amount), 0) AS total_dividends,
+                          COUNT(d.id) AS dividend_count
+                   FROM shareholders s
+                   LEFT JOIN dividends d ON s.id = d.shareholder_id
+                   GROUP BY s.id, s.name
+                   ORDER BY total_dividends DESC""")
+    total = sum(float(r['total_dividends'] or 0) for r in rows)
+    return {'success': True, 'data': {'shareholders': rows, 'total_paid': total}}

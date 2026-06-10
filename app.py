@@ -1094,6 +1094,16 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
         console_id = booking.get("console_id", "")
         telegram_chat_id = booking.get("telegram_chat_id", "")
         
+        # Guard: reject if console already has a different Active booking
+        if console_id:
+            existing = _mysql_query_one(
+                "SELECT id FROM console_booking WHERE console_id=%s AND status='Active' AND id != %s",
+                (console_id, booking_id)
+            )
+            if existing:
+                msg = "Console " + str(console_id) + " already has Active booking #" + str(existing['id']) + ". End that session first."
+                return error_response(message=msg)
+
         # Update booking status to Active
         _mysql_exec("UPDATE console_booking SET status='Active', start_time=NOW() WHERE id=%s", (booking_id,))
         
@@ -1427,6 +1437,86 @@ async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
 
 # ═══════════════════════════════════════
 
+
+
+@app.post("/api/consoles/start-session", response_model=GenericResponse, tags=["Consoles"], summary="Start session, auto-checkin confirmed booking [MySQL]")
+async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
+    """Start a session on a console. If there is a Confirmed booking, auto-checkin and link it."""
+    try:
+        console_id = (req.get('console_id') or '').strip()
+        member_id = req.get('member_id') or req.get('memberId') or 'Guest'
+        game_name = req.get('game_name') or req.get('gameName') or ''
+        duration_mins = req.get('duration_mins') or req.get('durationMins') or 60
+        if not console_id:
+            return error_response(message='console_id required')
+
+        # Check if console already Active
+        cs = _mysql_query_one("SELECT status FROM console_status WHERE console_id=%s", (console_id,))
+        if cs and cs['status'] == 'Active':
+            return error_response(message=f"Console {console_id} is already Active")
+
+        # Look for a Confirmed booking for this console today
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        bk = _mysql_query_one(
+            "SELECT id, member_id, game_name, duration_mins, telegram_chat_id, staff_name FROM console_booking "
+            "WHERE console_id=%s AND status='confirmed' AND DATE(booking_date)=%s ORDER By created_at DESC LIMIT 1",
+            (console_id, today)
+        )
+
+        booking_id = None
+        if bk:
+            # Use booking data (autofill)
+            member_id = bk['member_id'] or member_id
+            game_name = bk['game_name'] or game_name
+            duration_mins = bk['duration_mins'] or duration_mins
+            booking_id = bk['id']
+            # Check-in: update booking to Active
+            _mysql_exec("UPDATE console_booking SET status='Active', start_time=NOW() WHERE id=%s", (booking_id,))
+            logger.info(f"Auto-checkin booking #{booking_id} for console {console_id}")
+        else:
+            # No confirmed booking - create a new Active booking record
+            _mysql_exec(
+                "INSERT INTO console_booking (console_id, member_id, status, booking_date, start_time, duration_mins, game_name) VALUES (%s,%s,'Active',%s,NOW(),%s,%s)",
+                (console_id, member_id, today, duration_mins, game_name)
+            )
+            booking_id = _mysql_query_one("SELECT MAX(id) as id FROM console_booking WHERE console_id=%s", (console_id,))['id']
+
+        # Set console to Active
+        _mysql_exec(
+            "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=NOW() WHERE console_id=%s",
+            (member_id, game_name, console_id)
+        )
+
+        return ok({
+            "booking_id": booking_id,
+            "console_id": console_id,
+            "member_id": member_id,
+            "status": "Active",
+            "linked_booking": True if bk else False,
+        })
+    except Exception as e:
+        logger.exception(f"start-session error: {e}")
+        return error_response(message=str(e))
+
+@app.get("/api/get-confirmed-booking", response_model=GenericResponse, tags=["Bookings"], summary="Get confirmed bookings for a console [MySQL]")
+async def api_confirmed_bookings_for_console(console_id: str, auth=Depends(verify_api_key)):
+    """Get today's Confirmed booking for a console (for auto-checkin)."""
+    try:
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        row = _mysql_query_one(
+            "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking "
+            "WHERE console_id=%s AND status='confirmed' AND DATE(booking_date)=%s ORDER BY created_at DESC LIMIT 1",
+            (console_id, today)
+        )
+        if not row:
+            return ok({"booking": None})
+        for k in ("start_time", "end_time", "created_at"):
+            if k in row and row[k] is not None:
+                row[k] = row[k].isoformat() if hasattr(row[k], "isoformat") else str(row[k])
+        return ok({"booking": row})
+    except Exception as e:
+        logger.exception(f"confirmed-by-console error: {e}")
+        return ok({"booking": None})
 @app.post("/api/bookings/cancel", response_model=GenericResponse, tags=["Bookings"], summary="Cancel a booking by ID [MySQL]")
 async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
     """Cancel a booking. Frees console if reserved."""
@@ -2413,6 +2503,12 @@ async def api_stock_out_log(req: dict, auth=Depends(verify_api_key)):
             (item_name, qty, unit_cost, total_cost, sale_date, staff, notes)
         )
 
+        # Decrement inventory quantity
+        _mysql_exec(
+            "UPDATE inventory SET quantity = GREATEST(0, quantity - %s), last_updated = NOW() WHERE item_name = %s",
+            (qty, item_name)
+        )
+
         logger.info("Stock-out logged: item=%s qty=%s staff=%s", item_name, qty, staff)
         return ok({"item_name": item_name, "qty": qty, "success": True})
     except Exception as e:
@@ -2442,6 +2538,14 @@ async def api_stock_in_log(req: dict, auth=Depends(verify_api_key)):
             "INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, staff_name) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (batch_id, item_name, qty, unit_cost, supplier or "Manual", notes or "", staff)
+        )
+
+        # Update inventory quantity
+        _mysql_exec(
+            "INSERT INTO inventory (item_name, category, quantity, unit_price, reorder_level, last_updated) "
+            "VALUES (%s, %s, %s, %s, %s, NOW()) "
+            "ON DUPLICATE KEY UPDATE quantity = quantity + %s, unit_price = %s, last_updated = NOW()",
+            (item_name, "", qty, unit_cost, 0, qty, unit_cost)
         )
 
         logger.info("Stock-in logged: batch=%s item=%s qty=%s", batch_id, item_name, qty)
@@ -2483,6 +2587,14 @@ async def api_stock_in(req: dict, auth=Depends(verify_api_key)):
             """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (batch_id, item_name, quantity, unit_cost, source or "", receipt_no or "", payment_method, paid_by, staff_name)
+        )
+
+        # Update inventory quantity
+        _mysql_exec(
+            """INSERT INTO inventory (item_name, category, quantity, unit_price, reorder_level, last_updated)
+               VALUES (%s, %s, %s, %s, %s, NOW())
+               ON DUPLICATE KEY UPDATE quantity = quantity + %s, unit_price = %s, last_updated = NOW()""",
+            (item_name, "", quantity, unit_cost, 0, quantity, unit_cost)
         )
 
         # Create cash_movements entries to deduct from account balance

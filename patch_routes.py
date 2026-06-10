@@ -809,7 +809,7 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
         
         # 2. Calculate incoming money from sales_daily
         sale_rows = _mysql_query("""
-            SELECT payment_method
+            SELECT payment_method, notes
             FROM sales_daily
             WHERE sale_date >= '2026-01-01'
         """)
@@ -818,6 +818,9 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
         income_by_acct = {"cash": 0.0, "kpay": 0.0, "wave": 0.0, "aya": 0.0, "acm": 0.0, "kbz": 0.0}
         
         for r in sale_rows:
+            _note = (r.get("notes") or "").strip()
+            if _note.startswith("Topup") or _note.startswith("New member"):
+                continue
             pm = r["payment_method"] or ""
 
             if "|" in pm:
@@ -865,6 +868,11 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
         
         # 3. Include cash_movements (inject adds, eject subtracts)
         cm_rows = _mysql_query("SELECT movement_type, account, SUM(amount) as total FROM cash_movements GROUP BY movement_type, account")
+        # Fetch inject entries that overlap with topup (notes start with Topup or New member)
+        _bad_inject = _mysql_query("SELECT account, SUM(amount) as total FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37)))) GROUP BY account")
+        _bad_inject_map = {}
+        for _r in _bad_inject:
+            _bad_inject_map[_r['account'].strip().lower()] = float(_r['total'] or 0)
         for r in cm_rows:
             acct_key = r["account"].strip().lower()
             if acct_key == "kpay": acct_key = "kpay"
@@ -875,7 +883,10 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
             else: continue
             amt = float(r["total"] or 0)
             if r["movement_type"] in ("inject", "transfer_in"):
-                income_by_acct[acct_key] += amt
+                amt_adj = amt
+                if r["movement_type"] == "inject" and acct_key in _bad_inject_map:
+                    amt_adj = amt - _bad_inject_map[acct_key]
+                income_by_acct[acct_key] += amt_adj
             elif r["movement_type"] == "eject":
                 income_by_acct[acct_key] -= amt
             elif r["movement_type"] == "transfer_out":
