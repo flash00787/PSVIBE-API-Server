@@ -30,7 +30,7 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
         active_players = active_players["cnt"] if active_players else 0
 
         today_revenue = _mysql_query_one(
-            "SELECT COALESCE(SUM(amount), 0) as total FROM sales_daily WHERE DATE(sale_date) = %s", (today,)
+            "SELECT COALESCE(SUM(net), 0) as total FROM sales_daily WHERE DATE(sale_date) = %s", (today,)
         )
         today_revenue = float(today_revenue["total"]) if today_revenue else 0.0
 

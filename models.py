@@ -50,6 +50,8 @@ class HealthResponse(BaseModel):
 
 
 class GenericResponse(BaseModel):
+    mysql_connected: Optional[bool] = None
+    data_source: Optional[str] = None
     success: bool = True
     message: Optional[str] = None
     data: Optional[Any] = None

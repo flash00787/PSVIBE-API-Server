@@ -38,6 +38,7 @@ from sheets_client import (
 from mysql_db import query as mysql_query, query_one as mysql_query_one, execute as mysql_execute
 from auth import register_auth_routes, get_current_user
 from dashboard_routes import router as dashboard_router
+from kora_cmds import router as kora_cmds_router
 from models import (
     GameResponse, ConfigResponse, MemberResponse,
     BookingResponse, HealthResponse, GenericResponse
@@ -136,6 +137,7 @@ app.add_middleware(
 # ── Dashboard Auth & Routes ──
 register_auth_routes(app)
 app.include_router(dashboard_router)
+app.include_router(kora_cmds_router)
 
 # ── Config Cache ──
 _config_cache_data = None
@@ -215,6 +217,39 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         status_code=exc.status_code,
         content={"success": False, "error": exc.detail, "code": exc.status_code},
     )
+    allowed = {
+        "health": "curl -s http://127.0.0.1:8000/api/health",
+        "mysql_health": "curl -s http://127.0.0.1:8000/api/mysql/health",
+        "alerts": "python3 /root/coordination/check_alerts.py 2>/dev/null || echo \"No alerts system\"",
+        "backup": "date && echo \"Backup triggered\"",
+        "uptime": "uptime && free -h | head -2",
+        "disk": "df -h /",
+        "docker": "docker ps --format \"table {{.Names}}\t{{.Status}}\" 2>/dev/null",
+        "services": "systemctl list-units --type=service --state=running 2>/dev/null | head -10 || docker ps --format \"{{.Names}}: {{.Status}}\"",
+        "mem": "free -h",
+        "process": "ps aux --sort=-%mem | head -10",
+    }
+    if command not in allowed:
+        return {"success": False, "error": f"Unknown command: {command}. Allowed: {list(allowed.keys())}"}
+    try:
+        r = sp.run(shlex.split(allowed[command]), capture_output=True, text=True, timeout=15)
+        return {"success": True, "command": command, "output": r.stdout.strip() or "(no output)", "error": r.stderr.strip() or None}
+    except sp.TimeoutExpired:
+        return {"success": False, "command": command, "error": "Command timed out"}
+    except Exception as e:
+        return {"success": False, "command": command, "error": str(e)}
+
+
+@app.get("/kora")
+@app.get("/kora/{path:path}")
+async def serve_kora_dashboard(request: Request, path: str = ""):
+    """Serve Kora Dashboard"""
+    import os
+    kora_file = os.path.join(os.path.dirname(__file__), "..", ".openclaw", "workspace", "kora_dashboard", "index.html")
+    if os.path.exists(kora_file):
+        with open(kora_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read(), status_code=200)
+    return JSONResponse({"success": False, "error": "Kora Dashboard not found"}, status_code=404)
 
 
 @app.exception_handler(404)
@@ -422,12 +457,14 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)):
         for r in rows:
             if "id" not in r:
                 r["id"] = r.get("console_id", "")
-        # Mark Free consoles as Reserved if booking time slot includes NOW
+        # Mark Free consoles as Reserved if booking time slot includes now
         try:
+            _now_ref = now_mmt()
             upcoming = _mysql_query(
                 "SELECT console_id FROM console_booking "
                 "WHERE status IN ('confirmed', 'pending_check_in') "
-                "AND start_time <= NOW() AND end_time > NOW()"
+                "AND start_time <= %s AND end_time > %s",
+                (_now_ref, _now_ref)
             )
             reserved_ids = {r["console_id"].strip() for r in upcoming}
         except Exception:
@@ -1105,14 +1142,15 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
                 return error_response(message=msg)
 
         # Update booking status to Active
-        _mysql_exec("UPDATE console_booking SET status='Active', start_time=NOW() WHERE id=%s", (booking_id,))
+        _now_ref = now_mmt()
+        _mysql_exec("UPDATE console_booking SET status='Active', start_time=%s WHERE id=%s", (_now_ref, booking_id))
         
         # Set console to Active
         if console_id:
             member_name = booking.get("staff_name") or booking.get("member_id", "")
             _mysql_exec(
-                "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=NOW() WHERE console_id=%s",
-                (booking.get("member_id", ""), booking.get("game_name", ""), console_id)
+                "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=%s WHERE console_id=%s",
+                (booking.get("member_id", ""), booking.get("game_name", ""), _now_ref, console_id)
             )
         
         # ⏰ Schedule session timer for 5-min-before-end reminder
@@ -1464,6 +1502,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
         )
 
         booking_id = None
+        _now_ref = now_mmt()
         if bk:
             # Use booking data (autofill)
             member_id = bk['member_id'] or member_id
@@ -1471,20 +1510,20 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
             duration_mins = bk['duration_mins'] or duration_mins
             booking_id = bk['id']
             # Check-in: update booking to Active
-            _mysql_exec("UPDATE console_booking SET status='Active', start_time=NOW() WHERE id=%s", (booking_id,))
+            _mysql_exec("UPDATE console_booking SET status='Active', start_time=%s WHERE id=%s", (_now_ref, booking_id))
             logger.info(f"Auto-checkin booking #{booking_id} for console {console_id}")
         else:
             # No confirmed booking - create a new Active booking record
             _mysql_exec(
-                "INSERT INTO console_booking (console_id, member_id, status, booking_date, start_time, duration_mins, game_name) VALUES (%s,%s,'Active',%s,NOW(),%s,%s)",
-                (console_id, member_id, today, duration_mins, game_name)
+                "INSERT INTO console_booking (console_id, member_id, status, booking_date, start_time, duration_mins, game_name) VALUES (%s,%s,'Active',%s,%s,%s,%s)",
+                (console_id, member_id, today, _now_ref, duration_mins, game_name)
             )
             booking_id = _mysql_query_one("SELECT MAX(id) as id FROM console_booking WHERE console_id=%s", (console_id,))['id']
 
         # Set console to Active
         _mysql_exec(
-            "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=NOW() WHERE console_id=%s",
-            (member_id, game_name, console_id)
+            "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=%s WHERE console_id=%s",
+            (member_id, game_name, _now_ref, console_id)
         )
 
         return ok({
@@ -1655,9 +1694,10 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
             member_id = req.get("member_id", "")
             staff = req.get("staff_name", req.get("staff", ""))
             notes = req.get("notes", "")
-            _mysql_exec("INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s)", (console_id, member_id, now.date(), now, "Active", staff, notes))
+            _now_ref = now_mmt()
+            _mysql_exec("INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s)", (console_id, member_id, now.date(), _now_ref, "Active", staff, notes))
             # Sync console_status: mark console as Active (prevent duplicate sessions)
-            _mysql_exec("UPDATE console_status SET status='Active', current_member=%s, current_game='', start_time=NOW() WHERE console_id=%s", (member_id, console_id))
+            _mysql_exec("UPDATE console_status SET status='Active', current_member=%s, current_game='', start_time=%s WHERE console_id=%s", (member_id, _now_ref, console_id))
             return ok({"booking_id": f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ','').replace('-','')}-{now.strftime('%H%M')}"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2188,7 +2228,19 @@ try:
                 return resp
             return Response(status_code=404)
 
-        app.mount("/assets", StaticFiles(directory=os.path.join(dashboard_dir, "assets")), name="dashboard_assets")
+        
+        
+        class _NoCacheStaticFiles(StaticFiles):
+            """StaticFiles subclass that adds no-cache headers."""
+            async def get_response(self, path, scope):
+                resp = await super().get_response(path, scope)
+                if "Cache-Control" not in resp.headers:
+                    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                    resp.headers["Pragma"] = "no-cache"
+                    resp.headers["Expires"] = "0"
+                return resp
+        
+        app.mount("/assets", _NoCacheStaticFiles(directory=os.path.join(dashboard_dir, "assets")), name="dashboard_assets")
         
         # Serve favicon
         @app.get("/favicon.svg")
@@ -2842,6 +2894,126 @@ async def api_wallet_update(req: dict, auth=Depends(verify_api_key)):
 
 
 import patch_routes
+
+# ── n8n Reverse Proxy (HTTP middleware, path preserved) ──
+@app.middleware("http")
+async def n8n_middleware(request, call_next):
+    if request.url.path.startswith("/n8n") or request.url.path == "/favicon.ico":
+        import httpx as _httpx
+        from starlette.responses import StreamingResponse as _StreamingResponse
+
+        # Rewrite n8n HTML: prefix asset paths with /n8n/ so they get
+        # proxied back to n8n through the /n8n/ middleware handler
+        # (without this, assets at /assets/* conflict with dashboard)
+        if request.url.path == "/n8n/" or request.url.path == "/n8n":
+            target = f"http://localhost:5678{request.url.path}"
+            if request.url.query:
+                target += f"?{request.url.query}"
+            body = await request.body()
+            try:
+                async with _httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.request(
+                        method=request.method,
+                        url=target,
+                        headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+                        content=body or None,
+                    )
+                    # Read full HTML body
+                    html = b""
+                    async for chunk in resp.aiter_bytes():
+                        html += chunk
+                    # Rewrite asset paths: /assets/ -> /n8n/assets/ etc.
+                    text = html.decode("utf-8", errors="replace")
+                    text = text.replace('src="/assets/', 'src="/n8n/assets/')
+                    text = text.replace('href="/assets/', 'href="/n8n/assets/')
+                    text = text.replace('src="/static/', 'src="/n8n/static/')
+                    text = text.replace('href="/static/', 'href="/n8n/static/')
+                    text = text.replace('href="/favicon.ico"', 'href="/n8n/favicon.ico"')
+                    text = text.replace("window.BASE_PATH = '/';", "window.BASE_PATH = '/n8n/',")
+                    # Strip headers that cause garbled output (gzip already decoded)
+                    clean_headers = {k: v for k, v in resp.headers.items()
+                                     if k.lower() not in ("content-encoding", "content-length",
+                                                          "transfer-encoding", "content-security-policy",
+                                                          "strict-transport-security")}
+                    # Prevent Cloudflare from auto-minifying/transforming n8n HTML
+                    clean_headers["Cache-Control"] = "no-cache, no-store, must-revalidate, proxy-revalidate, no-transform"
+                    clean_headers["Cloudflare-No-Transform"] = "1" 
+                    return _StreamingResponse(
+                        [text.encode("utf-8")],
+                        status_code=resp.status_code,
+                        headers=clean_headers,
+                    )
+            except Exception as e:
+                from starlette.responses import JSONResponse
+                return JSONResponse({"success": False, "error": f"n8n proxy: {e}"}, status_code=502)
+
+        target = f"http://localhost:5678{request.url.path}"
+        if request.url.query:
+            target += f"?{request.url.query}"
+        body = await request.body()
+        try:
+            async with _httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.request(
+                    method=request.method,
+                    url=target,
+                    headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+                    content=body or None,
+                )
+                return _StreamingResponse(
+                    resp.aiter_bytes(),
+                    status_code=resp.status_code,
+                    headers={k: v for k, v in resp.headers.items()
+                             if k.lower() not in ("content-encoding", "content-length",
+                                                  "transfer-encoding", "content-security-policy",
+                                                  "strict-transport-security")},
+                )
+        except Exception as e:
+            from starlette.responses import JSONResponse
+            return JSONResponse({"success": False, "error": f"n8n proxy: {e}"}, status_code=502)
+
+    return await call_next(request)
+
+
+# n8n assets proxy — handles /n8n/assets/, /n8n/static/, /n8n/favicon.ico
+# (called when n8n's rewritten HTML references these paths)
+@app.middleware("http")
+async def n8n_assets_middleware(request, call_next):
+    if request.url.path.startswith("/n8n/assets/") or request.url.path.startswith("/n8n/static/") or request.url.path == "/n8n/favicon.ico":
+        import httpx as _httpx
+        from starlette.responses import StreamingResponse as _StreamingResponse
+
+        # Override base-path.js to use /n8n/ prefix for API calls
+        if request.url.path == "/n8n/static/base-path.js":
+            from starlette.responses import Response as _N8nResp
+            return _N8nResp(content="window.BASE_PATH = '/n8n/';", media_type="text/javascript")
+
+        # Strip /n8n prefix, forward remainder to n8n
+        internal_path = request.url.path[4:]  # /n8n/assets/... -> /assets/...
+        target = f"http://localhost:5678{internal_path}"
+        if request.url.query:
+            target += f"?{request.url.query}"
+        body = await request.body()
+        try:
+            async with _httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.request(
+                    method=request.method,
+                    url=target,
+                    headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+                    content=body or None,
+                )
+                return _StreamingResponse(
+                    resp.aiter_bytes(),
+                    status_code=resp.status_code,
+                    headers={k: v for k, v in resp.headers.items()
+                             if k.lower() not in ("content-encoding", "content-length",
+                                                  "transfer-encoding", "content-security-policy",
+                                                  "strict-transport-security")},
+                )
+        except Exception as e:
+            from starlette.responses import JSONResponse
+            return JSONResponse({"success": False, "error": f"n8n assets proxy: {e}"}, status_code=502)
+
+    return await call_next(request)
 
 # Resume active session timers on startup
 try:
