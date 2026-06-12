@@ -971,13 +971,8 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
                 kbz_base = c["balance"]
                 break
         
-        # income_by_acct["kbz"] includes opex deductions
+        # income_by_acct["kbz"] includes opex + cash movements
         kbz_balance = kbz_base + income_by_acct.get("kbz", 0)
-        
-        # Stock-in deductions for KBZ Bank (not in cash_movements normalizer)
-        si_rows = _mysql_query("SELECT COALESCE(SUM(quantity*unit_cost),0) as t FROM stock_in WHERE payment_method = 'KBZ Bank'")
-        kbz_stock_in = float(si_rows[0]["t"] or 0)
-        kbz_balance = kbz_balance - kbz_stock_in
         
         # Deduct capital expenditures from KBZ Bank
         a_rows = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM finance_assets WHERE status='active'")
