@@ -966,11 +966,8 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
             total_op += final_bal
         
         # Capital accounts: KBZ Bank real balance from transactions
+        # Base from accounts table would double-count initial capital (also in cash_movements)
         kbz_base = 0.0
-        for c in capital:
-            if c["name"] == "KBZ Bank":
-                kbz_base = c["balance"]
-                break
         
         # income_by_acct["kbz"] includes opex + cash movements
         kbz_balance = kbz_base + income_by_acct.get("kbz", 0)
