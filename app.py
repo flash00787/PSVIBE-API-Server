@@ -3015,6 +3015,32 @@ async def n8n_assets_middleware(request, call_next):
 
     return await call_next(request)
 
+
+
+@app.get('/shell/{path:path}', include_in_schema=False)
+async def proxy_shell_get(path: str, request: Request):
+    import httpx
+    from starlette.responses import Response
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        resp = await client.get(f'http://localhost:8888/{path}', headers=dict(request.headers))
+        return Response(content=resp.content, status_code=resp.status_code, headers=dict(resp.headers))
+
+@app.get('/shell', include_in_schema=False)
+async def proxy_shell_root(request: Request):
+    import httpx
+    from starlette.responses import Response
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        resp = await client.get('http://localhost:8888/', headers=dict(request.headers))
+        return Response(content=resp.content, status_code=resp.status_code, headers=dict(resp.headers))
+
+@app.post('/shell/{path:path}', include_in_schema=False)
+async def proxy_shell_post(path: str, request: Request):
+    import httpx
+    from starlette.responses import Response
+    body = await request.body()
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        resp = await client.post(f'http://localhost:8888/{path}', content=body, headers=dict(request.headers))
+        return Response(content=resp.content, status_code=resp.status_code, headers=dict(resp.headers))
 # Resume active session timers on startup
 try:
     resume_active_timers()

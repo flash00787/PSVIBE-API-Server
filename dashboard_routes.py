@@ -2,6 +2,7 @@
 import logging
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import get_current_user
@@ -367,7 +368,7 @@ async def dashboard_get_members(
         where = ["1=1"]
         params = []
         if search:
-            where.append("(m.member_id LIKE %s OR m.member_name LIKE %s OR COALESCE(m.phone,'') LIKE %s)")
+            where.append("(m.member_id LIKE %s OR m.name LIKE %s OR COALESCE(m.phone,'') LIKE %s)")
             like = f"%{search}%"
             params.extend([like, like, like])
         if tier:
@@ -375,7 +376,7 @@ async def dashboard_get_members(
             params.append(tier)
 
         sql = f"""
-            SELECT m.member_id, m.member_name as name, COALESCE(m.phone,''), m.balance_mins, m.tier,
+            SELECT m.member_id, m.name as name, COALESCE(m.phone,''), m.balance_mins, m.tier,
                    m.total_spend, m.lifetime_spend, m.join_date, m.last_updated
             FROM member_wallets m
             WHERE {' AND '.join(where)}
@@ -603,32 +604,76 @@ async def dashboard_get_coupons(
 
 @router.get("/topups")
 async def dashboard_get_topups(
-    search: str = "",
-    limit: int = 100,
+    member_id: str | None = Query(None),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    payment_method: str | None = Query(None),
+    search: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
 ):
-    """List all topup logs with search support."""
+    """List topup logs with optional filters."""
     try:
-        from mysql_db import query as _mq
-        sql = """
-            SELECT id, member_id, amount, mins_added, topup_date,
-                   staff_name, payment_method, balance_before, balance_after,
-                   balance_mins_before, balance_mins_after, notes, created_at
-            FROM topup_log
-        """
-        where = []
+        from mysql_db import query as _mq, query_one as _mqo
+        where = ["1=1"]
         params = []
+        if member_id:
+            where.append("tl.member_id = %s")
+            params.append(member_id)
+        if date_from:
+            where.append("DATE(tl.topup_date) >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("DATE(tl.topup_date) <= %s")
+            params.append(date_to)
+        if payment_method:
+            where.append("tl.payment_method = %s")
+            params.append(payment_method)
         if search:
-            where.append("member_id LIKE %s")
+            where.append("(tl.member_id LIKE %s OR tl.staff_name LIKE %s OR tl.payment_method LIKE %s)")
             s = f"%{search}%"
-            params.append(s)
-            params.append(s)
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY topup_date DESC LIMIT %s"
-        params.append(int(limit))
-        rows = _mq(sql, tuple(params)) if params else _mq(sql)
-        return {"success": True, "data": list(rows), "total": len(rows)}
+            params.extend([s, s, s])
+
+        sql = f"""
+            SELECT tl.id, tl.member_id, tl.amount, tl.mins_added, tl.topup_date,
+                   tl.staff_name, tl.payment_method, tl.balance_before, tl.balance_after,
+                   tl.balance_mins_before, tl.balance_mins_after, tl.notes, tl.created_at,
+                   mw.member_name
+            FROM topup_log tl
+            LEFT JOIN member_wallets mw ON tl.member_id = mw.member_id
+            WHERE {' AND '.join(where)}
+            ORDER BY tl.topup_date DESC, tl.id DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        rows = _mq(sql, tuple(params))
+
+        count_row = _mqo(
+            f"SELECT COUNT(*) as total FROM topup_log tl WHERE {' AND '.join(where)}",
+            tuple(params[:-2])
+        )
+        total = count_row["total"] if count_row else 0
+
+        topups = []
+        for r in rows:
+            topups.append({
+                "id": r["id"],
+                "member_id": r.get("member_id"),
+                "member_name": r.get("member_name"),
+                "amount": float(r.get("amount") or 0),
+                "mins_added": r.get("mins_added", 0),
+                "topup_date": str(r["topup_date"]) if r.get("topup_date") else None,
+                "staff_name": r.get("staff_name"),
+                "payment_method": r.get("payment_method"),
+                "balance_before": float(r.get("balance_before") or 0),
+                "balance_after": float(r.get("balance_after") or 0),
+                "balance_mins_before": r.get("balance_mins_before", 0),
+                "balance_mins_after": r.get("balance_mins_after", 0),
+                "notes": r.get("notes"),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+        return {"success": True, "data": topups, "total": total}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -2727,3 +2772,1874 @@ async def get_dividends_summary(user: dict = Depends(get_current_user)):
                    ORDER BY total_dividends DESC""")
     total = sum(float(r['total_dividends'] or 0) for r in rows)
     return {'success': True, 'data': {'shareholders': rows, 'total_paid': total}}
+
+# ═══════════════════════════════════════
+#  TOPUPS — CREATE
+# ═══════════════════════════════════════
+@router.post("/topups")
+async def dashboard_create_topup(req: dict, user: dict = Depends(get_current_user)):
+    """Manual topup — insert into topup_log and update member balance."""
+    try:
+        member_id = req.get("member_id", "")
+        amount = req.get("amount", 0)
+        mins_added = req.get("mins_added", 0)
+        payment_method = req.get("payment_method", "Cash")
+        staff_name = req.get("staff_name", user.get("username", "admin"))
+        notes = req.get("notes", "")
+
+        if not member_id:
+            return {"success": False, "error": "member_id is required"}
+        if amount <= 0:
+            return {"success": False, "error": "amount must be positive"}
+
+        # Get current member wallet
+        member = _mysql_query_one(
+            "SELECT member_id, member_name, balance_mins FROM member_wallets WHERE member_id = %s",
+            (member_id,)
+        )
+        if not member:
+            return {"success": False, "error": "Member not found"}
+
+        balance_mins_before = int(member.get("balance_mins") or 0)
+        balance_mins_after = balance_mins_before + mins_added
+
+        # Also check the 'members' table if it exists
+        member_balance_before = None
+        try:
+            mb = _mysql_query_one("SELECT balance_minutes FROM members WHERE member_id = %s", (member_id,))
+            member_balance_before = int(mb.get("balance_minutes") or 0) if mb else 0
+        except:
+            member_balance_before = 0
+
+        member_balance_after = (member_balance_before or 0) + mins_added
+
+        # Insert into topup_log
+        new_id = _mysql_execute(
+            """INSERT INTO topup_log
+               (member_id, amount, mins_added, topup_date, staff_name, payment_method,
+                balance_before, balance_after, balance_mins_before, balance_mins_after, notes, created_at)
+               VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, NOW())""",
+            (
+                member_id,
+                amount,
+                mins_added,
+                staff_name,
+                payment_method,
+                member_balance_before,
+                member_balance_after,
+                balance_mins_before,
+                balance_mins_after,
+                notes,
+            ),
+        )
+
+        # Update member_wallets
+        _mysql_execute(
+            "UPDATE member_wallets SET balance_mins = %s, last_updated = NOW() WHERE member_id = %s",
+            (balance_mins_after, member_id)
+        )
+
+        # Update members table
+        try:
+            _mysql_execute(
+                "UPDATE members SET balance_minutes = %s, updated_at = NOW() WHERE member_id = %s",
+                (member_balance_after, member_id)
+            )
+        except:
+            pass
+
+        return {
+            "success": True,
+            "data": {
+                "id": new_id,
+                "member_id": member_id,
+                "member_name": member.get("member_name"),
+                "amount": amount,
+                "mins_added": mins_added,
+                "payment_method": payment_method,
+                "staff_name": staff_name,
+                "balance_mins_before": balance_mins_before,
+                "balance_mins_after": balance_mins_after,
+                "notes": notes,
+            },
+        }
+    except Exception as e:
+        logger.error(f"POST /topups error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  STAFF — CRUD
+# ═══════════════════════════════════════
+@router.get("/staff")
+async def dashboard_get_staff(
+    search: str | None = Query(None),
+    is_active: str | None = Query(None),
+    role: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """List staff members with optional filters."""
+    try:
+        where = ["1=1"]
+        params = []
+        if search:
+            where.append("(staff_name LIKE %s OR role LIKE %s)")
+            like = f"%{search}%"
+            params.extend([like, like])
+        if is_active is not None and is_active.lower() in ("true", "false", "1", "0"):
+            where.append("is_active = %s")
+            params.append(1 if is_active.lower() in ("true", "1") else 0)
+        if role:
+            where.append("role = %s")
+            params.append(role)
+
+        sql = f"""
+            SELECT staff_id, staff_name, base_salary, hourly_rate, role, is_active, last_updated
+            FROM staff_records
+            WHERE {' AND '.join(where)}
+            ORDER BY staff_name ASC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        rows = _mysql_query(sql, tuple(params))
+
+        count_row = _mysql_query_one(
+            f"SELECT COUNT(*) as total FROM staff_records WHERE {' AND '.join(where)}",
+            tuple(params[:-2])
+        )
+        total = count_row["total"] if count_row else 0
+
+        staff_list = []
+        for r in rows:
+            staff_list.append({
+                "staff_id": r["staff_id"],
+                "staff_name": r.get("staff_name"),
+                "base_salary": float(r.get("base_salary") or 0),
+                "hourly_rate": float(r.get("hourly_rate") or 0),
+                "role": r.get("role"),
+                "is_active": bool(r.get("is_active")),
+                "last_updated": str(r["last_updated"]) if r.get("last_updated") else None,
+            })
+        return {"success": True, "data": staff_list, "total": total}
+    except Exception as e:
+        logger.error(f"GET /staff error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/staff")
+async def dashboard_create_staff(req: dict, user: dict = Depends(get_current_user)):
+    """Create a new staff member."""
+    try:
+        staff_name = req.get("staff_name", "").strip()
+        if not staff_name:
+            return {"success": False, "error": "staff_name is required"}
+
+        base_salary = req.get("base_salary", 0)
+        hourly_rate = req.get("hourly_rate", 0)
+        role = req.get("role", "")
+
+        new_id = _mysql_execute(
+            """INSERT INTO staff_records (staff_name, base_salary, hourly_rate, role, is_active, last_updated)
+               VALUES (%s, %s, %s, %s, 1, NOW())""",
+            (staff_name, base_salary, hourly_rate, role),
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "staff_id": new_id,
+                "staff_name": staff_name,
+                "base_salary": base_salary,
+                "hourly_rate": hourly_rate,
+                "role": role,
+                "is_active": True,
+            },
+        }
+    except Exception as e:
+        logger.error(f"POST /staff error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/staff/{staff_id}")
+async def dashboard_update_staff(staff_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """Update a staff member."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM staff_records WHERE staff_id = %s", (staff_id,))
+        if not existing:
+            return {"success": False, "error": "Staff not found"}
+
+        updates = []
+        params = []
+        for field in ["staff_name", "base_salary", "hourly_rate", "role", "is_active"]:
+            if field in req:
+                updates.append(f"{field} = %s")
+                params.append(req[field])
+
+        if not updates:
+            return {"success": False, "error": "No fields to update"}
+
+        updates.append("last_updated = NOW()")
+        params.append(staff_id)
+        _mysql_execute(f"UPDATE staff_records SET {', '.join(updates)} WHERE staff_id = %s", tuple(params))
+
+        updated = _mysql_query_one("SELECT * FROM staff_records WHERE staff_id = %s", (staff_id,))
+        return {
+            "success": True,
+            "data": {
+                "staff_id": updated["staff_id"],
+                "staff_name": updated.get("staff_name"),
+                "base_salary": float(updated.get("base_salary") or 0),
+                "hourly_rate": float(updated.get("hourly_rate") or 0),
+                "role": updated.get("role"),
+                "is_active": bool(updated.get("is_active")),
+                "last_updated": str(updated["last_updated"]) if updated.get("last_updated") else None,
+            },
+        }
+    except Exception as e:
+        logger.error(f"PUT /staff/{staff_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/staff/{staff_id}/deactivate")
+async def dashboard_deactivate_staff(staff_id: int, user: dict = Depends(get_current_user)):
+    """Soft-deactivate a staff member (set is_active=0)."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM staff_records WHERE staff_id = %s", (staff_id,))
+        if not existing:
+            return {"success": False, "error": "Staff not found"}
+
+        _mysql_execute(
+            "UPDATE staff_records SET is_active = 0, last_updated = NOW() WHERE staff_id = %s",
+            (staff_id,)
+        )
+        return {
+            "success": True,
+            "data": {
+                "staff_id": staff_id,
+                "staff_name": existing.get("staff_name"),
+                "is_active": False,
+                "message": "Staff deactivated",
+            },
+        }
+    except Exception as e:
+        logger.error(f"PUT /staff/{staff_id}/deactivate error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/staff/{staff_id}/attendance")
+async def dashboard_get_staff_attendance(
+    staff_id: int,
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """Get attendance history for a specific staff member."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM staff_records WHERE staff_id = %s", (staff_id,))
+        if not existing:
+            return {"success": False, "error": "Staff not found"}
+
+        where = ["al.staff_id = %s"]
+        params = [staff_id]
+        if date_from:
+            where.append("al.date >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("al.date <= %s")
+            params.append(date_to)
+
+        sql = f"""
+            SELECT al.id, al.staff_id, al.check_in, al.check_out, al.hours_worked,
+                   al.hourly_rate, al.daily_pay, al.date, al.status, al.notes, al.created_at,
+                   sr.staff_name
+            FROM attendance_log al
+            JOIN staff_records sr ON al.staff_id = sr.staff_id
+            WHERE {' AND '.join(where)}
+            ORDER BY al.date DESC, al.check_in DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        rows = _mysql_query(sql, tuple(params))
+
+        count_row = _mysql_query_one(
+            f"SELECT COUNT(*) as total FROM attendance_log al WHERE {' AND '.join(where)}",
+            tuple(params[:-2])
+        )
+        total = count_row["total"] if count_row else 0
+
+        attendance = []
+        for r in rows:
+            attendance.append({
+                "id": r["id"],
+                "staff_id": r.get("staff_id"),
+                "staff_name": r.get("staff_name"),
+                "check_in": str(r["check_in"]) if r.get("check_in") else None,
+                "check_out": str(r["check_out"]) if r.get("check_out") else None,
+                "hours_worked": float(r.get("hours_worked") or 0),
+                "hourly_rate": float(r.get("hourly_rate") or 0),
+                "daily_pay": float(r.get("daily_pay") or 0),
+                "date": str(r["date"]) if r.get("date") else None,
+                "status": r.get("status"),
+                "notes": r.get("notes"),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+        return {"success": True, "data": attendance, "total": total}
+    except Exception as e:
+        logger.error(f"GET /staff/{staff_id}/attendance error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  ATTENDANCE — LOG
+# ═══════════════════════════════════════
+@router.get("/attendance")
+async def dashboard_get_attendance(
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    staff_id: int | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """List attendance records with optional filters."""
+    try:
+        where = ["1=1"]
+        params = []
+        if date_from:
+            where.append("al.date >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("al.date <= %s")
+            params.append(date_to)
+        if staff_id:
+            where.append("al.staff_id = %s")
+            params.append(staff_id)
+
+        sql = f"""
+            SELECT al.id, al.staff_id, al.check_in, al.check_out, al.hours_worked,
+                   al.hourly_rate, al.daily_pay, al.date, al.status, al.notes, al.created_at,
+                   sr.staff_name
+            FROM attendance_log al
+            LEFT JOIN staff_records sr ON al.staff_id = sr.staff_id
+            WHERE {' AND '.join(where)}
+            ORDER BY al.date DESC, al.check_in DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        rows = _mysql_query(sql, tuple(params))
+
+        count_row = _mysql_query_one(
+            f"SELECT COUNT(*) as total FROM attendance_log al WHERE {' AND '.join(where)}",
+            tuple(params[:-2])
+        )
+        total = count_row["total"] if count_row else 0
+
+        attendance = []
+        for r in rows:
+            attendance.append({
+                "id": r["id"],
+                "staff_id": r.get("staff_id"),
+                "staff_name": r.get("staff_name"),
+                "check_in": str(r["check_in"]) if r.get("check_in") else None,
+                "check_out": str(r["check_out"]) if r.get("check_out") else None,
+                "hours_worked": float(r.get("hours_worked") or 0),
+                "hourly_rate": float(r.get("hourly_rate") or 0),
+                "daily_pay": float(r.get("daily_pay") or 0),
+                "date": str(r["date"]) if r.get("date") else None,
+                "status": r.get("status"),
+                "notes": r.get("notes"),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+        return {"success": True, "data": attendance, "total": total}
+    except Exception as e:
+        logger.error(f"GET /attendance error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/attendance/check-in")
+async def dashboard_attendance_check_in(req: dict, user: dict = Depends(get_current_user)):
+    """Check in a staff member — create attendance log entry."""
+    try:
+        staff_id = req.get("staff_id")
+        notes = req.get("notes", "")
+
+        if not staff_id:
+            return {"success": False, "error": "staff_id is required"}
+
+        # Get staff record for hourly_rate
+        staff = _mysql_query_one("SELECT * FROM staff_records WHERE staff_id = %s", (staff_id,))
+        if not staff:
+            return {"success": False, "error": "Staff not found"}
+
+        if not staff.get("is_active"):
+            return {"success": False, "error": "Staff is inactive"}
+
+        hourly_rate = float(staff.get("hourly_rate") or 0)
+
+        # Check if already checked in today without checkout
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        existing = _mysql_query_one(
+            "SELECT id FROM attendance_log WHERE staff_id = %s AND date = %s AND status = 'checked_in'",
+            (staff_id, today)
+        )
+        if existing:
+            return {"success": False, "error": "Staff already checked in today. Check out first."}
+
+        new_id = _mysql_execute(
+            """INSERT INTO attendance_log
+               (staff_id, check_in, hourly_rate, date, status, notes, created_at)
+               VALUES (%s, NOW(), %s, %s, 'checked_in', %s, NOW())""",
+            (staff_id, hourly_rate, today, notes),
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "id": new_id,
+                "staff_id": staff_id,
+                "staff_name": staff.get("staff_name"),
+                "date": today,
+                "status": "checked_in",
+                "hourly_rate": hourly_rate,
+                "message": f"{staff.get('staff_name')} checked in",
+            },
+        }
+    except Exception as e:
+        logger.error(f"POST /attendance/check-in error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/attendance/check-out")
+async def dashboard_attendance_check_out(req: dict, user: dict = Depends(get_current_user)):
+    """Check out a staff member — update attendance log with hours and pay."""
+    try:
+        staff_id = req.get("staff_id")
+        notes = req.get("notes", "")
+
+        if not staff_id:
+            return {"success": False, "error": "staff_id is required"}
+
+        # Find the open check-in for today
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        record = _mysql_query_one(
+            "SELECT * FROM attendance_log WHERE staff_id = %s AND date = %s AND status = 'checked_in' ORDER BY id DESC LIMIT 1",
+            (staff_id, today)
+        )
+        if not record:
+            return {"success": False, "error": "No open check-in found for today"}
+
+        # Calculate hours worked
+        hours_worked = 0
+        daily_pay = 0
+        try:
+            check_in_time = record["check_in"]
+            if check_in_time:
+                now = datetime.now(timezone.utc)
+                if hasattr(check_in_time, 'timestamp'):
+                    delta = now - check_in_time
+                else:
+                    ci_str = str(check_in_time)
+                    ci_dt = datetime.fromisoformat(ci_str.replace('Z', '+00:00'))
+                    delta = now.replace(tzinfo=None) - ci_dt.replace(tzinfo=None)
+                hours_worked = round(delta.total_seconds() / 3600.0, 2)
+                hourly_rate = float(record.get("hourly_rate") or 0)
+                daily_pay = round(hours_worked * hourly_rate, 2)
+        except Exception as calc_err:
+            logger.warning(f"Hours calculation fallback: {calc_err}")
+            hours_worked = 0
+            daily_pay = 0
+
+        # Update the record
+        _mysql_execute(
+            """UPDATE attendance_log
+               SET check_out = NOW(), hours_worked = %s, daily_pay = %s, status = 'checked_out', notes = CONCAT(IFNULL(notes,''), ' | ', %s)
+               WHERE id = %s""",
+            (hours_worked, daily_pay, notes, record["id"]),
+        )
+
+        staff = _mysql_query_one("SELECT staff_name FROM staff_records WHERE staff_id = %s", (staff_id,))
+
+        return {
+            "success": True,
+            "data": {
+                "id": record["id"],
+                "staff_id": staff_id,
+                "staff_name": staff.get("staff_name") if staff else "Unknown",
+                "date": today,
+                "hours_worked": hours_worked,
+                "daily_pay": daily_pay,
+                "status": "checked_out",
+                "message": f"Checked out. {hours_worked}h worked, {daily_pay} pay",
+            },
+        }
+    except Exception as e:
+        logger.error(f"POST /attendance/check-out error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  SALARY & PAYROLL
+# ═══════════════════════════════════════
+@router.get("/salary")
+async def dashboard_get_salary(
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    staff_name: str | None = Query(None),
+    status: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """List salary/payroll records with optional filters."""
+    try:
+        where = ["1=1"]
+        params = []
+        if date_from:
+            where.append("pay_date >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("pay_date <= %s")
+            params.append(date_to)
+        if staff_name:
+            where.append("staff_name LIKE %s")
+            params.append(f"%{staff_name}%")
+        if status:
+            where.append("status = %s")
+            params.append(status)
+
+        sql = f"""
+            SELECT id, staff_name, base_salary, bonus, deductions, net_salary,
+                   pay_period, pay_date, status, notes, created_at
+            FROM salary_payroll
+            WHERE {' AND '.join(where)}
+            ORDER BY pay_date DESC, id DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        rows = _mysql_query(sql, tuple(params))
+
+        count_row = _mysql_query_one(
+            f"SELECT COUNT(*) as total FROM salary_payroll WHERE {' AND '.join(where)}",
+            tuple(params[:-2])
+        )
+        total = count_row["total"] if count_row else 0
+
+        records = []
+        for r in rows:
+            records.append({
+                "id": r["id"],
+                "staff_name": r.get("staff_name"),
+                "base_salary": float(r.get("base_salary") or 0),
+                "bonus": float(r.get("bonus") or 0),
+                "deductions": float(r.get("deductions") or 0),
+                "net_salary": float(r.get("net_salary") or 0),
+                "pay_period": r.get("pay_period"),
+                "pay_date": str(r["pay_date"]) if r.get("pay_date") else None,
+                "status": r.get("status"),
+                "notes": r.get("notes"),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+        return {"success": True, "data": records, "total": total}
+    except Exception as e:
+        logger.error(f"GET /salary error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/salary")
+async def dashboard_create_salary(req: dict, user: dict = Depends(get_current_user)):
+    """Create a payroll record."""
+    try:
+        staff_name = req.get("staff_name", "").strip()
+        if not staff_name:
+            return {"success": False, "error": "staff_name is required"}
+
+        base_salary = req.get("base_salary", 0)
+        bonus = req.get("bonus", 0)
+        deductions = req.get("deductions", 0)
+        net_salary = base_salary + bonus - deductions
+        pay_period = req.get("pay_period", "")
+        pay_date = req.get("pay_date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        status = req.get("status", "pending")
+        notes = req.get("notes", "")
+
+        new_id = _mysql_execute(
+            """INSERT INTO salary_payroll
+               (staff_name, base_salary, bonus, deductions, net_salary, pay_period, pay_date, status, notes, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+            (staff_name, base_salary, bonus, deductions, net_salary, pay_period, pay_date, status, notes),
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "id": new_id,
+                "staff_name": staff_name,
+                "base_salary": base_salary,
+                "bonus": bonus,
+                "deductions": deductions,
+                "net_salary": net_salary,
+                "pay_period": pay_period,
+                "pay_date": pay_date,
+                "status": status,
+                "notes": notes,
+            },
+        }
+    except Exception as e:
+        logger.error(f"POST /salary error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/salary/advances")
+async def dashboard_get_salary_advances(
+    staff_name: str | None = Query(None),
+    repayment_status: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """List salary advances with optional filters."""
+    try:
+        where = ["1=1"]
+        params = []
+        if staff_name:
+            where.append("staff_name LIKE %s")
+            params.append(f"%{staff_name}%")
+        if repayment_status:
+            where.append("repayment_status = %s")
+            params.append(repayment_status)
+
+        sql = f"""
+            SELECT id, staff_name, amount, advance_date, repayment_status, notes, created_at
+            FROM salary_advance
+            WHERE {' AND '.join(where)}
+            ORDER BY advance_date DESC, id DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        rows = _mysql_query(sql, tuple(params))
+
+        count_row = _mysql_query_one(
+            f"SELECT COUNT(*) as total FROM salary_advance WHERE {' AND '.join(where)}",
+            tuple(params[:-2])
+        )
+        total = count_row["total"] if count_row else 0
+
+        advances = []
+        for r in rows:
+            advances.append({
+                "id": r["id"],
+                "staff_name": r.get("staff_name"),
+                "amount": float(r.get("amount") or 0),
+                "advance_date": str(r["advance_date"]) if r.get("advance_date") else None,
+                "repayment_status": r.get("repayment_status"),
+                "notes": r.get("notes"),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+        return {"success": True, "data": advances, "total": total}
+    except Exception as e:
+        logger.error(f"GET /salary/advances error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/salary/advances")
+async def dashboard_create_salary_advance(req: dict, user: dict = Depends(get_current_user)):
+    """Record a salary advance."""
+    try:
+        staff_name = req.get("staff_name", "").strip()
+        amount = req.get("amount", 0)
+        if not staff_name:
+            return {"success": False, "error": "staff_name is required"}
+        if amount <= 0:
+            return {"success": False, "error": "amount must be positive"}
+
+        advance_date = req.get("advance_date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        repayment_status = req.get("repayment_status", "pending")
+        notes = req.get("notes", "")
+
+        new_id = _mysql_execute(
+            """INSERT INTO salary_advance
+               (staff_name, amount, advance_date, repayment_status, notes, created_at)
+               VALUES (%s, %s, %s, %s, %s, NOW())""",
+            (staff_name, amount, advance_date, repayment_status, notes),
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "id": new_id,
+                "staff_name": staff_name,
+                "amount": amount,
+                "advance_date": advance_date,
+                "repayment_status": repayment_status,
+                "notes": notes,
+            },
+        }
+    except Exception as e:
+        logger.error(f"POST /salary/advances error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  CONSOLE — DETAILED CRUD
+# ═══════════════════════════════════════
+@router.get("/consoles/detail")
+async def dashboard_get_consoles_detail(
+    user: dict = Depends(get_current_user),
+):
+    """Get full console details with type and status info."""
+    try:
+        rows = _mysql_query("""
+            SELECT c.console_id, c.status, c.console_type, c.current_game,
+                   c.current_member, c.start_time, c.last_updated
+            FROM console_status c
+            ORDER BY c.console_id
+        """)
+
+        consoles = []
+        for r in rows:
+            # Get active booking if any
+            booking = _mysql_query_one("""
+                SELECT id, member_id, start_time, end_time, status, game_name, duration_mins
+                FROM console_booking
+                WHERE console_id = %s AND status IN ('Active', 'Confirmed')
+                ORDER BY id DESC LIMIT 1
+            """, (r["console_id"],))
+
+            consoles.append({
+                "console_id": r["console_id"],
+                "status": r.get("status") or "available",
+                "console_type": r.get("console_type") or "",
+                "current_game": r.get("current_game") or "",
+                "current_member": r.get("current_member") or "",
+                "start_time": str(r["start_time"]) if r.get("start_time") else None,
+                "last_updated": str(r["last_updated"]) if r.get("last_updated") else None,
+                "active_booking": {
+                    "id": booking["id"],
+                    "member_id": booking.get("member_id"),
+                    "start_time": str(booking["start_time"]) if booking and booking.get("start_time") else None,
+                    "end_time": str(booking["end_time"]) if booking and booking.get("end_time") else None,
+                    "status": booking.get("status"),
+                    "game_name": booking.get("game_name"),
+                    "duration_mins": booking.get("duration_mins"),
+                } if booking else None,
+            })
+
+        return {"success": True, "data": consoles}
+    except Exception as e:
+        logger.error(f"GET /consoles/detail error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/consoles/{console_id}")
+async def dashboard_update_console(console_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """Update console details — type, status, etc."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM console_status WHERE console_id = %s", (console_id,))
+        if not existing:
+            return {"success": False, "error": "Console not found"}
+
+        updates = []
+        params = []
+        for field in ["status", "console_type", "current_game", "current_member"]:
+            if field in req:
+                updates.append(f"{field} = %s")
+                params.append(req[field])
+
+        if not updates:
+            return {"success": False, "error": "No fields to update"}
+
+        updates.append("last_updated = NOW()")
+        params.append(console_id)
+        _mysql_execute(f"UPDATE console_status SET {', '.join(updates)} WHERE console_id = %s", tuple(params))
+
+        updated = _mysql_query_one("SELECT * FROM console_status WHERE console_id = %s", (console_id,))
+        return {
+            "success": True,
+            "data": {
+                "console_id": updated["console_id"],
+                "status": updated.get("status"),
+                "console_type": updated.get("console_type"),
+                "current_game": updated.get("current_game"),
+                "current_member": updated.get("current_member"),
+                "start_time": str(updated["start_time"]) if updated.get("start_time") else None,
+                "last_updated": str(updated["last_updated"]) if updated.get("last_updated") else None,
+            },
+        }
+    except Exception as e:
+        logger.error(f"PUT /consoles/{console_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/consoles")
+async def dashboard_create_console(req: dict, user: dict = Depends(get_current_user)):
+    """Add a new console to console_status."""
+    try:
+        console_id = req.get("console_id")
+        if not console_id:
+            return {"success": False, "error": "console_id is required"}
+
+        existing = _mysql_query_one("SELECT * FROM console_status WHERE console_id = %s", (console_id,))
+        if existing:
+            return {"success": False, "error": "Console already exists"}
+
+        _mysql_execute(
+            """INSERT INTO console_status (console_id, status, console_type, current_game, current_member, last_updated)
+               VALUES (%s, %s, %s, %s, %s, NOW())""",
+            (
+                console_id,
+                req.get("status", "available"),
+                req.get("console_type", ""),
+                req.get("current_game", ""),
+                req.get("current_member", ""),
+            ),
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "console_id": console_id,
+                "status": req.get("status", "available"),
+                "console_type": req.get("console_type", ""),
+            },
+        }
+    except Exception as e:
+        logger.error(f"POST /consoles error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  MEMBER — WALLET + TRANSACTIONS
+# ═══════════════════════════════════════
+@router.put("/members/{member_id}/wallet")
+async def dashboard_adjust_member_wallet(member_id: str, req: dict, user: dict = Depends(get_current_user)):
+    """Adjust a member's wallet balance (add or deduct minutes)."""
+    try:
+        adjustment_mins = req.get("adjustment_mins", 0)
+        reason = req.get("reason", "").strip()
+
+        if not adjustment_mins:
+            return {"success": False, "error": "adjustment_mins is required (positive to add, negative to deduct)"}
+
+        member = _mysql_query_one(
+            "SELECT member_id, member_name, balance_mins FROM member_wallets WHERE member_id = %s",
+            (member_id,)
+        )
+        if not member:
+            return {"success": False, "error": "Member not found"}
+
+        balance_before = int(member.get("balance_mins") or 0)
+        balance_after = balance_before + adjustment_mins
+
+        if balance_after < 0:
+            return {"success": False, "error": f"Insufficient balance. Current: {balance_before} mins"}
+
+        # Update member_wallets
+        _mysql_execute(
+            "UPDATE member_wallets SET balance_mins = %s, last_updated = NOW() WHERE member_id = %s",
+            (balance_after, member_id)
+        )
+
+        # Update members table if exists
+        try:
+            mb = _mysql_query_one("SELECT balance_minutes FROM members WHERE member_id = %s", (member_id,))
+            if mb:
+                mem_balance_before = int(mb.get("balance_minutes") or 0)
+                mem_balance_after = mem_balance_before + adjustment_mins
+                _mysql_execute(
+                    "UPDATE members SET balance_minutes = %s, updated_at = NOW() WHERE member_id = %s",
+                    (mem_balance_after, member_id)
+                )
+        except:
+            pass
+
+        # Log the adjustment in topup_log for audit trail
+        action_type = "topup" if adjustment_mins > 0 else "deduction"
+        staff_name = user.get("username", "admin")
+        _mysql_execute(
+            """INSERT INTO topup_log
+               (member_id, amount, mins_added, topup_date, staff_name, payment_method,
+                balance_before, balance_after, balance_mins_before, balance_mins_after, notes, created_at)
+               VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, NOW())""",
+            (
+                member_id,
+                0,
+                adjustment_mins,
+                staff_name,
+                f"Wallet {action_type}",
+                0,
+                0,
+                balance_before,
+                balance_after,
+                reason or f"Wallet {action_type}: {adjustment_mins} mins",
+            ),
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "member_id": member_id,
+                "member_name": member.get("member_name"),
+                "adjustment_mins": adjustment_mins,
+                "balance_before": balance_before,
+                "balance_after": balance_after,
+                "action": action_type,
+                "reason": reason,
+            },
+        }
+    except Exception as e:
+        logger.error(f"PUT /members/{member_id}/wallet error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/members/{member_id}/transactions")
+async def dashboard_get_member_transactions(
+    member_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """Get full transaction history for a member (topups, deductions, adjustments)."""
+    try:
+        existing = _mysql_query_one("SELECT member_id FROM member_wallets WHERE member_id = %s", (member_id,))
+        if not existing:
+            return {"success": False, "error": "Member not found"}
+
+        rows = _mysql_query(
+            """SELECT id, member_id, amount, mins_added, topup_date,
+                      staff_name, payment_method, balance_mins_before, balance_mins_after,
+                      notes, created_at
+               FROM topup_log WHERE member_id = %s
+               ORDER BY topup_date DESC, id DESC
+               LIMIT %s OFFSET %s""",
+            (member_id, limit, offset),
+        )
+
+        count_row = _mysql_query_one(
+            "SELECT COUNT(*) as total FROM topup_log WHERE member_id = %s", (member_id,)
+        )
+        total = count_row["total"] if count_row else 0
+
+        # Also get bookings (as deductions)
+        bookings = []
+        try:
+            booking_rows = _mysql_query(
+                """SELECT id, console_id, booking_date, start_time, end_time,
+                          duration_mins, status, game_name, notes, created_at
+                   FROM console_booking
+                   WHERE member_id = %s
+                   ORDER BY booking_date DESC, id DESC
+                   LIMIT %s OFFSET %s""",
+                (member_id, limit, offset),
+            )
+            for br in booking_rows:
+                bookings.append({
+                    "type": "booking",
+                    "id": br["id"],
+                    "console_id": br.get("console_id"),
+                    "booking_date": str(br["booking_date"]) if br.get("booking_date") else None,
+                    "start_time": str(br["start_time"]) if br.get("start_time") else None,
+                    "end_time": str(br["end_time"]) if br.get("end_time") else None,
+                    "duration_mins": br.get("duration_mins", 0),
+                    "status": br.get("status"),
+                    "game_name": br.get("game_name"),
+                    "notes": br.get("notes"),
+                    "created_at": str(br["created_at"]) if br.get("created_at") else None,
+                })
+        except Exception:
+            pass
+
+        transactions = []
+        for r in rows:
+            txn_type = "deduction" if (r.get("mins_added") or 0) < 0 else "topup"
+            if r.get("payment_method") and "deduction" in str(r.get("payment_method") or "").lower():
+                txn_type = "deduction"
+            if r.get("payment_method") and "adjustment" in str(r.get("payment_method") or "").lower():
+                txn_type = "adjustment"
+
+            transactions.append({
+                "type": txn_type,
+                "id": r["id"],
+                "member_id": r.get("member_id"),
+                "amount": float(r.get("amount") or 0),
+                "mins_added": r.get("mins_added", 0),
+                "date": str(r["topup_date"]) if r.get("topup_date") else None,
+                "staff_name": r.get("staff_name"),
+                "payment_method": r.get("payment_method"),
+                "balance_mins_before": r.get("balance_mins_before", 0),
+                "balance_mins_after": r.get("balance_mins_after", 0),
+                "notes": r.get("notes"),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+
+        # Merge and sort
+        all_txns = transactions + bookings
+        all_txns.sort(key=lambda x: str(x.get("date") or x.get("created_at") or x.get("booking_date") or ""), reverse=True)
+
+        return {
+            "success": True,
+            "data": {
+                "member_id": member_id,
+                "transactions": all_txns[:limit],
+            },
+            "total": total,
+        }
+    except Exception as e:
+        logger.error(f"GET /members/{member_id}/transactions error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  INVENTORY — ALERTS
+# ═══════════════════════════════════════
+@router.get("/inventory/alerts")
+async def dashboard_inventory_alerts(
+    user: dict = Depends(get_current_user),
+):
+    """Get inventory items below reorder level."""
+    try:
+        rows = _mysql_query("""
+            SELECT id, item_name, category, quantity, unit_price, reorder_level, last_updated
+            FROM inventory
+            WHERE quantity <= reorder_level AND reorder_level > 0
+            ORDER BY (reorder_level - quantity) DESC, item_name ASC
+        """)
+
+        items = []
+        for r in rows:
+            shortage = int(r.get("reorder_level", 0)) - int(r.get("quantity", 0))
+            items.append({
+                "id": r["id"],
+                "item_name": r["item_name"],
+                "category": r.get("category"),
+                "quantity": r.get("quantity", 0),
+                "unit_price": float(r.get("unit_price") or 0),
+                "reorder_level": r.get("reorder_level", 0),
+                "shortage": shortage,
+                "status": "critical" if shortage >= int(r.get("reorder_level", 0)) else "low",
+                "last_updated": str(r["last_updated"]) if r.get("last_updated") else None,
+            })
+
+        return {"success": True, "data": items, "total": len(items)}
+    except Exception as e:
+        logger.error(f"GET /inventory/alerts error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  BRANCH MANAGEMENT — CRUD (Phase 1)
+# ═══════════════════════════════════════
+from fastapi import Body
+
+@router.get("/branches")
+async def api_get_branches(user: dict = Depends(get_current_user)):
+    """Get all active branches"""
+    from branch_utils import get_all_branches
+    branches = get_all_branches()
+    return {"success": True, "data": branches, "total": len(branches)}
+
+@router.get("/branches/{branch_id}")
+async def api_get_branch(branch_id: int, user: dict = Depends(get_current_user)):
+    """Get a single branch by ID"""
+    from branch_utils import get_branch
+    branch = get_branch(branch_id)
+    if not branch:
+        return {"success": False, "error": f"Branch {branch_id} not found"}
+    return {"success": True, "data": branch}
+
+@router.post("/branches")
+async def api_create_branch(body: dict = Body(...), user: dict = Depends(get_current_user)):
+    """Create a new branch"""
+    name = body.get("name", "").strip()
+    code = body.get("code", "").strip().upper()
+    if not name or not code:
+        return {"success": False, "error": "Name and code are required"}
+    
+    existing = _mysql_query_one("SELECT id FROM branches WHERE code = %s", (code,))
+    if existing:
+        return {"success": False, "error": f"Branch code '{code}' already exists"}
+    
+    bid = _mysql_execute(
+        "INSERT INTO branches (name, code, address, phone, open_time, close_time) VALUES (%s, %s, %s, %s, %s, %s)",
+        (name, code, body.get("address", ""), body.get("phone", ""),
+         body.get("open_time", "10:00:00"), body.get("close_time", "22:00:00"))
+    )
+    
+    from branch_utils import get_branch
+    branch = get_branch(bid)
+    return {"success": True, "data": branch, "message": f"Branch '{name}' created"}
+
+@router.put("/branches/{branch_id}")
+async def api_update_branch(branch_id: int, body: dict = Body(...), user: dict = Depends(get_current_user)):
+    """Update branch details"""
+    existing = _mysql_query_one("SELECT id FROM branches WHERE id = %s", (branch_id,))
+    if not existing:
+        return {"success": False, "error": f"Branch {branch_id} not found"}
+    
+    fields = []
+    params = []
+    for key in ("name", "code", "address", "phone", "is_active", "open_time", "close_time", "telegram_group_id"):
+        if key in body:
+            fields.append(f"{key} = %s")
+            params.append(body[key])
+    if not fields:
+        return {"success": False, "error": "No fields to update"}
+    params.append(branch_id)
+    _mysql_execute(f"UPDATE branches SET {', '.join(fields)} WHERE id = %s", tuple(params))
+    
+    from branch_utils import get_branch
+    branch = get_branch(branch_id)
+    return {"success": True, "data": branch, "message": "Branch updated"}
+
+@router.delete("/branches/{branch_id}")
+async def api_delete_branch(branch_id: int, user: dict = Depends(get_current_user)):
+    """Soft-delete a branch (set is_active=0)"""
+    if branch_id == 1:
+        return {"success": False, "error": "Cannot delete the default branch (id=1)"}
+    
+    existing = _mysql_query_one("SELECT id, name FROM branches WHERE id = %s", (branch_id,))
+    if not existing:
+        return {"success": False, "error": f"Branch {branch_id} not found"}
+    
+    _mysql_execute("UPDATE branches SET is_active = 0 WHERE id = %s", (branch_id,))
+    return {"success": True, "message": f"Branch '{existing['name']}' deactivated"}
+
+# ═══════════════════════════════════════════════════
+#  LOYALTY SYSTEM — Customer Loyalty & Rewards
+# ═══════════════════════════════════════════════════
+
+# ── Loyalty Settings ──
+
+@router.get("/loyalty/settings")
+async def get_loyalty_settings(user: dict = Depends(get_current_user)):
+    """Get loyalty points settings."""
+    try:
+        row = _mysql_query_one("SELECT * FROM loyalty_settings WHERE id = 1")
+        if not row:
+            return {"success": True, "data": {
+                "points_per_ks": 1.0, "points_per_min": 0.5,
+                "min_redeem_points": 100, "points_per_ks_redeem": 1.0,
+                "signup_bonus_points": 50, "birthday_bonus_points": 100,
+                "referral_points": 25
+            }}
+        return {"success": True, "data": {
+            "id": row["id"],
+            "points_per_ks": float(row["points_per_ks"]),
+            "points_per_min": float(row["points_per_min"]),
+            "min_redeem_points": row["min_redeem_points"],
+            "points_per_ks_redeem": float(row["points_per_ks_redeem"]),
+            "signup_bonus_points": row["signup_bonus_points"],
+            "birthday_bonus_points": row["birthday_bonus_points"],
+            "referral_points": row["referral_points"],
+            "updated_at": str(row["updated_at"]) if row.get("updated_at") else None,
+        }}
+    except Exception as e:
+        logger.error(f"GET /loyalty/settings error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/loyalty/settings")
+async def update_loyalty_settings(req: dict, user: dict = Depends(get_current_user)):
+    """Update loyalty points settings."""
+    try:
+        _mysql_execute("""
+            INSERT INTO loyalty_settings (id, points_per_ks, points_per_min, min_redeem_points,
+                points_per_ks_redeem, signup_bonus_points, birthday_bonus_points, referral_points)
+            VALUES (1, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                points_per_ks = VALUES(points_per_ks),
+                points_per_min = VALUES(points_per_min),
+                min_redeem_points = VALUES(min_redeem_points),
+                points_per_ks_redeem = VALUES(points_per_ks_redeem),
+                signup_bonus_points = VALUES(signup_bonus_points),
+                birthday_bonus_points = VALUES(birthday_bonus_points),
+                referral_points = VALUES(referral_points)
+        """, (
+            req.get("points_per_ks", 1.0),
+            req.get("points_per_min", 0.5),
+            req.get("min_redeem_points", 100),
+            req.get("points_per_ks_redeem", 1.0),
+            req.get("signup_bonus_points", 50),
+            req.get("birthday_bonus_points", 100),
+            req.get("referral_points", 25),
+        ))
+        return {"success": True, "message": "Loyalty settings updated"}
+    except Exception as e:
+        logger.error(f"PUT /loyalty/settings error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ── Member Loyalty ──
+
+@router.get("/loyalty/members")
+async def list_loyalty_members(
+    search: str = Query(None),
+    tier: str = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user),
+):
+    """List all member loyalty with optional search/tier filters."""
+    try:
+        where = ["1=1"]
+        params = []
+        if search:
+            where.append("(ml.member_id LIKE %s OR m.name LIKE %s)")
+            params.extend([f"%{search}%", f"%{search}%"])
+        if tier:
+            where.append("ml.tier = %s")
+            params.append(tier)
+
+        where_clause = " AND ".join(where)
+        offset = (page - 1) * page_size
+
+        total = _mysql_query_one(
+            f"SELECT COUNT(*) as cnt FROM member_loyalty ml LEFT JOIN members m ON ml.member_id = m.member_id WHERE {where_clause}",
+            tuple(params)
+        )
+        total = total["cnt"] if total else 0
+
+        rows = _mysql_query(
+            f"""SELECT ml.*, COALESCE(m.name, ml.member_id) as member_name
+                FROM member_loyalty ml
+                LEFT JOIN members m ON ml.member_id = m.member_id
+                WHERE {where_clause}
+                ORDER BY ml.total_points DESC
+                LIMIT %s OFFSET %s""",
+            tuple(params + [page_size, offset])
+        )
+
+        members = []
+        for r in rows:
+            members.append({
+                "id": r["id"],
+                "member_id": r["member_id"],
+                "member_name": r.get("member_name", r["member_id"]),
+                "total_points": r.get("total_points", 0),
+                "redeemed_points": r.get("redeemed_points", 0),
+                "available_points": r.get("available_points", 0),
+                "lifetime_spent": float(r.get("lifetime_spent") or 0),
+                "tier": r.get("tier", "Bronze"),
+                "join_date": str(r["join_date"]) if r.get("join_date") else None,
+                "birthday": str(r["birthday"]) if r.get("birthday") else None,
+                "last_earn_date": str(r["last_earn_date"]) if r.get("last_earn_date") else None,
+                "last_redeem_date": str(r["last_redeem_date"]) if r.get("last_redeem_date") else None,
+            })
+
+        return {"success": True, "data": members, "total": total, "page": page, "page_size": page_size}
+    except Exception as e:
+        logger.error(f"GET /loyalty/members error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/loyalty/members/{member_id}")
+async def get_loyalty_member(member_id: str, user: dict = Depends(get_current_user)):
+    """Get one member's loyalty info."""
+    try:
+        row = _mysql_query_one(
+            """SELECT ml.*, COALESCE(m.name, ml.member_id) as member_name
+               FROM member_loyalty ml
+               LEFT JOIN members m ON ml.member_id = m.member_id
+               WHERE ml.member_id = %s""",
+            (member_id,)
+        )
+        if not row:
+            return {"success": False, "error": "Member not found in loyalty system"}
+
+        return {"success": True, "data": {
+            "id": row["id"],
+            "member_id": row["member_id"],
+            "member_name": row.get("member_name", row["member_id"]),
+            "total_points": row.get("total_points", 0),
+            "redeemed_points": row.get("redeemed_points", 0),
+            "available_points": row.get("available_points", 0),
+            "lifetime_spent": float(row.get("lifetime_spent") or 0),
+            "tier": row.get("tier", "Bronze"),
+            "join_date": str(row["join_date"]) if row.get("join_date") else None,
+            "birthday": str(row["birthday"]) if row.get("birthday") else None,
+            "last_earn_date": str(row["last_earn_date"]) if row.get("last_earn_date") else None,
+            "last_redeem_date": str(row["last_redeem_date"]) if row.get("last_redeem_date") else None,
+        }}
+    except Exception as e:
+        logger.error(f"GET /loyalty/members/{member_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/loyalty/members/adjust")
+async def adjust_loyalty_points(req: dict, user: dict = Depends(get_current_user)):
+    """Manual points adjustment (admin)."""
+    try:
+        member_id = req.get("member_id", "")
+        points = req.get("points", 0)
+        description = req.get("description", "Manual adjustment")
+        staff_name = req.get("staff_name", user.get("username", "admin"))
+
+        if not member_id:
+            return {"success": False, "error": "member_id is required"}
+        if points == 0:
+            return {"success": False, "error": "points must be non-zero"}
+
+        # Ensure member exists in loyalty
+        existing = _mysql_query_one(
+            "SELECT id, total_points FROM member_loyalty WHERE member_id = %s",
+            (member_id,)
+        )
+        if not existing:
+            return {"success": False, "error": "Member not found in loyalty system"}
+
+        # Adjust points
+        if points > 0:
+            _mysql_execute(
+                "UPDATE member_loyalty SET total_points = total_points + %s, last_earn_date = CURDATE() WHERE member_id = %s",
+                (points, member_id)
+            )
+        else:
+            # Deduction: ensure enough available
+            current = _mysql_query_one("SELECT available_points FROM member_loyalty WHERE member_id = %s", (member_id,))
+            if current and current["available_points"] < abs(points):
+                return {"success": False, "error": f"Insufficient points. Available: {current['available_points']}"}
+            _mysql_execute(
+                "UPDATE member_loyalty SET total_points = total_points + %s WHERE member_id = %s",
+                (points, member_id)
+            )
+
+        # Log transaction
+        _mysql_execute(
+            """INSERT INTO loyalty_transactions (member_id, points, transaction_type, description, created_by)
+               VALUES (%s, %s, 'adjustment', %s, %s)""",
+            (member_id, points, description, staff_name)
+        )
+
+        # Recalculate tier
+        _recalc_tier(member_id)
+
+        return {"success": True, "message": f"Points adjusted by {points}"}
+    except Exception as e:
+        logger.error(f"POST /loyalty/members/adjust error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ── Points Transactions ──
+
+@router.get("/loyalty/transactions")
+async def list_loyalty_transactions(
+    member_id: str = Query(None),
+    transaction_type: str = Query(None),
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user),
+):
+    """Transaction log with filters."""
+    try:
+        where = ["1=1"]
+        params = []
+        if member_id:
+            where.append("lt.member_id = %s")
+            params.append(member_id)
+        if transaction_type:
+            where.append("lt.transaction_type = %s")
+            params.append(transaction_type)
+        if date_from:
+            where.append("DATE(lt.created_at) >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("DATE(lt.created_at) <= %s")
+            params.append(date_to)
+
+        where_clause = " AND ".join(where)
+        offset = (page - 1) * page_size
+
+        total = _mysql_query_one(
+            f"SELECT COUNT(*) as cnt FROM loyalty_transactions lt WHERE {where_clause}",
+            tuple(params)
+        )
+        total = total["cnt"] if total else 0
+
+        rows = _mysql_query(
+            f"""SELECT lt.*, COALESCE(m.name, lt.member_id) as member_name
+                FROM loyalty_transactions lt
+                LEFT JOIN members m ON lt.member_id = m.member_id
+                WHERE {where_clause}
+                ORDER BY lt.created_at DESC
+                LIMIT %s OFFSET %s""",
+            tuple(params + [page_size, offset])
+        )
+
+        transactions = []
+        for r in rows:
+            transactions.append({
+                "id": r["id"],
+                "member_id": r["member_id"],
+                "member_name": r.get("member_name", r["member_id"]),
+                "points": r["points"],
+                "transaction_type": r["transaction_type"],
+                "reference_id": r.get("reference_id"),
+                "description": r.get("description"),
+                "branch_id": r.get("branch_id"),
+                "created_by": r.get("created_by"),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+
+        return {"success": True, "data": transactions, "total": total, "page": page, "page_size": page_size}
+    except Exception as e:
+        logger.error(f"GET /loyalty/transactions error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/loyalty/transactions/{member_id}")
+async def get_member_transactions(
+    member_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user),
+):
+    """Get all transactions for one member."""
+    try:
+        offset = (page - 1) * page_size
+
+        total = _mysql_query_one(
+            "SELECT COUNT(*) as cnt FROM loyalty_transactions WHERE member_id = %s",
+            (member_id,)
+        )
+        total = total["cnt"] if total else 0
+
+        rows = _mysql_query(
+            """SELECT * FROM loyalty_transactions
+               WHERE member_id = %s
+               ORDER BY created_at DESC
+               LIMIT %s OFFSET %s""",
+            (member_id, page_size, offset)
+        )
+
+        transactions = []
+        for r in rows:
+            transactions.append({
+                "id": r["id"],
+                "member_id": r["member_id"],
+                "points": r["points"],
+                "transaction_type": r["transaction_type"],
+                "reference_id": r.get("reference_id"),
+                "description": r.get("description"),
+                "branch_id": r.get("branch_id"),
+                "created_by": r.get("created_by"),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+
+        return {"success": True, "data": transactions, "total": total, "page": page, "page_size": page_size}
+    except Exception as e:
+        logger.error(f"GET /loyalty/transactions/{member_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ── Rewards Catalog ──
+
+@router.get("/loyalty/rewards")
+async def list_loyalty_rewards(
+    is_active: bool = Query(None),
+    user: dict = Depends(get_current_user),
+):
+    """List available rewards."""
+    try:
+        where = "1=1"
+        params = []
+        if is_active is not None:
+            where = "is_active = %s"
+            params = [1 if is_active else 0]
+
+        rows = _mysql_query(
+            f"SELECT * FROM loyalty_rewards WHERE {where} ORDER BY points_required ASC",
+            tuple(params)
+        )
+
+        rewards = []
+        for r in rows:
+            rewards.append({
+                "id": r["id"],
+                "name": r["name"],
+                "description": r.get("description"),
+                "points_required": r["points_required"],
+                "reward_type": r["reward_type"],
+                "reward_value": float(r["reward_value"]) if r.get("reward_value") else None,
+                "stock": r.get("stock", -1),
+                "is_active": bool(r.get("is_active", 1)),
+                "image_url": r.get("image_url"),
+            })
+
+        return {"success": True, "data": rewards}
+    except Exception as e:
+        logger.error(f"GET /loyalty/rewards error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/loyalty/rewards")
+async def create_loyalty_reward(req: dict, user: dict = Depends(get_current_user)):
+    """Add a new reward to the catalog."""
+    try:
+        name = req.get("name", "")
+        if not name:
+            return {"success": False, "error": "name is required"}
+
+        reward_id = _mysql_execute(
+            """INSERT INTO loyalty_rewards (name, description, points_required, reward_type, reward_value, stock, is_active, image_url)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                name,
+                req.get("description", ""),
+                req.get("points_required", 0),
+                req.get("reward_type", "discount_ks"),
+                req.get("reward_value"),
+                req.get("stock", -1),
+                req.get("is_active", 1),
+                req.get("image_url"),
+            )
+        )
+        return {"success": True, "data": {"id": reward_id}, "message": "Reward created"}
+    except Exception as e:
+        logger.error(f"POST /loyalty/rewards error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/loyalty/rewards/{reward_id}")
+async def update_loyalty_reward(reward_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """Update a reward."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM loyalty_rewards WHERE id = %s", (reward_id,))
+        if not existing:
+            return {"success": False, "error": "Reward not found"}
+
+        _mysql_execute(
+            """UPDATE loyalty_rewards
+               SET name = %s, description = %s, points_required = %s, reward_type = %s,
+                   reward_value = %s, stock = %s, is_active = %s, image_url = %s
+               WHERE id = %s""",
+            (
+                req.get("name", existing.get("name")),
+                req.get("description", existing.get("description")),
+                req.get("points_required", existing.get("points_required")),
+                req.get("reward_type", existing.get("reward_type")),
+                req.get("reward_value", existing.get("reward_value")),
+                req.get("stock", existing.get("stock", -1)),
+                req.get("is_active", existing.get("is_active", 1)),
+                req.get("image_url", existing.get("image_url")),
+                reward_id,
+            )
+        )
+        return {"success": True, "message": "Reward updated"}
+    except Exception as e:
+        logger.error(f"PUT /loyalty/rewards/{reward_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/loyalty/rewards/{reward_id}")
+async def deactivate_loyalty_reward(reward_id: int, user: dict = Depends(get_current_user)):
+    """Deactivate a reward (soft delete)."""
+    try:
+        _mysql_execute("UPDATE loyalty_rewards SET is_active = 0 WHERE id = %s", (reward_id,))
+        return {"success": True, "message": "Reward deactivated"}
+    except Exception as e:
+        logger.error(f"DELETE /loyalty/rewards/{reward_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ── Redemptions ──
+
+@router.get("/loyalty/redemptions")
+async def list_loyalty_redemptions(
+    member_id: str = Query(None),
+    status: str = Query(None),
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user),
+):
+    """List redemptions with filters."""
+    try:
+        where = ["1=1"]
+        params = []
+        if member_id:
+            where.append("lr.member_id = %s")
+            params.append(member_id)
+        if status:
+            where.append("lr.status = %s")
+            params.append(status)
+        if date_from:
+            where.append("DATE(lr.redeemed_at) >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("DATE(lr.redeemed_at) <= %s")
+            params.append(date_to)
+
+        where_clause = " AND ".join(where)
+        offset = (page - 1) * page_size
+
+        total = _mysql_query_one(
+            f"SELECT COUNT(*) as cnt FROM loyalty_redemptions lr WHERE {where_clause}",
+            tuple(params)
+        )
+        total = total["cnt"] if total else 0
+
+        rows = _mysql_query(
+            f"""SELECT lr.*, COALESCE(m.name, lr.member_id) as member_name
+                FROM loyalty_redemptions lr
+                LEFT JOIN members m ON lr.member_id = m.member_id
+                WHERE {where_clause}
+                ORDER BY lr.redeemed_at DESC
+                LIMIT %s OFFSET %s""",
+            tuple(params + [page_size, offset])
+        )
+
+        redemptions = []
+        for r in rows:
+            redemptions.append({
+                "id": r["id"],
+                "member_id": r["member_id"],
+                "member_name": r.get("member_name", r["member_id"]),
+                "reward_id": r["reward_id"],
+                "reward_name": r.get("reward_name"),
+                "points_used": r["points_used"],
+                "status": r.get("status", "pending"),
+                "redeemed_at": str(r["redeemed_at"]) if r.get("redeemed_at") else None,
+                "redeemed_by": r.get("redeemed_by"),
+                "notes": r.get("notes"),
+            })
+
+        return {"success": True, "data": redemptions, "total": total, "page": page, "page_size": page_size}
+    except Exception as e:
+        logger.error(f"GET /loyalty/redemptions error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/loyalty/redemptions")
+async def redeem_loyalty_reward(req: dict, user: dict = Depends(get_current_user)):
+    """Staff redeems reward for a member."""
+    try:
+        member_id = req.get("member_id", "")
+        reward_id = req.get("reward_id", 0)
+        staff_name = req.get("staff_name", user.get("username", "admin"))
+        notes = req.get("notes", "")
+
+        if not member_id:
+            return {"success": False, "error": "member_id is required"}
+        if not reward_id:
+            return {"success": False, "error": "reward_id is required"}
+
+        # Get reward
+        reward = _mysql_query_one(
+            "SELECT * FROM loyalty_rewards WHERE id = %s AND is_active = 1",
+            (reward_id,)
+        )
+        if not reward:
+            return {"success": False, "error": "Reward not found or inactive"}
+
+        # Check stock
+        if reward["stock"] == 0:
+            return {"success": False, "error": "Reward out of stock"}
+
+        # Get member loyalty
+        loyalty = _mysql_query_one(
+            "SELECT * FROM member_loyalty WHERE member_id = %s",
+            (member_id,)
+        )
+        if not loyalty:
+            return {"success": False, "error": "Member not found in loyalty system"}
+
+        points_needed = reward["points_required"]
+        if loyalty["available_points"] < points_needed:
+            return {"success": False, "error": f"Insufficient points. Need {points_needed}, have {loyalty['available_points']}"}
+
+        # Deduct points (increase redeemed, not decrease total_points — available is computed)
+        _mysql_execute(
+            "UPDATE member_loyalty SET redeemed_points = redeemed_points + %s, last_redeem_date = CURDATE() WHERE member_id = %s",
+            (points_needed, member_id)
+        )
+
+        # Log transaction
+        _mysql_execute(
+            """INSERT INTO loyalty_transactions (member_id, points, transaction_type, reference_id, description, created_by)
+               VALUES (%s, %s, 'redeem', %s, %s, %s)""",
+            (member_id, -points_needed, str(reward_id), f"Redeemed: {reward['name']}", staff_name)
+        )
+
+        # Reduce stock if limited
+        if reward["stock"] > 0:
+            _mysql_execute("UPDATE loyalty_rewards SET stock = stock - 1 WHERE id = %s", (reward_id,))
+
+        # Create redemption record
+        redemption_id = _mysql_execute(
+            """INSERT INTO loyalty_redemptions (member_id, reward_id, reward_name, points_used, status, redeemed_by, notes)
+               VALUES (%s, %s, %s, %s, 'redeemed', %s, %s)""",
+            (member_id, reward_id, reward["name"], points_needed, staff_name, notes)
+        )
+
+        return {"success": True, "data": {"id": redemption_id}, "message": f"Redeemed '{reward['name']}' for {points_needed} points"}
+    except Exception as e:
+        logger.error(f"POST /loyalty/redemptions error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/loyalty/redemptions/{redemption_id}")
+async def update_redemption_status(redemption_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """Update redemption status (confirm or cancel)."""
+    try:
+        status = req.get("status", "")
+        if status not in ("redeemed", "cancelled"):
+            return {"success": False, "error": "status must be 'redeemed' or 'cancelled'"}
+
+        existing = _mysql_query_one(
+            "SELECT * FROM loyalty_redemptions WHERE id = %s",
+            (redemption_id,)
+        )
+        if not existing:
+            return {"success": False, "error": "Redemption not found"}
+
+        old_status = existing["status"]
+        if old_status == status:
+            return {"success": True, "message": f"Already {status}"}
+
+        # If cancelling a redeemed reward, refund points
+        if status == "cancelled" and old_status == "redeemed":
+            _mysql_execute(
+                "UPDATE member_loyalty SET redeemed_points = redeemed_points - %s WHERE member_id = %s",
+                (existing["points_used"], existing["member_id"])
+            )
+            # Log refund transaction
+            _mysql_execute(
+                """INSERT INTO loyalty_transactions (member_id, points, transaction_type, description, created_by)
+                   VALUES (%s, %s, 'adjustment', %s, %s)""",
+                (existing["member_id"], existing["points_used"], f"Refund from cancelled redemption #{redemption_id}", user.get("username", "admin"))
+            )
+            # Restore stock
+            _mysql_execute("UPDATE loyalty_rewards SET stock = stock + 1 WHERE id = %s AND stock >= 0", (existing["reward_id"],))
+
+        # If confirming a pending redemption
+        if status == "redeemed" and old_status == "cancelled":
+            # Re-deduct points
+            loyalty = _mysql_query_one(
+                "SELECT available_points FROM member_loyalty WHERE member_id = %s",
+                (existing["member_id"],)
+            )
+            if not loyalty or loyalty["available_points"] < existing["points_used"]:
+                return {"success": False, "error": "Member doesn't have enough points anymore"}
+            _mysql_execute(
+                "UPDATE member_loyalty SET redeemed_points = redeemed_points + %s WHERE member_id = %s",
+                (existing["points_used"], existing["member_id"])
+            )
+            _mysql_execute("UPDATE loyalty_rewards SET stock = stock - 1 WHERE id = %s AND stock > 0", (existing["reward_id"],))
+
+        _mysql_execute(
+            "UPDATE loyalty_redemptions SET status = %s, notes = CONCAT(COALESCE(notes,''), %s) WHERE id = %s",
+            (status, f" | Status changed to {status} by {user.get('username', 'admin')}", redemption_id)
+        )
+
+        return {"success": True, "message": f"Redemption status updated to {status}"}
+    except Exception as e:
+        logger.error(f"PUT /loyalty/redemptions/{redemption_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ── Tier Calculation Helper ──
+
+def _recalc_tier(member_id: str):
+    """Recalculate member tier based on lifetime_spent."""
+    tiers = [
+        ("Platinum", 500000),
+        ("Gold", 300000),
+        ("Silver", 100000),
+        ("Bronze", 0),
+    ]
+    row = _mysql_query_one(
+        "SELECT lifetime_spent FROM member_loyalty WHERE member_id = %s",
+        (member_id,)
+    )
+    if not row:
+        return
+    spent = float(row.get("lifetime_spent") or 0)
+    for tier_name, threshold in tiers:
+        if spent >= threshold:
+            _mysql_execute(
+                "UPDATE member_loyalty SET tier = %s WHERE member_id = %s AND tier != %s",
+                (tier_name, member_id, tier_name)
+            )
+            break
+import httpx
+
+# Analytics proxy endpoints - proxy to local predictive analytics engine on port 3120
+ANALYTICS_BASE = "http://127.0.0.1:3120"
+
+
+@router.get("/analytics/sales-trend")
+async def get_analytics_sales_trend(user: dict = Depends(get_current_user)):
+    """Get 30-day sales trend data for charts"""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{ANALYTICS_BASE}/analytics/sales-trend", timeout=10.0)
+            return r.json()
+    except Exception as e:
+        logger.error(f"Analytics sales-trend proxy error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/analytics/peak-hours")
+async def get_analytics_peak_hours(user: dict = Depends(get_current_user)):
+    """Get busiest hours ranking"""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{ANALYTICS_BASE}/analytics/peak-hours", timeout=10.0)
+            return r.json()
+    except Exception as e:
+        logger.error(f"Analytics peak-hours proxy error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/analytics/popular-games")
+async def get_analytics_popular_games(user: dict = Depends(get_current_user)):
+    """Get top games by play count"""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{ANALYTICS_BASE}/analytics/popular-games", timeout=10.0)
+            return r.json()
+    except Exception as e:
+        logger.error(f"Analytics popular-games proxy error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/analytics/member-growth")
+async def get_analytics_member_growth(user: dict = Depends(get_current_user)):
+    """Get new members per day"""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{ANALYTICS_BASE}/analytics/member-growth", timeout=10.0)
+            return r.json()
+    except Exception as e:
+        logger.error(f"Analytics member-growth proxy error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/analytics/forecast")
+async def get_analytics_forecast(user: dict = Depends(get_current_user)):
+    """Get 7-day revenue forecast"""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{ANALYTICS_BASE}/analytics/forecast", timeout=10.0)
+            return r.json()
+    except Exception as e:
+        logger.error(f"Analytics forecast proxy error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/analytics/summary")
+async def get_analytics_summary(user: dict = Depends(get_current_user)):
+    """Get all analytics in one call"""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{ANALYTICS_BASE}/analytics/summary", timeout=15.0)
+            return r.json()
+    except Exception as e:
+        logger.error(f"Analytics summary proxy error: {e}")
+        return {"success": False, "error": str(e)}
