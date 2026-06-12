@@ -7,25 +7,27 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH Agent
+        uses: webfactory/ssh-agent@v0.9
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Deploy via SSH
+        run: |
+          ssh -o StrictHostKeyChecking=no -p 22 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} '
             cd /root/psvibe_api_server
-            python3 /root/coordination/fix_protocol.py --start .
             git pull origin master
             pip install -r requirements.txt --quiet
             systemctl restart psvibe-api
             sleep 3
-            curl -s http://localhost:8000/health | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('status')=='ok' else 1)"
+            curl -s http://localhost:8000/health | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('"'"'status'"'"')=='"'"'ok'"'"' else 1)"
             if [ $? -eq 0 ]; then
-              python3 /root/coordination/fix_protocol.py --complete
-              python3 /root/coordination/notifier.py send --title "✅ API Deploy OK" --message "API deployed: $(git log -1 --format=%h %s)" --level success
+              echo "✅ Deploy OK"
             else
-              python3 /root/coordination/fix_protocol.py --complete --rollback
-              python3 /root/coordination/notifier.py send --title "❌ API Deploy FAILED" --message "Health check failed. Rolled back." --level error
+              echo "❌ Health check failed"
               exit 1
             fi
+          '
