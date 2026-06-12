@@ -1052,6 +1052,31 @@ async def dashboard_get_games(
                 "disc_count": r.get("disc_count"),
                 "last_updated": str(r["last_updated"]) if r.get("last_updated") else None,
             })
+
+        # Enrich with console/SSD installation info
+        if games:
+            game_titles = [g["game_title"] for g in games]
+            placeholders = ",".join(["%s"] * len(game_titles))
+            cg_rows = _mysql_query(
+                f"SELECT game_title, console_id, console_name, status, install_type FROM console_games WHERE game_title IN ({placeholders}) ORDER BY game_title, console_id",
+                tuple(game_titles)
+            )
+            cg_map = {}
+            for cg in cg_rows:
+                gt = cg["game_title"]
+                if gt not in cg_map:
+                    cg_map[gt] = {"consoles": [], "ssds": []}
+                cid = cg["console_id"]
+                entry = {"console_id": cid, "console_name": cg.get("console_name") or cid, "status": cg.get("status"), "install_type": cg.get("install_type")}
+                if cid and cid.startswith("SSD"):
+                    cg_map[gt]["ssds"].append(entry)
+                else:
+                    cg_map[gt]["consoles"].append(entry)
+            for g in games:
+                info = cg_map.get(g["game_title"], {"consoles": [], "ssds": []})
+                g["consoles"] = info["consoles"]
+                g["ssds"] = info["ssds"]
+
         return {"success": True, "data": games, "total": total}
     except Exception as e:
         logger.error(f"GET /games error: {e}")
@@ -1094,6 +1119,87 @@ async def dashboard_create_game(req: dict, user: dict = Depends(get_current_user
     except Exception as e:
         logger.error(f"POST /games error: {e}")
         return {"success": False, "error": str(e)}
+
+
+
+# ── Game Install Management ─────────────────────────────────────────
+
+@router.post("/games/install")
+async def dashboard_install_game(req: dict, user: dict = Depends(get_current_user)):
+    """Install a game on a console or backup to an SSD."""
+    try:
+        game_title = req.get("game_title", "")
+        console_id = req.get("console_id", "")
+        if not game_title:
+            return {"success": False, "error": "game_title is required"}
+        if not console_id:
+            return {"success": False, "error": "console_id is required"}
+
+        game = _mysql_query_one("SELECT game_title FROM games_library WHERE game_title = %s", (game_title,))
+        if not game:
+            return {"success": False, "error": "Game not found"}
+
+        existing = _mysql_query_one(
+            "SELECT id FROM console_games WHERE game_title = %s AND console_id = %s",
+            (game_title, console_id)
+        )
+        if existing:
+            return {"success": False, "error": f"Game already installed on {console_id}"}
+
+        console_name = console_id
+        _mysql_execute(
+            """INSERT INTO console_games (branch_id, console_id, console_name, game_id, game_title, status, install_type, slot_position, created_at, updated_at)
+               VALUES (1, %s, %s, %s, %s, 'Installed', 'Internal SSD', 1, NOW(), NOW())""",
+            (console_id, console_name, game_title, game_title)
+        )
+
+        return {"success": True, "data": {"game_title": game_title, "console_id": console_id, "action": "installed"}}
+    except Exception as e:
+        logger.error(f"POST /games/install error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/games/uninstall")
+async def dashboard_uninstall_game(game_title: str = Query(...), console_id: str = Query(...), user: dict = Depends(get_current_user)):
+    """Remove a game from a console or SSD."""
+    try:
+        logger.warning(f'UNINSTALL: game_title="{game_title}" console_id="{console_id}"')
+        existing = _mysql_query_one(
+            "SELECT id FROM console_games WHERE game_title = %s AND console_id = %s",
+            (game_title, console_id)
+        )
+        logger.warning(f'UNINSTALL existing={existing}')
+        if not existing:
+            return {"success": False, "error": f"Game not found on {console_id}"}
+
+        _mysql_delete("DELETE FROM console_games WHERE game_title = %s AND console_id = %s", (game_title, console_id))
+        return {"success": True, "data": {"game_title": game_title, "console_id": console_id, "action": "uninstalled"}}
+    except Exception as e:
+        logger.error(f"DELETE /games/uninstall error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/games/install-targets")
+async def dashboard_get_install_targets(user: dict = Depends(get_current_user)):
+    """Get list of available consoles and SSDs for install target selection."""
+    try:
+        consoles = _mysql_query(
+            "SELECT DISTINCT console_id, console_name FROM console_games WHERE console_id NOT LIKE CONCAT('SSD', CHAR(37)) ORDER BY console_id"
+        )
+        ssds = _mysql_query(
+            "SELECT DISTINCT console_id, console_name FROM console_games WHERE console_id LIKE CONCAT('SSD', CHAR(37)) ORDER BY console_id"
+        )
+        return {
+            "success": True,
+            "data": {
+                "consoles": [{"id": c["console_id"], "name": c.get("console_name") or c["console_id"]} for c in consoles],
+                "ssds": [{"id": s["console_id"], "name": s.get("console_name") or s["console_id"]} for s in ssds],
+            }
+        }
+    except Exception as e:
+        logger.error(f"GET /games/install-targets error: {e}")
+        return {"success": False, "error": str(e)}
+
 
 
 @router.put("/games/{game_title:path}")
