@@ -880,6 +880,7 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
             elif acct_key in ("wave", "wavepay"): acct_key = "wave"
             elif acct_key in ("aya", "aya pay"): acct_key = "aya"
             elif acct_key in ("acm", "acm\'s acc"): acct_key = "acm"
+            elif acct_key in ("kbz", "kbz bank"): acct_key = "kbz"
             else: continue
             amt = float(r["total"] or 0)
             if r["movement_type"] in ("inject", "transfer_in"):
