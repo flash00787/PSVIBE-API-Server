@@ -648,7 +648,7 @@ async def api_fetch_staff_names(auth=Depends(verify_api_key)):
 async def api_fetch_food_prices(auth=Depends(verify_api_key)):
     """Fetch food prices from inventory table WHERE category=Food AND quantity > 0."""
     try:
-        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s) AND quantity > 0", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other"))
+        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
         result = {}
         for r in rows:
             name = r["item_name"]
@@ -662,7 +662,7 @@ async def api_fetch_food_prices(auth=Depends(verify_api_key)):
 async def api_fetch_food_menu(auth=Depends(verify_api_key)):
     """Fetch food items grouped by category from inventory."""
     try:
-        rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s) AND quantity > 0 ORDER BY category, item_name", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other"))
+        rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0 ORDER BY category, item_name", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
         result = {}
         for r in rows:
             cat = r["category"]
@@ -680,7 +680,7 @@ async def api_fetch_food_menu(auth=Depends(verify_api_key)):
 async def api_fetch_food_costs(auth=Depends(verify_api_key)):
     """Fetch food costs from inventory table WHERE category='Food' AND quantity > 0."""
     try:
-        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s) AND quantity > 0", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other"))
+        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
         result = {}
         for r in rows:
             name = r["item_name"]

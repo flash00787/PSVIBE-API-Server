@@ -1163,12 +1163,10 @@ async def dashboard_install_game(req: dict, user: dict = Depends(get_current_use
 async def dashboard_uninstall_game(game_title: str = Query(...), console_id: str = Query(...), user: dict = Depends(get_current_user)):
     """Remove a game from a console or SSD."""
     try:
-        logger.warning(f'UNINSTALL: game_title="{game_title}" console_id="{console_id}"')
         existing = _mysql_query_one(
             "SELECT id FROM console_games WHERE game_title = %s AND console_id = %s",
             (game_title, console_id)
         )
-        logger.warning(f'UNINSTALL existing={existing}')
         if not existing:
             return {"success": False, "error": f"Game not found on {console_id}"}
 
