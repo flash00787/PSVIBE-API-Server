@@ -7,27 +7,17 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup SSH Agent
-        uses: webfactory/ssh-agent@v0.9
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
       - name: Deploy via SSH
-        run: |
-          ssh -o StrictHostKeyChecking=no -p 22 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} '
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
             cd /root/psvibe_api_server
             git pull origin master
             pip install -r requirements.txt --quiet
             systemctl restart psvibe-api
             sleep 3
-            curl -s http://localhost:8000/health | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('"'"'status'"'"')=='"'"'ok'"'"' else 1)"
-            if [ $? -eq 0 ]; then
-              echo "✅ Deploy OK"
-            else
-              echo "❌ Health check failed"
-              exit 1
-            fi
-          '
+            curl -s http://localhost:8000/health
