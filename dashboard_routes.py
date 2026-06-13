@@ -368,7 +368,7 @@ async def dashboard_get_members(
         where = ["1=1"]
         params = []
         if search:
-            where.append("(m.member_id LIKE %s OR m.name LIKE %s OR COALESCE(m.phone,'') LIKE %s)")
+            where.append("(m.member_id LIKE %s OR m.member_name LIKE %s OR COALESCE(m.phone,'') LIKE %s)")
             like = f"%{search}%"
             params.extend([like, like, like])
         if tier:
@@ -376,8 +376,8 @@ async def dashboard_get_members(
             params.append(tier)
 
         sql = f"""
-            SELECT m.member_id, m.name as name, COALESCE(m.phone,''), m.balance_mins, m.tier,
-                   m.total_spend, m.lifetime_spend, m.join_date, m.last_updated
+            SELECT m.member_id, m.member_name as name, COALESCE(m.phone,'') as phone, m.balance_mins, m.tier,
+                   m.total_spend, m.lifetime_spend, m.join_date, m.last_updated, m.effective_rate
             FROM member_wallets m
             WHERE {' AND '.join(where)}
             ORDER BY m.member_id ASC
@@ -392,13 +392,25 @@ async def dashboard_get_members(
         )
         total = count_row["total"] if count_row else 0
 
+        from fifo_wallet import fifo_calc
+
         members = []
         for r in rows:
+            mid = r["member_id"]
+            bal_mins = r.get("balance_mins") or 0
+            # Fetch topup history for FIFO liability calculation
+            tu = _mysql_query(
+                "SELECT amount, mins_added FROM topup_log WHERE member_id=%s ORDER BY topup_date ASC",
+                (mid,)
+            ) or []
+            topups = [{"amount": float(t["amount"] or 0), "mins_added": float(t["mins_added"] or 0)} for t in tu]
+            fifo = fifo_calc(topups, bal_mins)
             members.append({
-                "member_id": r["member_id"],
+                "member_id": mid,
                 "name": r.get("name"),
-                "phone": r.get("phone"),
-                "balance_minutes": r.get("balance_mins"),
+                "phone": r.get("phone", ""),
+                "balance_minutes": bal_mins,
+                "balance_kyat": int(fifo["liability"]),
                 "tier": r.get("tier"),
                 "total_spend": float(r.get("total_spend") or 0),
                 "lifetime_spend": float(r.get("lifetime_spend") or 0),
@@ -2004,6 +2016,9 @@ async def get_finance_balances(user: dict = Depends(get_current_user)):
         opex_by_acct = {acc["key"]: 0.0 for acc in accounts}
         for row in opex_rows:
             pm = (row.get("payment_method") or "").strip().lower().replace(" ", "_")
+            # Normalize "acm's_acc" to account key "acm_acc"
+            if pm == "acm's_acc":
+                pm = "acm_acc"
             if pm in opex_by_acct:
                 opex_by_acct[pm] += float(row["total"] or 0)
         # Stock-in purchase payments (deducted from accounts)
@@ -2200,31 +2215,34 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
     from mysql_db import query as _mq, query_one as _mqo
     ym = f"{year:04d}-{month:02d}"
     try:
-        rev_rows = _mq("SELECT net, gross, amount, notes FROM sales_daily WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s AND gross > 0", (ym,))
-        game_rev = 0.0; food_rev = 0.0; discounts = 0.0; topup_sales = 0.0
+        # --- GAME REVENUE: all sales_daily net (excl Topup/New member notes) ---
+        rev_rows = _mq("SELECT net, gross, notes FROM sales_daily WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s AND gross > 0", (ym,))
+        total_sales = 0.0; discounts = 0.0; topup_sales = 0.0
         for r in rev_rows:
             g = float(r.get("gross") or 0)
             n = float(r.get("net") or 0)
-            a = float(r.get("amount") or 0)
             notes = (r.get("notes") or "")
             discounts += (g - n)
-            # Food has NO discount: food_rev = min(gross - amount, net)
-            food_amt = max(g - a, 0)
-            food_rev += min(food_amt, n)
-            # Exclude topup entries from game_rev (topups are deferred revenue)
-            # Only wallet_consumed (FIFO) counts as topup-derived revenue
             if notes.startswith("Topup") or notes.startswith("New member"):
-                topup_sales += max(n - food_amt, 0)
+                topup_sales += n
             else:
-                # Game gets the remaining after food: game_rev = max(net - food_amt, 0)
-                game_rev += max(n - food_amt, 0)
-        trows = _mq("SELECT COALESCE(SUM(amount),0) as t FROM topup_log WHERE DATE_FORMAT(topup_date, '%%Y-%%m') = %s", (ym,))
-        topup_rev = float(trows[0]["t"] or 0) if trows else 0
+                total_sales += n
+        # --- FOOD REVENUE: stock_out (actual items sold × unit_price = selling price) ---
+        frows = _mq("SELECT COALESCE(SUM(total), 0) as t FROM stock_out WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s", (ym,))
+        food_rev = float(frows[0]["t"] or 0) if frows else 0
+        # --- FOOD COGS from stock FIFO ---
         import stock_fifo, pymysql
         _sfc = pymysql.connect(host='127.0.0.1', user='root', password='PsVibe@MySQL2024!', database='psvibe_api')
         _sfr = stock_fifo.calc_fifo(_sfc)
         _sfc.close()
-        cogs = _sfr['cogs']
+        cogs = _sfr["cogs"]
+        # --- GAME REVENUE = total_sales - food_rev (food_REV is already in sales_daily total) ---
+        game_rev = total_sales - food_rev
+        # Ensure no negative game revenue
+        if game_rev < 0: game_rev = 0
+        trows = _mq("SELECT COALESCE(SUM(amount),0) as t FROM topup_log WHERE DATE_FORMAT(topup_date, '%%Y-%%m') = %s", (ym,))
+        topup_rev = float(trows[0]["t"] or 0) if trows else 0
+        # cogs already computed (from first block above)
         opex_rows = _mq("SELECT category, COALESCE(SUM(amount),0) as total FROM opex WHERE DATE_FORMAT(expense_date, '%%Y-%%m') = %s GROUP BY category ORDER BY total DESC", (ym,))
         expenses_by_cat = [{"category": r["category"], "amount": float(r["total"])} for r in opex_rows]
         total_expense = sum(e["amount"] for e in expenses_by_cat)
@@ -2237,18 +2255,23 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
             _fr = {"consumed": 0}
         wallet_consumed = float(_fr.get("consumed", 0))
         total_revenue = game_rev + food_rev + wallet_consumed
-        gross_profit = total_revenue - cogs
+        # Game Profit = game_rev (no direct COGS for game)
+        # Food Profit = food_rev - food_cogs
+        game_profit = game_rev
+        food_profit = food_rev - cogs
+        total_gross_profit = game_profit + food_profit
         # Depreciation expense for this month
         _dep_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0")
         depreciation_exp = float(_dep_rows[0]["t"] or 0) if _dep_rows else 0
         total_expense_all = total_expense + depreciation_exp
-        net_profit = gross_profit - total_expense_all
+        net_profit = total_gross_profit - total_expense_all
         return {"success": True, "data": {
             "period": ym,
             "revenue": {"game_revenue": round(game_rev,0), "food_revenue": round(food_rev,0), "topup_revenue": round(topup_rev,0), "wallet_consumed": round(wallet_consumed,0), "topup_deferred": round(topup_sales,0), "discounts": round(discounts,0), "total_revenue": round(total_revenue,0)},
-            "cogs": round(cogs,0), "gross_profit": round(gross_profit,0),
+            "cogs": round(cogs,0), "food_cogs": round(cogs,0),
+            "gross_profit": round(total_gross_profit,0), "game_profit": round(game_profit,0), "food_profit": round(food_profit,0),
             "expenses": {"by_category": expenses_by_cat, "total": round(total_expense,0), "depreciation": round(depreciation_exp,0), "total_with_depreciation": round(total_expense_all,0)},
-            "operating_profit": round(gross_profit - total_expense,0),
+            "operating_profit": round(total_gross_profit - total_expense,0),
             "net_profit": round(net_profit,0)
         }}
     except Exception as e:
@@ -2287,7 +2310,7 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
     try:
         from fifo_wallet import get_all_fifo
         try:
-            _fc = pymysql.connect(host="127.0.0.1", user="root", password="PsVib...4!", database="psvibe_api")
+            _fc = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
             _fr = get_all_fifo(_fc); _fc.close()
         except Exception:
             _fr = {"liability": 0}

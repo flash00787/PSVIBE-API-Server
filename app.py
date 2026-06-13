@@ -170,13 +170,23 @@ async def verify_api_key(
     api_key: str = Query(None, alias="api_key"),
     request: Request = None,
 ):
-    """Verify API key from query param or X-API-Key header."""
+    """Verify API key OR JWT Bearer token."""
     if API_KEY:
+        # Try API key first
         key = api_key
         if not key and request:
             key = request.headers.get("X-API-Key")
-        if not key or key != API_KEY:
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        if key and key == API_KEY:
+            return api_key
+        # Try JWT Bearer token
+        if request:
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                from auth import decode_token
+                payload = decode_token(auth[7:])
+                if payload and payload.get("sub"):
+                    return api_key
+        raise HTTPException(status_code=401, detail="Invalid or missing authentication")
     return api_key
 
 
@@ -480,12 +490,39 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  fetch_members
 # ═══════════════════════════════════════
+def _calc_member_liability_kyat(member_id):
+    """Calculate FIFO-based liability in kyat for a member."""
+    try:
+        from fifo_wallet import fifo_calc
+        tu = _mysql_query(
+            "SELECT amount, mins_added FROM topup_log WHERE member_id=%s ORDER BY topup_date ASC",
+            (member_id,)
+        ) or []
+        topups = [{"amount": float(t["amount"] or 0), "mins_added": float(t["mins_added"] or 0)} for t in tu]
+        bw = _mysql_query_one("SELECT balance_mins FROM member_wallets WHERE member_id=%s", (member_id,))
+        bal = float(bw["balance_mins"]) if bw and bw.get("balance_mins") else 0
+        fifo = fifo_calc(topups, bal)
+        return int(fifo["liability"])
+    except:
+        return 0
+
 @app.get("/api/fetch_members", response_model=GenericResponse, tags=["Members"], summary="Fetch all members [MySQL]")
 async def api_fetch_members(auth=Depends(verify_api_key)):
-    """Fetch sorted list of all member IDs from MySQL."""
+    """Fetch all members with name, phone, tier, and wallet balance (liability)."""
     try:
-        rows = _mysql_query("SELECT member_id FROM member_wallets WHERE member_id IS NOT NULL AND member_id != '' ORDER BY member_id")
-        return ok(sorted([r["member_id"] for r in rows]))
+        rows = _mysql_query("SELECT member_id, member_name, phone, balance_mins, tier, total_spend, lifetime_spend FROM member_wallets WHERE member_id IS NOT NULL AND member_id != '' ORDER BY member_id")
+        result = []
+        for r in rows:
+            result.append({
+                "id": r["member_id"],
+                "name": r.get("member_name") or r["member_id"],
+                "phone": r.get("phone") or "",
+                "tier": r.get("tier") or "",
+                "liability_mins": int(r.get("balance_mins") or 0),
+                "liability_kyat": _calc_member_liability_kyat(r["member_id"]),
+                "wallet_balance": int(r.get("balance_mins") or 0)
+            })
+        return ok(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1496,7 +1533,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
         # Look for a Confirmed booking for this console today
         today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         bk = _mysql_query_one(
-            "SELECT id, member_id, game_name, duration_mins, telegram_chat_id, staff_name FROM console_booking "
+            "SELECT id, member_id, game_name, duration_mins, telegram_chat_id, staff_name, phone FROM console_booking "
             "WHERE console_id=%s AND status='confirmed' AND DATE(booking_date)=%s ORDER By created_at DESC LIMIT 1",
             (console_id, today)
         )
@@ -1505,7 +1542,15 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
         _now_ref = now_mmt()
         if bk:
             # Use booking data (autofill)
-            member_id = bk['member_id'] or member_id
+            if bk['member_id']:
+                member_id = bk['member_id']
+            else:
+                # Try to resolve member_id from booking's phone
+                bk_phone = bk.get("phone", "")
+                if bk_phone:
+                    _pm = _mysql_query_one("SELECT member_id FROM member_wallets WHERE phone=%s AND member_id IS NOT NULL AND member_id != ''", (bk_phone,))
+                    if _pm:
+                        member_id = _pm["member_id"]
             game_name = bk['game_name'] or game_name
             duration_mins = bk['duration_mins'] or duration_mins
             booking_id = bk['id']
@@ -1678,9 +1723,20 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
             # Staff bookings auto-confirm; customer bookings need approval
             _bk_status = "confirmed" if req.get("source") == "staff" else "pending"
             
+            # Resolve actual member_id from phone or telegram_chat_id
+            bk_member_id = ""
+            if phone:
+                _pm = _mysql_query_one("SELECT member_id FROM member_wallets WHERE phone=%s AND member_id IS NOT NULL AND member_id != ''", (phone,))
+                if _pm:
+                    bk_member_id = _pm["member_id"]
+            if not bk_member_id:
+                _pm = _mysql_query_one("SELECT member_id FROM member_wallets WHERE member_id=%s", (telegram_chat_id,))
+                if _pm:
+                    bk_member_id = _pm["member_id"]
+            
             bk_id = _mysql_exec(
                 "INSERT INTO console_booking (console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (console_id, telegram_chat_id, _parsed_date, start_dt, end_dt, _bk_status, customer_name, notes, telegram_chat_id, duration_mins, phone, game_name)
+                (console_id, bk_member_id, _parsed_date, start_dt, end_dt, _bk_status, customer_name, notes, telegram_chat_id, duration_mins, phone, game_name)
             )
             
             
@@ -2030,7 +2086,7 @@ async def api_sheets_log(req: dict, auth=Depends(verify_api_key)):
 
 @app.post("/api/bot-users/track", response_model=GenericResponse, tags=["Bot Users"], summary="Track bot user interaction")
 async def api_bot_users_track(req: dict, auth=Depends(verify_api_key)):
-    """Fire-and-forget: upsert bot user tracking row to Bot_Users sheet."""
+    """Track bot user interaction - MySQL upsert + GSheets fallback."""
     try:
         tg_id = req.get("tg_id", "")
         username = req.get("username", "")
@@ -2038,18 +2094,134 @@ async def api_bot_users_track(req: dict, auth=Depends(verify_api_key)):
         action = req.get("action", "")
         member_id = req.get("member_id", "")
         phone = req.get("phone", "")
+        detail = req.get("detail", "")
         logger.info("BOT-USER: tg=%s user=%s action=%s", tg_id, user_name, action)
+
+        # MySQL: upsert user + log activity
+        try:
+            _mysql_exec(
+                "INSERT INTO customer_bot_users (tg_id, username, first_name, total_interactions, last_command, last_activity_type) "
+                "VALUES (%s, %s, %s, 1, %s, %s) "
+                "ON DUPLICATE KEY UPDATE "
+                "  username = VALUES(username), "
+                "  first_name = VALUES(first_name), "
+                "  total_interactions = total_interactions + 1, "
+                "  last_seen = NOW(), "
+                "  last_command = VALUES(last_command), "
+                "  last_activity_type = VALUES(last_activity_type)",
+                (tg_id, username, user_name, action, action)
+            )
+            if action:
+                _mysql_exec(
+                    "INSERT INTO customer_bot_activity_log (tg_id, activity_type, detail) VALUES (%s, %s, %s)",
+                    (tg_id, action, detail[:500] if detail else "")
+                )
+        except Exception as dbe:
+            logger.warning("bot-users MySQL write failed: %s", dbe)
+
+        # GSheets fallback (keep existing)
         try:
             from sheets_client import get_worksheet
             ws = get_worksheet("Bot_Users")
             from datetime import datetime, timezone
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            ws.append_row([ts, str(tg_id), username or '', user_name or '', action or '', member_id or '', phone or ''])
+            ws.append_row([ts, str(tg_id), username or "", user_name or "", action or "", member_id or "", phone or ""])
         except Exception as se:
             logger.warning("Bot_Users sheet write failed: %s", se)
+
         return ok({"tracked": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/bot-users/stats", response_model=GenericResponse, tags=["Bot Users"], summary="Bot user stats")
+async def api_bot_users_stats(auth=Depends(verify_api_key)):
+    """Return aggregated bot user statistics."""
+    try:
+        total = _mysql_query_one("SELECT COUNT(*) AS c FROM customer_bot_users")
+        active_today = _mysql_query_one("SELECT COUNT(*) AS c FROM customer_bot_users WHERE DATE(last_seen) = CURDATE()")
+        active_week = _mysql_query_one("SELECT COUNT(*) AS c FROM customer_bot_users WHERE last_seen >= DATE_SUB(NOW(), INTERVAL 7 DAY)")
+        ai_chats = _mysql_query_one("SELECT COUNT(*) AS c FROM customer_bot_activity_log WHERE activity_type IN ('ai_chat','ai_chat_cached')")
+        top_cmds = _mysql_query(
+            "SELECT activity_type, COUNT(*) AS cnt FROM customer_bot_activity_log "
+            "WHERE activity_type NOT IN ('ai_chat','ai_chat_cached','message') "
+            "GROUP BY activity_type ORDER BY cnt DESC LIMIT 10"
+        )
+        by_day = _mysql_query(
+            "SELECT DATE(first_seen) AS d, COUNT(*) AS cnt FROM customer_bot_users "
+            "WHERE first_seen >= DATE_SUB(NOW(), INTERVAL 7 DAY) "
+            "GROUP BY DATE(first_seen) ORDER BY d"
+        )
+        return ok({
+            "total_users": total["c"] if total else 0,
+            "active_today": active_today["c"] if active_today else 0,
+            "active_this_week": active_week["c"] if active_week else 0,
+            "total_ai_chats": ai_chats["c"] if ai_chats else 0,
+            "top_commands": [{"action": r["activity_type"], "count": r["cnt"]} for r in (top_cmds or [])],
+            "users_by_day": [{"date": str(r["d"]), "count": r["cnt"]} for r in (by_day or [])],
+        })
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.get("/api/bot-users/list", response_model=GenericResponse, tags=["Bot Users"], summary="List bot users")
+async def api_bot_users_list(limit: int = 50, offset: int = 0, search: str = "", auth=Depends(verify_api_key)):
+    """Return paginated bot user list."""
+    try:
+        if search:
+            like = f"%{search}%"
+            total = _mysql_query_one("SELECT COUNT(*) AS c FROM customer_bot_users WHERE username LIKE %s OR first_name LIKE %s OR tg_id LIKE %s", (like, like, like))
+            rows = _mysql_query(
+                "SELECT tg_id, username, first_name, first_seen, last_seen, total_interactions, ai_chat_count, last_command, last_activity_type "
+                "FROM customer_bot_users WHERE username LIKE %s OR first_name LIKE %s OR tg_id LIKE %s "
+                "ORDER BY last_seen DESC LIMIT %s OFFSET %s",
+                (like, like, like, limit, offset)
+            )
+        else:
+            total = _mysql_query_one("SELECT COUNT(*) AS c FROM customer_bot_users")
+            rows = _mysql_query(
+                "SELECT tg_id, username, first_name, first_seen, last_seen, total_interactions, ai_chat_count, last_command, last_activity_type "
+                "FROM customer_bot_users ORDER BY last_seen DESC LIMIT %s OFFSET %s",
+                (limit, offset)
+            )
+        users = []
+        for r in (rows or []):
+            users.append({
+                "tg_id": r["tg_id"],
+                "username": r["username"],
+                "first_name": r["first_name"],
+                "first_seen": str(r["first_seen"]) if r["first_seen"] else "",
+                "last_seen": str(r["last_seen"]) if r["last_seen"] else "",
+                "total_interactions": r["total_interactions"],
+                "ai_chat_count": r["ai_chat_count"],
+                "last_command": r["last_command"] or "",
+                "last_activity": r["last_activity_type"] or "",
+            })
+        return ok({"users": users, "total": total["c"] if total else 0})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@app.get("/api/bot-users/activity", response_model=GenericResponse, tags=["Bot Users"], summary="Bot user activity log")
+async def api_bot_users_activity(tg_id: str, limit: int = 50, auth=Depends(verify_api_key)):
+    """Return activity log for a specific user."""
+    try:
+        rows = _mysql_query(
+            "SELECT id, activity_type, detail, created_at FROM customer_bot_activity_log "
+            "WHERE tg_id=%s ORDER BY created_at DESC LIMIT %s",
+            (tg_id, limit)
+        )
+        activities = []
+        for r in (rows or []):
+            activities.append({
+                "id": r["id"],
+                "activity_type": r["activity_type"],
+                "detail": r["detail"] or "",
+                "created_at": str(r["created_at"]) if r["created_at"] else "",
+            })
+        return ok({"activities": activities})
+    except Exception as e:
+        return error_response(message=str(e))
+
 
 @app.get("/api/promotions/active", response_model=GenericResponse, tags=["Promotions"])
 async def api_promotions_active(auth=Depends(verify_api_key)):
@@ -2825,6 +2997,15 @@ async def api_opex_add(body: dict = Body(...), user: dict = Depends(get_current_
     if not cat or amt <= 0:
         return GenericResponse(success=False, error="Category and amount required")
     mysql_execute("INSERT INTO opex (category,description,amount,payment_method,recorded_by,expense_date) VALUES (%s,%s,%s,%s,%s,%s)", (cat, desc, amt, pmt, by, dt))
+    # Deduct from account balance if payment method matches an account name
+    try:
+        acc = mysql_query_one("SELECT id, balance FROM accounts WHERE account_name = %s", (pmt,))
+        if acc:
+            new_bal = float(acc["balance"]) - amt
+            mysql_execute("UPDATE accounts SET balance = %s WHERE id = %s", (new_bal, acc["id"]))
+            logger.info("OPEX: deducted %d from account '%s' (new balance: %.2f)", amt, pmt, new_bal)
+    except Exception as ae:
+        logger.warning("OPEX account deduction failed: %s", ae)
     return GenericResponse(success=True, data={"msg": f"{cat}: {amt:,} Ks recorded"})
 @app.get("/api/opex/summary", tags=["OPEX"], summary="Expense summary by category + date")
 async def api_opex_summary(

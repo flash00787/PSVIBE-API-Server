@@ -944,6 +944,8 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
                 income_by_acct["aya"] -= amt
             elif pm in ("kbz", "kbz bank"):
                 income_by_acct["kbz"] = income_by_acct.get("kbz", 0) - amt
+            elif pm in ("acm", "acm's acc"):
+                income_by_acct["acm"] = income_by_acct.get("acm", 0) - amt
 
         # 5. Build final operating list with real-time balances
         operating_names = ["Cash", "KPay", "Wave", "AYA Pay", "ACM\'s Acc"]
@@ -954,8 +956,8 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
             if keyword in ("acm's acc",):
                 keyword = "acm"
             income = income_by_acct.get(keyword, 0)
-            # Real-time balance = base (from accounts table) + income from transactions
-            final_bal = base + income
+            # Real-time balance = income from transactions (no base double-count)
+            final_bal = income
             icon_notes = {"Cash": "ေငြသား", "KPay": "KPay", "Wave": "Wave", "AYA Pay": "AYA Pay"}
             operating.append({
                 "name": name,
