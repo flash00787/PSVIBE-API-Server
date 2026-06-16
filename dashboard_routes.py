@@ -1,5 +1,6 @@
 """PS VIBE Dashboard — Dashboard Data API Endpoints"""
 import logging
+import re
 from datetime import datetime, timezone
 
 import httpx
@@ -25,7 +26,7 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
         today_bookings = today_bookings["cnt"] if today_bookings else 0
 
         active_players = _mysql_query_one(
-            "SELECT COUNT(*) as cnt FROM console_booking WHERE DATE(booking_date) = %s AND status IN ('Active', 'Confirmed')",
+            "SELECT COUNT(*) as cnt FROM console_booking WHERE DATE(booking_date) = %s AND status = 'Active'",
             (today,)
         )
         active_players = active_players["cnt"] if active_players else 0
@@ -73,7 +74,7 @@ async def get_console_status(user: dict = Depends(get_current_user)):
                     SELECT console_id, MAX(id) as max_id
                     FROM console_booking
                     WHERE DATE(booking_date) = %s
-                    AND status IN ('Active', 'Confirmed')
+                    AND status = 'Active'
                     GROUP BY console_id
                 ) cb2 ON cb1.id = cb2.max_id
             ) cb ON c.console_id = cb.console_id
@@ -787,6 +788,8 @@ async def dashboard_update_inventory(item_id: int, req: dict, user: dict = Depen
 
         updates = []
         params = []
+        # Track old item_name for stock_in/stock_out sync on rename
+        old_name = existing.get("item_name", "")
         for field in ["item_name", "category", "quantity", "unit_price", "reorder_level"]:
             if field in req:
                 updates.append(f"{field} = %s")
@@ -798,6 +801,13 @@ async def dashboard_update_inventory(item_id: int, req: dict, user: dict = Depen
         updates.append("last_updated = NOW()")
         params.append(item_id)
         _mysql_execute(f"UPDATE inventory SET {', '.join(updates)} WHERE id = %s", tuple(params))
+
+        # Sync stock_in/stock_out on rename
+        new_name = req.get("item_name", "")
+        if old_name and new_name and old_name != new_name:
+            _mysql_execute("UPDATE stock_in SET item_name = %s WHERE item_name = %s", (new_name, old_name))
+            _mysql_execute("UPDATE stock_out SET item_name = %s WHERE item_name = %s", (new_name, old_name))
+            logger.info("dashboard: renamed '%s' -> '%s' (synced stock_in, stock_out)", old_name, new_name)
 
         updated = _mysql_query_one("SELECT * FROM inventory WHERE id = %s", (item_id,))
         return {
@@ -1658,25 +1668,39 @@ async def dashboard_get_sales_daily(
         total = count_row["total"] if count_row else 0
 
         summary = _mysql_query_one(
-            f"SELECT COALESCE(SUM(amount), 0) as total_amount, COALESCE(SUM(gross), 0) as total_gross, COALESCE(SUM(discount), 0) as total_discount, COALESCE(SUM(net), 0) as total_net FROM sales_daily WHERE {' AND '.join(where)}",
+            f"SELECT COALESCE(SUM(amount), 0) as total_amount, COALESCE(SUM(gross), 0) as total_gross, COALESCE(SUM(discount), 0) as total_discount, COALESCE(SUM(net), 0) as total_net, COALESCE(SUM(gross - amount), 0) as total_food, COALESCE(SUM(CAST(REGEXP_REPLACE(notes, '.*Mins?:? *([0-9]+).*', '$1') AS UNSIGNED)), 0) as total_mins FROM sales_daily WHERE {' AND '.join(where)}",
             tuple(params[:-2])
         )
 
         entries = []
         for r in rows:
+            notes = r.get("notes") or ""
+            # Parse play minutes from notes: "Mins: XX" or "Mins:XX"
+            play_mins = 0
+            m_mins = re.search(r'Mins?:?\s*(\d+)', notes, re.IGNORECASE)
+            if m_mins:
+                play_mins = int(m_mins.group(1))
+            play_hrs = round(play_mins / 60, 1)
+            game_amt = float(r.get("amount") or 0)
+            gross = float(r.get("gross") or 0)
+            food_amt = max(0, gross - game_amt)
             entries.append({
                 "id": r["id"],
                 "voucher_no": r.get("voucher_no"),
                 "sale_date": str(r["sale_date"]) if r.get("sale_date") else None,
                 "console_id": r.get("console_id"),
                 "member_id": r.get("member_id"),
-                "amount": float(r.get("amount") or 0),
-                "gross": float(r.get("gross") or 0),
+                "amount": game_amt,
+                "game_amt": game_amt,
+                "food_amt": food_amt,
+                "play_mins": play_mins,
+                "play_hrs": play_hrs,
+                "gross": gross,
                 "discount": float(r.get("discount") or 0),
                 "net": float(r.get("net") or 0),
                 "staff_name": r.get("staff_name"),
                 "payment_method": r.get("payment_method"),
-                "notes": r.get("notes"),
+                "notes": notes,
                 "created_at": str(r["created_at"]) if r.get("created_at") else None,
             })
         return {
@@ -1684,11 +1708,14 @@ async def dashboard_get_sales_daily(
             "data": entries,
             "total": total,
             "summary": {
-                "total_amount": float(summary["total_amount"] or 0),
-                "total_gross": float(summary["total_gross"] or 0),
-                "total_discount": float(summary["total_discount"] or 0),
-                "total_net": float(summary["total_net"] or 0),
-            } if summary else None
+                "total_amount": float(summary["total_amount"] or 0) if summary else 0,
+                "total_gross": float(summary["total_gross"] or 0) if summary else 0,
+                "total_discount": float(summary["total_discount"] or 0) if summary else 0,
+                "total_net": float(summary["total_net"] or 0) if summary else 0,
+                "total_food": float(summary["total_food"] or 0) if summary else 0,
+                "total_mins": int(summary["total_mins"] or 0) if summary else 0,
+                "total_hrs": round(int(summary["total_mins"] or 0) / 60, 1) if summary else 0,
+            }
         }
     except Exception as e:
         logger.error(f"GET /sales-daily error: {e}")
@@ -2261,7 +2288,8 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         food_profit = food_rev - cogs
         total_gross_profit = game_profit + food_profit
         # Depreciation expense for this month
-        _dep_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0")
+        first_of_month = f"{year:04d}-{month:02d}-01"
+        _dep_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0 AND purchase_date < %s", (first_of_month,))
         depreciation_exp = float(_dep_rows[0]["t"] or 0) if _dep_rows else 0
         total_expense_all = total_expense + depreciation_exp
         net_profit = total_gross_profit - total_expense_all
@@ -3632,7 +3660,7 @@ async def dashboard_get_consoles_detail(
             booking = _mysql_query_one("""
                 SELECT id, member_id, start_time, end_time, status, game_name, duration_mins
                 FROM console_booking
-                WHERE console_id = %s AND status IN ('Active', 'Confirmed')
+                WHERE console_id = %s AND status = 'Active'
                 ORDER BY id DESC LIMIT 1
             """, (r["console_id"],))
 

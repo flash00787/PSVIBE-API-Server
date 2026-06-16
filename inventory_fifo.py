@@ -16,14 +16,16 @@ def get_fifo_stock(item_name=None):
     conn = _conn()
     cur = conn.cursor(dictionary=True)
     if item_name:
-        cur.execute('SELECT i.item_name, COALESCE(si.qty,0) as stock_in_qty, COALESCE(so.qty,0) as stock_out_qty FROM (SELECT DISTINCT item_name FROM inventory) i LEFT JOIN (SELECT item_name, SUM(quantity) as qty FROM stock_in GROUP BY item_name) si ON i.item_name=si.item_name LEFT JOIN (SELECT item_name, SUM(quantity) as qty FROM stock_out GROUP BY item_name) so ON i.item_name=so.item_name WHERE i.item_name=%s', (item_name,))
+        cur.execute('SELECT i.item_name, i.quantity as inv_qty, COALESCE(si.qty,0) as stock_in_qty, COALESCE(so.qty,0) as stock_out_qty FROM inventory i LEFT JOIN (SELECT item_name, SUM(quantity) as qty FROM stock_in GROUP BY item_name) si ON i.item_name=si.item_name LEFT JOIN (SELECT item_name, SUM(quantity) as qty FROM stock_out GROUP BY item_name) so ON i.item_name=so.item_name WHERE i.item_name=%s', (item_name,))
     else:
-        cur.execute('SELECT i.item_name, COALESCE(si.qty,0) as stock_in_qty, COALESCE(so.qty,0) as stock_out_qty FROM (SELECT DISTINCT item_name FROM inventory) i LEFT JOIN (SELECT item_name, SUM(quantity) as qty FROM stock_in GROUP BY item_name) si ON i.item_name=si.item_name LEFT JOIN (SELECT item_name, SUM(quantity) as qty FROM stock_out GROUP BY item_name) so ON i.item_name=so.item_name')
+        cur.execute('SELECT i.item_name, i.quantity as inv_qty, COALESCE(si.qty,0) as stock_in_qty, COALESCE(so.qty,0) as stock_out_qty FROM inventory i LEFT JOIN (SELECT item_name, SUM(quantity) as qty FROM stock_in GROUP BY item_name) si ON i.item_name=si.item_name LEFT JOIN (SELECT item_name, SUM(quantity) as qty FROM stock_out GROUP BY item_name) so ON i.item_name=so.item_name')
     rows = cur.fetchall()
     conn.close()
     result = []
     for r in rows:
         avail = r['stock_in_qty'] - r['stock_out_qty']
+        if avail <= 0 and r['stock_in_qty'] == 0 and r['stock_out_qty'] == 0 and r.get('inv_qty') is not None and r['inv_qty'] > 0:
+            avail = r['inv_qty']
         result.append({'item_name': r['item_name'], 'quantity': max(avail, 0), 'stock_in_qty': r['stock_in_qty'], 'stock_out_qty': r['stock_out_qty']})
     return result
 
@@ -75,6 +77,9 @@ def get_fifo_valuation(item_name=None):
     if item_name:
         all_items = [item_name]
     result = {'items': [], 'total_inventory_value': 0.0}
+    # Pre-fetch inventory quantities for fallback
+    cur.execute('SELECT item_name, quantity FROM inventory')
+    inv_qty_map = {r['item_name']: r.get('quantity') or 0 for r in cur.fetchall()}
     for item in all_items:
         cur.execute('SELECT COALESCE(SUM(quantity), 0) as total_out FROM stock_out WHERE item_name=%s', (item,))
         total_out = int(cur.fetchone()['total_out'] or 0)
@@ -92,6 +97,9 @@ def get_fifo_valuation(item_name=None):
             if remaining_qty > 0:
                 available_qty += remaining_qty
                 fifo_value += remaining_qty * b_cost
+        if available_qty <= 0 and item in inv_qty_map and inv_qty_map[item] > 0:
+            available_qty = inv_qty_map[item]
+            fifo_value = 0.0  # Not a FIFO tracked item
         item_data = {'item_name': item, 'quantity': available_qty, 'fifo_value': round(fifo_value, 2)}
         result['items'].append(item_data)
         result['total_inventory_value'] += round(fifo_value, 2)

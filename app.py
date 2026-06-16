@@ -1374,62 +1374,80 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
 #  GET /api/bookings - list bookings by status
 # ================================================================
 @app.get("/api/bookings", response_model=GenericResponse, tags=["Bookings"], summary="List bookings by status [MySQL]")
-async def api_get_bookings(status: str = "", auth=Depends(verify_api_key)):
+async def api_get_bookings(status: str = "", member_id: str = Query(""), auth=Depends(verify_api_key)):
+    """List bookings with optional status and member_id filters."""
     try:
+        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking"
+        where_clauses = []
+        params = []
         if status:
-            rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE status=%s ORDER BY booking_date DESC, start_time DESC", (status,))
-        else:
-            rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking ORDER BY booking_date DESC, start_time DESC")
+            where_clauses.append("status=%s")
+            params.append(status)
+        if member_id:
+            where_clauses.append("member_id=%s")
+            params.append(member_id)
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+        sql += " ORDER BY booking_date DESC, start_time DESC"
+        rows = _mysql_query(sql, tuple(params)) if params else _mysql_query(sql)
+        if not rows:
+            return ok({"bookings": []})
+        # Batch resolve console_types (N+1 fix)
+        all_cids = set()
+        for r in rows:
+            _cid = r.get("console_id", "")
+            if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
+                all_cids.add(_cid)
+        ctype_map = {}
+        if all_cids:
+            cid_list = sorted(all_cids)
+            placeholders = ",".join("%s" for _ in cid_list)
+            try:
+                crows = _mysql_query(f"SELECT console_id, console_type FROM console_status WHERE console_id IN ({placeholders})", cid_list)
+                for cr in crows or []:
+                    ctype_map[cr.get("console_id")] = cr.get("console_type", cr.get("console_id"))
+            except Exception:
+                pass
         from datetime import datetime as _dt
         normalized = []
         for r in rows:
-            # Derive consoleType from console_id
             _cid = r.get("console_id", "")
-            _ctype = _cid
-            if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
-                try:
-                    _crows = _mysql_query("SELECT console_type FROM console_status WHERE console_id=%s LIMIT 1", (_cid,))
-                    if _crows and _crows[0].get("console_type"):
-                        _ctype = _crows[0]["console_type"]
-                except Exception:
-                    pass
+            _ctype = ctype_map.get(_cid, _cid)
             start = r.get("start_time")
             time_slot = ""
             if start:
                 try:
                     start_dt = _dt.fromisoformat(start) if isinstance(start, str) else start
                     time_slot = start_dt.strftime("%H:%M")
-                except:
+                except Exception:
                     time_slot = str(start)[:5] if start else ""
             bd = r.get("booking_date")
+            bd_str = ""
             if bd:
                 try:
                     bd_o = _dt.fromisoformat(bd) if isinstance(bd, str) else bd
                     bd_str = bd_o.strftime("%Y-%m-%d")
-                except:
-                    bd_str = str(bd)[:10]
-            else:
-                bd_str = ""
-            # Derive consoleType from console_id: if console_id is a specific ID (C-01, etc),
-            # try to match against console_status; otherwise use console_id as the type name
-            _cid = r.get("console_id", "")
-            _ctype = _cid  # default: use console_id as display type (works for "PS5", "PS5 Pro")
-            # If console_id looks like a specific console ID (e.g., "C - 01", "C-01"),
-            # try to resolve to a type name from console_status
-            if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
-                try:
-                    _crows = _mysql_query("SELECT console_type FROM console_status WHERE console_id=%s LIMIT 1", (_cid,))
-                    if _crows and _crows[0].get("console_type"):
-                        _ctype = _crows[0]["console_type"]
                 except Exception:
-                    pass
-            normalized.append({"id": r.get("id",""), "customerName": r.get("staff_name",""), "phone": r.get("phone","") or r.get("telegram_chat_id",""), "date": bd_str, "timeSlot": time_slot, "consoleType": _ctype, "durationMins": r.get("duration_mins",60), "gameName": r.get("game_name",""), "console_id": r.get("console_id",""), "consoleId": r.get("console_id",""), "member_id": r.get("member_id",""), "telegram_chat_id": r.get("telegram_chat_id",""), "telegramChatId": r.get("telegram_chat_id",""), "status": r.get("status","")})
+                    bd_str = str(bd)[:10]
+            normalized.append({
+                "id": r.get("id",""),
+                "customerName": r.get("staff_name",""),
+                "phone": r.get("phone","") or r.get("telegram_chat_id",""),
+                "date": bd_str,
+                "timeSlot": time_slot,
+                "consoleType": _ctype,
+                "durationMins": r.get("duration_mins",60),
+                "gameName": r.get("game_name",""),
+                "console_id": r.get("console_id",""),
+                "consoleId": r.get("console_id",""),
+                "member_id": r.get("member_id",""),
+                "telegram_chat_id": r.get("telegram_chat_id",""),
+                "telegramChatId": r.get("telegram_chat_id",""),
+                "status": r.get("status","")
+            })
         return ok({"bookings": normalized})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-#  MUTATION — end_booking
-# ═══════════════════════════════════════
-
 
 @app.get("/api/search-bookings", response_model=GenericResponse, tags=["Bookings"], summary="Search bookings by telegram_chat_id [MySQL]")
 async def api_search_bookings(telegram_chat_id: str = Query("", description="Telegram chat ID of customer"), auth=Depends(verify_api_key)):

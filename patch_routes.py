@@ -664,82 +664,237 @@ async def api_waitlist_notify(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @app.get("/api/finance/pnl", tags=["Finance"])
 async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM format"), auth=Depends(verify_api_key)):
-    """Return P&L data for a month."""
+    """Monthly Profit & Loss statement — comprehensive calculation."""
     mmt = now_mmt()
-    month = m if m else f"{mmt.year}-{mmt.month:02d}"
-    month_slash = month.replace("-", "/")
-    
-    result = {
-        "month": month,
-        "revenue": {"console": 0, "food": 0, "products": 0, "topup": 0, "other": 0},
-        "cogs": 0,
-        "gross_profit": 0,
-        "expenses": {"salaries": 0, "rent": 0, "utilities": 0, "supplies": 0, "other": 0},
-        "total_revenue": 0,
-        "total_expenses": 0,
-        "net_profit": 0,
-    }
-
+    ym = m if m else f"{mmt.year}-{mmt.month:02d}"
     try:
-        rows = _mysql_query(
-            "SELECT amount FROM sales_daily WHERE YEAR(sale_date)=%s AND MONTH(sale_date)=%s",
-            (mmt.year, mmt.month))
-        for r in rows:
-            amt = int(float(r["amount"] or 0))
-            result["revenue"]["console"] += amt
-            result["total_revenue"] += amt
+        rev_rows = _mysql_query(
+            "SELECT net, gross, notes FROM sales_daily WHERE DATE_FORMAT(created_at, %s) = %s AND gross > 0",
+            ("%Y-%m", ym))
+        total_sales = 0.0; discounts = 0.0; topup_sales = 0.0
+        for r in rev_rows:
+            g = float(r.get("gross") or 0)
+            n = float(r.get("net") or 0)
+            notes = (r.get("notes") or "")
+            discounts += (g - n)
+            if notes.startswith("Topup") or notes.startswith("New member"):
+                topup_sales += n
+            else:
+                total_sales += n
+        frows = _mysql_query(
+            "SELECT COALESCE(SUM(total), 0) as t FROM stock_out WHERE DATE_FORMAT(created_at, %s) = %s",
+            ("%Y-%m", ym))
+        food_rev = float(frows[0]["t"] or 0) if frows else 0
+        import stock_fifo, pymysql
+        try:
+            _sfc = pymysql.connect(host="127.0.0.1", user="psvibe_user", password="PsVibe@2026_Rotated!", database="psvibe_api")
+            _sfr = stock_fifo.calc_fifo(_sfc)
+            _sfc.close()
+            cogs = _sfr["cogs"]
+        except Exception:
+            cogs = 0
+        game_rev = total_sales - food_rev
+        if game_rev < 0: game_rev = 0
+        trows = _mysql_query(
+            "SELECT COALESCE(SUM(amount),0) as t FROM topup_log WHERE DATE_FORMAT(topup_date, %s) = %s",
+            ("%Y-%m", ym))
+        topup_rev = float(trows[0]["t"] or 0) if trows else 0
+        opex_rows = _mysql_query(
+            "SELECT category, COALESCE(SUM(amount),0) as total FROM opex WHERE DATE_FORMAT(expense_date, %s) = %s GROUP BY category ORDER BY total DESC",
+            ("%Y-%m", ym))
+        expenses_by_cat = [{"category": r["category"], "amount": float(r["total"])} for r in opex_rows]
+        total_expense = sum(e["amount"] for e in expenses_by_cat)
+        from fifo_wallet import get_all_fifo
+        import pymysql
+        try:
+            _fc = pymysql.connect(host="127.0.0.1", user="psvibe_user", password="PsVibe@2026_Rotated!", database="psvibe_api")
+            _fr = get_all_fifo(_fc); _fc.close()
+        except Exception:
+            _fr = {"consumed": 0}
+        wallet_consumed = float(_fr.get("consumed", 0))
+        total_revenue = game_rev + food_rev + wallet_consumed
+        first_of_month = f"{ym}-01"
+        _dep_rows = _mysql_query(
+            "SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0 AND purchase_date < %s",
+            (first_of_month,))
+        depreciation_exp = float(_dep_rows[0]["t"] or 0) if _dep_rows else 0
+        total_expense_all = total_expense + depreciation_exp
+        game_profit = game_rev
+        food_profit = food_rev - cogs
+        total_gross_profit = game_profit + food_profit
+        net_profit = total_gross_profit - total_expense_all
+        return ok({
+            "period": ym,
+            "revenue": {
+                "game_revenue": round(game_rev, 0),
+                "food_revenue": round(food_rev, 0),
+                "topup_revenue": round(topup_rev, 0),
+                "wallet_consumed": round(wallet_consumed, 0),
+                "topup_deferred": round(topup_sales, 0),
+                "discounts": round(discounts, 0),
+                "total_revenue": round(total_revenue, 0)
+            },
+            "cogs": round(cogs, 0),
+            "gross_profit": round(total_gross_profit, 0),
+            "expenses": {
+                "by_category": expenses_by_cat,
+                "total": round(total_expense, 0),
+                "depreciation": round(depreciation_exp, 0),
+                "total_with_depreciation": round(total_expense_all, 0)
+            },
+            "operating_profit": round(total_gross_profit - total_expense, 0),
+            "net_profit": round(net_profit, 0)
+        })
     except Exception as e:
-        logger.warning("finance/pnl sales error: %s", e)
-
-    try:
-        rows = _mysql_query(
-            "SELECT amount FROM topup_log WHERE YEAR(topup_date)=%s AND MONTH(topup_date)=%s",
-            (mmt.year, mmt.month))
-        for r in rows:
-            amt = int(float(r["amount"] or 0))
-            result["revenue"]["topup"] += amt
-            result["total_revenue"] += amt
-    except Exception as e:
-        logger.warning("finance/pnl topup error: %s", e)
-
-    # Expenses (MySQL)
-    try:
-        rows = _mysql_query("SELECT COALESCE(SUM(base_salary), 0) AS total FROM staff_records WHERE is_active=1")
-        result["expenses"]["salaries"] = int(float(rows[0]["total"] or 0)) if rows else 0
-    except Exception:
-        pass
-
-    result["total_expenses"] = sum(result["expenses"].values())
-    result["gross_profit"] = result["total_revenue"] - result["cogs"]
-    result["net_profit"] = result["total_revenue"] - result["total_expenses"]
-
-    return ok(result)
+        import traceback
+        return ok({"error": str(e), "trace": traceback.format_exc()})
 
 
 @app.get("/api/finance/balance-sheet", tags=["Finance"])
 async def api_finance_balance_sheet(auth=Depends(verify_api_key)):
-    """Return balance sheet summary."""
-    result = {
-        "assets": {"cash": 0, "inventory_value": 0, "equipment_value": 0, "total": 0},
-        "liabilities": {"wallet_liability": 0, "advances": 0, "payables": 0, "total": 0},
-        "equity": {"retained_earnings": 0, "total": 0},
-    }
-
-    # Wallet liability (MySQL)
-    rows = _mysql_query("SELECT COALESCE(SUM(balance_mins), 0) AS total FROM member_wallets")
-    total_mins = int(rows[0]["total"]) if rows else 0
+    """Balance Sheet: Assets = Liabilities + Equity."""
+    from app import _mysql_query_one as _mqo
     try:
-        base_rate = int(float(_mysql_get_setting("base_rate", 0)))
-        if base_rate > 0:
-            result["liabilities"]["wallet_liability"] = int(total_mins * base_rate / 60)
-        else:
-            result["liabilities"]["wallet_liability"] = 0
-    except Exception:
-        result["liabilities"]["wallet_liability"] = 0
-
-    result["liabilities"]["total"] = result["liabilities"]["wallet_liability"]
-    result["assets"]["total"] = result["liabilities"]["total"] + result["equity"]["total"]
-    
+        from fifo_wallet import get_all_fifo
+        import pymysql
+        try:
+            _fc = pymysql.connect(host="127.0.0.1", user="psvibe_user", password="PsVibe@2026_Rotated!", database="psvibe_api")
+            _fr = get_all_fifo(_fc); _fc.close()
+        except Exception:
+            _fr = {"liability": 0}
+        member_liab = float(_fr.get("liability", 0))
+        accounts = [
+            {"key": "cash", "label": "Cash"},
+            {"key": "wave", "label": "WavePay"},
+            {"key": "kpay", "label": "KPay"},
+            {"key": "aya_pay", "label": "AYA Pay"},
+            {"key": "kbz_bank", "label": "KBZ Bank"},
+            {"key": "acm_acc", "label": "ACM's Acc"}
+        ]
+        db_acct = {"cash":"Cash","wave":"WavePay","kpay":"KPay","aya_pay":"AYA Pay","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
+        income_by_account = {a["key"]: 0.0 for a in accounts}
+        rows = _mysql_query("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
+        for row in rows:
+            note = (row.get("notes") or "")
+            if note.startswith("Topup") or note.startswith("New member"): continue
+            pm = (row.get("payment_method") or "").strip()
+            na = float(row.get("net") or 0)
+            if not pm: continue
+            sep = "|" if "|" in pm else ("/" if "/" in pm else "|")
+            for part in pm.split(sep):
+                part = part.strip()
+                if ":" in part:
+                    m, _, v = part.partition(":")
+                    m = m.strip().lower().replace(" ", "_")
+                    val = float(v.strip() or 0) if v.strip() else 0
+                else:
+                    m = part.lower().replace(" ", "_")
+                    val = na
+                if m == "wavepay": m = "wave"
+                if m in income_by_account: income_by_account[m] += val
+        trows = _mysql_query("SELECT payment_method, amount FROM topup_log WHERE amount > 0 AND payment_method IS NOT NULL")
+        for _tr in trows:
+            _pm = (_tr.get("payment_method") or "").strip()
+            _amt = float(_tr.get("amount") or 0)
+            if not _pm or _amt <= 0: continue
+            for _part in _pm.split("/"):
+                _part = _part.strip()
+                if ":" in _part:
+                    _method, _, _val = _part.partition(":")
+                    _method = _method.strip().lower().replace(" ", "_")
+                    _val = float(_val.strip() or 0) if _val.strip() else 0
+                else:
+                    _method = _part.lower().replace(" ", "_")
+                    _val = _amt
+                if _method == "wavepay": _method = "wave"
+                if _method in income_by_account: income_by_account[_method] += _val
+        bank_items = []; total_ca = 0.0
+        for a in accounts:
+            key = a["key"]; income = income_by_account.get(key, 0.0); db = db_acct[key]
+            opex = 0.0
+            if key == "kbz_bank":
+                opr = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM opex")
+                opex = float(opr[0]["t"] or 0) if opr else 0
+            else:
+                opr = _mysql_query("SELECT payment_method, amount FROM opex")
+                for r in opr:
+                    pm = (r.get("payment_method") or "").strip().lower().replace(" ", "_")
+                    amt = float(r.get("amount") or 0)
+                    if pm == key: opex += amt
+                    elif "/" in pm:
+                        parts = pm.split("/")
+                        for p in parts:
+                            if p.strip().lower().replace(" ", "_") == key:
+                                opex += amt / max(len(parts), 1)
+            t_in = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_in'", (db,))["t"] or 0)
+            t_out = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_out'", (db,))["t"] or 0)
+            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37))))", (db,))["t"] or 0)
+            ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject'", (db,))["t"] or 0)
+            bal = income - opex + t_in + t_out + inj - ej
+            if key == "kbz_bank":
+                ded_assets = float(_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active'")["t"] or 0)
+                ded_adv = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances")["t"] or 0)
+                ded_prep = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid")["t"] or 0)
+                bal = bal - ded_assets - ded_adv - ded_prep
+            bank_items.append({"account": a["label"], "balance": round(bal, 0)})
+            total_ca += bal
+        arows = _mysql_query("SELECT name, amount, salvage_value, acc_depreciation FROM finance_assets WHERE status='active'")
+        fix_items = []; total_fix = 0.0; total_gross = 0.0
+        for a in arows:
+            cost = float(a["amount"] or 0); dep = float(a.get("acc_depreciation") or 0); nbv = max(0, cost - dep)
+            fix_items.append({"name": a["name"], "cost": round(cost, 0), "sv": round(float(a.get("salvage_value") or 0), 0), "acc_dep": round(dep, 0), "nbv": round(nbv, 0)})
+            total_gross += cost; total_fix += nbv
+        total_prepaid_q = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid WHERE status='active'")
+        total_prepaid = float(total_prepaid_q[0]["t"] or 0) if total_prepaid_q else 0
+        total_amort_q = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM prepaid_amortization")
+        total_amort = float(total_amort_q[0]["t"] or 0) if total_amort_q else 0
+        prep_t = max(0, total_prepaid - total_amort)
+        adv_t_q = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL")
+        adv_t = float(adv_t_q[0]["t"] or 0) if adv_t_q else 0
+        other_ca = prep_t + adv_t
+        import stock_fifo, pymysql
+        try:
+            _sf2 = pymysql.connect(host="127.0.0.1", user="psvibe_user", password="PsVibe@2026_Rotated!", database="psvibe_api")
+            _inv = stock_fifo.calc_fifo(_sf2)
+            _sf2.close()
+            inventory_value = _inv["inventory_value"]
+        except Exception:
+            inventory_value = 0
+        _dep_q = _mysql_query("SELECT COALESCE(SUM(acc_depreciation),0) as t FROM finance_assets WHERE status='active'")
+        total_dep = float(_dep_q[0]["t"] or 0) if _dep_q else 0
+        total_assets = total_ca + total_fix + other_ca + inventory_value
+        _sh = _mysql_query("SELECT SUM(capital_contribution) as tc FROM shareholders")
+        icap = float(_sh[0]["tc"] or 0) if _sh else 0
+        ti = float(_mqo("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE net>0")["t"] or 0)
+        te = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM opex")["t"] or 0)
+        cost_of_sold = _inv.get("cogs", 0)
+        _excl_inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37))))")["t"] or 0)
+        retained = ti - te - cost_of_sold - member_liab - total_dep + _excl_inj
+        total_eq = icap + retained
+        total_liab = member_liab
+        total_liab_eq = round(total_liab + total_eq, 0)
+        total_assets_r = round(total_assets, 0)
+        _bs_diff = round(total_assets_r - total_liab_eq, 0)
+        if _bs_diff != 0:
+            retained += _bs_diff
+            retained = round(retained, 0)
+            total_eq = icap + retained
+            total_liab_eq = round(total_liab + total_eq, 0)
+        return ok({
+            "assets": {
+                "current": {"items": bank_items, "total": round(total_ca, 0)},
+                "inventory": {"value": round(inventory_value, 0)},
+                "other_current": {"prepaid": round(prep_t, 0), "advances": round(adv_t, 0), "total": round(other_ca, 0)},
+                "fixed": {"items": fix_items, "gross_cost": round(total_gross, 0), "acc_depreciation": round(total_dep, 0), "nbv": round(total_fix, 0)},
+                "total_assets": total_assets_r
+            },
+            "liabilities": {"member_liability": round(member_liab, 0), "total": round(member_liab, 0)},
+            "equity": {"initial_capital": round(icap, 0), "retained_earnings": round(retained, 0), "total": round(total_eq, 0)},
+            "total_liabilities_equity": total_liab_eq
+        })
+    except Exception as e:
+        import traceback
+        return ok({"error": str(e), "trace": traceback.format_exc()})
     return ok(result)
 
 
@@ -1320,3 +1475,39 @@ async def admin_transfer_page():
         return HTMLResponse(content=html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     except FileNotFoundError:
         return HTMLResponse(content="<h1>Page not found</h1>", status_code=404)
+
+@app.post("/api/food-cart", tags=["Food"])
+async def food_cart_add(data: dict, auth=Depends(verify_api_key)):
+    """Add food item to cart for a booking."""
+    try:
+        booking_id = str(data.get("booking_id", "")).strip()
+        item_name = str(data.get("item_name", "")).strip()
+        quantity = int(data.get("quantity", 1))
+        unit_price = int(data.get("unit_price", 0))
+        if not booking_id or not item_name:
+            return error_response("booking_id and item_name required")
+        _mysql_exec(
+            "INSERT INTO food_cart (booking_id, item_name, quantity, unit_price) VALUES (%s, %s, %s, %s)",
+            (booking_id, item_name, quantity, unit_price)
+        )
+        return ok({"message": f"Added {item_name} x{quantity}"})
+    except Exception as e:
+        logger.error("food_cart_add: %s", e)
+        return error_response(str(e))
+
+
+@app.get("/api/food-cart/{booking_id}", tags=["Food"])
+async def food_cart_get(booking_id: str, auth=Depends(verify_api_key)):
+    """Get all food items in cart for a booking."""
+    try:
+        rows = _mysql_query(
+            "SELECT item_name, quantity, unit_price FROM food_cart WHERE booking_id = %s ORDER BY id ASC",
+            (booking_id,)
+        )
+        items = []
+        for r in rows:
+            items.append({"item_name": r["item_name"], "quantity": int(r["quantity"]), "unit_price": int(r["unit_price"])})
+        return ok({"ok": True, "items": items})
+    except Exception as e:
+        logger.error("food_cart_get: %s", e)
+        return ok({"ok": False, "items": []})
