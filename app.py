@@ -1450,18 +1450,29 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), auth=De
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/search-bookings", response_model=GenericResponse, tags=["Bookings"], summary="Search bookings by telegram_chat_id [MySQL]")
-async def api_search_bookings(telegram_chat_id: str = Query("", description="Telegram chat ID of customer"), auth=Depends(verify_api_key)):
-    """Search bookings by telegram chat ID."""
+async def api_search_bookings(telegram_chat_id: str = Query("", description="Telegram chat ID of customer"), date: str = Query("", description="Filter by booking date (YYYY-MM-DD)"), auth=Depends(verify_api_key)):
+    """Search bookings by telegram chat ID and/or date."""
     try:
+        # Build dynamic WHERE clause
+        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE 1=1"
+        params = []
         if telegram_chat_id:
-            rows = _mysql_query(
-                "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE telegram_chat_id=%s ORDER BY booking_date DESC, start_time DESC",
-                (telegram_chat_id,)
-            )
-        else:
-            rows = _mysql_query(
-                "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking ORDER BY booking_date DESC, start_time DESC"
-            )
+            sql += " AND telegram_chat_id=%s"
+            params.append(telegram_chat_id)
+        if date:
+            # Normalize date formats to YYYY-MM-DD
+            from datetime import datetime as _dt_parse
+            _cleaned_date = date
+            for _fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+                try:
+                    _cleaned_date = _dt_parse.strptime(date, _fmt).strftime("%Y-%m-%d")
+                    break
+                except:
+                    continue
+            sql += " AND booking_date=%s"
+            params.append(_cleaned_date)
+        sql += " ORDER BY booking_date DESC, start_time DESC"
+        rows = _mysql_query(sql, tuple(params))
         from datetime import datetime as _dt
         normalized = []
         for r in rows:
