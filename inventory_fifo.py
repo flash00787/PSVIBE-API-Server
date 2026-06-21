@@ -20,13 +20,22 @@ def get_fifo_stock(item_name=None):
     else:
         cur.execute('SELECT i.item_name, i.quantity as inv_qty, COALESCE(si.qty,0) as stock_in_qty, COALESCE(so.qty,0) as stock_out_qty FROM inventory i LEFT JOIN (SELECT item_name, SUM(quantity) as qty FROM stock_in GROUP BY item_name) si ON i.item_name=si.item_name LEFT JOIN (SELECT item_name, SUM(quantity) as qty FROM stock_out GROUP BY item_name) so ON i.item_name=so.item_name')
     rows = cur.fetchall()
-    conn.close()
     result = []
     for r in rows:
         avail = r['stock_in_qty'] - r['stock_out_qty']
+        # Subtract held (reserved) stock quantities
+        try:
+            cur2 = conn.cursor(dictionary=True)
+            cur2.execute('SELECT COALESCE(SUM(quantity), 0) as held_qty FROM stock_hold WHERE item_name=%s AND status=%s', (r['item_name'], 'held'))
+            held_row = cur2.fetchone()
+            cur2.close()
+            avail -= int(held_row['held_qty']) if held_row else 0
+        except Exception:
+            pass  # stock_hold table may not exist during migration
         if avail <= 0 and r['stock_in_qty'] == 0 and r['stock_out_qty'] == 0 and r.get('inv_qty') is not None and r['inv_qty'] > 0:
             avail = r['inv_qty']
         result.append({'item_name': r['item_name'], 'quantity': max(avail, 0), 'stock_in_qty': r['stock_in_qty'], 'stock_out_qty': r['stock_out_qty']})
+    conn.close()
     return result
 
 def compute_fifo_cost(item_name, qty_to_sell):
@@ -100,7 +109,15 @@ def get_fifo_valuation(item_name=None):
         if available_qty <= 0 and item in inv_qty_map and inv_qty_map[item] > 0:
             available_qty = inv_qty_map[item]
             fifo_value = 0.0  # Not a FIFO tracked item
-        item_data = {'item_name': item, 'quantity': available_qty, 'fifo_value': round(fifo_value, 2)}
+        # Subtract held (reserved) stock from available quantity (but keep fifo_value for financial)
+        held_qty = 0
+        try:
+            cur.execute('SELECT COALESCE(SUM(quantity), 0) as held FROM stock_hold WHERE item_name=%s AND status=%s', (item, 'held'))
+            hr = cur.fetchone()
+            held_qty = int(hr['held']) if hr else 0
+        except Exception:
+            pass  # stock_hold table may not exist
+        item_data = {'item_name': item, 'quantity': max(0, available_qty - held_qty), 'fifo_value': round(fifo_value, 2)}
         result['items'].append(item_data)
         result['total_inventory_value'] += round(fifo_value, 2)
     conn.close()

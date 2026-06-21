@@ -125,6 +125,26 @@ async def api_sheets_inventory(auth=Depends(verify_api_key)):
 
 
 # ═══════════════════════════════════════
+#  SHEETS — config
+# ═══════════════════════════════════════
+@app.get("/api/sheets/config", tags=["Sheets"])
+async def api_sheets_config(auth=Depends(verify_api_key)):
+    """Return config (base_rate, console_multipliers) from MySQL settings_config."""
+    try:
+        base_rate = _mysql_get_setting("base_rate", 10000)
+        multipliers = _mysql_get_setting("console_multipliers", {})
+        if isinstance(multipliers, str):
+            import json as _json
+            multipliers = _json.loads(multipliers)
+        return ok({
+            "base_rate": base_rate,
+            "console_multipliers": multipliers,
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
 #  SHEETS — consoles
 # ═══════════════════════════════════════
 @app.get("/api/sheets/consoles", tags=["Sheets"])
@@ -584,20 +604,6 @@ async def api_bookings_get(booking_id: str, auth=Depends(verify_api_key)):
         return ok({"booking": _map_booking_row(rows[0])})
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════
-#  BOOKINGS — broadcast-targets
-# ═══════════════════════════════════════
-@app.get("/api/bookings/broadcast-targets", tags=["Bookings"])
-async def api_bookings_broadcast_targets(auth=Depends(verify_api_key)):
-    """Get broadcast targets from MySQL."""
-    try:
-        rows = _mysql_query("SELECT DISTINCT member_id FROM console_booking WHERE status='Active'")
-        targets = [r["member_id"] for r in rows]
-        return ok({"targets": targets, "count": len(targets)})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1110,6 +1116,8 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
             # ACM's Acc is stored as "acm" in income_by_acct
             if keyword in ("acm's acc",):
                 keyword = "acm"
+            elif keyword in ("aya pay",):
+                keyword = "aya"
             income = income_by_acct.get(keyword, 0)
             # Real-time balance = income from transactions (no base double-count)
             final_bal = income
@@ -1333,6 +1341,24 @@ async def api_bookings_update_status(booking_id: int, req: dict, auth=Depends(ve
             except Exception:
                 pass  # graceful fail
         
+        # Auto-notify waitlisted customers when cancelled
+        if new_status == "cancelled":
+            try:
+                from app import _auto_notify_waitlist
+                bk_info = _mysql_query(
+                    "SELECT booking_date, start_time, console_id FROM console_booking WHERE id = %s",
+                    (booking_id,)
+                )
+                if bk_info and bk_info[0]:
+                    _bk = bk_info[0]
+                    if _bk.get("booking_date") and _bk.get("start_time") and _bk.get("console_id"):
+                        import asyncio
+                        asyncio.create_task(_auto_notify_waitlist(
+                            _bk["booking_date"], _bk["start_time"], _bk["console_id"]
+                        ))
+            except Exception:
+                pass  # graceful fail
+        
         # Return updated booking
         rows = _mysql_query(
             "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE id=%s",
@@ -1511,3 +1537,100 @@ async def food_cart_get(booking_id: str, auth=Depends(verify_api_key)):
     except Exception as e:
         logger.error("food_cart_get: %s", e)
         return ok({"ok": False, "items": []})
+
+
+@app.post("/api/food-cart/hold", tags=["Food"])
+async def food_cart_hold(data: dict, auth=Depends(verify_api_key)):
+    """Hold stock items for a booking. Replaces any existing holds for same booking."""
+    try:
+        booking_id = str(data.get("booking_id", "")).strip()
+        items = data.get("items", [])
+        if not booking_id or not items:
+            return error_response("booking_id and items required")
+        # Remove existing holds for this booking
+        _mysql_exec('DELETE FROM stock_hold WHERE booking_id = %s AND status IN ("held", "cancelled")', (booking_id,))
+        # Insert new holds
+        for item in items:
+            item_name = str(item.get("item_name", "")).strip()
+            qty = int(item.get("quantity", 1))
+            price = int(item.get("unit_price", 0))
+            if item_name and qty > 0:
+                _mysql_exec(
+                    "INSERT INTO stock_hold (booking_id, item_name, quantity, unit_price, status) VALUES (%s, %s, %s, %s, 'held')",
+                    (booking_id, item_name, qty, price)
+                )
+        # Also mark food_cart entries as held
+        _mysql_exec("UPDATE food_cart SET fulfilled_at = NOW() WHERE booking_id = %s AND fulfilled_at IS NULL", (booking_id,))
+        return ok({"message": f"Held {len(items)} items for booking {booking_id}"})
+    except Exception as e:
+        logger.error("food_cart_hold: %s", e)
+        return error_response(str(e))
+
+
+@app.post("/api/food-cart/release", tags=["Food"])
+async def food_cart_release(data: dict, auth=Depends(verify_api_key)):
+    """Release hold AND record actual stock-out for confirmed sale items."""
+    try:
+        booking_id = str(data.get("booking_id", "")).strip()
+        items = data.get("items", [])
+        staff = str(data.get("staff_name", ""))
+        if not booking_id or not items:
+            return error_response("booking_id and items required")
+        for item in items:
+            item_name = str(item.get("item_name", "")).strip()
+            qty = int(item.get("quantity", 1))
+            price = int(item.get("unit_price", 0))
+            if item_name and qty > 0:
+                # Wrap release + stock_out + inventory in a transaction for atomicity
+                _rel_conn = _mc.connect(**_MYSQL_CFG)
+                try:
+                    _rel_cur = _rel_conn.cursor()
+                    _rel_conn.start_transaction()
+                    # Release hold (handles both held/cancelled — session end may have cancelled)
+                    _rel_cur.execute(
+                        'UPDATE stock_hold SET status = \'released\', updated_at = NOW() WHERE booking_id = %s AND item_name = %s AND status IN ("held", "cancelled")',
+                        (booking_id, item_name)
+                    )
+                    # Record actual stock-out
+                    _rel_cur.execute(
+                        "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, staff_name, notes) VALUES (%s, %s, %s, %s, NOW(), %s, %s)",
+                        (item_name, qty, price, qty * price, staff, f"Food cart release: booking {booking_id}")
+                    )
+                    # Decrement inventory quantity for legacy summary column
+                    _rel_cur.execute(
+                        "UPDATE inventory SET quantity = GREATEST(0, quantity - %s), last_updated = NOW() WHERE item_name = %s",
+                        (qty, item_name)
+                    )
+                    _rel_conn.commit()
+                except Exception:
+                    _rel_conn.rollback()
+                    raise
+                finally:
+                    try:
+                        _rel_conn.close()
+                    except Exception:
+                        pass
+        # Mark food_cart entries as fulfilled
+        _mysql_exec("UPDATE food_cart SET fulfilled_at = NOW() WHERE booking_id = %s AND fulfilled_at IS NULL", (booking_id,))
+        return ok({"message": f"Released {len(items)} items for booking {booking_id}"})
+    except Exception as e:
+        logger.error("food_cart_release: %s", e)
+        return error_response(str(e))
+
+
+@app.post("/api/food-cart/cancel-release", tags=["Food"])
+async def food_cart_cancel(data: dict, auth=Depends(verify_api_key)):
+    """Cancel holds for a booking (no stock deduction)."""
+    try:
+        booking_id = str(data.get("booking_id", "")).strip()
+        if not booking_id:
+            return error_response("booking_id required")
+        _mysql_exec(
+            'UPDATE stock_hold SET status = \'cancelled\', updated_at = NOW() WHERE booking_id = %s AND status IN ("held", "cancelled")',
+            (booking_id,)
+        )
+        _mysql_exec("DELETE FROM food_cart WHERE booking_id = %s AND fulfilled_at IS NULL", (booking_id,))
+        return ok({"message": f"Cancelled holds for booking {booking_id}"})
+    except Exception as e:
+        logger.error("food_cart_cancel: %s", e)
+        return error_response(str(e))

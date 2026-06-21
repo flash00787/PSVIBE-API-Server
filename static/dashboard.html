@@ -3,84 +3,125 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PS VIBE — Admin Dashboard</title>
+<title>PS VIBE — Dashboard</title>
 <style>
 :root {
-  --bg: #0d1117;
-  --card: #161b22;
-  --border: #30363d;
-  --text: #c9d1d9;
-  --dim: #8b949e;
-  --cyan: #00d4ff;
-  --magenta: #ff00ff;
-  --green: #3fb950;
-  --amber: #d2991d;
-  --red: #f85149;
-  --input-bg: #0d1117;
-  --hover: #1c2128;
+  --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #c9d1d9;
+  --dim: #8b949e; --cyan: #00d4ff; --magenta: #ff00ff; --green: #3fb950;
+  --amber: #d2991d; --red: #f85149; --input-bg: #0d1117; --hover: #1c2128;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-       background:var(--bg); color:var(--text); min-height:100vh; line-height:1.5; }
-.header { background:linear-gradient(135deg,#0a0e14 0%,#141028 30%,#1a1640 50%,#141028 70%,#0a0e14 100%);
-          padding:0.85rem 2rem; border-bottom:1px solid var(--border);
-          display:flex; align-items:center; min-height:72px;
-          position:sticky; top:0; z-index:100; backdrop-filter:blur(12px); }
-.header .info { margin-left: auto; }
-.header .info { display:flex; align-items:center; gap:1rem; }
-.header .info button { background:var(--border); color:var(--text); border:none;
-  padding:0.3rem 0.7rem; border-radius:5px; cursor:pointer; font-size:0.78rem; }
-.header .info button:hover { background:var(--cyan); color:#000; }
+  background:var(--bg); color:var(--text); min-height:100vh; }
+a { color:var(--cyan); text-decoration:none; }
+
+/* ═══ LOGIN PAGE ═══ */
+.login-page { display:flex; align-items:center; justify-content:center; min-height:100vh;
+  background:linear-gradient(135deg,#0a0e14 0%,#141028 30%,#1a1640 50%,#141028 70%,#0a0e14 100%); }
+.login-card { background:var(--card); border:1px solid var(--border); border-radius:16px;
+  padding:2.5rem; width:100%; max-width:420px; box-shadow:0 0 60px rgba(0,212,255,0.08); }
+.login-logo { text-align:center; margin-bottom:2rem; }
+.login-logo h1 { font-size:2rem; font-weight:800; background:linear-gradient(135deg,var(--cyan),var(--magenta));
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.login-logo p { color:var(--dim); font-size:0.85rem; margin-top:0.25rem; }
+.form-group { margin-bottom:1.25rem; }
+.form-group label { display:block; font-size:0.82rem; color:var(--dim); margin-bottom:0.35rem;
+  font-weight:500; text-transform:uppercase; letter-spacing:0.05em; }
+.form-group input { width:100%; background:var(--input-bg); border:1px solid var(--border);
+  color:var(--text); padding:0.7rem 0.85rem; border-radius:8px; font-size:0.95rem;
+  transition:border-color 0.2s; }
+.form-group input:focus { outline:none; border-color:var(--cyan); box-shadow:0 0 0 3px rgba(0,212,255,0.1); }
+.login-btn { width:100%; padding:0.75rem; border:none; border-radius:8px;
+  background:linear-gradient(135deg,var(--cyan),var(--magenta)); color:#fff;
+  font-size:1rem; font-weight:600; cursor:pointer; transition:opacity 0.2s; }
+.login-btn:hover { opacity:0.9; }
+.login-btn:disabled { opacity:0.5; cursor:not-allowed; }
+.login-error { background:rgba(248,81,73,0.1); border:1px solid var(--red); color:var(--red);
+  padding:0.6rem 0.85rem; border-radius:8px; font-size:0.85rem; margin-bottom:1rem;
+  display:none; }
+.login-error.show { display:block; }
+.login-spinner { display:none; width:20px; height:20px; border:2px solid rgba(255,255,255,0.3);
+  border-top-color:#fff; border-radius:50%; animation:spin 0.6s linear infinite;
+  margin:0 auto; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+/* ═══ DASHBOARD ═══ */
+.dashboard-page { display:none; }
+.topbar { background:linear-gradient(135deg,#0a0e14 0%,#141028 30%,#1a1640 50%,#141028 70%,#0a0e14 100%);
+  padding:0.7rem 1.5rem; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; justify-content:space-between;
+  position:sticky; top:0; z-index:100; backdrop-filter:blur(12px); }
+.topbar-logo { font-size:1.35rem; font-weight:800;
+  background:linear-gradient(135deg,var(--cyan),var(--magenta));
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.topbar-right { display:flex; align-items:center; gap:0.75rem; }
+.topbar-user { color:var(--text); font-size:0.9rem; }
+.role-badge { padding:0.2rem 0.55rem; border-radius:12px; font-size:0.7rem; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.05em; }
+.role-badge.admin { background:rgba(0,212,255,0.15); color:var(--cyan); border:1px solid rgba(0,212,255,0.3); }
+.role-badge.staff { background:rgba(63,185,80,0.15); color:var(--green); border:1px solid rgba(63,185,80,0.3); }
+.logout-btn { background:var(--border); color:var(--text); border:none;
+  padding:0.35rem 0.75rem; border-radius:6px; cursor:pointer; font-size:0.82rem;
+  transition:all 0.2s; }
+.logout-btn:hover { background:var(--red); color:#fff; }
+
+/* Nav Tabs */
 .nav { background:var(--card); border-bottom:1px solid var(--border); display:flex;
-       overflow-x:auto; padding:0 0.5rem; -webkit-overflow-scrolling:touch; }
+  overflow-x:auto; padding:0 0.5rem; -webkit-overflow-scrolling:touch; }
 .nav button { background:none; border:none; color:var(--dim); padding:0.85rem 0.9rem;
   cursor:pointer; font-size:0.9rem; font-weight:500; white-space:nowrap;
   border-bottom:2px solid transparent; transition:all 0.2s; }
 .nav button:hover { color:var(--text); }
 .nav button.active { color:var(--cyan); border-bottom-color:var(--cyan); }
+
+/* Main Content */
 .main { max-width:1400px; margin:0 auto; padding:1.5rem; }
 .tab-content { display:none; }
 .tab-content.active { display:block; }
-/* Cards */
-.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1rem; margin-bottom:1.5rem; }
-.kpi-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:1.25rem;
-  position:relative; overflow:hidden; }
+
+/* KPI Cards */
+.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem; margin-bottom:1.5rem; }
+.kpi-card { background:var(--card); border:1px solid var(--border); border-radius:12px;
+  padding:1.25rem; position:relative; overflow:hidden; }
 .kpi-card::before { content:''; position:absolute; top:0; left:0; width:4px; height:100%; }
 .kpi-card.cyan::before { background:var(--cyan); }
 .kpi-card.magenta::before { background:var(--magenta); }
 .kpi-card.green::before { background:var(--green); }
 .kpi-card.amber::before { background:var(--amber); }
-.kpi-card .label { font-size:0.8rem; color:var(--dim); text-transform:uppercase;
+.kpi-card .label { font-size:0.78rem; color:var(--dim); text-transform:uppercase;
   letter-spacing:0.05em; margin-bottom:0.25rem; }
-.kpi-card .value { font-size:1.75rem; font-weight:700; }
+.kpi-card .value { font-size:1.6rem; font-weight:700; }
 .kpi-card .value.cyan { color:var(--cyan); }
 .kpi-card .value.magenta { color:var(--magenta); }
 .kpi-card .value.green { color:var(--green); }
 .kpi-card .value.amber { color:var(--amber); }
+
 /* Panels */
 .panel { background:var(--card); border:1px solid var(--border); border-radius:12px;
   margin-bottom:1.5rem; overflow:hidden; }
-.panel-header { padding:0.85rem 0.9rem; border-bottom:1px solid var(--border);
+.panel-header { padding:0.85rem 1rem; border-bottom:1px solid var(--border);
   font-weight:600; font-size:0.95rem; display:flex; justify-content:space-between;
   align-items:center; flex-wrap:wrap; gap:0.5rem; }
-.panel-body { padding:1.25rem; }
-/* Search */
-.search-box { position:relative; }
-.search-box input { background:var(--input-bg); border:1px solid var(--border); color:var(--text);
-  padding:0.5rem 0.75rem 0.5rem 2rem; border-radius:6px; font-size:0.9rem; width:220px; }
-.search-box input:focus { outline:none; border-color:var(--cyan); }
-.search-box .icon { position:absolute; left:0.65rem; top:50%; transform:translateY(-50%); color:var(--dim); }
+.panel-body { padding:1rem; }
+
+/* Controls */
+.controls { display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:1rem; }
+.controls input, .controls select { background:var(--input-bg); border:1px solid var(--border);
+  color:var(--text); padding:0.45rem 0.7rem; border-radius:6px; font-size:0.85rem; }
+.controls input:focus, .controls select:focus { outline:none; border-color:var(--cyan); }
+.controls input { width:200px; }
+
 /* Tables */
-table { width:100%; border-collapse:collapse; font-size:0.88rem; }
-th, td { padding:0.55rem 0.75rem; text-align:left; border-bottom:1px solid var(--border); }
-th { color:var(--dim); font-weight:500; font-size:0.78rem; text-transform:uppercase;
-  cursor:pointer; user-select:none; white-space:nowrap; }
-th:hover { color:var(--cyan); }
-th .sort-arrow { margin-left:0.3rem; font-size:0.7rem; }
+.table-wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+th, td { padding:0.5rem 0.7rem; text-align:left; border-bottom:1px solid var(--border);
+  white-space:nowrap; }
+th { color:var(--dim); font-weight:500; font-size:0.75rem; text-transform:uppercase; }
 tr:hover { background:var(--hover); }
-.action-btns { display:flex; gap:0.35rem; flex-wrap:wrap; }
-.btn { padding:0.35rem 0.7rem; border-radius:4px; border:none; cursor:pointer;
-  font-size:0.8rem; font-weight:500; transition:all 0.15s; }
+
+/* Buttons */
+.btn { padding:0.3rem 0.65rem; border-radius:4px; border:none; cursor:pointer;
+  font-size:0.78rem; font-weight:500; transition:all 0.15s; }
 .btn-cyan { background:var(--cyan); color:#000; }
 .btn-cyan:hover { opacity:0.85; }
 .btn-magenta { background:var(--magenta); color:#fff; }
@@ -91,7 +132,77 @@ tr:hover { background:var(--hover); }
 .btn-red:hover { opacity:0.85; }
 .btn-outline { background:transparent; border:1px solid var(--border); color:var(--text); }
 .btn-outline:hover { border-color:var(--cyan); color:var(--cyan); }
-/* Modals */
+.btn-sm { font-size:0.72rem; padding:0.2rem 0.45rem; }
+.action-btns { display:flex; gap:0.3rem; flex-wrap:wrap; }
+
+/* Console Grid */
+.console-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:0.75rem; }
+.console-card { background:var(--card); border:1px solid var(--border); border-radius:10px;
+  padding:0.85rem; text-align:center; transition:all 0.2s; }
+.console-card .console-id { font-size:1.1rem; font-weight:700; margin-bottom:0.25rem; }
+.console-card .console-status { font-size:0.75rem; font-weight:600;
+  padding:0.15rem 0.45rem; border-radius:10px; display:inline-block; }
+.console-card.available { border-color:rgba(63,185,80,0.3); }
+.console-card.available .console-status { background:rgba(63,185,80,0.15); color:var(--green); }
+.console-card.active, .console-card.playing { border-color:rgba(0,212,255,0.3); }
+.console-card.active .console-status, .console-card.playing .console-status { background:rgba(0,212,255,0.15); color:var(--cyan); }
+.console-card.reserved { border-color:rgba(210,153,29,0.3); }
+.console-card.reserved .console-status { background:rgba(210,153,29,0.15); color:var(--amber); }
+.console-card.maintenance { border-color:rgba(248,81,73,0.3); }
+.console-card.maintenance .console-status { background:rgba(248,81,73,0.15); color:var(--red); }
+.console-card .console-game { font-size:0.72rem; color:var(--dim); margin-top:0.25rem;
+  overflow:hidden; text-overflow:ellipsis; }
+
+/* Timeline */
+.timeline-grid { display:grid; grid-template-columns:80px repeat(10,1fr); gap:1px;
+  background:var(--border); border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+.timeline-header { background:var(--card); padding:0.4rem 0.3rem; font-size:0.68rem;
+  color:var(--dim); text-align:center; font-weight:600; }
+.timeline-header.console-label { text-align:right; padding-right:0.5rem; }
+.timeline-row { display:contents; }
+.timeline-cell { background:var(--bg); padding:0.2rem; min-height:28px; position:relative; }
+.timeline-booking { position:absolute; top:2px; bottom:2px; border-radius:3px;
+  font-size:0.6rem; padding:1px 3px; overflow:hidden; white-space:nowrap;
+  text-overflow:ellipsis; color:#fff; display:flex; align-items:center; }
+.timeline-booking.confirmed { background:var(--green); }
+.timeline-booking.pending { background:var(--amber); }
+.timeline-booking.active { background:var(--cyan); }
+.timeline-booking.done { background:rgba(139,148,158,0.4); }
+
+/* Game Cards */
+.game-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:1rem; }
+.game-card { background:var(--card); border:1px solid var(--border); border-radius:10px;
+  padding:1rem; transition:border-color 0.2s; }
+.game-card:hover { border-color:var(--cyan); }
+.game-card .game-title { font-size:1rem; font-weight:600; color:var(--cyan); margin-bottom:0.35rem; }
+.game-card .game-meta { font-size:0.78rem; color:var(--dim); display:flex; gap:0.75rem;
+  flex-wrap:wrap; margin-bottom:0.5rem; }
+.game-card .game-consoles { font-size:0.75rem; color:var(--dim); margin-top:0.5rem; }
+.game-card .game-consoles span { display:inline-block; background:rgba(0,212,255,0.1);
+  color:var(--cyan); padding:0.1rem 0.4rem; border-radius:3px; margin:0.15rem;
+  font-size:0.7rem; }
+
+/* Status badges */
+.status { padding:0.15rem 0.45rem; border-radius:10px; font-size:0.7rem; font-weight:600; }
+.status.confirmed { background:rgba(63,185,80,0.15); color:var(--green); }
+.status.pending { background:rgba(210,153,29,0.15); color:var(--amber); }
+.status.active, .status.playing { background:rgba(0,212,255,0.15); color:var(--cyan); }
+.status.done, .status.completed { background:rgba(139,148,158,0.15); color:var(--dim); }
+.status.rejected { background:rgba(248,81,73,0.15); color:var(--red); }
+
+/* Filter tabs */
+.filter-tabs { display:flex; gap:0.3rem; margin-bottom:0.75rem; }
+.filter-tab { background:var(--input-bg); border:1px solid var(--border); color:var(--dim);
+  padding:0.35rem 0.8rem; border-radius:6px; cursor:pointer; font-size:0.8rem; }
+.filter-tab.active { background:rgba(0,212,255,0.1); border-color:var(--cyan); color:var(--cyan); }
+.filter-tab:hover { color:var(--text); }
+
+/* Empty/Loading/Error */
+.empty, .loading, .error { text-align:center; padding:2rem; color:var(--dim); font-size:0.9rem; }
+.error { color:var(--red); }
+.loading { color:var(--cyan); }
+
+/* Modal */
 .modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
   background:rgba(0,0,0,0.7); z-index:1000; justify-content:center;
   align-items:center; padding:1rem; }
@@ -100,694 +211,1241 @@ tr:hover { background:var(--hover); }
   width:100%; max-width:480px; max-height:90vh; overflow-y:auto; }
 .modal-header { padding:1rem 1.25rem; border-bottom:1px solid var(--border);
   display:flex; justify-content:space-between; align-items:center; }
-.modal-header h3 { font-size:1.1rem; }
-.modal-header .close { background:none; border:none; color:var(--dim); font-size:1.5rem;
-  cursor:pointer; line-height:1; }
-.modal-header .close:hover { color:var(--red); }
+.modal-header h3 { font-size:1.05rem; }
+.modal-close { background:none; border:none; color:var(--dim); cursor:pointer;
+  font-size:1.2rem; }
+.modal-close:hover { color:var(--red); }
 .modal-body { padding:1.25rem; }
-.modal-footer { padding:0.75rem 1.25rem; border-top:1px solid var(--border);
+.modal-footer { padding:1rem 1.25rem; border-top:1px solid var(--border);
   display:flex; justify-content:flex-end; gap:0.5rem; }
-.form-group { margin-bottom:1rem; }
-.form-group label { display:block; font-size:0.82rem; color:var(--dim); margin-bottom:0.3rem;
-  font-weight:500; }
-.form-group input, .form-group select, .form-group textarea { width:100%;
-  background:var(--input-bg); border:1px solid var(--border); color:var(--text);
-  padding:0.55rem 0.75rem; border-radius:6px; font-size:0.9rem; font-family:inherit; }
-.form-group input:focus, .form-group select:focus, .form-group textarea:focus {
-  outline:none; border-color:var(--cyan); }
-.form-row { display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; }
+
 /* Toast */
-.toast-container { position:fixed; top:1rem; right:1rem; z-index:2000; display:flex;
-  flex-direction:column; gap:0.5rem; }
-.toast { padding:0.75rem 1.25rem; border-radius:8px; font-size:0.88rem; font-weight:500;
+.toast { position:fixed; top:1rem; right:1rem; z-index:2000; padding:0.7rem 1.2rem;
+  border-radius:8px; font-size:0.85rem; font-weight:500; color:#fff;
   animation:slideIn 0.3s ease; max-width:360px; }
-.toast.success { background:#0d3320; border:1px solid var(--green); color:var(--green); }
-.toast.error { background:#3d111a; border:1px solid var(--red); color:var(--red); }
-.toast.info { background:#0d1f33; border:1px solid var(--cyan); color:var(--cyan); }
-@keyframes slideIn { from { transform:translateX(100%); opacity:0; }
-  to { transform:translateX(0); opacity:1; } }
-/* Confirm dialog */
-.confirm-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
-  background:rgba(0,0,0,0.7); z-index:1500; justify-content:center; align-items:center; }
-.confirm-overlay.show { display:flex; }
-.confirm-box { background:var(--card); border:1px solid var(--red); border-radius:12px;
-  padding:1.5rem; max-width:400px; text-align:center; }
-.confirm-box p { margin-bottom:1rem; }
-.confirm-box .actions { display:flex; gap:0.5rem; justify-content:center; }
-/* Loading / Empty */
-.loading { text-align:center; padding:3rem; color:var(--dim); }
-.empty { text-align:center; padding:2rem; color:var(--dim); font-size:0.9rem; }
-/* Auth modal */
-.auth-overlay { display:flex; position:fixed; top:0; left:0; width:100%; height:100%;
-  background:rgba(0,0,0,0.85); z-index:3000; justify-content:center;
-  align-items:center; }
-.auth-box { background:var(--card); border:1px solid var(--cyan); border-radius:12px;
-  padding:2rem; max-width:400px; width:90%; text-align:center; }
-.auth-box h2 { margin-bottom:0.5rem; }
-.auth-box h2 span { color:var(--magenta); }
-.auth-box p { color:var(--dim); margin-bottom:1.25rem; font-size:0.9rem; }
+.toast.success { background:var(--green); }
+.toast.error { background:var(--red); }
+@keyframes slideIn { from { transform:translateX(100%); opacity:0; } to { transform:translateX(0); opacity:1; } }
+
 /* Responsive */
 @media (max-width:768px) {
-  .header { padding:0.6rem 0.75rem; }
-  .header h1 { font-size:1.2rem; }
-  .nav button { padding:0.65rem 0.75rem; font-size:0.8rem; }
-  .main { padding:0.75rem; }
-  .form-row { grid-template-columns:1fr; }
-  th, td { padding:0.4rem 0.5rem; font-size:0.78rem; }
+  .main { padding:1rem; }
   .kpi-grid { grid-template-columns:repeat(2,1fr); }
+  .console-grid { grid-template-columns:repeat(auto-fill,minmax(100px,1fr)); }
+  .topbar { padding:0.6rem 1rem; }
 }
 
-/* Logo styles */
-.header-logo {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.header-logo img {
-  max-width: 200px;
-  max-height: 60px;
-  width: auto;
-  height: auto;
-  object-fit: contain;
-  filter: drop-shadow(0 0 8px rgba(0,212,255,0.35));
-}
-@media (max-width: 480px) {
-  .header-logo img {
-    max-width: 150px;
-    max-height: 45px;
-  }
-}
+/* Users table extra column styles */
+td .user-status { display:inline-block; width:8px; height:8px; border-radius:50%;
+  margin-right:0.5rem; }
+td .user-status.active { background:var(--green); }
+td .user-status.inactive { background:var(--red); }
 </style>
 </head>
 <body>
 
-<div class="header">
-  <div class="header-logo">
-    <img src="psvibe_logo_text.png" alt="PS VIBE">
-  </div>
-  <div class="info">
-    <span id="header-ts" style="font-size:0.8rem;color:var(--dim)"></span>
-    <button onclick="logout()" title="Clear API key">🔑 Reset Key</button>
-  </div>
-</div>
-
-<div class="nav">
-  <button class="active" onclick="switchTab('summary')">📊 Summary</button>
-  <button onclick="switchTab('members')">👥 Members</button>
-  <button onclick="switchTab('wallet')">💰 Wallet</button>
-  <button onclick="switchTab('sales')">📋 Sales</button>
-</div>
-
-<div class="main">
-  <!-- Summary Tab -->
-  <div id="tab-summary" class="tab-content active">
-    <div class="kpi-grid" id="summary-cards"></div>
-    <div class="panel">
-      <div class="panel-header">Recent Top-Ups</div>
-      <div class="panel-body" id="recent-topups"><div class="loading">Loading...</div></div>
+<!-- ═══════════ LOGIN PAGE ═══════════ -->
+<div id="login-page" class="login-page">
+  <div class="login-card">
+    <div class="login-logo">
+      <h1>PS VIBE</h1>
+      <p>Console Gaming Center — Staff Dashboard</p>
     </div>
-  </div>
-
-  <!-- Members Tab -->
-  <div id="tab-members" class="tab-content">
-    <div class="panel">
-      <div class="panel-header">
-        <span>Member List</span>
-        <div style="display:flex;gap:0.5rem;align-items:center">
-          <div class="search-box">
-            <span class="icon">🔍</span>
-            <input type="text" id="member-search" placeholder="Search members..."
-              oninput="loadMembers()">
-          </div>
-          <button class="btn btn-outline" onclick="loadMembers()">🔄</button>
-        </div>
+    <div id="login-error" class="login-error"></div>
+    <form id="login-form" onsubmit="return handleLogin(event)">
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="login-username" placeholder="Enter username" required autocomplete="username">
       </div>
-      <div class="panel-body" id="members-table"><div class="loading">Loading...</div></div>
-    </div>
-  </div>
-
-  <!-- Wallet Tab -->
-  <div id="tab-wallet" class="tab-content">
-    <div class="panel">
-      <div class="panel-header">
-        <span>Wallet Balance Lookup</span>
-        <div style="display:flex;gap:0.5rem">
-          <input type="text" id="wallet-member-id" placeholder="Enter Member ID..."
-            style="background:var(--input-bg);border:1px solid var(--border);
-            color:var(--text);padding:0.45rem 0.75rem;border-radius:6px;font-size:0.9rem;width:180px;"
-            onkeydown="if(event.key==='Enter')loadWallet()">
-          <button class="btn btn-cyan" onclick="loadWallet()">Look Up</button>
-        </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" id="login-password" placeholder="Enter password" required autocomplete="current-password">
       </div>
-      <div class="panel-body" id="wallet-display">
-        <div class="empty">Enter a member ID and click Look Up</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Sales Tab -->
-  <div id="tab-sales" class="tab-content">
-    <div class="panel">
-      <div class="panel-header">
-        <span>Sales Records</span>
-        <div style="display:flex;gap:0.5rem;align-items:center">
-          <input type="date" id="sales-date-filter"
-            style="background:var(--input-bg);border:1px solid var(--border);
-            color:var(--text);padding:0.4rem 0.75rem;border-radius:6px;font-size:0.85rem;"
-            onchange="loadSales()">
-          <button class="btn btn-outline" onclick="loadSales()">🔄</button>
-        </div>
-      </div>
-      <div class="panel-body" id="sales-table"><div class="loading">Loading...</div></div>
-    </div>
+      <button type="submit" class="login-btn" id="login-btn">
+        <span id="login-btn-text">Sign In</span>
+        <div class="login-spinner" id="login-spinner"></div>
+      </button>
+    </form>
   </div>
 </div>
 
-<!-- Auth Modal -->
-<div class="auth-overlay" id="auth-overlay">
-  <div class="auth-box">
-    <h2>🔐 PS <span>VIBE</span> Admin</h2>
-    <p>Enter your API key to access the dashboard.</p>
-    <div class="form-group">
-      <input type="password" id="api-key-input" placeholder="API Key"
-        onkeydown="if(event.key==='Enter')setApiKey()">
-    </div>
-    <button class="btn btn-cyan" onclick="setApiKey()" style="width:100%;padding:0.6rem;">
-      Unlock Dashboard
-    </button>
-    <p style="margin-top:0.75rem;font-size:0.75rem;color:var(--dim);">
-      Keys are stored in your browser session only.
-    </p>
-  </div>
-</div>
-
-<!-- Edit Member Modal -->
-<div class="modal-overlay" id="edit-member-modal">
-  <div class="modal">
-    <div class="modal-header">
-      <h3>✏️ Edit Member</h3>
-      <button class="close" onclick="closeModal('edit-member-modal')">&times;</button>
-    </div>
-    <div class="modal-body">
-      <div class="form-group">
-        <label>Member ID</label>
-        <input type="text" id="edit-member-id" readonly style="opacity:0.6">
-      </div>
-      <div class="form-group">
-        <label>Name</label>
-        <input type="text" id="edit-member-name">
-      </div>
-      <div class="form-group">
-        <label>Phone</label>
-        <input type="text" id="edit-member-phone">
-      </div>
-      <div class="form-group">
-        <label>Email</label>
-        <input type="email" id="edit-member-email">
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('edit-member-modal')">Cancel</button>
-      <button class="btn btn-cyan" onclick="saveMember()">Save Changes</button>
+<!-- ═══════════ DASHBOARD PAGE ═══════════ -->
+<div id="dashboard-page" class="dashboard-page">
+  <div class="topbar">
+    <div class="topbar-logo">PS VIBE</div>
+    <div class="topbar-right">
+      <span class="topbar-user" id="topbar-user-name"></span>
+      <span class="role-badge" id="topbar-role-badge"></span>
+      <button class="logout-btn" onclick="showChangePwModal()" style="margin-right:0">🔑 Password</button>
+      <button class="logout-btn" onclick="logout()">Logout</button>
     </div>
   </div>
+  <div class="nav" id="nav-tabs"></div>
+  <div class="main" id="main-content"></div>
 </div>
 
-<!-- Wallet Adjust Modal -->
-<div class="modal-overlay" id="adjust-wallet-modal">
-  <div class="modal">
-    <div class="modal-header">
-      <h3>⚡ Adjust Wallet Balance</h3>
-      <button class="close" onclick="closeModal('adjust-wallet-modal')">&times;</button>
-    </div>
-    <div class="modal-body">
-      <div class="form-group">
-        <label>Member ID</label>
-        <input type="text" id="adjust-member-id" readonly style="opacity:0.6">
-      </div>
-      <div class="form-group">
-        <label>Current Balance</label>
-        <input type="text" id="adjust-current-balance" readonly style="opacity:0.6">
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Adjustment (+/- mins)</label>
-          <input type="number" id="adjust-amount" placeholder="e.g. 100 or -50">
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Reason</label>
-        <textarea id="adjust-reason" rows="2" placeholder="Why is this adjustment being made?"></textarea>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('adjust-wallet-modal')">Cancel</button>
-      <button class="btn btn-magenta" onclick="saveWalletAdjust()">Adjust Balance</button>
-    </div>
-  </div>
+<!-- ═══════════ MODALS ═══════════ -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal" id="modal-content"></div>
 </div>
 
-<!-- Top-Up Modal -->
-<div class="modal-overlay" id="topup-modal">
-  <div class="modal">
-    <div class="modal-header">
-      <h3>💳 Record Top-Up</h3>
-      <button class="close" onclick="closeModal('topup-modal')">&times;</button>
-    </div>
-    <div class="modal-body">
-      <div class="form-group">
-        <label>Member ID</label>
-        <input type="text" id="topup-member-id" readonly style="opacity:0.6">
-      </div>
-      <div class="form-group">
-        <label>Amount (Ks)</label>
-        <input type="number" id="topup-amount" placeholder="e.g. 50000">
-      </div>
-      <div class="form-group">
-        <label>Payment Method</label>
-        <select id="topup-method">
-          <option value="Cash">Cash</option>
-          <option value="KPay">KPay</option>
-          <option value="WavePay">WavePay</option>
-          <option value="AYA Pay">AYA Pay</option>
-          <option value="CB Pay">CB Pay</option>
-          <option value="Bank Transfer">Bank Transfer</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Staff Name</label>
-        <input type="text" id="topup-staff" placeholder="Staff name (optional)">
-      </div>
-      <div class="form-group">
-        <label>Date</label>
-        <input type="date" id="topup-date">
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal('topup-modal')">Cancel</button>
-      <button class="btn btn-green" onclick="saveTopup()">Record Top-Up</button>
-    </div>
-  </div>
-</div>
-
-<!-- Confirm Dialog -->
-<div class="confirm-overlay" id="confirm-overlay">
-  <div class="confirm-box">
-    <p id="confirm-message"></p>
-    <div class="actions">
-      <button class="btn btn-outline" onclick="closeConfirm()">Cancel</button>
-      <button class="btn btn-red" id="confirm-yes-btn">Confirm</button>
-    </div>
-  </div>
-</div>
-
-<!-- Toast Container -->
-<div class="toast-container" id="toast-container"></div>
+<div id="toast-container"></div>
 
 <script>
-// ── State ──
-let API_KEY = "";
-let API_BASE = window.location.origin;
-let currentTab = 'summary';
-let sortColumn = null;
-let sortDir = 'asc';
-let membersData = [];
-let confirmCallback = null;
+// ═══════════ AUTH STATE ═══════════
+let currentUser = null;
+let accessToken = null;
+let refreshToken = null;
 
-// ── Init ──
-window.addEventListener('DOMContentLoaded', () => {
-  API_KEY = API_KEY || sessionStorage.getItem("psvibe_api_key") || "";
-  if (API_KEY) {
-    document.getElementById('auth-overlay').style.display = 'none';
-    initDashboard();
-  } else {
-    document.getElementById('auth-overlay').style.display = 'flex';
-    document.getElementById('api-key-input').focus();
+const API_BASE = '';
+
+function checkAuth() {
+  const stored = localStorage.getItem('psvibe_auth');
+  if (!stored) {
+    showLogin();
+    return false;
   }
-  // Set today's date for date inputs
-  const today = new Date().toISOString().split('T')[0];
-  document.getElementById('sales-date-filter').value = today;
-  document.getElementById('topup-date').value = today;
-});
+  try {
+    const auth = JSON.parse(stored);
+    accessToken = auth.access_token;
+    refreshToken = auth.refresh_token;
+    currentUser = auth.user;
+    showDashboard();
+    return true;
+  } catch(e) {
+    localStorage.removeItem('psvibe_auth');
+    showLogin();
+    return false;
+  }
+}
 
-function setApiKey() {
-  const key = document.getElementById('api-key-input').value.trim();
-  if (!key) return toast('Please enter an API key', 'error');
-  API_KEY = key;
-  sessionStorage.setItem('psvibe_api_key', key);
-  document.getElementById('auth-overlay').style.display = 'none';
-  initDashboard();
+function showLogin() {
+  document.getElementById('login-page').style.display = 'flex';
+  document.getElementById('dashboard-page').style.display = 'none';
+}
+
+function showDashboard() {
+  document.getElementById('login-page').style.display = 'none';
+  document.getElementById('dashboard-page').style.display = 'block';
+  document.getElementById('topbar-user-name').textContent = currentUser.name || currentUser.username;
+  const badge = document.getElementById('topbar-role-badge');
+  badge.textContent = currentUser.role;
+  badge.className = 'role-badge ' + currentUser.role;
+  buildNav();
+  switchTab('dashboard');
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  const btn = document.getElementById('login-btn');
+  const btnText = document.getElementById('login-btn-text');
+  const spinner = document.getElementById('login-spinner');
+
+  errEl.classList.remove('show');
+  btn.disabled = true;
+  btnText.style.display = 'none';
+  spinner.style.display = 'block';
+
+  try {
+    const resp = await fetch(API_BASE + '/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      errEl.textContent = data.detail || 'Invalid username or password';
+      errEl.classList.add('show');
+      btn.disabled = false;
+      btnText.style.display = '';
+      spinner.style.display = 'none';
+      return;
+    }
+    // Store tokens
+    const auth = {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      user: data.user
+    };
+    localStorage.setItem('psvibe_auth', JSON.stringify(auth));
+    accessToken = data.access_token;
+    refreshToken = data.refresh_token;
+    currentUser = data.user;
+    showDashboard();
+  } catch(e) {
+    errEl.textContent = 'Network error. Please try again.';
+    errEl.classList.add('show');
+    btn.disabled = false;
+    btnText.style.display = '';
+    spinner.style.display = 'none';
+  }
 }
 
 function logout() {
-  API_KEY = '';
-  sessionStorage.removeItem('psvibe_api_key');
-  document.getElementById('auth-overlay').style.display = 'flex';
-  document.getElementById('api-key-input').value = '';
-  document.getElementById('api-key-input').focus();
+  localStorage.removeItem('psvibe_auth');
+  accessToken = null;
+  refreshToken = null;
+  currentUser = null;
+  showLogin();
+  document.getElementById('login-username').value = '';
+  document.getElementById('login-password').value = '';
+  document.getElementById('login-error').classList.remove('show');
 }
 
-// ── API Helpers ──
-async function api(url, opts = {}) {
-  const headers = { 'X-API-Key': API_KEY, ...(opts.headers || {}) };
-  if (opts.body && typeof opts.body === 'object') {
-    headers['Content-Type'] = 'application/json';
-    opts.body = JSON.stringify(opts.body);
+// ═══════════ API HELPERS ═══════════
+async function apiGet(url) {
+  const resp = await fetch(API_BASE + url, {
+    headers: {
+      'Authorization': 'Bearer ' + accessToken,
+      'Content-Type': 'application/json'
+    }
+  });
+  if (resp.status === 401) {
+    // Try refresh
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      const r2 = await fetch(API_BASE + url, {
+        headers: { 'Authorization': 'Bearer ' + accessToken }
+      });
+      return r2.json();
+    }
+    logout();
+    throw new Error('Session expired');
   }
-  const res = await fetch(API_BASE + url, { ...opts, headers });
-  return res.json();
+  return resp.json();
 }
 
-// ── Tab Switching ──
-function switchTab(tab) {
-  currentTab = tab;
+async function apiPost(url, body) {
+  const resp = await fetch(API_BASE + url, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + accessToken,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+  if (resp.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      const r2 = await fetch(API_BASE + url, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + accessToken,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
+      return r2.json();
+    }
+    logout();
+    throw new Error('Session expired');
+  }
+  return resp.json();
+}
+
+async function apiPut(url, body) {
+  const resp = await fetch(API_BASE + url, {
+    method: 'PUT',
+    headers: {
+      'Authorization': 'Bearer ' + accessToken,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+  if (resp.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      const r2 = await fetch(API_BASE + url, {
+        method: 'PUT',
+        headers: {
+          'Authorization': 'Bearer ' + accessToken,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
+      return r2.json();
+    }
+    logout();
+    throw new Error('Session expired');
+  }
+  return resp.json();
+}
+
+async function apiDelete(url) {
+  const resp = await fetch(API_BASE + url, {
+    method: 'DELETE',
+    headers: { 'Authorization': 'Bearer ' + accessToken }
+  });
+  if (resp.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      const r2 = await fetch(API_BASE + url, {
+        method: 'DELETE',
+        headers: { 'Authorization': 'Bearer ' + accessToken }
+      });
+      return r2.json();
+    }
+    logout();
+    throw new Error('Session expired');
+  }
+  return resp.json();
+}
+
+async function tryRefresh() {
+  try {
+    const resp = await fetch(API_BASE + '/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken })
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    accessToken = data.access_token;
+    refreshToken = data.refresh_token;
+    currentUser = data.user;
+    const stored = JSON.parse(localStorage.getItem('psvibe_auth') || '{}');
+    stored.access_token = data.access_token;
+    stored.refresh_token = data.refresh_token;
+    stored.user = data.user;
+    localStorage.setItem('psvibe_auth', JSON.stringify(stored));
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+// ═══════════ NAVIGATION ═══════════
+function buildNav() {
+  const nav = document.getElementById('nav-tabs');
+  const isAdmin = currentUser.role === 'admin';
+
+  const adminTabs = [
+    { id: 'dashboard', label: '📊 Dashboard', icon: '' },
+    { id: 'booking', label: '📅 Booking', icon: '' },
+    { id: 'timeline', label: '⏱️ Timeline', icon: '' },
+    { id: 'games', label: '🎮 Games', icon: '' },
+    { id: 'members', label: '👥 Members', icon: '' },
+    { id: 'wallet', label: '💰 Wallet', icon: '' },
+    { id: 'sales', label: '📋 Sales', icon: '' },
+    { id: 'inventory', label: '📦 Inventory', icon: '' },
+    { id: 'users', label: '👷 Users', icon: '' },
+    { id: 'finance', label: '💵 Finance', icon: '' },
+    { id: 'analytics', label: '📈 Analytics', icon: '' },
+  ];
+
+  const staffTabs = [
+    { id: 'dashboard', label: '📊 Dashboard', icon: '' },
+    { id: 'booking', label: '📅 Booking', icon: '' },
+    { id: 'timeline', label: '⏱️ Timeline', icon: '' },
+    { id: 'games', label: '🎮 Games', icon: '' },
+  ];
+
+  const tabs = isAdmin ? adminTabs : staffTabs;
+  nav.innerHTML = tabs.map(t =>
+    `<button id="nav-${t.id}" onclick="switchTab('${t.id}')">${t.label}</button>`
+  ).join('');
+}
+
+function switchTab(tabId) {
+  // Role guard: staff users can only access their 4 tabs
+  if (currentUser && currentUser.role !== 'admin') {
+    const staffAllowed = ['dashboard', 'booking', 'timeline', 'games'];
+    if (!staffAllowed.includes(tabId)) {
+      document.getElementById('main-content').innerHTML = '<div class="empty">⛔ Access denied. Admin only.</div>';
+      return;
+    }
+  }
+
   document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-  document.getElementById('tab-' + tab).classList.add('active');
-  event.target.classList.add('active');
-  if (tab === 'summary') loadSummary();
-  else if (tab === 'members') loadMembers();
-  else if (tab === 'sales') loadSales();
+  const navBtn = document.getElementById('nav-' + tabId);
+  if (navBtn) navBtn.classList.add('active');
+
+  const main = document.getElementById('main-content');
+
+  switch(tabId) {
+    case 'dashboard': loadDashboardTab(main); break;
+    case 'booking': loadBookingTab(main); break;
+    case 'timeline': loadTimelineTab(main); break;
+    case 'games': loadGamesTab(main); break;
+    case 'members': loadMembersTab(main); break;
+    case 'wallet': loadWalletTab(main); break;
+    case 'sales': loadSalesTab(main); break;
+    case 'inventory': loadInventoryTab(main); break;
+    case 'users': loadUsersTab(main); break;
+    case 'finance': loadFinanceTab(main); break;
+    case 'analytics': loadAnalyticsTab(main); break;
+    default: main.innerHTML = '<div class="empty">Tab not found</div>';
+  }
 }
 
-// ── Init Dashboard ──
-function initDashboard() {
-  document.getElementById('header-ts').textContent = new Date().toLocaleString();
-  loadSummary();
-}
-
-// ── Toast ──
-function toast(msg, type = 'info') {
-  const c = document.getElementById('toast-container');
+// ═══════════ TOAST ═══════════
+function toast(msg, type) {
+  type = type || 'success';
+  const container = document.getElementById('toast-container');
   const el = document.createElement('div');
   el.className = 'toast ' + type;
   el.textContent = msg;
-  c.appendChild(el);
-  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s';
-    setTimeout(() => el.remove(), 300); }, 3500);
+  container.appendChild(el);
+  setTimeout(() => { el.remove(); }, 3000);
 }
 
-// ── Modals ──
-function openModal(id) { document.getElementById(id).classList.add('show'); }
-function closeModal(id) { document.getElementById(id).classList.remove('show'); }
-
-// ── Confirm ──
-function showConfirm(msg, cb) {
-  document.getElementById('confirm-message').textContent = msg;
-  confirmCallback = cb;
-  document.getElementById('confirm-overlay').classList.add('show');
-  document.getElementById('confirm-yes-btn').onclick = () => {
-    document.getElementById('confirm-overlay').classList.remove('show');
-    if (confirmCallback) confirmCallback();
-    confirmCallback = null;
-  };
-}
-function closeConfirm() {
-  document.getElementById('confirm-overlay').classList.remove('show');
-  confirmCallback = null;
-}
-
-// ── Formatting ──
+// ═══════════ FORMATTING ═══════════
 function F(n) { return n != null ? Number(n).toLocaleString() : '-'; }
 function FKS(n) { return n != null ? Number(n).toLocaleString() + ' Ks' : '-'; }
 
-// ═══════════════════════════════════════
-// SUMMARY TAB
-// ═══════════════════════════════════════
-async function loadSummary() {
+// ═══════════ TAB: DASHBOARD ═══════════
+async function loadDashboardTab(container) {
+  container.innerHTML = '<div class="loading">Loading dashboard...</div>';
   try {
-    const r = await api('/api/dashboard/summary');
-    if (!r.success) { document.getElementById('summary-cards').innerHTML =
-      '<div class="error">Failed: ' + (r.error||'unknown') + '</div>'; return; }
-    const d = r.data;
-    document.getElementById('summary-cards').innerHTML =
-      kpi('Total Members', F(d.total_members), 'cyan') +
-      kpi('Active Today', F(d.active_today), 'green') +
-      kpi('Total Wallet Mins', F(d.total_wallet_mins), 'magenta') +
-      kpi('Today Revenue', FKS(d.today_revenue), 'amber');
-  } catch(e) {
-    document.getElementById('summary-cards').innerHTML =
-      '<div class="error">Error loading summary</div>';
-  }
-  // Load recent top-ups for summary
-  try {
-    const r = await api('/api/dashboard/recent-topups');
-    if (r.success && r.data && r.data.length) {
-      let h = '<table><tr><th>Date</th><th>Member</th><th>Amount</th><th>Method</th></tr>';
-      r.data.forEach(t => {
-        h += `<tr><td>${t.topup_date||'-'}</td><td>${t.member_id||'-'}</td>
-          <td>${FKS(t.amount)}</td><td>${t.payment_method||'-'}</td></tr>`;
+    const [statsRes, consolesRes] = await Promise.all([
+      apiGet('/api/dashboard/stats'),
+      apiGet('/api/dashboard/consoles')
+    ]);
+
+    let html = '';
+
+    // KPI Cards
+    if (statsRes.success) {
+      const s = statsRes.data;
+      html += '<div class="kpi-grid">';
+      html += kpiCard('Today Bookings', F(s.today_bookings || 0), 'cyan');
+      html += kpiCard('Active Sessions', F(s.active_players || 0), 'green');
+      html += kpiCard('Today Revenue', FKS(s.today_revenue || 0), 'amber');
+      html += kpiCard('Free Consoles', F(consolesRes.success ?
+        (consolesRes.data || []).filter(c => (c.status||'').toLowerCase() === 'available').length : 0), 'magenta');
+      html += '</div>';
+    }
+
+    // Console Grid
+    html += '<div class="panel"><div class="panel-header">🕹️ Console Status</div><div class="panel-body">';
+    if (consolesRes.success && consolesRes.data.length) {
+      html += '<div class="console-grid">';
+      consolesRes.data.forEach(c => {
+        const status = (c.status || 'available').toLowerCase();
+        html += `<div class="console-card ${status}">
+          <div class="console-id">${c.console_id}</div>
+          <div class="console-status">${c.status || 'Available'}</div>
+          ${c.current_game ? `<div class="console-game">${c.current_game}</div>` : ''}
+        </div>`;
       });
-      h += '</table>';
-      document.getElementById('recent-topups').innerHTML = h;
+      html += '</div>';
     } else {
-      document.getElementById('recent-topups').innerHTML =
-        '<div class="empty">No recent top-ups</div>';
+      html += '<div class="empty">No console data</div>';
     }
-  } catch(e) {}
-}
+    html += '</div></div>';
 
-function kpi(label, value, cls) {
-  return `<div class="kpi-card ${cls}"><div class="label">${label}</div>
-    <div class="value ${cls}">${value}</div></div>`;
-}
-
-// ═══════════════════════════════════════
-// MEMBERS TAB
-// ═══════════════════════════════════════
-async function loadMembers() {
-  const search = document.getElementById('member-search').value.trim();
-  document.getElementById('members-table').innerHTML = '<div class="loading">Loading...</div>';
-  try {
-    const r = await api(`/api/dashboard/members?search=${encodeURIComponent(search)}&page=1&limit=500`);
-    if (!r.success) {
-      document.getElementById('members-table').innerHTML =
-        `<div class="error">Failed: ${r.error||'unknown'}</div>`; return;
+    // Today's Schedule
+    html += '<div class="panel"><div class="panel-header">📋 Today\'s Schedule</div><div class="panel-body">';
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const bookingsRes = await apiGet('/api/dashboard/bookings?date=' + today + '&limit=20');
+      if (bookingsRes.success && bookingsRes.data && bookingsRes.data.length) {
+        html += '<div class="table-wrap"><table><thead><tr>';
+        html += '<th>Time</th><th>Console</th><th>Member</th><th>Game</th><th>Duration</th><th>Status</th></tr></thead><tbody>';
+        bookingsRes.data.forEach(b => {
+          const st = (b.status || '').toLowerCase();
+          html += `<tr>
+            <td>${b.start_time||'-'}</td>
+            <td>${b.console_id||'-'}</td>
+            <td>${b.member_id||'-'}</td>
+            <td>${b.game_name||'-'}</td>
+            <td>${b.duration_mins||'-'} min</td>
+            <td><span class="status ${st}">${b.status||'-'}</span></td>
+          </tr>`;
+        });
+        html += '</tbody></table></div>';
+      } else {
+        html += '<div class="empty">No bookings for today</div>';
+      }
+    } catch(e) {
+      html += '<div class="empty">Could not load schedule</div>';
     }
-    membersData = r.data || [];
-    renderMembersTable(membersData);
+    html += '</div></div>';
+
+    container.innerHTML = html;
   } catch(e) {
-    document.getElementById('members-table').innerHTML =
-      `<div class="error">Error: ${e.message}</div>`;
+    container.innerHTML = '<div class="error">Error loading dashboard: ' + e.message + '</div>';
   }
 }
 
-function renderMembersTable(data) {
-  if (!data.length) {
-    document.getElementById('members-table').innerHTML =
-      '<div class="empty">No members found</div>'; return;
+function kpiCard(label, value, color) {
+  return `<div class="kpi-card ${color}">
+    <div class="label">${label}</div>
+    <div class="value ${color}">${value}</div>
+  </div>`;
+}
+
+// ═══════════ TAB: BOOKING ═══════════
+let bookingFilter = 'all';
+async function loadBookingTab(container) {
+  bookingFilter = 'all';
+  container.innerHTML = `
+    <div class="panel">
+      <div class="panel-header">📅 Bookings</div>
+      <div class="panel-body">
+        <div class="controls">
+          <input type="date" id="booking-date" value="${new Date().toISOString().split('T')[0]}" onchange="refreshBookings()">
+          <div class="filter-tabs" id="booking-filters">
+            <button class="filter-tab active" onclick="setBookingFilter('all',this)">All</button>
+            <button class="filter-tab" onclick="setBookingFilter('pending',this)">Pending</button>
+            <button class="filter-tab" onclick="setBookingFilter('confirmed',this)">Confirmed</button>
+            <button class="filter-tab" onclick="setBookingFilter('active',this)">Active</button>
+          </div>
+        </div>
+        <div id="booking-content"><div class="loading">Loading...</div></div>
+      </div>
+    </div>`;
+
+  refreshBookings();
+}
+
+function setBookingFilter(f, btn) {
+  bookingFilter = f;
+  document.querySelectorAll('#booking-filters .filter-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  refreshBookings();
+}
+
+async function refreshBookings() {
+  const date = document.getElementById('booking-date').value;
+  const content = document.getElementById('booking-content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    let url = '/api/dashboard/bookings?date=' + date + '&limit=200';
+    const res = await apiGet(url);
+    if (!res.success) {
+      content.innerHTML = '<div class="error">' + (res.error || 'Failed') + '</div>';
+      return;
+    }
+    let data = res.data || [];
+    if (bookingFilter !== 'all') {
+      data = data.filter(b => (b.status || '').toLowerCase() === bookingFilter);
+    }
+
+    if (!data.length) {
+      content.innerHTML = '<div class="empty">No bookings found</div>';
+      return;
+    }
+
+    let html = '<div class="table-wrap"><table><thead><tr>';
+    html += '<th>ID</th><th>Time</th><th>Console</th><th>Member</th><th>Game</th><th>Duration</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
+    data.forEach(b => {
+      const st = (b.status || '').toLowerCase();
+      html += `<tr>
+        <td>${b.id}</td>
+        <td>${b.start_time||'-'} — ${b.end_time||'-'}</td>
+        <td>${b.console_id||'-'}</td>
+        <td>${b.member_id||'-'}</td>
+        <td>${b.game_name||'-'}</td>
+        <td>${b.duration_mins||'-'} min</td>
+        <td><span class="status ${st}">${b.status||'-'}</span></td>
+        <td><div class="action-btns">`;
+      if (st === 'pending' && currentUser.role === 'admin') {
+        html += `<button class="btn btn-green btn-sm" onclick="approveBooking(${b.id})">✓ Approve</button>
+                 <button class="btn btn-red btn-sm" onclick="rejectBooking(${b.id})">✗ Reject</button>`;
+      }
+      html += '</div></td></tr>';
+    });
+    html += '</tbody></table></div>';
+    content.innerHTML = html;
+  } catch(e) {
+    content.innerHTML = '<div class="error">Error: ' + e.message + '</div>';
   }
-  let h = '<table><thead><tr>';
-  h += th('ID', 'member_id') + th('Name', 'name') + th('Phone', 'phone') +
-       th('Balance (mins)', 'wallet_mins') + th('Total Spend', 'net_spend') +
-       th('Rank', 'rank');
-  h += '<th>Actions</th></tr></thead><tbody>';
+}
+
+async function approveBooking(id) {
+  try {
+    const res = await apiPut('/api/dashboard/bookings/' + id, { status: 'Confirmed' });
+    if (res.success) { toast('Booking confirmed!', 'success'); refreshBookings(); }
+    else { toast(res.error || 'Failed', 'error'); }
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function rejectBooking(id) {
+  try {
+    const res = await apiPut('/api/dashboard/bookings/' + id, { status: 'Rejected' });
+    if (res.success) { toast('Booking rejected', 'success'); refreshBookings(); }
+    else { toast(res.error || 'Failed', 'error'); }
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ═══════════ TAB: TIMELINE ═══════════
+async function loadTimelineTab(container) {
+  container.innerHTML = '<div class="loading">Loading timeline...</div>';
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const res = await apiGet('/api/dashboard/bookings?date=' + today + '&limit=200');
+    if (!res.success) {
+      container.innerHTML = '<div class="error">' + (res.error || 'Failed') + '</div>';
+      return;
+    }
+    const bookings = res.data || [];
+    if (!bookings.length) {
+      container.innerHTML = '<div class="empty">No bookings for today</div>';
+      return;
+    }
+
+    // Build console list from bookings
+    const consoles = [...new Set(bookings.map(b => b.console_id).filter(Boolean))].sort();
+    if (!consoles.length) {
+      container.innerHTML = '<div class="empty">No console data</div>';
+      return;
+    }
+
+    const hours = [];
+    for (let h = 10; h <= 23; h++) hours.push(h);
+
+    let html = '<div class="panel"><div class="panel-header">⏱️ Today\'s Timeline (' + today + ')</div><div class="panel-body" style="overflow-x:auto">';
+    html += '<div class="timeline-grid">';
+    // Header
+    html += '<div class="timeline-header console-label">Console</div>';
+    hours.forEach(h => {
+      html += `<div class="timeline-header">${h}:00</div>`;
+    });
+
+    // Rows
+    const colors = { confirmed: 'confirmed', pending: 'pending', active: 'active' };
+    const defaultColor = 'done';
+    const hourWidth = 100 / 14; // 14 hours
+
+    consoles.forEach(cid => {
+      html += `<div class="timeline-row">`;
+      html += `<div class="timeline-header console-label" style="background:var(--card);text-align:right;padding-right:0.5rem">${cid}</div>`;
+      hours.forEach(h => {
+        html += `<div class="timeline-cell">`;
+        bookings.filter(b => b.console_id === cid).forEach(b => {
+          const startH = b.start_time ? parseInt(b.start_time.split(':')[0]) : 0;
+          const endH = b.end_time ? parseInt(b.end_time.split(':')[0]) : 0;
+          if (h >= startH && h < endH) {
+            const cls = colors[(b.status || '').toLowerCase()] || defaultColor;
+            const spanH = endH - startH;
+            const left = ((startH - 10) / 14) * 100;
+            const w = (spanH / 14) * 100;
+            html += `<div class="timeline-booking ${cls}" style="left:${left}%;width:${w}%" title="${b.member_id||''}: ${b.game_name||''}">${b.member_id||b.id} ${b.game_name||''}</div>`;
+          }
+        });
+        html += '</div>';
+      });
+      html += '</div>';
+    });
+
+    html += '</div></div></div>';
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = '<div class="error">Error: ' + e.message + '</div>';
+  }
+}
+
+// ═══════════ TAB: GAMES ═══════════
+async function loadGamesTab(container) {
+  container.innerHTML = `
+    <div class="panel">
+      <div class="panel-header">🎮 Games Library</div>
+      <div class="panel-body">
+        <div class="controls">
+          <input type="text" id="games-search" placeholder="Search games..." oninput="refreshGames()">
+          <select id="games-genre" onchange="refreshGames()">
+            <option value="">All Genres</option>
+          </select>
+        </div>
+        <div id="games-content"><div class="loading">Loading...</div></div>
+      </div>
+    </div>`;
+
+  try {
+    const res = await apiGet('/api/dashboard/games?limit=500');
+    if (!res.success) {
+      document.getElementById('games-content').innerHTML = '<div class="error">' + (res.error || 'Failed') + '</div>';
+      return;
+    }
+    window._gamesData = res.data || [];
+
+    // Populate genre dropdown
+    const genres = [...new Set(window._gamesData.map(g => g.genre).filter(Boolean))].sort();
+    const genreSelect = document.getElementById('games-genre');
+    genres.forEach(g => {
+      const opt = document.createElement('option');
+      opt.value = g;
+      opt.textContent = g;
+      genreSelect.appendChild(opt);
+    });
+
+    renderGames();
+  } catch(e) {
+    document.getElementById('games-content').innerHTML = '<div class="error">Error: ' + e.message + '</div>';
+  }
+}
+
+function refreshGames() {
+  renderGames();
+}
+
+function renderGames() {
+  const search = (document.getElementById('games-search')?.value || '').toLowerCase();
+  const genre = document.getElementById('games-genre')?.value || '';
+  let data = window._gamesData || [];
+
+  if (search) data = data.filter(g => (g.game_title || '').toLowerCase().includes(search));
+  if (genre) data = data.filter(g => g.genre === genre);
+
+  const content = document.getElementById('games-content');
+  if (!data.length) {
+    content.innerHTML = '<div class="empty">No games found</div>';
+    return;
+  }
+
+  let html = '<div class="game-grid">';
+  data.forEach(g => {
+    const consoles = (g.consoles || []).map(c => c.console_id || c.console_name).join(', ');
+    const ssds = (g.ssds || []).map(s => s.console_id || s.console_name).join(', ');
+    html += `<div class="game-card">
+      <div class="game-title">${g.game_title}</div>
+      <div class="game-meta">
+        <span>🎭 ${g.genre||'—'}</span>
+        <span>👤 ${g.solo_multi||'—'}</span>
+        <span>💿 ${g.disc_count||0} discs</span>
+        <span>📌 ${g.final_status||'—'}</span>
+      </div>
+      <div class="game-consoles">
+        ${consoles ? '<span>🕹️ ' + consoles + '</span>' : ''}
+        ${ssds ? '<span>💾 SSD: ' + ssds + '</span>' : ''}
+      </div>
+    </div>`;
+  });
+  html += '</div>';
+  content.innerHTML = html;
+}
+
+// ═══════════ TAB: MEMBERS ═══════════
+async function loadMembersTab(container) {
+  container.innerHTML = `
+    <div class="panel">
+      <div class="panel-header">👥 Members</div>
+      <div class="panel-body">
+        <div class="controls">
+          <input type="text" id="members-search" placeholder="Search by name, ID, phone..." oninput="refreshMembers()">
+          <select id="members-tier" onchange="refreshMembers()">
+            <option value="">All Tiers</option>
+            <option value="Bronze">Bronze</option>
+            <option value="Silver">Silver</option>
+            <option value="Gold">Gold</option>
+            <option value="Platinum">Platinum</option>
+          </select>
+        </div>
+        <div id="members-content"><div class="loading">Loading...</div></div>
+      </div>
+    </div>`;
+
+  window._membersData = [];
+  try {
+    const res = await apiGet('/api/dashboard/members?limit=500');
+    if (res.success) {
+      window._membersData = res.data || [];
+    }
+    renderMembers();
+  } catch(e) {
+    document.getElementById('members-content').innerHTML = '<div class="error">Error: ' + e.message + '</div>';
+  }
+}
+
+function refreshMembers() { renderMembers(); }
+
+function renderMembers() {
+  const search = (document.getElementById('members-search')?.value || '').toLowerCase();
+  const tier = document.getElementById('members-tier')?.value || '';
+  let data = window._membersData || [];
+
+  if (search) data = data.filter(m =>
+    (m.member_id || '').toLowerCase().includes(search) ||
+    (m.name || '').toLowerCase().includes(search) ||
+    (m.phone || '').toLowerCase().includes(search)
+  );
+  if (tier) data = data.filter(m => (m.tier || '') === tier);
+
+  const content = document.getElementById('members-content');
+  if (!data.length) {
+    content.innerHTML = '<div class="empty">No members found</div>';
+    return;
+  }
+
+  let html = '<div class="table-wrap"><table><thead><tr>';
+  html += '<th>ID</th><th>Name</th><th>Phone</th><th>Balance (mins)</th><th>Balance (Ks)</th><th>Tier</th><th>Total Spend</th><th>Joined</th></tr></thead><tbody>';
   data.forEach(m => {
-    h += `<tr>
-      <td><strong>${m.member_id||'-'}</strong></td>
+    html += `<tr>
+      <td><strong>${m.member_id}</strong></td>
       <td>${m.name||'-'}</td>
       <td>${m.phone||'-'}</td>
-      <td>${F(m.wallet_mins)}</td>
-      <td>${FKS(m.net_spend)}</td>
-      <td>${m.rank||'-'}</td>
-      <td><div class="action-btns">
-        <button class="btn btn-outline" onclick="editMember('${m.member_id}')">✏️ Edit</button>
-        <button class="btn btn-magenta" onclick="adjustWallet('${m.member_id}',${m.wallet_mins||0})">⚡ Adjust</button>
-        <button class="btn btn-green" onclick="topupMember('${m.member_id}')">💳 Top-Up</button>
-      </div></td></tr>`;
+      <td>${F(m.balance_minutes)}</td>
+      <td>${FKS(m.balance_kyat)}</td>
+      <td>${m.tier||'-'}</td>
+      <td>${FKS(m.total_spend)}</td>
+      <td>${(m.join_date||'').substring(0,10)}</td>
+    </tr>`;
   });
-  h += '</tbody></table>';
-  document.getElementById('members-table').innerHTML = h;
+  html += '</tbody></table></div>';
+  content.innerHTML = html;
 }
 
-function th(label, key) {
-  const arrow = sortColumn === key ? (sortDir === 'asc' ? '▲' : '▼') : '';
-  return `<th onclick="sortMembers('${key}')">${label}<span class="sort-arrow">${arrow}</span></th>`;
-}
-
-function sortMembers(key) {
-  if (sortColumn === key) { sortDir = sortDir === 'asc' ? 'desc' : 'asc'; }
-  else { sortColumn = key; sortDir = 'asc'; }
-  const data = [...membersData].sort((a,b) => {
-    let va = a[key], vb = b[key];
-    if (va == null) va = '';
-    if (vb == null) vb = '';
-    if (typeof va === 'number') return sortDir === 'asc' ? va - vb : vb - va;
-    return sortDir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
-  });
-  renderMembersTable(data);
-}
-
-// ── Edit Member ──
-async function editMember(memberId) {
-  try {
-    const r = await api(`/api/dashboard/member/${encodeURIComponent(memberId)}`);
-    if (!r.success) { toast('Member not found', 'error'); return; }
-    document.getElementById('edit-member-id').value = r.data.member_id;
-    document.getElementById('edit-member-name').value = r.data.name || '';
-    document.getElementById('edit-member-phone').value = r.data.phone || '';
-    document.getElementById('edit-member-email').value = r.data.email || '';
-    openModal('edit-member-modal');
-  } catch(e) { toast('Error: ' + e.message, 'error'); }
-}
-
-async function saveMember() {
-  const id = document.getElementById('edit-member-id').value;
-  const data = {
-    name: document.getElementById('edit-member-name').value.trim(),
-    phone: document.getElementById('edit-member-phone').value.trim(),
-    email: document.getElementById('edit-member-email').value.trim()
-  };
-  try {
-    const r = await api(`/api/dashboard/member/${encodeURIComponent(id)}/update`, {
-      method: 'POST', body: data
-    });
-    if (r.success) { toast('Member updated!', 'success'); closeModal('edit-member-modal'); loadMembers(); }
-    else { toast('Failed: ' + (r.error||'unknown'), 'error'); }
-  } catch(e) { toast('Error: ' + e.message, 'error'); }
-}
-
-// ── Adjust Wallet ──
-function adjustWallet(memberId, balance) {
-  document.getElementById('adjust-member-id').value = memberId;
-  document.getElementById('adjust-current-balance').value = F(balance) + ' mins';
-  document.getElementById('adjust-amount').value = '';
-  document.getElementById('adjust-reason').value = '';
-  openModal('adjust-wallet-modal');
-}
-
-async function saveWalletAdjust() {
-  const data = {
-    member_id: document.getElementById('adjust-member-id').value,
-    amount: parseInt(document.getElementById('adjust-amount').value) || 0,
-    reason: document.getElementById('adjust-reason').value.trim()
-  };
-  if (!data.amount) { toast('Please enter an amount', 'error'); return; }
-  if (!data.reason) { toast('Please enter a reason', 'error'); return; }
-  showConfirm(`Adjust wallet by ${data.amount > 0 ? '+' : ''}${data.amount} mins for ${data.member_id}?`, async () => {
-    try {
-      const r = await api('/api/dashboard/wallet/adjust', { method: 'POST', body: data });
-      if (r.success) { toast('Wallet adjusted!', 'success'); closeModal('adjust-wallet-modal'); loadMembers(); }
-      else { toast('Failed: ' + (r.error||'unknown'), 'error'); }
-    } catch(e) { toast('Error: ' + e.message, 'error'); }
-  });
-}
-
-// ── Top-Up ──
-function topupMember(memberId) {
-  document.getElementById('topup-member-id').value = memberId;
-  document.getElementById('topup-amount').value = '';
-  document.getElementById('topup-method').value = 'Cash';
-  document.getElementById('topup-staff').value = '';
-  document.getElementById('topup-date').value = new Date().toISOString().split('T')[0];
-  openModal('topup-modal');
-}
-
-async function saveTopup() {
-  const data = {
-    member_id: document.getElementById('topup-member-id').value,
-    amount: parseInt(document.getElementById('topup-amount').value) || 0,
-    payment_method: document.getElementById('topup-method').value,
-    staff_name: document.getElementById('topup-staff').value.trim(),
-    date: document.getElementById('topup-date').value
-  };
-  if (!data.amount) { toast('Please enter an amount', 'error'); return; }
-  if (!data.date) { toast('Please select a date', 'error'); return; }
-  showConfirm(`Record top-up of ${FKS(data.amount)} for ${data.member_id} via ${data.payment_method}?`, async () => {
-    try {
-      const r = await api('/api/dashboard/topup', { method: 'POST', body: data });
-      if (r.success) { toast('Top-up recorded!', 'success'); closeModal('topup-modal'); loadMembers(); }
-      else { toast('Failed: ' + (r.error||'unknown'), 'error'); }
-    } catch(e) { toast('Error: ' + e.message, 'error'); }
-  });
-}
-
-// ═══════════════════════════════════════
-// WALLET TAB
-// ═══════════════════════════════════════
-async function loadWallet() {
-  const memberId = document.getElementById('wallet-member-id').value.trim();
-  if (!memberId) { toast('Please enter a member ID', 'error'); return; }
-  document.getElementById('wallet-display').innerHTML = '<div class="loading">Loading...</div>';
-  try {
-    const r = await api(`/api/dashboard/wallet/${encodeURIComponent(memberId)}`);
-    if (!r.success) {
-      document.getElementById('wallet-display').innerHTML =
-        `<div class="error">${r.error||'Member not found'}</div>`; return;
-    }
-    const d = r.data;
-    const netSpend = (d.net_spend||0);
-    document.getElementById('wallet-display').innerHTML = `
-      <div class="kpi-grid" style="margin-bottom:1rem">
-        ${kpi('Total Bought (I)', F(d.total_bought_mins||0) + ' mins', 'cyan')}
-        ${kpi('Total Used (J)', F(d.total_used_mins||0) + ' mins', 'magenta')}
-        ${kpi('Balance (H)', F(d.balance_mins||0) + ' mins', 'green')}
-        ${kpi('Net Spend', FKS(netSpend), 'amber')}
+// ═══════════ TAB: WALLET ═══════════
+async function loadWalletTab(container) {
+  container.innerHTML = `
+    <div class="panel">
+      <div class="panel-header">💰 Member Wallet Lookup</div>
+      <div class="panel-body">
+        <div class="controls">
+          <input type="text" id="wallet-search" placeholder="Enter Member ID..." style="width:250px">
+          <button class="btn btn-cyan" onclick="lookupWallet()">Search</button>
+        </div>
+        <div id="wallet-content"><div class="empty">Enter a member ID to view wallet details</div></div>
       </div>
-      <table>
-        <tr><td style="width:140px;color:var(--dim)">Member ID</td><td><strong>${d.member_id||'-'}</strong></td></tr>
-        <tr><td style="color:var(--dim)">Name</td><td>${d.name||'-'}</td></tr>
-        <tr><td style="color:var(--dim)">Phone</td><td>${d.phone||'-'}</td></tr>
-        <tr><td style="color:var(--dim)">Email</td><td>${d.email||'-'}</td></tr>
-        <tr><td style="color:var(--dim)">Rank</td><td>${d.rank||'-'}</td></tr>
-      </table>
-      <div style="margin-top:1rem;display:flex;gap:0.5rem">
-        <button class="btn btn-magenta" onclick="adjustWallet('${d.member_id}',${d.balance_mins||0})">⚡ Adjust</button>
-        <button class="btn btn-green" onclick="topupMember('${d.member_id}')">💳 Top-Up</button>
-      </div>`;
+    </div>`;
+}
+
+async function lookupWallet() {
+  const memberId = document.getElementById('wallet-search').value.trim();
+  if (!memberId) { toast('Enter a member ID', 'error'); return; }
+  const content = document.getElementById('wallet-content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    const [memberRes, topupsRes] = await Promise.all([
+      apiGet('/api/dashboard/members/' + encodeURIComponent(memberId)),
+      apiGet('/api/dashboard/members/' + encodeURIComponent(memberId) + '/topups?limit=50')
+    ]);
+
+    if (!memberRes.success) {
+      content.innerHTML = '<div class="error">' + (memberRes.error || 'Member not found') + '</div>';
+      return;
+    }
+
+    const m = memberRes.data;
+    let html = '<div class="kpi-grid" style="margin-bottom:1rem">';
+    html += kpiCard('Balance (mins)', F(m.balance_minutes), 'cyan');
+    html += kpiCard('Balance (Ks)', FKS(m.balance_kyat || 0), 'green');
+    html += kpiCard('Total Spend', FKS(m.total_spend), 'magenta');
+    html += kpiCard('Tier', m.tier || '—', 'amber');
+    html += '</div>';
+
+    html += '<table style="margin-bottom:1.5rem">';
+    html += `<tr><td style="color:var(--dim);width:120px">Member ID</td><td><strong>${m.member_id}</strong></td></tr>`;
+    html += `<tr><td style="color:var(--dim)">Name</td><td>${m.name||'-'}</td></tr>`;
+    html += `<tr><td style="color:var(--dim)">Phone</td><td>${m.phone||'-'}</td></tr>`;
+    html += `<tr><td style="color:var(--dim)">Joined</td><td>${(m.join_date||'').substring(0,10)}</td></tr>`;
+    html += '</table>';
+
+    // Topup history
+    html += '<h4 style="margin-bottom:0.5rem;color:var(--dim)">Topup History</h4>';
+    if (topupsRes.success && topupsRes.data && topupsRes.data.length) {
+      html += '<div class="table-wrap"><table><thead><tr>';
+      html += '<th>Date</th><th>Amount</th><th>Mins</th><th>Method</th><th>Staff</th><th>Bal Before</th><th>Bal After</th></tr></thead><tbody>';
+      topupsRes.data.forEach(t => {
+        html += `<tr>
+          <td>${(t.topup_date||'').substring(0,16)}</td>
+          <td>${FKS(t.amount)}</td>
+          <td>${F(t.mins_added)}</td>
+          <td>${t.payment_method||'-'}</td>
+          <td>${t.staff_name||'-'}</td>
+          <td>${F(t.balance_mins_before)}</td>
+          <td>${F(t.balance_mins_after)}</td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+    } else {
+      html += '<div class="empty">No topup history</div>';
+    }
+
+    content.innerHTML = html;
   } catch(e) {
-    document.getElementById('wallet-display').innerHTML =
-      `<div class="error">Error: ${e.message}</div>`;
+    content.innerHTML = '<div class="error">Error: ' + e.message + '</div>';
   }
 }
 
-// ═══════════════════════════════════════
-// SALES TAB
-// ═══════════════════════════════════════
-async function loadSales() {
-  const date = document.getElementById('sales-date-filter').value;
-  document.getElementById('sales-table').innerHTML = '<div class="loading">Loading...</div>';
-  try {
-    const r = await api(`/api/dashboard/sales?date=${encodeURIComponent(date||'today')}`);
-    if (!r.success) {
-      document.getElementById('sales-table').innerHTML =
-        `<div class="error">${r.error||'Failed to load'}</div>`; return;
-    }
-    const data = r.data || [];
-    if (!data.length) {
-      document.getElementById('sales-table').innerHTML =
-        '<div class="empty">No sales for this date</div>'; return;
-    }
-    // Calculate totals
-    let totalAmount = 0;
-    data.forEach(s => totalAmount += (s.amount||0));
-    let h = `<div style="margin-bottom:1rem;font-size:0.9rem;color:var(--amber)">
-      Total: ${F(data.length)} vouchers · ${FKS(totalAmount)}
+// ═══════════ TAB: SALES ═══════════
+async function loadSalesTab(container) {
+  container.innerHTML = `
+    <div class="panel">
+      <div class="panel-header">📋 Sales Daily</div>
+      <div class="panel-body">
+        <div class="controls">
+          <input type="date" id="sales-date" value="${new Date().toISOString().split('T')[0]}" onchange="refreshSales()">
+          <button class="btn btn-cyan" onclick="refreshSales()">Load</button>
+        </div>
+        <div id="sales-content"><div class="loading">Loading...</div></div>
+      </div>
     </div>`;
-    h += '<table><thead><tr>';
-    h += '<th>Voucher#</th><th>Member</th><th>Amount</th><th>Payment</th><th>Staff</th><th>Date</th>';
-    h += '</tr></thead><tbody>';
+  refreshSales();
+}
+
+async function refreshSales() {
+  const date = document.getElementById('sales-date').value;
+  const content = document.getElementById('sales-content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    const res = await apiGet('/api/dashboard/sales-daily?date=' + date + '&limit=200');
+    if (!res.success) {
+      content.innerHTML = '<div class="error">' + (res.error || 'Failed') + '</div>';
+      return;
+    }
+    const data = res.data || [];
+    if (!data.length) {
+      content.innerHTML = '<div class="empty">No sales for this date</div>';
+      return;
+    }
+
+    let totalNet = 0;
+    data.forEach(s => totalNet += (s.net || 0));
+
+    let html = `<div style="margin-bottom:1rem;font-size:0.9rem;color:var(--amber)">
+      Total: ${data.length} vouchers · Net: ${FKS(totalNet)}
+    </div>`;
+    html += '<div class="table-wrap"><table><thead><tr>';
+    html += '<th>Voucher</th><th>Console</th><th>Member</th><th>Game Amt</th><th>Food Amt</th><th>Gross</th><th>Discount</th><th>Net</th><th>Staff</th><th>Payment</th></tr></thead><tbody>';
     data.forEach(s => {
-      h += `<tr>
-        <td>${s.receipt_no||s.voucher_no||'-'}</td>
+      html += `<tr>
+        <td>${s.voucher_no||'-'}</td>
+        <td>${s.console_id||'-'}</td>
         <td>${s.member_id||'-'}</td>
-        <td>${FKS(s.amount)}</td>
-        <td>${s.payment_method||'-'}</td>
+        <td>${FKS(s.game_amt||s.amount)}</td>
+        <td>${FKS(s.food_amt||0)}</td>
+        <td>${FKS(s.gross)}</td>
+        <td>${FKS(s.discount)}</td>
+        <td>${FKS(s.net)}</td>
         <td>${s.staff_name||'-'}</td>
-        <td>${s.sale_date||s.date||'-'}</td>
+        <td>${s.payment_method||'-'}</td>
       </tr>`;
     });
-    h += '</tbody></table>';
-    document.getElementById('sales-table').innerHTML = h;
+    html += '</tbody></table></div>';
+    content.innerHTML = html;
   } catch(e) {
-    document.getElementById('sales-table').innerHTML =
-      `<div class="error">Error: ${e.message}</div>`;
+    content.innerHTML = '<div class="error">Error: ' + e.message + '</div>';
   }
 }
+
+// ═══════════ TAB: INVENTORY ═══════════
+async function loadInventoryTab(container) {
+  container.innerHTML = `
+    <div class="panel">
+      <div class="panel-header">📦 Inventory</div>
+      <div class="panel-body">
+        <div class="controls">
+          <input type="text" id="inventory-search" placeholder="Search items..." oninput="refreshInventory()">
+        </div>
+        <div id="inventory-content"><div class="loading">Loading...</div></div>
+      </div>
+    </div>`;
+  window._inventoryData = [];
+  try {
+    const res = await apiGet('/api/dashboard/inventory?limit=500');
+    if (res.success) window._inventoryData = res.data || [];
+    renderInventory();
+  } catch(e) {
+    document.getElementById('inventory-content').innerHTML = '<div class="error">Error: ' + e.message + '</div>';
+  }
+}
+
+function refreshInventory() { renderInventory(); }
+
+function renderInventory() {
+  const search = (document.getElementById('inventory-search')?.value || '').toLowerCase();
+  let data = window._inventoryData || [];
+  if (search) data = data.filter(i => (i.item_name || '').toLowerCase().includes(search));
+
+  const content = document.getElementById('inventory-content');
+  if (!data.length) {
+    content.innerHTML = '<div class="empty">No items found</div>';
+    return;
+  }
+
+  let html = '<div class="table-wrap"><table><thead><tr>';
+  html += '<th>ID</th><th>Item</th><th>Category</th><th>Qty</th><th>Unit Price</th><th>Reorder Level</th><th>Last Updated</th></tr></thead><tbody>';
+  data.forEach(i => {
+    const low = i.quantity <= i.reorder_level && i.reorder_level > 0;
+    html += `<tr>
+      <td>${i.id}</td>
+      <td>${i.item_name}</td>
+      <td>${i.category||'-'}</td>
+      <td style="color:${low ? 'var(--red)' : 'var(--text)'}">${F(i.quantity)}</td>
+      <td>${FKS(i.unit_price)}</td>
+      <td>${F(i.reorder_level)}</td>
+      <td>${(i.last_updated||'').substring(0,10)}</td>
+    </tr>`;
+  });
+  html += '</tbody></table></div>';
+  content.innerHTML = html;
+}
+
+// ═══════════ TAB: USERS (Admin) ═══════════
+async function loadUsersTab(container) {
+  container.innerHTML = `
+    <div class="panel">
+      <div class="panel-header">👷 Dashboard Users <button class="btn btn-cyan btn-sm" onclick="showUserModal()">+ Add User</button></div>
+      <div class="panel-body">
+        <div id="users-content"><div class="loading">Loading...</div></div>
+      </div>
+    </div>`;
+  refreshUsers();
+}
+
+async function refreshUsers() {
+  const content = document.getElementById('users-content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+  try {
+    const res = await apiGet('/api/dashboard/users');
+    if (!res.success) {
+      content.innerHTML = '<div class="error">' + (res.error || 'Failed') + '</div>';
+      return;
+    }
+    const data = res.data || [];
+    if (!data.length) {
+      content.innerHTML = '<div class="empty">No users found</div>';
+      return;
+    }
+
+    let html = '<div class="table-wrap"><table><thead><tr>';
+    html += '<th>ID</th><th>Username</th><th>Display Name</th><th>Role</th><th>Staff ID</th><th>Active</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
+    data.forEach(u => {
+      html += `<tr>
+        <td>${u.id}</td>
+        <td><strong>${u.username}</strong></td>
+        <td>${u.display_name||'-'}</td>
+        <td><span class="role-badge ${u.role}">${u.role}</span></td>
+        <td>${u.staff_id||'-'}</td>
+        <td><span class="user-status ${u.is_active ? 'active' : 'inactive'}"></span>${u.is_active ? 'Active' : 'Inactive'}</td>
+        <td>${(u.last_login||'').substring(0,16)||'Never'}</td>
+        <td><div class="action-btns">
+          <button class="btn btn-outline btn-sm" onclick="editUser(${u.id},'${u.username}','${u.role}','${(u.display_name||'').replace(/'/g,"\\'")}',${u.is_active})">✏️ Edit</button>
+          ${u.username !== 'admin' ? `<button class="btn btn-red btn-sm" onclick="deactivateUser(${u.id},'${u.username}')">🗑 Deactivate</button>` : ''}
+        </div></td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+    content.innerHTML = html;
+  } catch(e) {
+    content.innerHTML = '<div class="error">Error: ' + e.message + '</div>';
+  }
+}
+
+function showUserModal() {
+  showModal('Add Dashboard User', `
+    <form onsubmit="return createUser(event)">
+      <div class="form-group"><label>Username</label><input type="text" id="mu-username" required minlength="3"></div>
+      <div class="form-group"><label>Password</label><input type="password" id="mu-password" required minlength="4"></div>
+      <div class="form-group"><label>Display Name</label><input type="text" id="mu-display-name"></div>
+      <div class="form-group"><label>Role</label><select id="mu-role"><option value="staff">Staff</option><option value="admin">Admin</option></select></div>
+      <div class="form-group"><label>Staff ID (optional)</label><input type="text" id="mu-staff-id"></div>
+      <div class="modal-footer" style="border-top:none;padding:0;margin-top:1rem">
+        <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-cyan">Create User</button>
+      </div>
+    </form>
+  `);
+}
+
+async function createUser(e) {
+  e.preventDefault();
+  const body = {
+    username: document.getElementById('mu-username').value.trim(),
+    password: document.getElementById('mu-password').value,
+    display_name: document.getElementById('mu-display-name').value.trim() || undefined,
+    role: document.getElementById('mu-role').value,
+    staff_id: document.getElementById('mu-staff-id').value.trim() || undefined,
+  };
+  try {
+    const res = await apiPost('/api/dashboard/users', body);
+    if (res.success) { toast(res.message || 'User created', 'success'); closeModal(); refreshUsers(); }
+    else { toast(res.error || 'Failed', 'error'); }
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+function editUser(id, username, role, displayName, isActive) {
+  showModal('Edit User: ' + username, `
+    <form onsubmit="return updateUser(event, ${id})">
+      <div class="form-group"><label>Display Name</label><input type="text" id="eu-display-name" value="${displayName||''}"></div>
+      <div class="form-group"><label>New Password (leave blank to keep)</label><input type="password" id="eu-password" minlength="4" placeholder="Leave blank to keep"></div>
+      <div class="form-group"><label>Role</label><select id="eu-role"><option value="staff" ${role==='staff'?'selected':''}>Staff</option><option value="admin" ${role==='admin'?'selected':''}>Admin</option></select></div>
+      <div class="form-group"><label>Active</label><select id="eu-active"><option value="1" ${isActive?'selected':''}>Yes</option><option value="0" ${!isActive?'selected':''}>No</option></select></div>
+      <div class="modal-footer" style="border-top:none;padding:0;margin-top:1rem">
+        <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-cyan">Save Changes</button>
+      </div>
+    </form>
+  `);
+}
+
+async function updateUser(e, id) {
+  e.preventDefault();
+  const body = {};
+  const pw = document.getElementById('eu-password').value;
+  if (pw) body.password = pw;
+  body.display_name = document.getElementById('eu-display-name').value.trim() || undefined;
+  body.role = document.getElementById('eu-role').value;
+  body.is_active = document.getElementById('eu-active').value === '1';
+  try {
+    const res = await apiPut('/api/dashboard/users/' + id, body);
+    if (res.success) { toast(res.message || 'User updated', 'success'); closeModal(); refreshUsers(); }
+    else { toast(res.error || 'Failed', 'error'); }
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function deactivateUser(id, username) {
+  if (!confirm('Deactivate user "' + username + '"? They will no longer be able to log in.')) return;
+  try {
+    const res = await apiDelete('/api/dashboard/users/' + id);
+    if (res.success) { toast(res.message || 'User deactivated', 'success'); refreshUsers(); }
+    else { toast(res.error || 'Failed', 'error'); }
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ═══════════ TAB: FINANCE ═══════════
+async function loadFinanceTab(container) {
+  container.innerHTML = `
+    <div class="panel">
+      <div class="panel-header">💵 Finance Balances</div>
+      <div class="panel-body">
+        <div id="finance-content"><div class="loading">Loading...</div></div>
+      </div>
+    </div>`;
+  try {
+    const res = await apiGet('/api/dashboard/finance/balances');
+    if (!res.success) {
+      document.getElementById('finance-content').innerHTML = '<div class="error">' + (res.error || 'Failed') + '</div>';
+      return;
+    }
+    const accounts = res.accounts || [];
+    const totals = res.totals || {};
+
+    let html = '<div class="kpi-grid" style="margin-bottom:1.5rem">';
+    accounts.forEach(a => {
+      html += `<div class="kpi-card ${a.balance >= 0 ? 'green' : 'red'}">
+        <div class="label">${a.icon} ${a.label}</div>
+        <div class="value ${a.balance >= 0 ? 'green' : 'red'}">${FKS(a.balance)}</div>
+      </div>`;
+    });
+    html += '</div>';
+
+    html += '<div class="kpi-grid">';
+    html += kpiCard('Total Balance', FKS(totals.total_balance), 'cyan');
+    html += kpiCard('Store Total', FKS(totals.store_total), 'magenta');
+    html += kpiCard('Game Revenue', FKS(totals.game_revenue), 'green');
+    html += kpiCard('Food Revenue', FKS(totals.food_revenue), 'amber');
+    html += kpiCard('Topup Revenue', FKS(totals.topup_revenue), 'cyan');
+    html += kpiCard('Discounts', FKS(totals.discount_total), 'magenta');
+    html += kpiCard('Member Liability', FKS(totals.member_liability), 'amber');
+    html += kpiCard('Capital Total', FKS(totals.capital_total), 'green');
+    html += '</div>';
+
+    document.getElementById('finance-content').innerHTML = html;
+  } catch(e) {
+    document.getElementById('finance-content').innerHTML = '<div class="error">Error: ' + e.message + '</div>';
+  }
+}
+
+// ═══════════ TAB: ANALYTICS ═══════════
+async function loadAnalyticsTab(container) {
+  container.innerHTML = '<div class="loading">Loading analytics...</div>';
+  try {
+    const res = await apiGet('/api/dashboard/analytics/summary');
+    const data = res.success ? res.data : {};
+
+    let html = '<div class="kpi-grid">';
+    html += kpiCard('30-Day Revenue', FKS(data.revenue_30d || 0), 'cyan');
+    html += kpiCard('30-Day Bookings', F(data.bookings_30d || 0), 'green');
+    html += kpiCard('Top Game', data.top_game || '—', 'magenta');
+    html += kpiCard('Peak Hour', data.peak_hour || '—', 'amber');
+    html += '</div>';
+
+    // Sales Trend
+    if (data.sales_trend && data.sales_trend.length) {
+      html += '<div class="panel"><div class="panel-header">📈 Sales Trend (30 Days)</div><div class="panel-body">';
+      html += '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Revenue</th><th>Bookings</th></tr></thead><tbody>';
+      data.sales_trend.forEach(d => {
+        html += `<tr><td>${d.date||'-'}</td><td>${FKS(d.revenue)}</td><td>${F(d.bookings)}</td></tr>`;
+      });
+      html += '</tbody></table></div></div></div>';
+    }
+
+    // Peak Hours
+    if (data.peak_hours && data.peak_hours.length) {
+      html += '<div class="panel"><div class="panel-header">⏰ Peak Hours</div><div class="panel-body">';
+      html += '<div class="table-wrap"><table><thead><tr><th>Hour</th><th>Bookings</th></tr></thead><tbody>';
+      data.peak_hours.forEach(h => {
+        html += `<tr><td>${h.hour||'-'}</td><td>${F(h.count)}</td></tr>`;
+      });
+      html += '</tbody></table></div></div></div>';
+    }
+
+    // Popular Games
+    if (data.popular_games && data.popular_games.length) {
+      html += '<div class="panel"><div class="panel-header">🎮 Popular Games</div><div class="panel-body">';
+      html += '<div class="table-wrap"><table><thead><tr><th>Game</th><th>Plays</th></tr></thead><tbody>';
+      data.popular_games.forEach(g => {
+        html += `<tr><td>${g.game_title||'-'}</td><td>${F(g.play_count)}</td></tr>`;
+      });
+      html += '</tbody></table></div></div></div>';
+    }
+
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = '<div class="error">Error loading analytics: ' + e.message + '</div>';
+  }
+}
+
+// ═══════════ MODAL HELPERS ═══════════
+function showModal(title, bodyHtml) {
+  document.getElementById('modal-content').innerHTML = `
+    <div class="modal-header"><h3>${title}</h3><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">${bodyHtml}</div>`;
+  document.getElementById('modal-overlay').classList.add('show');
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('show');
+}
+
+// Close modal on overlay click
+document.getElementById('modal-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+// ═══════════ INIT ═══════════
+// ═══════════ CHANGE PASSWORD ═══════════
+function showChangePwModal() {
+  showModal("🔑 Change Password", `
+    <form onsubmit="return changePassword(event)">
+      <div class="form-group"><label>Current Password</label><input type="password" id="cpw-current" required></div>
+      <div class="form-group"><label>New Password</label><input type="password" id="cpw-new" required minlength="4"></div>
+      <div class="form-group"><label>Confirm New Password</label><input type="password" id="cpw-confirm" required minlength="4"></div>
+      <div class="modal-footer" style="border-top:none;padding:0;margin-top:1rem">
+        <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-cyan">Change Password</button>
+      </div>
+    </form>
+  `);
+}
+
+async function changePassword(e) {
+  e.preventDefault();
+  const currentPw = document.getElementById("cpw-current").value;
+  const newPw = document.getElementById("cpw-new").value;
+  const confirmPw = document.getElementById("cpw-confirm").value;
+  if (newPw !== confirmPw) { toast("Passwords do not match", "error"); return; }
+  if (newPw.length < 4) { toast("Password must be at least 4 characters", "error"); return; }
+  try {
+    const res = await apiPost("/api/dashboard/change-password", {
+      current_password: currentPw,
+      new_password: newPw
+    });
+    if (res.success) { toast(res.message || "Password changed", "success"); closeModal(); }
+    else { toast(res.error || "Failed", "error"); }
+  } catch(err) { toast("Error: " + err.message, "error"); }
+}
+
+checkAuth();
 </script>
 </body>
 </html>

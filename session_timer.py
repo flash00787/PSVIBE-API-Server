@@ -10,6 +10,7 @@ import os
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta
+import mysql.connector
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,17 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 STAFF_NOTIFY_CHAT = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
 
 CALLBACK_BASE = os.environ.get("API_BASE_URL", "http://localhost:8000")
+
+# MySQL config
+MYSQL_CFG = {
+    "host": os.environ.get("MYSQL_HOST", "127.0.0.1"),
+    "port": int(os.environ.get("MYSQL_PORT", "3306")),
+    "user": os.environ.get("MYSQL_USER", "psvibe_user"),
+    "password": os.environ.get("MYSQL_PASSWORD", ""),
+    "database": os.environ.get("MYSQL_DATABASE", "psvibe_api"),
+    "charset": "utf8mb4",
+    "autocommit": False,
+}
 
 # ── Helper: send Telegram message ──────────────────────────────────────
 def _send_telegram(chat_id: str, text: str, keyboard: list = None) -> bool:
@@ -100,9 +112,15 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
             await asyncio.sleep(sleep_seconds)
         
         # Check if session is still active
-        booking = _mysql_query("SELECT status FROM console_booking WHERE id=%s", (booking_id,))
+        booking = _mysql_query("SELECT status, telegram_chat_id FROM console_booking WHERE id=%s", (booking_id,))
         if not booking or booking[0]["status"] != "Active":
             logger.info(f"Session {booking_id} no longer active, skipping reminder")
+            return
+        
+        # Skip API-side reminder if booking was created via bot (has telegram_chat_id).
+        # The sales bot runs its own _remind_loop and would duplicate the notification.
+        if booking[0].get("telegram_chat_id"):
+            logger.info(f"Session {booking_id} has telegram_chat_id — bot handles reminders, skipping API timer")
             return
         
         # Recalculate remaining time (may have extended)
@@ -233,10 +251,24 @@ def end_session_now(booking_id: int) -> dict:
         console_id = b["console_id"]
         member_id = b["member_id"]
         
-        _mysql_exec("UPDATE console_booking SET status='done', end_time=NOW() WHERE id=%s", (booking_id,))
-        _mysql_exec(
-            "UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s",
-            (console_id,))
+        # Transactional: ensure both tables stay in sync
+        conn = mysql.connector.connect(**MYSQL_CFG)
+        conn.start_transaction()
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute("UPDATE console_booking SET status='Done', end_time=NOW() WHERE id=%s", (booking_id,))
+            cur.execute(
+                "UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s",
+                (console_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
         
         # Cancel timer
         if booking_id in _active_timers:
@@ -297,7 +329,7 @@ def resume_active_timers():
     """On API server restart, find all Active bookings and resume timers."""
     try:
         rows = _mysql_query(
-            "SELECT id, console_id, member_id, start_time, duration_mins FROM console_booking WHERE status='Active' AND start_time IS NOT NULL")
+            "SELECT id, console_id, member_id, start_time, duration_mins, telegram_chat_id FROM console_booking WHERE status='Active' AND start_time IS NOT NULL")
         if not rows:
             logger.info("No active sessions to resume timers for")
             return
@@ -308,15 +340,49 @@ def resume_active_timers():
             start_time = r["start_time"]
             if isinstance(start_time, str):
                 start_time = datetime.fromisoformat(start_time)
-            duration = r["duration_mins"] or 60
+            elif hasattr(start_time, 'isoformat'):
+                # MySQL connector may return datetime objects — ensure it's a datetime
+                start_time = datetime.fromisoformat(start_time.isoformat())
+            duration = r["duration_mins"]
+            # No timer mode (duration=0 or NULL): skip timer scheduling, just ensure console_status sync
+            if not duration:
+                logger.info(f"Booking {r['id']} has no timer (duration=0), skipping timer schedule")
+                continue
             
-            end_time = start_time + timedelta(minutes=duration)
-            if end_time < now:
-                # Session already expired - mark as done
-                _mysql_exec("UPDATE console_booking SET status='done' WHERE id=%s", (r["id"],))
-                _mysql_exec(
-                    "UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s",
-                    (r["console_id"],))
+            # Normalize: MySQL DATETIME is stored in MMT (UTC+6:30) without timezone.
+            # Make it timezone-aware so comparisons with UTC `now` work correctly.
+            try:
+                if start_time is not None and start_time.tzinfo is None:
+                    MMT = timezone(timedelta(hours=6, minutes=30))
+                    start_time = start_time.replace(tzinfo=MMT)
+                elif start_time is not None and start_time.tzinfo is not None:
+                    # Already timezone-aware — keep as-is
+                    pass
+                else:
+                    logger.warning(f"Skipping booking {r['id']}: start_time is None")
+                    continue
+                # Convert to UTC for safe comparison
+                start_time_utc = start_time.astimezone(timezone.utc)
+                end_time = start_time_utc + timedelta(minutes=duration)
+                if end_time < now:
+                    # Session expired — log but DO NOT auto-end (by Boss request).
+                    # Staff must manually end sessions. The sales bot's _remind_loop
+                    # will continue sending reminders until staff clicks "End Session".
+                    logger.warning(
+                        f"resume_active_timers: booking {r['id']} expired "
+                        f"(end={end_time.isoformat()}, now={now.isoformat()}) — "
+                        f"NOT auto-ending (manual-only policy)"
+                    )
+                    continue
+            except Exception as _tz_err:
+                logger.error(f"resume_active_timers timezone error for booking {r['id']}: {_tz_err} — skipping (manual-only policy)")
+                continue
+            
+            # Skip API-side timer if booking was created via bot (has telegram_chat_id).
+            # The sales bot runs its own _remind_loop and would duplicate the notification.
+            # NOTE: expired session cleanup above runs BEFORE this skip.
+            if r.get("telegram_chat_id"):
+                logger.info(f"Booking {r['id']} has telegram_chat_id — bot handles reminders, skipping API timer")
                 continue
             
             schedule_session_timer(r["id"], r["console_id"], r["member_id"], start_time, duration)

@@ -26,7 +26,7 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
         today_bookings = today_bookings["cnt"] if today_bookings else 0
 
         active_players = _mysql_query_one(
-            "SELECT COUNT(*) as cnt FROM console_booking WHERE DATE(booking_date) = %s AND status = 'Active'",
+            "SELECT COUNT(*) as cnt FROM console_booking WHERE DATE(booking_date) = %s AND status = 'Active' AND console_id IS NOT NULL AND console_id != ''",
             (today,)
         )
         active_players = active_players["cnt"] if active_players else 0
@@ -64,7 +64,9 @@ async def get_console_status(user: dict = Depends(get_current_user)):
 
         rows = _mysql_query("""
             SELECT c.console_id as id, c.console_id as name, c.status,
-                   cb.id as booking_id, cb.member_id as customer_name,
+                   cb.id as booking_id, 
+                   COALESCE(NULLIF(cb.staff_name, ''), cb.member_id) as customer_name,
+                   cb.phone as customer_phone,
                    cb.start_time, cb.end_time, cb.status as booking_status
             FROM console_status c
             LEFT JOIN (
@@ -78,19 +80,23 @@ async def get_console_status(user: dict = Depends(get_current_user)):
                     GROUP BY console_id
                 ) cb2 ON cb1.id = cb2.max_id
             ) cb ON c.console_id = cb.console_id
-                AND c.status = 'Active'
             ORDER BY c.console_id
         """, (today,))
+
+        for row in rows:
+            has_booking = row.get("booking_id") is not None
+            display_status = "Active" if has_booking else (row["status"] or "Active")
 
         consoles = []
         for row in rows:
             consoles.append({
                 "id": row["id"],
                 "name": row["name"],
-                "status": row["status"],
+                "status": display_status,
                 "current_booking": {
                     "id": row["booking_id"],
                     "customer": row["customer_name"],
+                    "phone": row.get("customer_phone", "") or "",
                     "start": str(row["start_time"]) if row.get("start_time") else None,
                     "end": str(row["end_time"]) if row.get("end_time") else None,
                     "status": row["booking_status"]
@@ -110,7 +116,8 @@ async def get_today_schedule(user: dict = Depends(get_current_user)):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         rows = _mysql_query("""
-            SELECT cb.id, c.console_id as console_name, cb.member_id as customer_name,
+            SELECT cb.id, c.console_id as console_name, 
+                   COALESCE(NULLIF(cb.staff_name, ''), cb.member_id) as customer_name,
                    cb.start_time, cb.end_time, cb.status,
                    cb.duration_mins, cb.phone
             FROM console_booking cb
@@ -1080,7 +1087,7 @@ async def dashboard_get_games(
             game_titles = [g["game_title"] for g in games]
             placeholders = ",".join(["%s"] * len(game_titles))
             cg_rows = _mysql_query(
-                f"SELECT game_title, console_id, console_name, status, install_type FROM console_games WHERE game_title IN ({placeholders}) ORDER BY game_title, console_id",
+                f"SELECT DISTINCT game_title, console_id, console_name, status, install_type FROM console_games WHERE game_title IN ({placeholders}) ORDER BY game_title, console_id",
                 tuple(game_titles)
             )
             cg_map = {}
@@ -2284,7 +2291,7 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         total_revenue = game_rev + food_rev + wallet_consumed
         # Game Profit = game_rev (no direct COGS for game)
         # Food Profit = food_rev - food_cogs
-        game_profit = game_rev
+        game_profit = game_rev + wallet_consumed
         food_profit = food_rev - cogs
         total_gross_profit = game_profit + food_profit
         # Depreciation expense for this month
@@ -2352,7 +2359,7 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
             {"key": "acm_acc", "label": "ACM's Acc"}
         ]
         # Map key -> DB account name for cash_movements queries
-        db_acct = {"cash":"Cash","wave":"WavePay","kpay":"KPay","aya_pay":"AYA Pay","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
+        db_acct = {"cash":"Cash","wave":"Wave","kpay":"KPay","aya_pay":"AYA Pay","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
         bank_items = []
         total_ca = 0.0
 
@@ -2407,21 +2414,12 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
 
             # OPEX — KBZ Bank pays all, others get 0
             opex = 0.0
-            if key == "kbz_bank":
-                opr = _mq("SELECT COALESCE(SUM(amount),0) as t FROM opex")
-                opex = float(opr[0]["t"] or 0) if opr else 0
-            else:
-                opr = _mq("SELECT payment_method, amount FROM opex")
-                for r in opr:
-                    pm = (r.get("payment_method") or "").strip().lower().replace(" ", "_")
-                    amt = float(r.get("amount") or 0)
-                    if pm == key:
-                        opex += amt
-                    elif "/" in pm:
-                        parts = pm.split("/")
-                        for p in parts:
-                            if p.strip().lower().replace(" ", "_") == key:
-                                opex += amt / len(parts)
+            opr = _mq("SELECT payment_method, COALESCE(SUM(amount),0) as total FROM opex WHERE description NOT LIKE '%%Prepaid Rent Amortization%%' GROUP BY payment_method")
+            opex_by_method = {}
+            for r in opr:
+                pm = (r.get("payment_method") or "").strip().lower().replace(" ", "_").replace("acm's_acc", "acm_acc")
+                opex_by_method[pm] = float(r.get("total") or 0)
+            opex = opex_by_method.get(key, 0)
 
             # Cash movements — use DB account name (label), not key
             db = db_acct[key]
@@ -2503,24 +2501,26 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
         member_liab = round(_member_liab_val, 0)
 
         # Equity: initial capital from KBZ + retained earnings
+        # Retained = cumulative P&L net profit = Revenue - Expenses
+        # Revenue = game+food sales (excl topups) + wallet consumption (FIFO consumed)
+        # Expenses = opex + food cogs + cumulative depreciation
         _sh = _mq("SELECT SUM(capital_contribution) as tc FROM shareholders")
         icap = float(_sh[0]["tc"] or 0) if _sh else 0
-        ti = float(_mqo("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE net>0")["t"] or 0)
+        ti_excl_topup = float(_mqo("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE net>0 AND notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%'")["t"] or 0)
         te = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM opex")["t"] or 0)
         cost_of_sold = _inv['cogs']  # FIFO-based COGS
-        _excl_inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37))))")["t"] or 0)
-        retained = ti - te - cost_of_sold - member_liab - total_dep + _excl_inj  # depreciation
+        wallet_consumed = float(_fr.get("consumed", 0))  # FIFO wallet consumed = recognized revenue
+        total_earned_revenue = ti_excl_topup + wallet_consumed
+        retained = total_earned_revenue - te - cost_of_sold - total_dep
         total_eq = icap + retained
 
         total_liab = member_liab
-        # Auto-balancing: small rounding adjustment to zero out data-entry discrepancies
         total_liab_eq = round(total_liab + total_eq, 0)
         total_assets = round(total_assets, 0)
-        # Adjust retained earnings by the remaining diff (rounding/data-entry gap)
+        # Small rounding/data-entry gap auto-balance (only for minor discrepancies < 100K)
         _bs_diff = round(total_assets - total_liab_eq, 0)
-        if _bs_diff != 0:
+        if abs(_bs_diff) > 10 and abs(_bs_diff) < 100000:
             retained += _bs_diff
-            _excl_inj_local = locals().get('_excl_inj', 0)
             retained = round(retained, 0)
             total_eq = icap + retained
             total_liab_eq = round(total_liab + total_eq, 0)
@@ -2599,6 +2599,7 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
         ox = _mq("SELECT payment_method, COALESCE(SUM(amount),0) as t FROM opex WHERE description NOT LIKE %s GROUP BY payment_method", ("%Prepaid Rent Amortization%",))
         for _r in ox:
             m = (_r.get("payment_method") or "").strip().lower().replace(" ", "_")
+            if m == "acm's_acc": m = "acm_acc"
             if m in opex: opex[m] += float(_r["t"] or 0)
         opex_total = sum(opex.values())
 
@@ -4797,4 +4798,229 @@ async def get_analytics_summary(user: dict = Depends(get_current_user)):
             return r.json()
     except Exception as e:
         logger.error(f"Analytics summary proxy error: {e}")
+        return {"success": False, "error": str(e)}
+
+# ═══════════════════════════════════════
+#  DASHBOARD USERS — CRUD (Admin Only)
+# ═══════════════════════════════════════
+from auth import require_admin
+import bcrypt as _bcrypt
+
+@router.get("/users")
+async def dashboard_get_users(user: dict = Depends(require_admin)):
+    """List all dashboard users (admin only)."""
+    try:
+        rows = _mysql_query(
+            "SELECT id, username, role, display_name, staff_id, is_active, created_at, last_login FROM dashboard_users ORDER BY id ASC"
+        )
+        users = []
+        for r in rows:
+            users.append({
+                "id": r["id"],
+                "username": r["username"],
+                "role": r["role"],
+                "display_name": r.get("display_name"),
+                "staff_id": r.get("staff_id"),
+                "is_active": bool(r.get("is_active")),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+                "last_login": str(r["last_login"]) if r.get("last_login") else None,
+            })
+        return {"success": True, "data": users, "total": len(users)}
+    except Exception as e:
+        logger.error(f"GET /users error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/users")
+async def dashboard_create_user(req: dict, user: dict = Depends(require_admin)):
+    """Create a new dashboard user (admin only)."""
+    try:
+        username = (req.get("username") or "").strip()
+        password = (req.get("password") or "").strip()
+        if not username or not password:
+            return {"success": False, "error": "username and password are required"}
+        if len(username) < 3:
+            return {"success": False, "error": "username must be at least 3 characters"}
+        if len(password) < 4:
+            return {"success": False, "error": "password must be at least 4 characters"}
+
+        existing = _mysql_query_one("SELECT id FROM dashboard_users WHERE username = %s", (username,))
+        if existing:
+            return {"success": False, "error": f"User '{username}' already exists"}
+
+        password_hash = _bcrypt.hashpw(password.encode('utf-8'), _bcrypt.gensalt()).decode('utf-8')
+        role = req.get("role", "staff")
+        if role not in ("admin", "staff"):
+            role = "staff"
+        display_name = (req.get("display_name") or username).strip()
+        staff_id = (req.get("staff_id") or "").strip() or None
+
+        new_id = _mysql_execute(
+            "INSERT INTO dashboard_users (username, password_hash, role, display_name, staff_id) VALUES (%s, %s, %s, %s, %s)",
+            (username, password_hash, role, display_name, staff_id),
+        )
+        return {
+            "success": True,
+            "data": {
+                "id": new_id,
+                "username": username,
+                "role": role,
+                "display_name": display_name,
+                "staff_id": staff_id,
+            },
+            "message": f"User '{username}' created",
+        }
+    except Exception as e:
+        logger.error(f"POST /users error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/users/{user_id}")
+async def dashboard_update_user(user_id: int, req: dict, user: dict = Depends(require_admin)):
+    """Update a dashboard user: password, role, active status (admin only)."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM dashboard_users WHERE id = %s", (user_id,))
+        if not existing:
+            return {"success": False, "error": "User not found"}
+
+        updates = []
+        params = []
+
+        if "password" in req and req["password"]:
+            new_pw = req["password"].strip()
+            if len(new_pw) < 4:
+                return {"success": False, "error": "password must be at least 4 characters"}
+            password_hash = _bcrypt.hashpw(new_pw.encode('utf-8'), _bcrypt.gensalt()).decode('utf-8')
+            updates.append("password_hash = %s")
+            params.append(password_hash)
+
+        if "role" in req:
+            role = req["role"]
+            if role not in ("admin", "staff"):
+                return {"success": False, "error": "role must be 'admin' or 'staff'"}
+            updates.append("role = %s")
+            params.append(role)
+
+        if "display_name" in req:
+            updates.append("display_name = %s")
+            params.append(req["display_name"])
+
+        if "staff_id" in req:
+            updates.append("staff_id = %s")
+            params.append(req["staff_id"] or None)
+
+        if "is_active" in req:
+            updates.append("is_active = %s")
+            params.append(1 if req["is_active"] else 0)
+
+        if not updates:
+            return {"success": False, "error": "No fields to update"}
+
+        params.append(user_id)
+        _mysql_execute(f"UPDATE dashboard_users SET {', '.join(updates)} WHERE id = %s", tuple(params))
+
+        # Clear credentials cache to pick up changes
+        import auth
+        auth._creds_cache = None
+        auth._creds_cache_time = None
+
+        updated = _mysql_query_one(
+            "SELECT id, username, role, display_name, staff_id, is_active, created_at, last_login FROM dashboard_users WHERE id = %s",
+            (user_id,),
+        )
+        return {
+            "success": True,
+            "data": {
+                "id": updated["id"],
+                "username": updated["username"],
+                "role": updated["role"],
+                "display_name": updated.get("display_name"),
+                "staff_id": updated.get("staff_id"),
+                "is_active": bool(updated.get("is_active")),
+                "created_at": str(updated["created_at"]) if updated.get("created_at") else None,
+                "last_login": str(updated["last_login"]) if updated.get("last_login") else None,
+            },
+            "message": "User updated",
+        }
+    except Exception as e:
+        logger.error(f"PUT /users/{user_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/users/{user_id}")
+async def dashboard_delete_user(user_id: int, user: dict = Depends(require_admin)):
+    """Deactivate a dashboard user (soft delete, admin only)."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM dashboard_users WHERE id = %s", (user_id,))
+        if not existing:
+            return {"success": False, "error": "User not found"}
+
+        if existing["username"] == "admin":
+            return {"success": False, "error": "Cannot deactivate the default admin user"}
+
+        _mysql_execute("UPDATE dashboard_users SET is_active = 0 WHERE id = %s", (user_id,))
+
+        # Clear credentials cache
+        import auth
+        auth._creds_cache = None
+        auth._creds_cache_time = None
+
+        return {
+            "success": True,
+            "data": {
+                "id": user_id,
+                "username": existing["username"],
+                "is_active": False,
+            },
+            "message": f"User '{existing['username']}' deactivated",
+        }
+    except Exception as e:
+        logger.error(f"DELETE /users/{user_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+#  SELF-SERVICE PASSWORD CHANGE
+# ============================================================
+@router.post("/change-password")
+async def dashboard_change_password(req: dict, user: dict = Depends(get_current_user)):
+    '''Let any logged-in user change their own password.'''
+    try:
+        current_pw = req.get("current_password", "")
+        new_pw = req.get("new_password", "")
+        if not current_pw or not new_pw:
+            return {"success": False, "error": "Current and new password required"}
+        if len(new_pw) < 4:
+            return {"success": False, "error": "New password must be at least 4 characters"}
+        
+        # Verify current password
+        row = _mysql_query_one(
+            "SELECT password_hash FROM dashboard_users WHERE username = %s AND is_active = 1",
+            (user["username"],)
+        )
+        if not row:
+            return {"success": False, "error": "User not found"}
+        
+        import bcrypt
+        if not bcrypt.checkpw(current_pw.encode("utf-8"), row["password_hash"].encode("utf-8")):
+            return {"success": False, "error": "Current password is incorrect"}
+        
+        # Update password
+        new_hash = bcrypt.hashpw(new_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        _mysql_execute(
+            "UPDATE dashboard_users SET password_hash = %s WHERE username = %s",
+            (new_hash, user["username"])
+        )
+        
+        # Flush credentials cache so login works immediately
+        try:
+            from auth import flush_credentials_cache
+            flush_credentials_cache()
+        except Exception:
+            pass
+        
+        logger.info("Password changed for user: %s", user["username"])
+        return {"success": True, "message": "Password changed successfully"}
+    except Exception as e:
+        logger.error(f"change-password error: {e}")
         return {"success": False, "error": str(e)}

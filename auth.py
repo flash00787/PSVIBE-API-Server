@@ -1,4 +1,4 @@
-"""PS VIBE Dashboard — JWT Authentication Module"""
+"""PS VIBE Dashboard — JWT Authentication Module (DB-backed)"""
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -7,7 +7,7 @@ from typing import Optional
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import bcrypt  # direct bcrypt (no passlib - passlib+bcrypt4.x broken)
+import bcrypt
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -21,34 +21,76 @@ REFRESH_TOKEN_EXPIRE = timedelta(days=7)
 def _hash_pw(pw: str) -> str:
     import bcrypt
     return bcrypt.hashpw(pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
 def _verify_pw(pw: str, h: str) -> bool:
     import bcrypt
     return bool(bcrypt.checkpw(pw.encode('utf-8'), h.encode('utf-8')))
+
 security = HTTPBearer(auto_error=False)
 
 
-# --- Credentials (Lazy-loaded) ---
+# --- Database-backed credentials ---
+def _get_credentials_from_db() -> dict:
+    """Load all active users from dashboard_users table."""
+    try:
+        from mysql_db import query as _q
+        rows = _q(
+            "SELECT username, password_hash, role, display_name FROM dashboard_users WHERE is_active = 1"
+        )
+        creds = {}
+        for row in rows:
+            creds[row["username"]] = {
+                "password_hash": row["password_hash"],
+                "role": row["role"],
+                "name": row.get("display_name") or row["username"],
+            }
+        return creds
+    except Exception as e:
+        logger.error(f"Failed to load credentials from DB: {e}")
+        return {}
+
+# Cache credentials (refreshed each call)
 _creds_cache = None
+_creds_cache_time = None
+_CREDS_CACHE_TTL = timedelta(seconds=30)
 
-def _get_credentials():
-    return {
-        "admin": {
-            "password_hash": _hash_pw("admin123"),
-            "role": "admin",
-            "name": "Admin"
-        },
-        "staff": {
-            "password_hash": _hash_pw("staff123"),
-            "role": "staff",
-            "name": "Staff"
-        }
-    }
+def _auto_create_admin_if_empty():
+    """If dashboard_users table is empty, create default admin user."""
+    try:
+        from mysql_db import query_one as _qo, execute as _e
+        existing = _qo("SELECT COUNT(*) as cnt FROM dashboard_users")
+        if not existing or existing["cnt"] == 0:
+            logger.info("No dashboard_users found — creating default admin")
+            admin_hash = _hash_pw("admin123")
+            _e(
+                "INSERT INTO dashboard_users (username, password_hash, role, display_name) VALUES (%s, %s, %s, %s)",
+                ("admin", admin_hash, "admin", "Administrator"),
+            )
+            logger.info("Default admin user created (admin/admin123)")
+    except Exception as e:
+        logger.warning(f"Auto-create admin skipped: {e}")
 
-def get_credentials():
-    global _creds_cache
-    if _creds_cache is None:
-        _creds_cache = _get_credentials()
+
+
+def flush_credentials_cache():
+    """Force refresh credentials cache (called after password changes)."""
+    global _creds_cache, _creds_cache_time
+    _creds_cache = None
+    _creds_cache_time = None
+
+def get_credentials() -> dict:
+    global _creds_cache, _creds_cache_time
+    now = datetime.now(timezone.utc)
+    if _creds_cache is None or _creds_cache_time is None or (now - _creds_cache_time) > _CREDS_CACHE_TTL:
+        _auto_create_admin_if_empty()
+        _creds_cache = _get_credentials_from_db()
+        _creds_cache_time = now
     return _creds_cache
+
+# Keep _get_credentials for compatibility but deprecate
+def _get_credentials():
+    """Deprecated — kept for backward compatibility only."""
+    return get_credentials()
 
 
 class LoginRequest(BaseModel):
@@ -125,6 +167,15 @@ async def require_admin(user: dict = Depends(get_current_user)):
     return user
 
 
+# --- Update last_login ---
+def _update_last_login(username: str):
+    try:
+        from mysql_db import execute as _e
+        _e("UPDATE dashboard_users SET last_login = NOW() WHERE username = %s", (username,))
+    except Exception as e:
+        logger.warning(f"Failed to update last_login: {e}")
+
+
 # --- Routes ---
 
 def register_auth_routes(app):
@@ -137,6 +188,7 @@ def register_auth_routes(app):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid username or password"
             )
+        _update_last_login(user["username"])
         access_token = create_access_token(
             data={"sub": user["username"], "role": user["role"], "name": user["name"]}
         )
@@ -181,3 +233,12 @@ def register_auth_routes(app):
             "role": user["role"],
             "name": user["name"]
         }
+
+    @app.get("/dashboard.html")
+    async def serve_dashboard_html():
+        from starlette.responses import FileResponse
+        fpath = os.path.join(os.path.dirname(__file__), "static", "dashboard.html")
+        if os.path.isfile(fpath):
+            return FileResponse(fpath, media_type="text/html")
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse("<h1>Dashboard not found</h1>", status_code=404)
