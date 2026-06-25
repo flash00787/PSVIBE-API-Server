@@ -3773,6 +3773,55 @@ try:
                 return resp
             return HTMLResponse("<h1>Dashboard not built</h1>", status_code=404)
 
+        # ═══ SEL Currency Exchange Dashboard ═══
+        _sel_dash_dir = "/opt/kora-projects/sel_exchange/dashboard"
+        if os.path.isdir(_sel_dash_dir):
+            # API proxy: forward /currency-exchange/api-proxy/* → SEL API on port 8001
+            @app.api_route("/currency-exchange/api-proxy/{path:path}", methods=["GET","POST","PUT","PATCH","DELETE"])
+            async def proxy_sel_api(path: str, request: Request):
+                from starlette.responses import Response as _SResp
+                import urllib.request as _ureq, urllib.parse as _uparse
+                sel_base = "http://127.0.0.1:8001"
+                # Build query string with API key
+                qs_parts = dict(request.query_params)
+                qs_parts["api_key"] = "sel-exchange-2026"
+                qs_str = _uparse.urlencode(qs_parts)
+                target = f"{sel_base}/api/{path}?{qs_str}"
+                body = await request.body()
+                headers = {"Content-Type": request.headers.get("Content-Type", "application/json")}
+                auth_hdr = request.headers.get("Authorization")
+                if auth_hdr:
+                    headers["Authorization"] = auth_hdr
+                req = _ureq.Request(target, data=body if body else None, method=request.method, headers=headers)
+                try:
+                    resp = _ureq.urlopen(req, timeout=15)
+                    content = resp.read()
+                    return _SResp(content=content, status_code=resp.status, media_type=resp.headers.get("Content-Type", "application/json"))
+                except _ureq.HTTPError as e:
+                    err_body = e.read()
+                    return _SResp(content=err_body, status_code=e.code, media_type="application/json")
+
+            @app.get("/currency-exchange")
+            async def serve_sel_dashboard():
+                idx = os.path.join(_sel_dash_dir, "index.html")
+                if os.path.isfile(idx):
+                    resp = FileResponse(idx, media_type="text/html")
+                    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                    resp.headers["Pragma"] = "no-cache"
+                    return resp
+                return HTMLResponse("<h1>SEL Dashboard not found</h1>", status_code=404)
+
+            @app.get("/currency-exchange/login")
+            async def serve_sel_login():
+                lp = os.path.join(_sel_dash_dir, "login.html")
+                if os.path.isfile(lp):
+                    resp = FileResponse(lp, media_type="text/html")
+                    resp.headers["Cache-Control"] = "no-cache"
+                    return resp
+                return HTMLResponse("<h1>Login page not found</h1>", status_code=404)
+
+            logger.info("SEL Currency Exchange dashboard mounted at /currency-exchange")
+
         import patch_routes
 
         # Catch-all: Serve SPA for all non-API paths (e.g., /login, /dashboard)
