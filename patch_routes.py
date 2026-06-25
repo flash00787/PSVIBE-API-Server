@@ -834,12 +834,12 @@ async def api_finance_balance_sheet(auth=Depends(verify_api_key)):
                                 opex += amt / max(len(parts), 1)
             t_in = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_in'", (db,))["t"] or 0)
             t_out = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_out'", (db,))["t"] or 0)
-            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37))))", (db,))["t"] or 0)
+            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Advance settled', CHAR(37))))", (db,))["t"] or 0)
             ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject'", (db,))["t"] or 0)
             bal = income - opex + t_in + t_out + inj - ej
             if key == "kbz_bank":
                 ded_assets = float(_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active'")["t"] or 0)
-                ded_adv = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances")["t"] or 0)
+                ded_adv = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL")["t"] or 0)
                 ded_prep = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid")["t"] or 0)
                 bal = bal - ded_assets - ded_adv - ded_prep
             bank_items.append({"account": a["label"], "balance": round(bal, 0)})
@@ -871,17 +871,18 @@ async def api_finance_balance_sheet(auth=Depends(verify_api_key)):
         total_assets = total_ca + total_fix + other_ca + inventory_value
         _sh = _mysql_query("SELECT SUM(capital_contribution) as tc FROM shareholders")
         icap = float(_sh[0]["tc"] or 0) if _sh else 0
-        ti = float(_mqo("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE net>0")["t"] or 0)
+        ti_excl = float(_mqo("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE net>0 AND notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%'")["t"] or 0)
         te = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM opex")["t"] or 0)
         cost_of_sold = _inv.get("cogs", 0)
-        _excl_inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37))))")["t"] or 0)
-        retained = ti - te - cost_of_sold - member_liab - total_dep + _excl_inj
+        wallet_consumed = float(_fr.get("consumed", 0)) if _fr else 0
+        total_earned_revenue = ti_excl + wallet_consumed
+        retained = total_earned_revenue - te - cost_of_sold - total_dep
         total_eq = icap + retained
         total_liab = member_liab
         total_liab_eq = round(total_liab + total_eq, 0)
         total_assets_r = round(total_assets, 0)
         _bs_diff = round(total_assets_r - total_liab_eq, 0)
-        if _bs_diff != 0:
+        if abs(_bs_diff) > 10:
             retained += _bs_diff
             retained = round(retained, 0)
             total_eq = icap + retained
@@ -1570,6 +1571,7 @@ async def food_cart_hold(data: dict, auth=Depends(verify_api_key)):
 @app.post("/api/food-cart/release", tags=["Food"])
 async def food_cart_release(data: dict, auth=Depends(verify_api_key)):
     """Release hold AND record actual stock-out for confirmed sale items."""
+    from app import _mc, _MYSQL_CFG, _mysql_get_setting
     try:
         booking_id = str(data.get("booking_id", "")).strip()
         items = data.get("items", [])
@@ -1633,4 +1635,76 @@ async def food_cart_cancel(data: dict, auth=Depends(verify_api_key)):
         return ok({"message": f"Cancelled holds for booking {booking_id}"})
     except Exception as e:
         logger.error("food_cart_cancel: %s", e)
+        return error_response(str(e))
+
+
+# ─── PS VIBE: Stale Check-In Auto-Cleanup ───
+
+@app.post("/api/cleanup/stale-checkins", tags=["Maintenance"])
+async def cleanup_stale_checkins(data: dict = None, auth=Depends(verify_api_key)):
+    """
+    Auto-cancel stale checked_in / pending_check_in bookings where:
+    - start_time is in the past
+    - No Active session exists for that console
+    - Used at day-end closing (9 PM MMT / 14:30 UTC)
+    """
+    dry_run = False
+    if data:
+        dry_run = data.get("dry_run", False)
+    
+    try:
+        # Find stale checkins — today + yesterday (covers late-night cases)
+        rows = _mysql_query("""
+            SELECT cb.id, cb.console_id, cb.staff_name, cb.member_id,
+                   cb.start_time, cb.booking_date, cb.status,
+                   cb.duration_mins
+            FROM console_booking cb
+            WHERE cb.status IN ('checked_in', 'pending_check_in')
+              AND cb.booking_date >= DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+              AND cb.start_time < NOW()
+            ORDER BY cb.id
+        """)
+        
+        cancelled_ids = []
+        for r in (rows or []):
+            bid = r["id"]
+            cid = r["console_id"]
+            name = r.get("staff_name") or r.get("member_id") or "Unknown"
+            
+            # Check if console has an Active session (safety check)
+            active = _mysql_query(
+                "SELECT id FROM console_booking WHERE console_id=%s AND status='Active' LIMIT 1",
+                (cid,)
+            )
+            if active:
+                logger.info(f"cleanup_stale: skip #{bid} ({name}) — console {cid} has Active session")
+                continue
+            
+            if dry_run:
+                cancelled_ids.append(f"#{bid} ({name}/{cid}) — DRY RUN")
+                continue
+            
+            _mysql_exec(
+                "UPDATE console_booking SET status='cancelled', notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: stale check-in (day-end cleanup)') WHERE id=%s",
+                (bid,)
+            )
+            # Free console if still occupied by stale checkin
+            _mysql_exec(
+                "UPDATE console_status SET status='Free', current_session_id=NULL WHERE console_id=%s AND status='Occupied'",
+                (cid,)
+            )
+            cancelled_ids.append(f"#{bid} ({name}/{cid})")
+            logger.info(f"cleanup_stale: auto-cancelled stale check-in #{bid} ({name}, {cid})")
+        
+        if not cancelled_ids:
+            return ok({"message": "No stale check-ins found", "cancelled": 0, "bookings": []})
+        
+        return ok({
+            "message": f"{len(cancelled_ids)} stale check-in(s) {'would be ' if dry_run else ''}cancelled" + (" (DRY RUN)" if dry_run else ""),
+            "cancelled": len(cancelled_ids),
+            "dry_run": dry_run,
+            "bookings": cancelled_ids
+        })
+    except Exception as e:
+        logger.error(f"cleanup_stale_checkins: {e}")
         return error_response(str(e))

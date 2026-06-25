@@ -8,6 +8,7 @@ import logging
 import re
 import time
 from datetime import datetime, timezone, timedelta
+from contextlib import asynccontextmanager
 import os
 import asyncio
 import urllib.request
@@ -15,8 +16,10 @@ import urllib.error
 
 # Telegram notifications (direct, no n8n needed)
 # Session timer module for 5-min-before-end reminder
-from session_timer import resume_active_timers
+from session_timer import resume_active_timers, schedule_session_timer, _active_timers
 
+# Field name normalization (snake_case ↔ camelCase backward compat)
+from field_utils import normalize_list, normalize_response
 
 from fastapi import FastAPI, HTTPException, Query, Depends, Request, Body
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -39,6 +42,7 @@ from mysql_db import query as mysql_query, query_one as mysql_query_one, execute
 from auth import register_auth_routes, get_current_user
 from dashboard_routes import router as dashboard_router
 from kora_cmds import router as kora_cmds_router
+from digest_routes import router as digest_router
 from models import (
     GameResponse, ConfigResponse, MemberResponse,
     BookingResponse, HealthResponse, GenericResponse
@@ -183,12 +187,34 @@ def _mysql_get_settings_dict(prefix=None):
     return result
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: resume active session timers inside the event loop."""
+    try:
+        resume_active_timers()
+        active_consoles = _mysql_query(
+            "SELECT DISTINCT console_id FROM console_booking WHERE status='Active'"
+        )
+        for _row in (active_consoles or []):
+            _cid = _row.get('console_id', '')
+            if _cid:
+                try:
+                    _sync_console_status(_cid)
+                    logging.info("Synced console_status for %s on startup", _cid)
+                except Exception as _sync_err:
+                    logging.warning("sync_console_status failed for %s: %s", _cid, _sync_err)
+    except Exception as e:
+        logging.error("resume_active_timers failed on startup: %s", e, exc_info=True)
+    yield
+    # Shutdown: nothing to clean up
+
 app = FastAPI(
     title=API_TITLE,
     version=API_VERSION,
     description=API_DESCRIPTION,
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -199,10 +225,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Branch Context Middleware ─────────────────────────────────────────
+# Backward-compatible: defaults to branch_id=1 (Sanchaung)
+# To use a different branch, pass X-Branch-ID header
+@app.middleware("http")
+async def branch_context_middleware(request: Request, call_next):
+    try:
+        branch_id = int(request.headers.get("X-Branch-ID", "1"))
+    except (ValueError, TypeError):
+        branch_id = 1
+    request.state.branch_id = branch_id
+    response = await call_next(request)
+    return response
+
+def get_branch_id(request: Request) -> int:
+    """Helper: get current branch_id from request context. Defaults to 1."""
+    return getattr(request.state, "branch_id", 1)
+
+
 # ── Dashboard Auth & Routes ──
 register_auth_routes(app)
 app.include_router(dashboard_router)
 app.include_router(kora_cmds_router)
+app.include_router(digest_router)
 
 # ── Config Cache ──
 _config_cache_data = None
@@ -473,7 +518,7 @@ def _fetch_wallet_mins_from_mysql(member_id):
             row = mysql_query_one("SELECT balance_mins, last_updated FROM member_wallets WHERE member_id = %s", (member_id,))
             if row:
                 age = (datetime.now(timezone.utc) - row.get("last_updated", datetime.min.replace(tzinfo=timezone.utc))).total_seconds()
-                if age < 600:  # 10 min max staleness
+                if age < 120:  # 2 min max staleness (MySQL primary)
                     return row.get("balance_mins", 0)
                 logging.warning("MySQL wallet_mins for %s is stale (%.0fs old), falling back to GSheet", member_id, age)
     except Exception:
@@ -489,7 +534,7 @@ def _fetch_balance_mins_from_mysql(member_id):
             row = mysql_query_one("SELECT balance_mins, last_updated FROM member_wallets WHERE member_id = %s", (member_id,))
             if row:
                 age = (datetime.now(timezone.utc) - row.get("last_updated", datetime.min.replace(tzinfo=timezone.utc))).total_seconds()
-                if age < 600:  # 10 min max staleness
+                if age < 120:  # 2 min max staleness (MySQL primary)
                     return row.get("balance_mins", 0)
                 logging.warning("MySQL balance_mins for %s is stale (%.0fs old), falling back to GSheet", member_id, age)
     except Exception:
@@ -523,7 +568,7 @@ def _fetch_topups_from_mysql(days=30):
 #  fetch_console_status
 # ═══════════════════════════════════════
 @app.get("/api/fetch_console_status", response_model=GenericResponse, tags=["Consoles"], summary="Fetch console statuses [MySQL]")
-async def api_fetch_console_status(auth=Depends(verify_api_key)):
+async def api_fetch_console_status(auth=Depends(verify_api_key)) -> JSONResponse:
     """Fetch live console statuses from MySQL console_status table."""
     try:
         rows = _mysql_query(
@@ -533,27 +578,42 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)):
             if "id" not in r:
                 r["id"] = r.get("console_id", "")
         # Display-only Reserved: show Free consoles as "Reserved" if a confirmed
-        # booking starts within 60 minutes. Does NOT change console_status table —
+        # booking starts within 120 minutes. Does NOT change console_status table —
         # consoles remain Free for walk-ins. This is display-only indication.
+        # Also attach upcoming booking info to Active consoles for dual-status display.
         try:
             _now_ref = now_mmt()
-            _window_end = _now_ref + timedelta(minutes=60)
+            _window_end = _now_ref + timedelta(minutes=120)
             upcoming = _mysql_query(
-                "SELECT console_id FROM console_booking "
-                "WHERE status IN ('confirmed', 'pending_check_in') "
-                "AND start_time <= %s AND end_time > %s",
-                (_window_end, _now_ref)
+                "SELECT cb.console_id, cb.start_time, cb.staff_name, cb.duration_mins FROM console_booking cb "
+                "WHERE cb.status IN ('confirmed', 'pending_check_in') "
+                "AND cb.start_time <= %s AND cb.end_time > %s "
+                "AND cb.id = (SELECT MAX(cb2.id) FROM console_booking cb2 WHERE cb2.console_id = cb.console_id AND cb2.status IN ('confirmed', 'pending_check_in') AND cb2.start_time <= %s AND cb2.end_time > %s)",
+                (_window_end, _now_ref, _window_end, _now_ref)
             )
             reserved_ids = {r["console_id"].strip() for r in upcoming}
+            reserved_info = {}
+            for u in upcoming:
+                cid = u["console_id"].strip()
+                st = u.get("start_time")
+                reserved_info[cid] = {
+                    "reserved_for": u.get("staff_name") or "",
+                    "reserved_at": st.strftime("%I:%M %p") if st else "",
+                    "reserved_duration": u.get("duration_mins") if u.get("duration_mins") else 0,
+                }
         except Exception:
             reserved_ids = set()
+            reserved_info = {}
         for r in rows:
             cid = r["console_id"].strip()
             if r.get("status") == "Free" and cid in reserved_ids:
                 r["status"] = "Reserved"
             elif r.get("status") == "Reserved" and cid not in reserved_ids:
                 r["status"] = "Free"
-        return ok({"consoles": rows})
+            # For Active consoles: attach upcoming reservation info for dual display
+            if r.get("status") == "Active" and cid in reserved_info:
+                r.update(reserved_info[cid])
+        return ok({"consoles": normalize_list(rows)})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -576,9 +636,37 @@ async def api_extend_booking_duration(req: dict, auth=Depends(verify_api_key)):
         if not row:
             return error_response(message="No active booking found")
         new_duration = (row["duration_mins"] or 0) + extra_mins
-        _mysql_exec("UPDATE console_booking SET duration_mins=%s, end_time=DATE_ADD(start_time, INTERVAL %s MINUTE) WHERE id=%s", (new_duration, new_duration, row["id"]))
+        _dur_end = 360 if new_duration == 0 else new_duration
+        _mysql_exec("UPDATE console_booking SET duration_mins=%s, end_time=DATE_ADD(start_time, INTERVAL %s MINUTE) WHERE id=%s", (new_duration, _dur_end, row["id"]))
         invalidate_cache("bookings")
         return ok({"booking_id": row["id"], "new_duration_mins": new_duration})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/bookings/mark-bot-reminder", response_model=GenericResponse, tags=["Bookings"], summary="Mark booking for bot-managed reminders (prevents API timer duplication)")
+async def api_mark_bot_reminder(req: dict, auth=Depends(verify_api_key)):
+    """Called by the Sales Bot when _remind_loop starts handling a session.
+    Updates telegram_chat_id so the API-side session_timer will skip this booking."""
+    try:
+        console_id = req.get("console_id", "")
+        telegram_chat_id = req.get("telegram_chat_id", "")
+        if not console_id or not telegram_chat_id:
+            return error_response(message="console_id and telegram_chat_id required")
+        row = _mysql_query_one(
+            "SELECT id, telegram_chat_id FROM console_booking WHERE console_id=%s AND status='Active' ORDER BY id DESC LIMIT 1",
+            (console_id,)
+        )
+        if not row:
+            return error_response(message="No active booking found for this console")
+        # Only update if telegram_chat_id is currently empty (avoid overwriting real customer chat IDs)
+        existing_tg = (row.get("telegram_chat_id") or "").strip()
+        if not existing_tg:
+            _mysql_exec("UPDATE console_booking SET telegram_chat_id=%s WHERE id=%s",
+                       (str(telegram_chat_id), row["id"]))
+            logger.info(f"Booking {row['id']}: set telegram_chat_id={telegram_chat_id} (bot handles reminders)")
+        else:
+            logger.debug(f"Booking {row['id']}: telegram_chat_id already set to {existing_tg}, skipping")
+        return ok({"booking_id": row["id"]})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1487,7 +1575,7 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                 if _bk and _bk.get("console_id") and _bk.get("start_time") and _bk.get("end_time"):
                     _app_cur.execute(
                         "SELECT id FROM console_booking WHERE console_id=%s"
-                        " AND status IN ('confirmed','pending','pending_check_in','Active')"
+                        " AND status IN ('confirmed','pending','pending_check_in','checked_in','Active')"
                         " AND id != %s"
                         " AND NOT (end_time <= %s OR start_time >= %s)"
                         " LIMIT 1 FOR UPDATE",
@@ -1513,6 +1601,17 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                     # The booking itself shows as "Reserved" in displays, but the physical
                     # console stays Free so walk-in customers can still use it until booked time.
                     pass
+                elif status == "Active":
+                    # Checkin bind / session start — mark console as Active
+                    _bk_info = _mysql_query_one(
+                        "SELECT staff_name, member_id, game_name FROM console_booking WHERE id=%s",
+                        (booking_id,)
+                    ) or {}
+                    _member_name = _bk_info.get("staff_name", "") or _bk_info.get("member_id", "") or ""
+                    _app_cur.execute(
+                        "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=NOW() WHERE console_id=%s",
+                        (_member_name, _bk_info.get("game_name", "") or "", _console_id)
+                    )
                 elif status in ("rejected", "cancelled"):
                     _app_cur.execute("UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s", (_console_id,))
             _app_conn.commit()
@@ -1615,7 +1714,7 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
 async def api_get_bookings(status: str = "", member_id: str = Query(""), date: str = Query(""), auth=Depends(verify_api_key)):
     """List bookings with optional status, member_id, and date filters."""
     try:
-        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking"
+        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name, created_at FROM console_booking"
         where_clauses = []
         params = []
         if status:
@@ -1675,7 +1774,7 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
                     start_dt = _dt.fromisoformat(start) if isinstance(start, str) else start
                     time_slot = start_dt.strftime("%H:%M")
                     start_time_full = start_dt.strftime("%H:%M")
-                    dur = int(r.get("duration_mins", 60) or 60)
+                    dur = int(r.get("duration_mins", 0))  # 0=No Timer
                     end_dt = start_dt + timedelta(minutes=dur)
                     end_time_str = end_dt.strftime("%H:%M")
                 except Exception:
@@ -1692,6 +1791,20 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
             _staff_name = r.get("staff_name","") or ""
             if not _staff_name.strip():
                 _staff_name = _phone
+            _created = r.get("created_at")
+            _created_str = ""
+            if _created:
+                try:
+                    if hasattr(_created, 'isoformat'):
+                        if _created.tzinfo is None:
+                            # MySQL TIMESTAMP is stored in UTC
+                            _created_str = _created.replace(tzinfo=timezone.utc).isoformat()
+                        else:
+                            _created_str = _created.isoformat()
+                    else:
+                        _created_str = str(_created)
+                except Exception:
+                    _created_str = str(_created)
             normalized.append({
                 "id": r.get("id",""),
                 "customerName": _staff_name,
@@ -1708,7 +1821,8 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
                 "member_id": r.get("member_id",""),
                 "telegram_chat_id": r.get("telegram_chat_id",""),
                 "telegramChatId": r.get("telegram_chat_id",""),
-                "status": r.get("status","")
+                "status": r.get("status",""),
+                "created_at": _created_str
             })
         return ok({"bookings": normalized})
     except Exception as e:
@@ -1780,7 +1894,7 @@ async def api_search_bookings(telegram_chat_id: str = Query("", description="Tel
                 "game_name": game_name,
                 "phone": r.get("phone"),
             })
-        return JSONResponse(content={"success": True, "data": {"bookings": normalized, "total": len(normalized)}})
+        return JSONResponse(content={"success": True, "data": {"bookings": normalize_list(normalized), "total": len(normalized)}})
     except Exception as e:
         logger.error("api_search_bookings: %s", e, exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
@@ -1964,7 +2078,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
         _now_mmt = now_mmt()
         bk = _mysql_query_one(
             "SELECT id, member_id, game_name, duration_mins, telegram_chat_id, staff_name, phone FROM console_booking "
-            "WHERE console_id=%s AND status='confirmed' AND DATE(booking_date)=%s "
+            "WHERE console_id=%s AND status IN ('confirmed','checked_in') AND DATE(booking_date)=%s "
             "AND start_time <= DATE_ADD(%s, INTERVAL 30 MINUTE) "
             "AND end_time >= %s "
             "ORDER BY created_at DESC LIMIT 1",
@@ -1973,6 +2087,8 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
 
         # CI-3: Wrap conflict check + console_status update in transaction with row locking
         _now_ref = now_mmt()
+        # No Timer (duration=0): hold console with 6hr window to prevent overbooking
+        _hold_window = 360 if duration_mins == 0 else duration_mins
         booking_id = None
         _start_conn = _mc.connect(**_MYSQL_CFG)
         _start_conn.start_transaction()
@@ -1989,14 +2105,26 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 _start_conn.close()
                 return error_response(message=f"Console {console_id} is already Active")
 
-            # C2: Overlap check — block if another booking exists on this console now
-            _start_cur.execute(
-                "SELECT id, status FROM console_booking WHERE console_id=%s"
-                " AND status IN ('pending','confirmed','pending_check_in','Active')"
-                " AND NOT (end_time <= %s OR start_time >= DATE_ADD(%s, INTERVAL %s MINUTE))"
-                " LIMIT 1 FOR UPDATE",
-                (console_id, _now_ref, _now_ref, duration_mins)
-            )
+            # C2: Overlap check — only block if overlap > 30 min (grace period)
+            if bk:
+                _start_cur.execute(
+                    "SELECT id, status FROM console_booking WHERE console_id=%s"
+                    " AND id != %s"
+                    " AND status IN ('pending','confirmed','pending_check_in','checked_in','Active')"
+                    " AND start_time < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
+                    " AND end_time > DATE_ADD(%s, INTERVAL 30 MINUTE)"
+                    " LIMIT 1 FOR UPDATE",
+                    (console_id, bk["id"], _now_ref, _hold_window, _now_ref)
+                )
+            else:
+                _start_cur.execute(
+                    "SELECT id, status FROM console_booking WHERE console_id=%s"
+                    " AND status IN ('pending','confirmed','pending_check_in','checked_in','Active')"
+                    " AND start_time < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
+                    " AND end_time > DATE_ADD(%s, INTERVAL 30 MINUTE)"
+                    " LIMIT 1 FOR UPDATE",
+                    (console_id, _now_ref, _hold_window, _now_ref)
+                )
             _overlap = _start_cur.fetchone()
             if _overlap:
                 _start_conn.rollback()
@@ -2029,14 +2157,22 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 else:
                     duration_mins = _bk_dur if _bk_dur > 0 else duration_mins
                 booking_id = bk['id']
-                _start_cur.execute("UPDATE console_booking SET status='Active', duration_mins=%s, start_time=%s, end_time=DATE_ADD(%s, INTERVAL %s MINUTE) WHERE id=%s", (duration_mins, _now_ref, _now_ref, duration_mins, booking_id))
+                _dur_end2 = 360 if duration_mins == 0 else duration_mins
+                _start_cur.execute("UPDATE console_booking SET status='Active', duration_mins=%s, start_time=%s, end_time=DATE_ADD(%s, INTERVAL %s MINUTE) WHERE id=%s", (duration_mins, _now_ref, _now_ref, _dur_end2, booking_id))
                 logger.info(f"Auto-checkin booking #{booking_id} for console {console_id}")
+                if duration_mins and duration_mins > 0:
+                    try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
+                    except Exception: pass
             else:
+                _dur_end5 = 360 if duration_mins == 0 else duration_mins
                 _start_cur.execute(
-                    "INSERT INTO console_booking (console_id, member_id, status, booking_date, start_time, duration_mins, game_name) VALUES (%s,%s,'Active',%s,%s,%s,%s)",
-                    (console_id, member_id, today, _now_ref, duration_mins, game_name)
+                    "INSERT INTO console_booking (console_id, member_id, status, booking_date, start_time, duration_mins, end_time, game_name) VALUES (%s,%s,'Active',%s,%s,%s,DATE_ADD(%s, INTERVAL %s MINUTE),%s)",
+                    (console_id, member_id, today, _now_ref, duration_mins, _now_ref, _dur_end5, game_name)
                 )
                 booking_id = _start_cur.lastrowid
+                if duration_mins and duration_mins > 0:
+                    try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
+                    except Exception: pass
 
             _start_cur.execute(
                 "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=%s WHERE console_id=%s",
@@ -2075,7 +2211,7 @@ async def api_confirmed_bookings_for_console(console_id: str, auth=Depends(verif
         today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         row = _mysql_query_one(
             "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking "
-            "WHERE console_id=%s AND status='confirmed' AND DATE(booking_date)=%s ORDER BY created_at DESC LIMIT 1",
+            "WHERE console_id=%s AND status IN ('confirmed','checked_in') AND DATE(booking_date)=%s ORDER BY created_at DESC LIMIT 1",
             (console_id, today)
         )
         if not row:
@@ -2312,7 +2448,8 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
             if not game_name:
                 game_name = linked_booking.get("game_name", "") or game_name
             if duration_mins <= 0:
-                duration_mins = linked_booking.get("duration_mins", 60) or 60
+                _lk_dur = linked_booking.get("duration_mins") or 0
+                duration_mins = _lk_dur if _lk_dur > 0 else 0  # keep 0=No Timer if linked booking also has no duration
         
         booking_date = req.get("booking_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
@@ -2336,10 +2473,10 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 conn.close()
                 return JSONResponse(content={"success": False, "error": f"Console {console_id} is already Active"}, status_code=409)
             
-            # Conflict check: any overlapping Active booking (HARD BLOCK)
+            # Conflict check: only block if another Active booking exists AND hasn't ended yet
             cur.execute(
-                "SELECT id FROM console_booking WHERE console_id=%s AND status='Active' LIMIT 1 FOR UPDATE",
-                (console_id,)
+                "SELECT id FROM console_booking WHERE console_id=%s AND status='Active' AND (end_time IS NULL OR end_time > %s) LIMIT 1 FOR UPDATE",
+                (console_id, _now_ref)
             )
             active_conflict = cur.fetchone()
             if active_conflict:
@@ -2347,36 +2484,50 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 conn.close()
                 return JSONResponse(content={"success": False, "error": f"Console {console_id} already has active session (BK#{active_conflict['id']})"}, status_code=409)
 
-            # H2: Check for pending/confirmed bookings — WARN only (don't block)
-            _warn_msg = ""
+            # H2: Check for pending/confirmed bookings — block only if overlap > 30 min (grace period)
+            # No Timer (duration=0): use 480 min (8 hr max session) as conflict window
+            _conflict_dur = duration_mins if duration_mins > 0 else 480
             cur.execute(
                 "SELECT id, status FROM console_booking WHERE console_id=%s"
                 " AND status IN ('pending','confirmed','pending_check_in')"
-                " AND NOT (end_time <= %s OR start_time >= DATE_ADD(%s, INTERVAL %s MINUTE))"
+                " AND start_time < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
+                " AND end_time > DATE_ADD(%s, INTERVAL 30 MINUTE)"
                 " LIMIT 1 FOR UPDATE",
-                (console_id, _now_ref, _now_ref, duration_mins or 60)
+                (console_id, _now_ref, _conflict_dur, _now_ref)
             )
             _warn_bk = cur.fetchone()
             if _warn_bk:
-                _warn_msg = f"⚠️ Console {console_id} has a {_warn_bk['status']} booking (BK#{_warn_bk['id']}) at this time slot — customer may arrive late"
-                logger.warning("sessions/start: %s", _warn_msg)
+                conn.rollback()
+                conn.close()
+                return JSONResponse(content={
+                    "success": False,
+                    "error": f"Cannot start session on {console_id} — {_warn_bk['status']} booking BK#{_warn_bk['id']} exists at this time"
+                }, status_code=409)
             
             telegram_chat_id = ""
             if linked_booking:
                 # Transition linked booking from checked_in → Active with timer
                 telegram_chat_id = linked_booking.get("telegram_chat_id", "") or ""
+                _dur_end3 = 360 if duration_mins == 0 else duration_mins
                 cur.execute(
                     "UPDATE console_booking SET status='Active', start_time=%s, end_time=DATE_ADD(%s, INTERVAL %s MINUTE), duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), console_id=%s, telegram_chat_id=COALESCE(NULLIF(%s, ''), telegram_chat_id) WHERE id=%s",
-                    (_now_ref, _now_ref, duration_mins, duration_mins, game_name, console_id, telegram_chat_id, linked_booking_id)
+                    (_now_ref, _now_ref, _dur_end3, duration_mins, game_name, console_id, telegram_chat_id, linked_booking_id)
                 )
                 booking_id = linked_booking_id
+                if duration_mins and duration_mins > 0:
+                    try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
+                    except Exception: pass
             else:
                 # Create booking with end_time
+                _dur_end4 = 360 if duration_mins == 0 else duration_mins
                 cur.execute(
                     "INSERT INTO console_booking (console_id, member_id, status, booking_date, start_time, end_time, duration_mins, game_name) VALUES (%s, %s, 'Active', %s, %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s)",
-                    (console_id, member_id, booking_date, _now_ref, _now_ref, duration_mins, duration_mins, game_name)
+                    (console_id, member_id, booking_date, _now_ref, _now_ref, _dur_end4, duration_mins, game_name)
                 )
                 booking_id = cur.lastrowid
+                if duration_mins and duration_mins > 0:
+                    try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
+                    except Exception: pass
             
             # Sync console_status
             cur.execute(
@@ -2408,14 +2559,131 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
             "duration_mins": duration_mins,
             "linked_booking": bool(linked_booking),
             "telegram_chat_id": telegram_chat_id if linked_booking else "",
-            "warning": _warn_msg or None,
+            "warning": None,  # H2: conflict now blocks instead of warning
         })
     except Exception as e:
         logger.exception(f"sessions/start error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ═══════════════════════════════════════
+#  MUTATION — move active session to another console
+# ═══════════════════════════════════════
+@app.post("/api/sessions/move", response_model=GenericResponse, tags=["Sessions"], summary="Move a booking (Active/confirmed/checked_in) to another console [MySQL]")
+async def api_sessions_move(req: dict, auth=Depends(verify_api_key)):
+    """Move a booking to another console.
+    
+    Request: { "booking_id": int, "to_console_id": str }
+    
+    - Supports Active, confirmed, and checked_in bookings
+    - Active: full swap (console_status + timers)
+    - Confirmed/checked_in: just updates console_id (no console_status)
+    """
+    try:
+        booking_id = req.get("booking_id")
+        to_console_id = (req.get("to_console_id") or "").strip()
+        
+        if not booking_id or not to_console_id:
+            return error_response(message="booking_id and to_console_id are required")
+        
+        _now = now_mmt()
+        _conn = _mc.connect(**_MYSQL_CFG)
+        _conn.start_transaction()
+        _cur = _conn.cursor(dictionary=True)
+        try:
+            # C1: Lock source booking row (Active, confirmed, or checked_in)
+            _cur.execute(
+                "SELECT id, console_id, member_id, start_time, duration_mins, game_name, status FROM console_booking WHERE id=%s AND status IN ('Active','confirmed','checked_in') FOR UPDATE",
+                (booking_id,)
+            )
+            _bk = _cur.fetchone()
+            if not _bk:
+                _conn.rollback()
+                return error_response(message=f"Booking {booking_id} not found or cannot be moved (must be Active, confirmed, or checked_in)")
+            
+            _is_active = _bk["status"] == "Active"
+            _from_cid = _bk["console_id"]
+            if _from_cid == to_console_id:
+                _conn.rollback()
+                return error_response(message=f"Booking is already on {to_console_id}")
+            
+            if _is_active:
+                # C2-Active: Lock target console_status — must exist and be Free
+                _cur.execute(
+                    "SELECT status FROM console_status WHERE console_id=%s FOR UPDATE",
+                    (to_console_id,)
+                )
+                _tgt = _cur.fetchone()
+                if not _tgt:
+                    _conn.rollback()
+                    return error_response(message=f"Console {to_console_id} does not exist")
+                if _tgt["status"] != "Free":
+                    _conn.rollback()
+                    return error_response(message=f"Console {to_console_id} is not Free (currently: {_tgt['status']})")
+                
+                # ── Execute swap ──
+                # 1. Update booking: change console_id
+                _cur.execute(
+                    "UPDATE console_booking SET console_id=%s WHERE id=%s",
+                    (to_console_id, booking_id)
+                )
+                # 2. Free up old console
+                _cur.execute(
+                    "UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s",
+                    (_from_cid,)
+                )
+                # 3. Activate new console
+                _cur.execute(
+                    "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=%s WHERE console_id=%s",
+                    (_bk["member_id"], _bk["game_name"], _bk["start_time"], to_console_id)
+                )
+                
+                # Cancel old API timer and schedule new one
+                if _bk["duration_mins"] and _bk["duration_mins"] > 0:
+                    try:
+                        _old_timer = _active_timers.pop(booking_id, None)
+                        if _old_timer:
+                            _old_timer["task"].cancel()
+                        # Normalize start_time to MMT-aware (DB returns naive)
+                        _bk_st = _bk["start_time"]
+                        if hasattr(_bk_st, 'tzinfo') and _bk_st.tzinfo is None:
+                            from datetime import timezone as _tz, timedelta as _td
+                            _bk_st = _bk_st.replace(tzinfo=_tz(_td(hours=6, minutes=30)))
+                        schedule_session_timer(booking_id, to_console_id, _bk["member_id"], _bk_st, _bk["duration_mins"])
+                    except Exception:
+                        pass  # timer failure is non-critical
+            else:
+                # Non-active (confirmed/checked_in): just update console_id — no console_status swap
+                _cur.execute(
+                    "UPDATE console_booking SET console_id=%s WHERE id=%s",
+                    (to_console_id, booking_id)
+                )
+            
+            _conn.commit()
+            
+            invalidate_cache("bookings")
+            
+            logger.info(f"Session moved: BK#{booking_id} {_from_cid} -> {to_console_id}")
+            return ok({
+                "booking_id": booking_id,
+                "from_console": _from_cid,
+                "to_console": to_console_id,
+                "member_id": _bk["member_id"],
+                "moved": True
+            })
+        except Exception:
+            _conn.rollback()
+            raise
+        finally:
+            try: _conn.close()
+            except: pass
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"sessions/move error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/bookings", response_model=GenericResponse, tags=["Bookings"], summary="Create booking from customer bot payload [MySQL]")
-async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
+async def api_bookings_create(req: dict, auth=Depends(verify_api_key)) -> JSONResponse:
     """Create a booking — customer bot format ONLY (staff use POST /api/sessions/start)."""
     try:
         now = now_mmt()
@@ -2485,35 +2753,48 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
             cur = conn.cursor(dictionary=True)
             try:
                 # ── Slot conflict check with FOR UPDATE locking ──
-                # MI-8: When console_id is empty/None, check ALL consoles of matching type
+                # CI-5: Conflict check — find ALL busy consoles (not just first)
+                _conflict_ids = set()
                 if console_id:
+                    # Specific console: check this one directly
                     cur.execute(
-                        "SELECT id, start_time, end_time FROM console_booking WHERE console_id=%s AND status IN ('pending','confirmed','pending_check_in','Active') AND ((start_time <= %s AND end_time > %s) OR (start_time < %s AND end_time >= %s) OR (start_time >= %s AND end_time <= %s)) LIMIT 1 FOR UPDATE",
-                        (console_id, start_dt, start_dt, end_dt, end_dt, start_dt, end_dt)
+                        "SELECT id FROM console_booking WHERE console_id=%s AND status IN ('pending','confirmed','pending_check_in','checked_in','Active') AND start_time < %s AND end_time > %s LIMIT 1 FOR UPDATE",
+                        (console_id, end_dt, start_dt)
                     )
-                    _conflicts = cur.fetchall()
+                    if cur.fetchone():
+                        _conflict_ids.add(console_id)
                 else:
-                    # Check all consoles of matching type
+                    # No console: find ALL matching consoles, identify which are busy
                     _matching_consoles = cur.execute(
                         "SELECT console_id FROM console_status WHERE console_type=%s", (console_type,)
                     )
                     _matching_consoles = cur.fetchall()
-                    if _matching_consoles:
-                        _cids = [c["console_id"] for c in _matching_consoles]
+                    _cids = [c["console_id"] for c in (_matching_consoles or [])]
+                    if _cids:
                         _placeholders = ",".join(["%s"] * len(_cids))
                         cur.execute(
-                            f"SELECT id, console_id, start_time, end_time FROM console_booking WHERE console_id IN ({_placeholders}) AND status IN ('pending','confirmed','pending_check_in','Active') AND ((start_time <= %s AND end_time > %s) OR (start_time < %s AND end_time >= %s) OR (start_time >= %s AND end_time <= %s)) LIMIT 1 FOR UPDATE",
-                            tuple(_cids) + (start_dt, start_dt, end_dt, end_dt, start_dt, end_dt)
+                            f"SELECT DISTINCT console_id FROM console_booking WHERE console_id IN ({_placeholders}) AND status IN ('pending','confirmed','pending_check_in','checked_in','Active') AND start_time < %s AND end_time > %s FOR UPDATE",
+                            tuple(_cids) + (end_dt, start_dt)
                         )
-                        _conflicts = cur.fetchall()
+                        _conflict_ids = {r["console_id"] for r in cur.fetchall()}
                     else:
-                        _conflicts = []
-                if _conflicts:
-                    _existing = _conflicts[0]
-                    _conflict_cid = _existing.get("console_id", console_id)
+                        _cids = []
+                
+                # Specific console requested and busy → reject
+                if console_id and console_id in _conflict_ids:
                     conn.rollback()
                     conn.close()
-                    return JSONResponse(content={"success": False, "message": f"⏰ Console {_conflict_cid} သည် {_parsed_date} {time_slot} တွင် ကြိုတင်စာရင်းရှိပြီးဖြစ်ပါသည် (Booking #{_existing['id']})"}, status_code=409)
+                    return JSONResponse(content={"success": False, "message": f"\u23f0 Console {console_id} \u101e\u100a\u103a {_parsed_date} {time_slot} \u1010\u103d\u1004\u103a \u1000\u103c\u102d\u102f\u1010\u1004\u103a\u1005\u102c\u101b\u1004\u103a\u1038\u101b\u103e\u102d\u1015\u103c\u102e\u1038\u1016\u103c\u1005\u103a\u1015\u102b\u101e\u100a\u103a"}, status_code=409)
+                
+                # Auto-assign: pick first available console from matching type
+                if not console_id:
+                    _available = [cid for cid in _cids if cid not in _conflict_ids]
+                    if _available:
+                        console_id = _available[0]
+                    else:
+                        conn.rollback()
+                        conn.close()
+                        return JSONResponse(content={"success": False, "message": f"\u23f0 {_parsed_date} {time_slot} \u1010\u103d\u1004\u103a {console_type} \u1005\u1000\u103a\u1021\u102c\u1038\u101c\u102f\u1036\u1038 \u1019\u101b\u1010\u1031\u102c\u1037\u1015\u102b"}, status_code=409)
 
                 notes = f"Game: {game_name} | Phone: {phone} | User: {username}"
 
@@ -2564,7 +2845,7 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
 
             # Send admin notification (fire-and-forget — don't block response)
             import threading
-            threading.Thread(target=_notify_booking_received, args=(customer_name, booking_date_str, time_slot, console_type, duration_mins, game_name, phone, bk_id), daemon=True).start()
+            threading.Thread(target=_notify_booking_received, args=(customer_name, booking_date_str, time_slot, console_type, duration_mins, game_name, phone, bk_id, console_id), daemon=True).start()
 
             return ok({"id": bk_id, "message": "Booking created"})
         else:
@@ -2580,16 +2861,19 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 
 
-def _notify_booking_received(name, date, time_slot, console_type, duration, game, phone, bk_id):
+def _notify_booking_received(name, date, time_slot, console_type, duration, game, phone, bk_id, console_id=""):
     """Notify admin via Telegram about new customer booking. Use Sale Bot to approve."""
     import json, urllib.request, os
     token = os.environ.get("CUSTOMER_BOT_TOKEN", os.environ.get("BOT_TOKEN", ""))
     chat_id = "-1003686032747"
     if not token or not chat_id:
         return
+    console_label = f" {console_type}"
+    if console_id:
+        console_label = f" {console_id} ({console_type})"
     msg = ("\U0001f195 *New Booking Request #" + str(bk_id) + "*\n\n"
            + "\U0001f464 " + name + "\n\U0001f4de " + phone + "\n\U0001f4c5 " + date + " \u23f0 " + time_slot
-           + "\n\U0001f3ae " + console_type + "\n\u23f1 " + str(duration) + " min\n\U0001f579 " + (game if game else "\u2014")
+           + "\n\U0001f3ae" + console_label + "\n\u23f1 " + str(duration) + " min\n\U0001f579 " + (game if game else "\u2014")
            + "\n\n_Customer မှ booking တင်ထားပါသည်။_\n"
            + "_(Sale Bot → Customer Booking မှ Approve/Reject ပြုလုပ်ပါ)_")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -2645,7 +2929,7 @@ def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, st
 #  MUTATION — topup/log
 # ================================================================
 @app.post("/api/topup/log", response_model=GenericResponse, tags=["Topup"], summary="Log a top-up transaction and update wallet")
-async def api_topup_log(req: dict, auth=Depends(verify_api_key)):
+async def api_topup_log(req: dict, auth=Depends(verify_api_key)) -> JSONResponse:
     """Log a top-up transaction into topup_log table + update member wallet."""
     try:
         member_id = req.get("member_id", "")
@@ -3020,7 +3304,7 @@ async def api_bot_users_track(req: dict, auth=Depends(verify_api_key)):
 
 # ── Customer Feedback ─────────────────────────────────────────────────────────
 @app.post("/api/feedback/submit", response_model=GenericResponse, tags=["Feedback"], summary="Submit customer feedback (stars + optional comment)")
-async def api_feedback_submit(req: dict, auth=Depends(verify_api_key)):
+async def api_feedback_submit(req: dict, auth=Depends(verify_api_key)) -> JSONResponse:
     """Insert a customer feedback row into customer_feedback table.
     Payload: {tg_id, username, booking_id, rating, comment?, console_id?}
     """
@@ -3467,7 +3751,10 @@ try:
         async def serve_dashboard_root():
             idx = os.path.join(dashboard_dir, "index.html")
             if os.path.isfile(idx):
-                return FileResponse(idx, media_type="text/html")
+                resp = FileResponse(idx, media_type="text/html")
+                resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                resp.headers["Pragma"] = "no-cache"
+                return resp
             return HTMLResponse("<h1>Dashboard not built</h1>", status_code=404)
 
         import patch_routes
@@ -3484,7 +3771,10 @@ try:
                 )
             idx = os.path.join(dashboard_dir, "index.html")
             if os.path.isfile(idx):
-                return FileResponse(idx, media_type="text/html")
+                resp = FileResponse(idx, media_type="text/html")
+                resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                resp.headers["Pragma"] = "no-cache"
+                return resp
             return HTMLResponse("<h1>Dashboard not built</h1>", status_code=404)
 
         logger.info("Dashboard SPA mounted at /")
@@ -4427,7 +4717,7 @@ async def api_booking_conflicts(req: dict, auth=Depends(verify_api_key)):
         
         # Query conflicting bookings (exclude cancelled/done)
         where_clause = """
-            status IN ('pending','confirmed','pending_check_in','Active')
+            status IN ('pending','confirmed','pending_check_in','checked_in','Active')
             AND NOT (end_time <= %s OR start_time >= %s)
         """
         params = [start_dt, end_dt]
@@ -4499,25 +4789,10 @@ def _auto_cancel_expired_pending():
 
 # Start daemon thread (no asyncio dependency, works at import time)
 import threading
-_bg_thread = threading.Thread(target=_auto_cancel_expired_pending, daemon=True, name="auto-cancel-pending")
-_bg_thread.start()
+# Auto-cancel disabled per Boss request (2026-06-22): manual-only policy.
+# _bg_thread = threading.Thread(target=_auto_cancel_expired_pending, daemon=True, name="auto-cancel-pending")
+# _bg_thread.start()
 
 
-# Resume active session timers on startup
-try:
-    resume_active_timers()
-    # Safety: After resume, sync all console_status from bookings to fix any drift
-    active_consoles = _mysql_query(
-        "SELECT DISTINCT console_id FROM console_booking WHERE status='Active'"
-    )
-    for _row in (active_consoles or []):
-        _cid = _row.get('console_id', '')
-        if _cid:
-            try:
-                _sync_console_status(_cid)
-                logging.info("Synced console_status for %s on startup", _cid)
-            except Exception as _sync_err:
-                logging.warning("sync_console_status failed for %s: %s", _cid, _sync_err)
-except Exception as e:
-    logging.error("resume_active_timers failed on startup: %s", e, exc_info=True)
+# Module-level resume moved to lifespan handler
 

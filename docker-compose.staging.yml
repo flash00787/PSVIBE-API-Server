@@ -1,0 +1,49 @@
+# PS VIBE Staging Environment
+# Run: docker-compose -f docker-compose.staging.yml up -d
+# Access: API on port 8001, SaleBot health on port 8081
+# Does NOT interfere with production on 8000/8080
+
+version: '3.8'
+services:
+  mysql-staging:
+    image: mysql:8.0
+    container_name: psvibe-mysql-staging
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: psvibe_staging_root
+      MYSQL_DATABASE: psvibe_api
+      MYSQL_USER: psvibe_staging
+      MYSQL_PASSWORD: psvibe_staging_pass
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_staging_data:/var/lib/mysql
+      - ./staging/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api-staging:
+    image: python:3.12-slim
+    container_name: psvibe-api-staging
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "pip install -r requirements.txt --quiet &&
+             uvicorn app:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8001:8000"
+    volumes:
+      - /root/psvibe_api_server:/app:ro
+      - ./staging/.env.staging:/app/.env:ro
+    depends_on:
+      mysql-staging:
+        condition: service_healthy
+    environment:
+      - DB_HOST=mysql-staging
+      - DB_PORT=3306
+
+volumes:
+  mysql_staging_data:

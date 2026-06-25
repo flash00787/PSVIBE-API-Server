@@ -1,182 +1,147 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="my">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PS VIBE - Receipt</title>
 <style>
-  :root {
-    --primary: #6C27FF; --primary-dark: #4A0EBD; --accent: #FF2D95;
-    --bg: #0D0D1A; --card-bg: #1A1A2E; --card-border: #2D2D4A;
-    --text: #E8E8F0; --text-muted: #8888AA; --success: #00E676;
-    --warning: #FFD600; --danger: #FF1744;
-  }
+  @page { size: 80mm auto; margin: 0; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
-  .container { max-width: 480px; width: 100%; padding: 16px; }
-  .header { text-align: center; padding: 24px 0 16px; border-bottom: 2px solid var(--primary); margin-bottom: 20px; }
-  .header h1 { font-size: 28px; font-weight: 800; background: linear-gradient(135deg, var(--primary), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; letter-spacing: 2px; }
-  .header .subtitle { font-size: 12px; color: var(--text-muted); margin-top: 4px; letter-spacing: 3px; text-transform: uppercase; }
-  .header .badge-receipt { display: inline-block; background: var(--primary); color: white; font-size: 10px; font-weight: 700; padding: 3px 12px; border-radius: 20px; margin-top: 8px; letter-spacing: 1px; text-transform: uppercase; }
-  .header .badge-gift { background: var(--accent); }
-  .header .badge-new { background: var(--success); }
-  .header .badge-topup { background: #FF9800; }
-  .voucher-banner { background: linear-gradient(135deg, var(--primary-dark), #7C4DFF); border-radius: 12px; padding: 12px 16px; text-align: center; margin-bottom: 16px; }
-  .voucher-banner .label { font-size: 10px; text-transform: uppercase; letter-spacing: 2px; opacity: 0.8; }
-  .voucher-banner .voucher-id { font-size: 20px; font-weight: 800; letter-spacing: 1px; margin-top: 2px; }
-  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
-  .info-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 10px 12px; }
-  .info-card .label { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 3px; }
-  .info-card .value { font-size: 14px; font-weight: 600; }
-  .info-wide { grid-column: 1 / -1; }
-  .section { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
-  .section-header { padding: 10px 14px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: var(--primary); border-bottom: 1px solid var(--card-border); }
-  .section-body { padding: 8px 14px; }
-  .section-body table { width: 100%; border-collapse: collapse; }
-  .section-body th { text-align: left; font-size: 10px; text-transform: uppercase; color: var(--text-muted); padding: 4px 0; letter-spacing: 0.5px; border-bottom: 1px solid var(--card-border); }
-  .section-body td { padding: 6px 0; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.04); }
-  .section-body td:last-child, .section-body th:last-child { text-align: right; }
-  .total-row { display: flex; justify-content: space-between; padding: 6px 14px; font-size: 14px; }
-  .total-row.muted { color: var(--text-muted); font-size: 12px; }
-  .total-row.grand-total { font-size: 18px; font-weight: 800; padding: 12px 14px; background: linear-gradient(135deg, rgba(108,39,255,0.15), rgba(255,45,149,0.10)); border-top: 2px solid var(--primary); }
-  .total-row .amount { font-weight: 700; }
-  .total-row .amount.positive { color: var(--success); }
-  .total-row .amount.negative { color: var(--danger); }
-  .payment-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px 14px; }
-  .payment-item { text-align: center; padding: 8px; border-radius: 8px; background: rgba(255,255,255,0.03); border: 1px solid var(--card-border); }
-  .payment-item .pay-label { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); }
-  .payment-item .pay-amount { font-size: 18px; font-weight: 800; }
-  .payment-item .pay-amount.cash { color: var(--success); }
-  .payment-item .pay-amount.kpay { color: var(--accent); }
-  .footer { text-align: center; padding: 24px 0; margin-top: 8px; border-top: 1px solid var(--card-border); }
-  .footer .tagline { font-size: 14px; font-weight: 600; background: linear-gradient(135deg, var(--primary), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-  .footer .copyright { font-size: 10px; color: var(--text-muted); margin-top: 8px; }
-  .footer .print-btn { display: inline-block; margin-top: 16px; padding: 10px 32px; border-radius: 25px; border: none; background: linear-gradient(135deg, var(--primary), var(--accent)); color: white; font-size: 14px; font-weight: 700; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
-  .footer .print-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(108,39,255,0.4); }
-  .footer .print-btn:active { transform: translateY(0); }
-  .foc-badge { display: inline-block; background: var(--accent); color: white; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; margin-left: 4px; vertical-align: middle; }
-  .wallet-display { text-align: center; padding: 10px; background: rgba(0,230,118,0.06); border-radius: 8px; margin: 4px 0; }
-  .wallet-display .wallet-label { font-size: 9px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; }
-  .wallet-display .wallet-value { font-size: 22px; font-weight: 800; color: var(--success); }
-  .member-hero { text-align: center; padding: 16px; border-bottom: 1px solid var(--card-border); }
-  .member-hero .member-name { font-size: 20px; font-weight: 700; }
-  .member-hero .member-id { font-size: 12px; color: var(--text-muted); margin-top: 2px; font-family: monospace; letter-spacing: 1px; }
-  .summary-row { display: flex; justify-content: space-between; padding: 8px 14px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.04); }
-  .summary-row .s-label { color: var(--text-muted); }
-  .summary-row .s-value { font-weight: 600; }
-  .referral-box { background: rgba(255,214,0,0.08); border: 1px solid rgba(255,214,0,0.2); border-radius: 8px; padding: 10px 14px; margin: 8px 14px; text-align: center; font-size: 12px; }
-  .referral-box .ref-code { font-weight: 700; color: var(--warning); font-family: monospace; font-size: 14px; }
-  @media print { body { background: white; color: black; } .header h1, .footer .tagline { -webkit-text-fill-color: initial; background: none; color: var(--primary); } .voucher-banner { background: var(--primary-dark); -webkit-print-color-adjust: exact; print-color-adjust: exact; } .info-card, .section { border-color: #ddd; background: #fafafa; } .total-row.grand-total { background: #f0f0f0; } .footer .print-btn { display: none; } .container { max-width: 100%; padding: 0; } }
+  body {
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #000;
+    background: #fff;
+    width: 320px;
+    margin: 0 auto;
+    padding: 10px 12px;
+  }
+  .logo { text-align: center; padding: 8px 0 6px; border-bottom: 2px dashed #000; margin-bottom: 8px; }
+  .logo img { width: 200px; height: auto; }
+  .title { text-align: center; font-size: 16px; font-weight: bold; margin: 3px 0; letter-spacing: 2px; }
+  .subtitle { text-align: center; font-size: 11px; border-bottom: 1px solid #000; padding-bottom: 6px; margin-bottom: 6px; }
+  .row { display: flex; justify-content: space-between; padding: 2px 0; }
+  .row .lbl { white-space: nowrap; }
+  .row .val { text-align: right; font-weight: bold; white-space: nowrap; }
+  .divider { border-top: 1px dashed #000; margin: 6px 0; }
+  .section-title { text-align: center; font-weight: bold; font-size: 12px; margin: 8px 0 4px; text-transform: uppercase; letter-spacing: 1px; }
+  table { width: 100%; border-collapse: collapse; margin: 3px 0; }
+  th { text-align: left; font-size: 12px; border-bottom: 1px solid #000; padding: 2px 0; }
+  td { padding: 2px 0; font-size: 13px; }
+  td.amt { text-align: right; white-space: nowrap; }
+  .total { border-top: 2px solid #000; margin-top: 5px; padding-top: 5px; }
+  .total .row { font-weight: bold; font-size: 15px; }
+  .grand-total { font-size: 18px; font-weight: bold; }
+  .footer { text-align: center; margin-top: 12px; padding-top: 8px; border-top: 1px dashed #000; font-size: 10px; }
+  .footer .tagline { font-weight: bold; font-size: 12px; margin-bottom: 3px; }
+  .badge { display: inline-block; border: 2px solid #000; padding: 2px 10px; font-size: 11px; font-weight: bold; margin: 4px 0; }
+  .divider-bold { border-top: 2px solid #000; margin: 4px 0; }
+  .highlight { font-size: 16px; font-weight: bold; }
+  @media print {
+    body { width: 100%; padding: 4px 10px; font-size: 13px; }
+    .no-print { display: none; }
+    .logo img { width: 220px; }
+    .title { font-size: 17px; }
+    .grand-total { font-size: 20px; }
+  }
 </style>
 </head>
 <body>
-<div class="container" id="app">
-  <div class="header">
-    <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:8px">
-      <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="24" cy="24" r="24" fill="url(#lg)"/>
-        <rect x="10" y="10" width="28" height="28" rx="8" fill="url(#lg2)"/>
-        <text x="24" y="31" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="18" font-weight="900" fill="white">PV</text>
-        <defs>
-          <linearGradient id="lg" x1="0" y1="0" x2="48" y2="48">
-            <stop stop-color="#6C27FF"/>
-            <stop offset="1" stop-color="#FF2D95"/>
-          </linearGradient>
-          <linearGradient id="lg2" x1="0" y1="0" x2="28" y2="28">
-            <stop stop-color="#7C4DFF"/>
-            <stop offset="1" stop-color="#E040FB"/>
-          </linearGradient>
-        </defs>
-      </svg>
-      <div style="text-align:left">
-        <div style="font-size:20px;font-weight:800;color:var(--text);letter-spacing:1px">ps-vibe.com</div>
-        <div style="font-size:10px;color:var(--text-muted);letter-spacing:1px">https://ps-vibe.com</div>
-      </div>
-    </div>
-    <div class="badge-receipt" id="receiptBadge">🧾 Receipt</div>
-  </div>
-  <div class="voucher-banner"><div class="label">Voucher ID</div><div class="voucher-id" id="voucherId"></div></div>
 
-  <!-- Session sections (hidden for new_member / topup) -->
-  <div id="sessionSections">
-    <div class="info-grid" id="sessionGrid">
-      <div class="info-card"><div class="label">📅 Date</div><div class="value" id="receiptDate"></div></div>
-      <div class="info-card"><div class="label">🕹️ Console</div><div class="value" id="consoleId"></div></div>
-      <div class="info-card"><div class="label">👤 Member</div><div class="value" id="memberId"></div></div>
-      <div class="info-card"><div class="label">⏱️ Duration</div><div class="value" id="playDuration"></div></div>
-    </div>
-    <div class="section" id="gameFeeSection">
-      <div class="section-header">🎮 Gaming Fee</div>
-      <div class="section-body"><table><tr><th>Description</th><th>Amount</th></tr><tr id="gameFeeRow"><td></td><td></td></tr></table></div>
-    </div>
-    <div class="section" id="foodSection" style="display:none">
-      <div class="section-header">🍕 Food & Drinks</div>
-      <div class="section-body"><table><tr><th>Item</th><th>Amount</th></tr></table></div>
-    </div>
-    <div class="section" id="discountSection" style="display:none">
-      <div class="section-header">🎁 Discounts & Promotions</div>
-      <div id="discountBody"></div>
-    </div>
-    <div class="section" style="border-color: var(--primary);" id="totalSection">
-      <div class="total-row muted"><span class="label">Gross Total</span><span class="amount" id="grossTotal"></span></div>
-      <div class="total-row muted" id="discountRow" style="display:none"><span class="label">Discount</span><span class="amount negative" id="discountAmount"></span></div>
-      <div class="total-row muted" id="bonusRow" style="display:none"><span class="label">🎁 Bonus Minutes</span><span class="amount positive" id="bonusAmount"></span></div>
-      <div class="total-row grand-total"><span class="label">💰 Net Total</span><span class="amount" id="netTotal"></span></div>
-    </div>
+<div class="logo">
+  <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAZAAAABgCAYAAAAzWiRhAAAHh0lEQVR42u3d25biOgxF0YKR//9lzsthdJoGKolvkj3XexWxLWlLvt5+EvB4PB49f+92u90ej8fjdrvdfgAA72MlwSAiAHCFe1hlGxy4n+IRQcwAgIAI3ABAQAAABAQHqiK9AAAE5DQW0gEgiYDI+AGAgJwWDtk+AORgi1JlEA4AICCHRINgAAABOSQct/9RgQAAATlccTzFIdPi+PObCRsAdBaQ/YK4XVUAMB9NdmHtryPJLB6EDwA6Coi7rACAgBAPAEB7AaklHsQHABYSkFriYccTACwkIKatAICAFIlIhP8BAOhH0TmQmlNXBKQd0fq2x1Tl6DZHbWOL7zr7HVfPh3369lFj3WvKPXJsvEVo3FNAogjJ/jusy7R1iJr9a8wwypZbCnNke95KGje7o87QvojZyz4DrWVHr/8nQgXSykdKkq2a31XjO0q+PULS+fottcc4egWy/WDazCiqAH66I+3K9+4v6jQNigi2XOp3mTYm3Us6rXYDBYD1nK8k05rlypzMCUqUdZhIQlJii9l2tV7ehWWeGSOdb+Xt4yXTULbdt0+IribDGcfmntkZsGZWKwiOrfRLguRK43amnVlt+tIaSM23MlpNh2FOpyMe/yZetbbDEoL64zN7Vbi1zFTOGHOUzvOQSNVybtu29Q87jXcwmGkzxM+KL2HVPsIhL7OCnTWNuM39bz++jImGdjjPOy1W2b8GFAt4scLODIFRC4bl3c8gLjh+Lxd3lGiTTw1iBUF33bupOIF3c4I3yOgh2uvuvjezrcPYTs5XqUfc5W1/y4q7ov8AsIIfx0C0E3Ei0Tn1Otmub/aV/RS3j6/zLMsMS1Icx/4apLB53rfTGOjNjSj36cLsy1NGo6PcvsB3q0FyXqPULNF9gY2S1QhPaIS5uQjSzpqLylnEznbT0i6q8I9aBFpMXU2tp0L8OjJcGOo7BzO92CR5VWcGbIF5VmyDOqC0NtK+eLB6aJitVYzVJ68l3wBYJjHeF2bF3V5dhrwAhmYk4VfG/Y9bvOBiGfFp+RjDAWH/sjHfnjU6RxCJVJHOLI14Lzz2e/yA2safbCxgsflrMjwii2dIpsxUVnYxq2VldXe2eIqMJqSR8aY28js2IhiYjTEWyO7s9Vrb1t8VxYuytv1p8nWhqTFahCX3GchVLCG9aPV3tVp3T6ulnLGZ0tP4WbvlHnhkO0pZvL5kRJhJ0wvAnImqDkPWIAeLNDP3Qa3F4jfQp2/t4GM/ke3Frlt2pQVJtk9d4zEdqW1jGRbV+vBjSLIGw/5w2gNx1I9HYCx7j1WvX+qNXehv1+07F/5rxLN7juK9xbYHOJL88Np0vCbzW1Z3A8J7H4CvBAiScLwJfPPBvAAbMRJ8HDrsAAbdP/5thW+MX6+qQ7G1e0NBcLfb/+98Uy3nbjrddZRXoVzns39YB/TQhwP/nraheIZHnPmIR/GvCtjXhGWHcN4Mrff+AA8FL/sOaY/tHd/ay01p5X/XBqDWmKZRgaL0fT+ac0E+MXuLHcY0L1Od5Mp5/EOOKb9s4iYJ3H/QmH30KXjBzvwqgLfjn8fzAv7sls/Bk4w1NXtGdBYL7GSMUKG4F/oGnzxkVfnzNui8r94myfyPbnHsOJNSc7cBvHMAOe6t+0FkQH7PmsLlznoF/sPL/1J8TPQcYfPS5CviUfzIRp5mhK9uWr/GqJKRgCXbfWYPPLKMYNEOafQ06xnuMhNifCg6IbuFm/KyzHhBHPQOEJ+hO3dtp8lsR78gCDGyVo1gmw0Yn3wHu32bXUxWdv2x2rZ+t3GmhHfMgiLpjh+ksUdwZJLJDNvnxR2w7mZ1psYFbL1Nj0e5Qa+u/oOGTO9jyVGRHdsT3d1qD2hZR7qR5xDaSIOKJj5LdHVH8dX8Ea0w+qrJ9GmjJgeg2w+22uMPbIxG8sP89b78zRxU5+gh5t5l3wQ0WoBstW3dOpGRl+vH3fv8C//NBF8FIzzTiBJXGJo2K3sqmxHrHuFfY6XlCLZ9O5GW87aCZFuF8Br6+KyIZ1YzLLh9qkGAXk/avMr39LrV7mMpwSMoGn1VzObOqXlVMMNye9T69jZr/vu9Zpz6Fm3kOSpRs1Wln4GT8eeulFp9m97RId1um4hvRlolLh/DOWtv2tJP+Qj6NDxjjP4bBIN9JMoB2i29CAsPfm5dY+CRQSyqCiHju3trH9q7xzfMWZDr4LyzA3zXcCw8WLMkYPRpgWYL4eNvfYk8tCkGAtXHhHUXKtH3sC2dZ8teWmqlOm3+7k3Uj7BYyf1aPP5M65Vlv1E6mpAMe59pQ7QL+1sQERbBQhbtvUjvnr1cWEEz+nvM0i8tv1H5KyTL6eizZXZnFJ0ZImxMPhp1FGM/4lmhX6IJCINgEY6YCMNcXJdmD+EgIB3FaaTHq+JCAAG5tFj4lBnCAQAIyGHxIPwAgIAUz0BE/66pCQgAQEA2/5hADwQAIMGSXsMsa1wEAOFej8FhW/be/TAAgIBGE2DCAQAstRYAALYWLyIAALkF5Eh3b/EAAAICADhbQCIOxRAAAQEBALgoIGceo5l9DQgAQEAaOeNl4QICAARkC/EgHACgu4BkyMfsgUG0gwYABASopnQjAosDACAgApkmHukKBQCAgIjHd4EAAGP5BwNBTdo9mCksAAAAAElFTkSuQmCC" alt="PS VIBE">
+</div>
+<div class="title">PS VIBE Gaming Lounge</div>
+<div class="subtitle">Play The Game. Share The VIBE!</div>
+
+<div style="text-align:center"><span class="badge" id="receiptBadge">🧾 RECEIPT</span></div>
+
+<div class="row"><span class="lbl">Voucher:</span><span class="val" id="voucherId">-</span></div>
+
+<!-- ═══ Session Sections ═══ -->
+<div id="sessionSections">
+  <div class="divider"></div>
+  <div class="row"><span class="lbl">Date:</span><span class="val" id="receiptDate">-</span></div>
+  <div class="row"><span class="lbl">Console:</span><span class="val" id="consoleId">-</span></div>
+  <div class="row"><span class="lbl">Member:</span><span class="val" id="memberId">-</span></div>
+  <div class="row"><span class="lbl">Duration:</span><span class="val" id="playDuration">-</span></div>
+
+  <!-- Wallet balance section (members only) -->
+  <div id="walletSection" style="display:none">
+    <div class="divider"></div>
+    <div class="section-title">WALLET BALANCE</div>
+    <div class="row" id="walletPrevRow"><span class="lbl">Prev Balance</span><span class="val" id="walletPrev">-</span></div>
+    <div class="row" id="walletUsedRow"><span class="lbl">Minutes Used</span><span class="val" id="walletUsed">-</span></div>
+    <div class="row" id="walletBonusRow" style="display:none"><span class="lbl">Bonus Earned</span><span class="val" id="walletBonus">-</span></div>
+    <div class="row"><span class="lbl">Balance After</span><span class="val highlight" id="walletAfter">-</span></div>
   </div>
 
-  <!-- New Member sections -->
-  <div id="nmSections" style="display:none">
-    <div class="section" style="border-color: var(--primary);">
-      <div class="member-hero">
-        <div class="member-name" id="nmName">-</div>
-        <div class="member-id" id="nmMid">-</div>
-      </div>
-      <div class="summary-row"><span class="s-label">📅 Date</span><span class="s-value" id="nmDate">-</span></div>
-      <div class="summary-row"><span class="s-label">📞 Phone</span><span class="s-value" id="nmPhone">-</span></div>
-      <div class="summary-row"><span class="s-label">💵 Card Price</span><span class="s-value" id="nmAmount">-</span></div>
-      <div class="summary-row"><span class="s-label">⏱️ Base Mins</span><span class="s-value" id="nmMins">-</span></div>
-      <div class="summary-row" id="nmGiftBadge" style="display:none"><span class="s-label">🎁 Type</span><span class="s-value" style="color:var(--accent);font-weight:700">Gift / Free Card</span></div>
-      <div class="referral-box" id="nmReferralBox" style="display:none">
-        🎁 Referral Bonus!<br>
-        Code: <span class="ref-code" id="nmRefCode"></span><br>
-        <span style="color:var(--success);font-weight:600">+30 mins</span> added to wallet
-      </div>
-    </div>
-    <div class="section">
-      <div class="section-header">💳 Payment</div>
-      <div class="payment-grid">
-        <div class="payment-item"><div class="pay-label">Cash</div><div class="pay-amount cash" id="nmCash">0 Ks</div></div>
-        <div class="payment-item"><div class="pay-label">KPay</div><div class="pay-amount kpay" id="nmKpay">0 Ks</div></div>
-      </div>
-    </div>
-    <div class="section">
-      <div class="section-header">💰 Wallet</div>
-      <div class="wallet-display">
-        <div class="wallet-label">Initial Balance</div>
-        <div class="wallet-value" id="nmBalance">0 mins</div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
-          Rank: <span id="nmRank">New Member</span>
-          <span id="nmBonusInfo" style="display:none"> | Referral: +30 mins</span>
-        </div>
-      </div>
-    </div>
+  <div class="divider"></div>
+  <div class="section-title">GAMING</div>
+  <table><tr><th>Description</th><th style="text-align:right">Amount</th></tr>
+  <tr id="gameFeeRow"><td></td><td class="amt"></td></tr></table>
+
+  <div id="foodSection" style="display:none">
+    <div class="section-title">FOOD & DRINKS</div>
+    <table><tr><th>Item</th><th style="text-align:right">Amount</th></tr></table>
   </div>
 
-  <div class="section" id="receiptPayment" style="display:none">
-    <div class="section-header">💳 Payment</div>
-    <div class="payment-grid">
-      <div class="payment-item"><div class="pay-label">Cash</div><div class="pay-amount cash" id="cashAmount">0 Ks</div></div>
-      <div class="payment-item"><div class="pay-label">KPay</div><div class="pay-amount kpay" id="kpayAmount">0 Ks</div></div>
-    </div>
+  <div id="discountSection" style="display:none">
+    <div class="divider"></div>
+    <div id="discountBody"></div>
   </div>
 
-  <div class="footer">
-    <div class="tagline">🎮 Play The Game. Share The VIBE! 🎮</div>
-    <div class="copyright">PS VIBE Gaming Lounge &mdash; Yangon, Myanmar</div>
-    <button class="print-btn" onclick="window.print()">🖨️ Print</button>
+  <div class="divider-bold"></div>
+  <div id="totalSection">
+    <div class="row"><span class="lbl">Gross Total</span><span class="val" id="grossTotal">-</span></div>
+    <div class="row" id="discountRow" style="display:none"><span class="lbl">Discount</span><span class="val" id="discountAmount">-</span></div>
+    <div class="row" id="bonusRow" style="display:none"><span class="lbl">Bonus Mins</span><span class="val" id="bonusAmount">-</span></div>
+    <div class="total"><div class="row"><span>NET TOTAL</span><span class="grand-total" id="netTotal">-</span></div></div>
+  </div>
+
+  <div class="divider"></div>
+  <div id="receiptPayment">
+    <div class="section-title">PAYMENT</div>
+    <div class="row"><span class="lbl">Cash:</span><span class="val" id="cashAmount">-</span></div>
+    <div class="row"><span class="lbl">KPay:</span><span class="val" id="kpayAmount">-</span></div>
+    <div class="row" id="ayaRowSession"><span class="lbl">AYA Pay:</span><span class="val" id="ayaAmount">-</span></div>
   </div>
 </div>
+
+<!-- ═══ New Member / Topup Sections ═══ -->
+<div id="nmSections" style="display:none">
+  <div class="divider"></div>
+  <div style="text-align:center;font-size:13px;font-weight:bold;margin:5px 0" id="nmName">-</div>
+  <div style="text-align:center;font-size:10px" id="nmMid">-</div>
+  <div class="divider"></div>
+  <div class="row"><span class="lbl">Date:</span><span class="val" id="nmDate">-</span></div>
+  <div class="row"><span class="lbl">Phone:</span><span class="val" id="nmPhone">-</span></div>
+  <div class="row"><span class="lbl">Card Price:</span><span class="val" id="nmAmount">-</span></div>
+  <div class="row"><span class="lbl">Base Mins:</span><span class="val" id="nmMins">-</span></div>
+  <div id="nmGiftBadge" style="display:none;text-align:center;font-weight:bold;margin:4px 0">*** GIFT / FREE CARD ***</div>
+  <div id="nmReferralBox" style="display:none;text-align:center;margin:4px 0;font-size:10px">
+    Ref: <strong id="nmRefCode">-</strong> (+30 mins)
+  </div>
+  <div class="divider"></div>
+  <div class="section-title">PAYMENT</div>
+  <div class="row"><span class="lbl">Cash:</span><span class="val" id="nmCash">-</span></div>
+  <div class="row"><span class="lbl">KPay:</span><span class="val" id="nmKpay">-</span></div>
+  <div class="row" id="ayaRowNm"><span class="lbl">AYA Pay:</span><span class="val" id="nmAya">-</span></div>
+  <div class="divider"></div>
+  <div class="section-title">WALLET</div>
+  <div style="text-align:center;font-size:16px;font-weight:bold;margin:4px 0" id="nmBalance">-</div>
+  <div style="text-align:center;font-size:10px">Rank: <span id="nmRank">-</span></div>
+</div>
+
+<div class="footer">
+  <div class="tagline">Play The Game. Share The VIBE!</div>
+  <div>PS VIBE Gaming Lounge - Yangon</div>
+  <div>https://ps-vibe.com</div>
+  <div style="margin-top:8px;font-size:8px" id="receiptFooter"></div>
+</div>
+
+<button class="no-print" onclick="window.print()" style="display:block;width:100%;padding:12px;margin-top:15px;background:#000;color:#fff;border:none;font-size:16px;font-weight:bold;cursor:pointer">🖨️ PRINT</button>
+
 <script>
 (function(){
   var data = window.__RECEIPT_DATA__;
@@ -185,95 +150,150 @@
 
   var rtype = data.type || '';
 
+  // ═══ NEW MEMBER ═══
   if(rtype === 'new_member'){
-    // ── New Member Receipt ──
     var badge = document.getElementById('receiptBadge');
-    if(data.is_gift){ badge.textContent = '🎁 Gift Member'; badge.className = 'badge-receipt badge-gift'; }
-    else { badge.textContent = '🆕 New Member'; badge.className = 'badge-receipt badge-new'; }
+    badge.textContent = data.is_gift ? 'GIFT MEMBER' : 'NEW MEMBER';
     document.getElementById('sessionSections').style.display = 'none';
-    document.getElementById('receiptPayment').style.display = 'none';
     document.getElementById('nmSections').style.display = 'block';
     document.getElementById('nmName').textContent = data.name || '-';
-    document.getElementById('nmMid').textContent = '🪪 ' + (data.member_id || '-');
+    document.getElementById('nmMid').textContent = data.member_id || '-';
     document.getElementById('nmDate').textContent = data.date || '-';
     document.getElementById('nmPhone').textContent = data.phone || '-';
     var amt = data.amount||0;
-    if(data.is_gift && amt===0){ document.getElementById('nmAmount').textContent = 'N/A (Gift)'; }
-    else { document.getElementById('nmAmount').textContent = fmtKs(amt); }
+    document.getElementById('nmAmount').textContent = data.is_gift && amt===0 ? 'N/A (Gift)' : fmtKs(amt);
     document.getElementById('nmMins').textContent = (data.mins||0) + ' mins';
-    if(data.is_gift) document.getElementById('nmGiftBadge').style.display = 'flex';
-    document.getElementById('nmCash').textContent = fmtKs(data.kpay ? 0 : data.amount||0);
+    if(data.is_gift) document.getElementById('nmGiftBadge').style.display = 'block';
+    document.getElementById('nmCash').textContent = fmtKs(data.cash||0);
     document.getElementById('nmKpay').textContent = fmtKs(data.kpay||0);
+    var nmaya = data.aya||0;
+    if(nmaya){ document.getElementById('nmAya').textContent = fmtKs(nmaya); }
+    else { document.getElementById('ayaRowNm').style.display='none'; }
     document.getElementById('nmBalance').textContent = (data.balance_after||data.balance_mins||0) + ' mins';
     document.getElementById('nmRank').textContent = data.rank || 'New Member';
     if(data.referral_code){
       document.getElementById('nmReferralBox').style.display = 'block';
       document.getElementById('nmRefCode').textContent = data.referral_code;
-      document.getElementById('nmBonusInfo').style.display = 'inline';
     }
     return;
   }
 
+  // ═══ TOPUP ═══
   if(rtype === 'topup'){
-    var badge = document.getElementById('receiptBadge');
-    badge.textContent = '💳 Top Up'; badge.className = 'badge-receipt badge-topup';
+    document.getElementById('receiptBadge').textContent = 'TOP UP';
     document.getElementById('sessionSections').style.display = 'none';
-    document.getElementById('receiptPayment').style.display = 'none';
     document.getElementById('nmSections').style.display = 'block';
-    var amt = data.amount||0;
     document.getElementById('nmName').textContent = data.name || data.member_id || '-';
-    document.getElementById('nmMid').textContent = '🪪 ' + (data.member_id || '-');
+    document.getElementById('nmMid').textContent = data.member_id || '-';
     document.getElementById('nmDate').textContent = data.date || '-';
-    document.getElementById('nmPhone').textContent = data.staff_name || '-';
-    document.getElementById('nmAmount').textContent = fmtKs(amt);
-    document.getElementById('nmMins').textContent = (data.mins_added||data.mins||0) + ' mins';
+    document.getElementById('nmPhone').textContent = data.phone || '-';
+    document.getElementById('nmAmount').textContent = fmtKs(data.amount||0);
+    document.getElementById('nmMins').textContent = (data.total_mins||data.mins||0) + ' mins';
     document.getElementById('nmGiftBadge').style.display = 'none';
     document.getElementById('nmCash').textContent = fmtKs(data.cash||0);
     document.getElementById('nmKpay').textContent = fmtKs(data.kpay||0);
+    var tuaya = data.aya||0;
+    if(tuaya){ document.getElementById('nmAya').textContent = fmtKs(tuaya); }
+    else { document.getElementById('ayaRowNm').style.display='none'; }
     document.getElementById('nmBalance').textContent = (data.balance_after||0) + ' mins';
     document.getElementById('nmRank').textContent = data.rank || '-';
     return;
   }
 
-  // ── Default: Gaming Session Receipt ──
+  // ═══ SESSION SALE ═══
   document.getElementById('nmSections').style.display = 'none';
-  document.getElementById('receiptPayment').style.display = 'block';
-  // ── Coupon display ──
-  var cpnCode = data.coupon_code||'';
-  var cpnMins = data.coupon_mins||0;
-  if(cpnCode){
-    document.getElementById('couponSection').style.display = 'block';
-    document.getElementById('couponCode').textContent = cpnCode;
-    document.getElementById('couponMins').textContent = cpnMins;
-  }
   document.getElementById('receiptDate').textContent = data.date||'-';
   document.getElementById('consoleId').textContent = data.console_id||'-';
-  document.getElementById('memberId').textContent = data.is_guest ? '👤 Guest' : (data.member_id||'👤 Guest');
+
+  var isGuest = data.is_guest;
+  var memberLabel = isGuest ? 'Guest' : (data.member_id||'Guest');
+  document.getElementById('memberId').textContent = memberLabel;
+
   var mins = data.play_mins||0;
   document.getElementById('playDuration').textContent = mins+' mins';
-  document.getElementById('gameFeeRow').innerHTML = '<td>🎮 '+mins+' mins'+(data.is_guest?' × '+(data.multiplier||1)+'x':' played')+'</td><td>'+fmtKs(data.game_amt)+'</td>';
-  var fi = data.food_items||[];
-  if(fi.length>0){
-    document.getElementById('foodSection').style.display='block';
-    var ft = document.querySelector('#foodSection table');
-    fi.forEach(function(it){var r=ft.insertRow();r.innerHTML='<td>'+(it.name||'Item')+' ×'+(it.qty||1)+'</td><td>'+fmtKs(it.subtotal||0)+'</td>';});
+
+  // ── WALLET BALANCE (members only) ──
+  if(!isGuest){
+    var prevBal = data.prev_balance;
+    var balChange = data.balance_change;  // negative = deducted
+    var balAfter = data.balance_after;
+    var bonusMins = data.bonus_mins || 0;
+
+    if(prevBal !== null && prevBal !== undefined && balChange !== null && balChange !== undefined){
+      document.getElementById('walletSection').style.display = 'block';
+      document.getElementById('walletPrev').textContent = prevBal + ' mins';
+      document.getElementById('walletUsed').textContent = balChange + ' mins';
+
+      if(bonusMins > 0){
+        document.getElementById('walletBonusRow').style.display = 'flex';
+        document.getElementById('walletBonus').textContent = '+' + bonusMins + ' mins';
+      }
+
+      if(balAfter !== null && balAfter !== undefined){
+        document.getElementById('walletAfter').textContent = balAfter + ' mins';
+      } else {
+        // Calculate if not provided
+        document.getElementById('walletAfter').textContent = (prevBal + balChange + bonusMins) + ' mins';
+      }
+    } else if(balChange !== null && balChange !== undefined){
+      // Show at least the deduction
+      document.getElementById('walletSection').style.display = 'block';
+      document.getElementById('walletPrevRow').style.display = 'none';
+      document.getElementById('walletUsed').textContent = balChange + ' mins';
+      if(balAfter !== null && balAfter !== undefined){
+        document.getElementById('walletAfter').textContent = balAfter + ' mins';
+      } else {
+        document.getElementById('walletAfter').textContent = '-';
+      }
+    }
   }
-  var disc = data.discount||0, promoT = data.promo_title||'', focN = data.foc_item_name||'', focQ = data.foc_item_qty||0, bonus = data.bonus_mins||0;
-  if(disc>0||bonus>0||focN){
-    document.getElementById('discountSection').style.display='block';
-    var db = document.getElementById('discountBody'), lines=[];
-    if(focN)lines.push('<div class="section-body"><span class="foc-badge">FOC</span> <strong>'+focN+'</strong> <span style="color:var(--text-muted)">×'+focQ+'</span></div>');
-    if(promoT)lines.push('<div style="padding:4px 14px;font-size:12px;color:var(--text-muted)">Promotion: '+promoT+'</div>');
-    if(data.promo_note)lines.push('<div style="padding:4px 14px 10px;font-size:11px;color:var(--text-muted)">'+data.promo_note+'</div>');
+
+  // ── Gaming Fee ──
+  var guestNote = isGuest ? ' (' + (data.multiplier||1) + 'x)' : '';
+  document.getElementById('gameFeeRow').innerHTML = '<td>Gaming ' + mins + ' mins' + guestNote + '</td><td class="amt">' + fmtKs(data.game_amt) + '</td>';
+
+  // ── Food ──
+  var fi = data.food_items||[];
+  if(fi.length > 0){
+    document.getElementById('foodSection').style.display = 'block';
+    var ft = document.querySelector('#foodSection table');
+    fi.forEach(function(it){var r=ft.insertRow();r.innerHTML='<td>' + it.name + ' x' + it.qty + '</td><td class="amt">' + fmtKs(it.subtotal) + '</td>';});
+  }
+
+  // ── Discount / FOC / Bonus ──
+  var disc = data.discount||0, focN = data.foc_item_name||'', focQ = data.foc_item_qty||0;
+  if(disc > 0 || focN || bonusMins > 0){
+    document.getElementById('discountSection').style.display = 'block';
+    var db = document.getElementById('discountBody'), lines = [];
+    if(focN) lines.push('<div style="text-align:center;font-weight:bold">*** FOC: ' + focN + ' x' + focQ + ' ***</div>');
+    if(data.promo_title) lines.push('<div style="text-align:center;font-size:10px">' + data.promo_title + '</div>');
     db.innerHTML = lines.join('');
   }
+
+  // ── Totals ──
   document.getElementById('grossTotal').textContent = fmtKs(data.gross_total||0);
-  if(disc>0){document.getElementById('discountRow').style.display='flex';document.getElementById('discountAmount').textContent='-'+fmtKs(disc);}
-  if(bonus>0){document.getElementById('bonusRow').style.display='flex';document.getElementById('bonusAmount').textContent='+'+bonus+' mins';}
+  if(disc > 0){document.getElementById('discountRow').style.display='flex';document.getElementById('discountAmount').textContent='-'+fmtKs(disc);}
+  if(bonusMins > 0 && !isGuest){document.getElementById('bonusRow').style.display='flex';document.getElementById('bonusAmount').textContent='+'+bonusMins+' mins';}
   document.getElementById('netTotal').textContent = fmtKs(data.net_total||0);
+
+  // ── Payment ──
   document.getElementById('cashAmount').textContent = fmtKs(data.cash||0);
   document.getElementById('kpayAmount').textContent = fmtKs(data.kpay||0);
-  function fmtKs(a){a=a??0;return Number(a).toLocaleString()+' Ks';}
+  var aya = data.aya||0;
+  if(aya){ document.getElementById('ayaAmount').textContent = fmtKs(aya); }
+  else { document.getElementById('ayaRowSession').style.display='none'; }
+
+  // ── Member: remaining balance summary line ──
+  if(!isGuest && data.prev_balance !== null && data.balance_after !== null){
+    var sumDiv = document.createElement('div');
+    sumDiv.style.textAlign = 'center';
+    sumDiv.style.marginTop = '5px';
+    sumDiv.style.fontSize = '10px';
+    sumDiv.textContent = data.prev_balance + ' → ' + data.balance_after + ' mins';
+    document.getElementById('receiptPayment').appendChild(sumDiv);
+  }
+
+  function fmtKs(a){a = a ?? 0; return Number(a).toLocaleString() + ' Ks';}
 })();
 </script>
 </body>

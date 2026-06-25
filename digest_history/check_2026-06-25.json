@@ -1,0 +1,407 @@
+{
+  "timestamp": "2026-06-25T04:12:36.619533Z",
+  "date": "2026-06-25",
+  "overall_status": "critical",
+  "total_issues": 34,
+  "checks": {
+    "wallet_balance": {
+      "status": "pass",
+      "issues": [],
+      "count": 0
+    },
+    "topup_chain": {
+      "status": "pass",
+      "issues": [],
+      "count": 0
+    },
+    "sales_vs_bookings": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "booking_without_sale",
+          "booking_id": 945,
+          "console_id": "C-01",
+          "member_id": "",
+          "booking_date": "2026-06-25",
+          "booking_status": "cancelled",
+          "detail": "Booking#945 (cancelled) on 2026-06-25 has no matching sales_daily record"
+        },
+        {
+          "type": "booking_without_sale",
+          "booking_id": 952,
+          "console_id": "C-09",
+          "member_id": "",
+          "booking_date": "2026-06-25",
+          "booking_status": "Active",
+          "detail": "Booking#952 (Active) on 2026-06-25 has no matching sales_daily record"
+        }
+      ],
+      "count": 2
+    },
+    "inventory": {
+      "status": "pass",
+      "issues": [],
+      "count": 0
+    },
+    "receipts_vs_sales": {
+      "status": "pass",
+      "issues": [],
+      "count": 0
+    },
+    "negative_sales": {
+      "status": "pass",
+      "issues": [],
+      "count": 0
+    },
+    "booking_status": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "end_before_start",
+          "booking_id": 247,
+          "console_id": "C-01",
+          "start_time": "2026-06-09 17:07:21",
+          "end_time": "2026-06-09 12:57:51",
+          "status": "Done",
+          "detail": "Booking#247: end_time (2026-06-09 12:57:51) < start_time (2026-06-09 17:07:21)"
+        },
+        {
+          "type": "end_before_start",
+          "booking_id": 534,
+          "console_id": "C-10",
+          "start_time": "2026-06-18 22:16:32",
+          "end_time": "2026-06-18 18:39:47",
+          "status": "Done",
+          "detail": "Booking#534: end_time (2026-06-18 18:39:47) < start_time (2026-06-18 22:16:32)"
+        },
+        {
+          "type": "end_before_start",
+          "booking_id": 537,
+          "console_id": "C-01",
+          "start_time": "2026-06-18 23:00:58",
+          "end_time": "2026-06-18 18:39:42",
+          "status": "Done",
+          "detail": "Booking#537: end_time (2026-06-18 18:39:42) < start_time (2026-06-18 23:00:58)"
+        },
+        {
+          "type": "end_before_start",
+          "booking_id": 900,
+          "console_id": "C-10",
+          "start_time": "2026-06-24 15:00:00",
+          "end_time": "2026-06-24 14:00:00",
+          "status": "cancelled",
+          "detail": "Booking#900: end_time (2026-06-24 14:00:00) < start_time (2026-06-24 15:00:00)"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-01",
+          "booking_a": 198,
+          "booking_b": 202,
+          "a_start": "2026-06-06 12:45:39",
+          "a_end": "2026-06-09 15:26:16",
+          "b_start": "2026-06-06 17:13:34",
+          "b_end": "2026-06-06 17:33:30",
+          "detail": "Console C-01: Booking#198 [2026-06-06 12:45:39→2026-06-09 15:26:16] overlaps Booking#202 [2026-06-06 17:13:34→2026-06-06 17:33:30]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-01",
+          "booking_a": 198,
+          "booking_b": 203,
+          "a_start": "2026-06-06 12:45:39",
+          "a_end": "2026-06-09 15:26:16",
+          "b_start": "2026-06-06 17:33:58",
+          "b_end": "2026-06-06 20:36:36",
+          "detail": "Console C-01: Booking#198 [2026-06-06 12:45:39→2026-06-09 15:26:16] overlaps Booking#203 [2026-06-06 17:33:58→2026-06-06 20:36:36]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-01",
+          "booking_a": 198,
+          "booking_b": 207,
+          "a_start": "2026-06-06 12:45:39",
+          "a_end": "2026-06-09 15:26:16",
+          "b_start": "2026-06-07 11:05:17",
+          "b_end": "2026-06-07 12:45:41",
+          "detail": "Console C-01: Booking#198 [2026-06-06 12:45:39→2026-06-09 15:26:16] overlaps Booking#207 [2026-06-07 11:05:17→2026-06-07 12:45:41]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-01",
+          "booking_a": 198,
+          "booking_b": 218,
+          "a_start": "2026-06-06 12:45:39",
+          "a_end": "2026-06-09 15:26:16",
+          "b_start": "2026-06-07 18:08:07",
+          "b_end": "2026-06-07 18:10:01",
+          "detail": "Console C-01: Booking#198 [2026-06-06 12:45:39→2026-06-09 15:26:16] overlaps Booking#218 [2026-06-07 18:08:07→2026-06-07 18:10:01]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-01",
+          "booking_a": 198,
+          "booking_b": 220,
+          "a_start": "2026-06-06 12:45:39",
+          "a_end": "2026-06-09 15:26:16",
+          "b_start": "2026-06-07 19:32:05",
+          "b_end": "2026-06-07 20:42:22",
+          "detail": "Console C-01: Booking#198 [2026-06-06 12:45:39→2026-06-09 15:26:16] overlaps Booking#220 [2026-06-07 19:32:05→2026-06-07 20:42:22]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-01",
+          "booking_a": 198,
+          "booking_b": 226,
+          "a_start": "2026-06-06 12:45:39",
+          "a_end": "2026-06-09 15:26:16",
+          "b_start": "2026-06-08 12:35:02",
+          "b_end": "2026-06-08 14:05:57",
+          "detail": "Console C-01: Booking#198 [2026-06-06 12:45:39→2026-06-09 15:26:16] overlaps Booking#226 [2026-06-08 12:35:02→2026-06-08 14:05:57]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-01",
+          "booking_a": 198,
+          "booking_b": 242,
+          "a_start": "2026-06-06 12:45:39",
+          "a_end": "2026-06-09 15:26:16",
+          "b_start": "2026-06-09 14:56:18",
+          "b_end": "2026-06-09 16:00:25",
+          "detail": "Console C-01: Booking#198 [2026-06-06 12:45:39→2026-06-09 15:26:16] overlaps Booking#242 [2026-06-09 14:56:18→2026-06-09 16:00:25]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-01",
+          "booking_a": 390,
+          "booking_b": 408,
+          "a_start": "2026-06-16 13:19:47",
+          "a_end": "2026-06-16 18:45:07",
+          "b_start": "2026-06-16 17:39:42",
+          "b_end": "2026-06-16 20:29:34",
+          "detail": "Console C-01: Booking#390 [2026-06-16 13:19:47→2026-06-16 18:45:07] overlaps Booking#408 [2026-06-16 17:39:42→2026-06-16 20:29:34]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-01",
+          "booking_a": 447,
+          "booking_b": 444,
+          "a_start": "2026-06-17 13:22:30",
+          "a_end": "2026-06-17 16:22:50",
+          "b_start": "2026-06-17 16:22:22",
+          "b_end": "2026-06-17 19:00:00",
+          "detail": "Console C-01: Booking#447 [2026-06-17 13:22:30→2026-06-17 16:22:50] overlaps Booking#444 [2026-06-17 16:22:22→2026-06-17 19:00:00]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-01",
+          "booking_a": 444,
+          "booking_b": 470,
+          "a_start": "2026-06-17 16:22:22",
+          "a_end": "2026-06-17 19:00:00",
+          "b_start": "2026-06-17 16:23:05",
+          "b_end": "2026-06-17 18:11:59",
+          "detail": "Console C-01: Booking#444 [2026-06-17 16:22:22→2026-06-17 19:00:00] overlaps Booking#470 [2026-06-17 16:23:05→2026-06-17 18:11:59]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-01",
+          "booking_a": 473,
+          "booking_b": 553,
+          "a_start": "2026-06-19 12:00:00",
+          "a_end": "2026-06-19 12:30:00",
+          "b_start": "2026-06-19 12:00:05",
+          "b_end": "2026-06-19 14:40:02",
+          "detail": "Console C-01: Booking#473 [2026-06-19 12:00:00→2026-06-19 12:30:00] overlaps Booking#553 [2026-06-19 12:00:05→2026-06-19 14:40:02]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-02",
+          "booking_a": 632,
+          "booking_b": 720,
+          "a_start": "2026-06-21 11:00:00",
+          "a_end": "2026-06-21 13:00:00",
+          "b_start": "2026-06-21 11:17:47",
+          "b_end": "2026-06-21 13:03:24",
+          "detail": "Console C-02: Booking#632 [2026-06-21 11:00:00→2026-06-21 13:00:00] overlaps Booking#720 [2026-06-21 11:17:47→2026-06-21 13:03:24]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-03",
+          "booking_a": 243,
+          "booking_b": 260,
+          "a_start": "2026-06-09 14:59:50",
+          "a_end": "2026-06-09 16:03:19",
+          "b_start": "2026-06-09 15:55:09",
+          "b_end": "2026-06-09 15:55:09",
+          "detail": "Console C-03: Booking#243 [2026-06-09 14:59:50→2026-06-09 16:03:19] overlaps Booking#260 [2026-06-09 15:55:09→2026-06-09 15:55:09]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-03",
+          "booking_a": 463,
+          "booking_b": 477,
+          "a_start": "2026-06-17 15:45:31",
+          "a_end": "2026-06-17 19:00:00",
+          "b_start": "2026-06-17 17:37:11",
+          "b_end": "2026-06-17 20:11:51",
+          "detail": "Console C-03: Booking#463 [2026-06-17 15:45:31→2026-06-17 19:00:00] overlaps Booking#477 [2026-06-17 17:37:11→2026-06-17 20:11:51]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-03",
+          "booking_a": 715,
+          "booking_b": 679,
+          "a_start": "2026-06-21 10:29:36",
+          "a_end": "2026-06-21 11:34:34",
+          "b_start": "2026-06-21 11:00:00",
+          "b_end": "2026-06-21 13:00:00",
+          "detail": "Console C-03: Booking#715 [2026-06-21 10:29:36→2026-06-21 11:34:34] overlaps Booking#679 [2026-06-21 11:00:00→2026-06-21 13:00:00]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-03",
+          "booking_a": 679,
+          "booking_b": 725,
+          "a_start": "2026-06-21 11:00:00",
+          "a_end": "2026-06-21 13:00:00",
+          "b_start": "2026-06-21 11:50:19",
+          "b_end": "2026-06-21 15:06:06",
+          "detail": "Console C-03: Booking#679 [2026-06-21 11:00:00→2026-06-21 13:00:00] overlaps Booking#725 [2026-06-21 11:50:19→2026-06-21 15:06:06]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-03",
+          "booking_a": 738,
+          "booking_b": 730,
+          "a_start": "2026-06-21 15:10:30",
+          "a_end": "2026-06-21 16:25:13",
+          "b_start": "2026-06-21 16:00:00",
+          "b_end": "2026-06-21 17:00:00",
+          "detail": "Console C-03: Booking#738 [2026-06-21 15:10:30→2026-06-21 16:25:13] overlaps Booking#730 [2026-06-21 16:00:00→2026-06-21 17:00:00]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-03",
+          "booking_a": 730,
+          "booking_b": 749,
+          "a_start": "2026-06-21 16:00:00",
+          "a_end": "2026-06-21 17:00:00",
+          "b_start": "2026-06-21 16:28:25",
+          "b_end": "2026-06-21 17:29:30",
+          "detail": "Console C-03: Booking#730 [2026-06-21 16:00:00→2026-06-21 17:00:00] overlaps Booking#749 [2026-06-21 16:28:25→2026-06-21 17:29:30]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-03",
+          "booking_a": 859,
+          "booking_b": 855,
+          "a_start": "2026-06-23 13:25:20",
+          "a_end": "2026-06-23 15:38:28",
+          "b_start": "2026-06-23 15:16:44",
+          "b_end": "2026-06-23 16:29:38",
+          "detail": "Console C-03: Booking#859 [2026-06-23 13:25:20→2026-06-23 15:38:28] overlaps Booking#855 [2026-06-23 15:16:44→2026-06-23 16:29:38]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-04",
+          "booking_a": 576,
+          "booking_b": 719,
+          "a_start": "2026-06-21 11:00:00",
+          "a_end": "2026-06-21 13:00:00",
+          "b_start": "2026-06-21 11:08:40",
+          "b_end": "2026-06-21 13:01:12",
+          "detail": "Console C-04: Booking#576 [2026-06-21 11:00:00→2026-06-21 13:00:00] overlaps Booking#719 [2026-06-21 11:08:40→2026-06-21 13:01:12]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-05",
+          "booking_a": 590,
+          "booking_b": 624,
+          "a_start": "2026-06-20 10:00:00",
+          "a_end": "2026-06-20 14:00:00",
+          "b_start": "2026-06-20 10:47:04",
+          "b_end": "2026-06-20 10:54:50",
+          "detail": "Console C-05: Booking#590 [2026-06-20 10:00:00→2026-06-20 14:00:00] overlaps Booking#624 [2026-06-20 10:47:04→2026-06-20 10:54:50]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-05",
+          "booking_a": 590,
+          "booking_b": 626,
+          "a_start": "2026-06-20 10:00:00",
+          "a_end": "2026-06-20 14:00:00",
+          "b_start": "2026-06-20 10:58:27",
+          "b_end": "2026-06-20 13:23:07",
+          "detail": "Console C-05: Booking#590 [2026-06-20 10:00:00→2026-06-20 14:00:00] overlaps Booking#626 [2026-06-20 10:58:27→2026-06-20 13:23:07]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-07",
+          "booking_a": 718,
+          "booking_b": 705,
+          "a_start": "2026-06-21 10:52:59",
+          "a_end": "2026-06-21 12:51:38",
+          "b_start": "2026-06-21 11:00:00",
+          "b_end": "2026-06-21 13:00:00",
+          "detail": "Console C-07: Booking#718 [2026-06-21 10:52:59→2026-06-21 12:51:38] overlaps Booking#705 [2026-06-21 11:00:00→2026-06-21 13:00:00]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-08",
+          "booking_a": 671,
+          "booking_b": 661,
+          "a_start": "2026-06-20 17:54:44",
+          "a_end": "2026-06-20 19:57:55",
+          "b_start": "2026-06-20 18:00:00",
+          "b_end": "2026-06-20 19:00:00",
+          "detail": "Console C-08: Booking#671 [2026-06-20 17:54:44→2026-06-20 19:57:55] overlaps Booking#661 [2026-06-20 18:00:00→2026-06-20 19:00:00]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-09",
+          "booking_a": 583,
+          "booking_b": 579,
+          "a_start": "2026-06-19 17:08:21",
+          "a_end": "2026-06-19 19:08:53",
+          "b_start": "2026-06-19 19:00:00",
+          "b_end": "2026-06-19 20:00:00",
+          "detail": "Console C-09: Booking#583 [2026-06-19 17:08:21→2026-06-19 19:08:53] overlaps Booking#579 [2026-06-19 19:00:00→2026-06-19 20:00:00]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-09",
+          "booking_a": 579,
+          "booking_b": 595,
+          "a_start": "2026-06-19 19:00:00",
+          "a_end": "2026-06-19 20:00:00",
+          "b_start": "2026-06-19 19:13:22",
+          "b_end": "2026-06-19 20:16:47",
+          "detail": "Console C-09: Booking#579 [2026-06-19 19:00:00→2026-06-19 20:00:00] overlaps Booking#595 [2026-06-19 19:13:22→2026-06-19 20:16:47]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-09",
+          "booking_a": 612,
+          "booking_b": 665,
+          "a_start": "2026-06-20 17:00:00",
+          "a_end": "2026-06-20 18:30:00",
+          "b_start": "2026-06-20 17:13:27",
+          "b_end": "2026-06-20 19:26:47",
+          "detail": "Console C-09: Booking#612 [2026-06-20 17:00:00→2026-06-20 18:30:00] overlaps Booking#665 [2026-06-20 17:13:27→2026-06-20 19:26:47]"
+        },
+        {
+          "type": "overlapping_booking",
+          "console_id": "C-10",
+          "booking_a": 531,
+          "booking_b": 722,
+          "a_start": "2026-06-21 11:00:00",
+          "a_end": "2026-06-21 14:00:00",
+          "b_start": "2026-06-21 11:19:11",
+          "b_end": "2026-06-21 14:33:31",
+          "detail": "Console C-10: Booking#531 [2026-06-21 11:00:00→2026-06-21 14:00:00] overlaps Booking#722 [2026-06-21 11:19:11→2026-06-21 14:33:31]"
+        }
+      ],
+      "count": 32
+    }
+  }
+}

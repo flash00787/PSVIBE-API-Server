@@ -42,7 +42,7 @@ def _send_telegram(chat_id: str, text: str, keyboard: list = None) -> bool:
         logger.warning("No BOT_TOKEN set, cannot send Telegram")
         return False
     try:
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
         if keyboard and len(keyboard) > 0:
             payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard})
         data = json.dumps(payload).encode()
@@ -59,7 +59,7 @@ def _edit_telegram(chat_id: str, message_id: str, text: str, keyboard: list = No
     if not BOT_TOKEN:
         return False
     try:
-        payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "Markdown"}
+        payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
         if keyboard and len(keyboard) > 0:
             payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard})
         data = json.dumps(payload).encode()
@@ -100,7 +100,14 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
     
     If extend happens, this task gets cancelled and a new one is scheduled.
     """
+    logger.info(f"Timer task STARTED for booking {booking_id}")
     try:
+        # Normalize: MySQL DATETIME is stored in MMT (UTC+6:30) without timezone.
+        # When passed from move-session or other endpoints, start_time may be naive.
+        if start_time.tzinfo is None:
+            MMT = timezone(timedelta(hours=6, minutes=30))
+            start_time = start_time.replace(tzinfo=MMT)
+        
         # Calculate end time
         end_time = start_time + timedelta(minutes=duration_mins)
         reminder_time = end_time - timedelta(minutes=5)
@@ -117,10 +124,13 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
             logger.info(f"Session {booking_id} no longer active, skipping reminder")
             return
         
-        # Skip API-side reminder if booking was created via bot (has telegram_chat_id).
+        # Skip API-side reminder if booking was created via bot (has non-empty telegram_chat_id).
         # The sales bot runs its own _remind_loop and would duplicate the notification.
-        if booking[0].get("telegram_chat_id"):
-            logger.info(f"Session {booking_id} has telegram_chat_id — bot handles reminders, skipping API timer")
+        # Note: empty string "" means no Telegram (walk-in), bot should handle via its own reminder_store.
+        tg_id = booking[0].get("telegram_chat_id", "")
+        # Only skip if bot has actually registered a persistent reminder for this console
+        if tg_id and str(tg_id).strip() and _bot_has_persistent_reminder(console_id, tg_id):
+            logger.info(f"Session {booking_id} has bot reminder — skipping API timer")
             return
         
         # Recalculate remaining time (may have extended)
@@ -135,6 +145,9 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
         actual_end = b.get("end_time") or (start_time + timedelta(minutes=duration_mins))
         if isinstance(actual_end, str):
             actual_end = datetime.fromisoformat(actual_end)
+        # Normalize: DB returns naive datetime in MMT
+        if actual_end is not None and actual_end.tzinfo is None:
+            actual_end = actual_end.replace(tzinfo=MMT)
         
         remaining = int((actual_end - now).total_seconds() / 60)
         if remaining <= 0:
@@ -142,12 +155,13 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
         
         bk_name = member_id or booking
         lines = [
-            f"⏰ *Timer Alert — Session Ending Soon!*\n",
-            f"🎮 Console: `{console_id}`",
-            f"👤 Member: `{bk_name}`",
-            f"⏱ Remaining: *{remaining} min*",
+            f"⏰ <b>Timer Alert — Session ဆုံးခါနီး!</b>\n",
+            f"🎮 Console: <code>{console_id}</code>",
+            f"👤 Member: <code>{bk_name}</code>",
+            f"⏱ Remaining: <b>{remaining} min</b>",
             f"",
-            f"Use sales bot to extend or end session.",
+            f"⚠️ <b>Manual End လုပ်ပါ</b> — Session auto-end မဖြစ်ပါ",
+            f"End Session နှိပ်မှသာ session ဆုံးမည်။",
         ]
         text = "\n".join(lines)
         
@@ -182,7 +196,10 @@ def schedule_session_timer(booking_id: int, console_id: str, member_id: str,
         old["task"].cancel()
         logger.info(f"Cancelled old timer for booking {booking_id}")
     
-    loop = asyncio.get_event_loop()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
     task = loop.create_task(
         _session_timer_task(booking_id, console_id, member_id, start_time, duration_mins)
     )
@@ -325,6 +342,22 @@ def handle_callback(callback_data: str, callback_id: str = None,
 
 
 # ── Resume active sessions on startup ────────────────────────────────
+
+def _bot_has_persistent_reminder(console_id: str, chat_id) -> bool:
+    """Check if the sales bot has registered a persistent reminder for this console."""
+    try:
+        reminder_file = "/root/psvibe-sales-bot/data/session_reminders.json"
+        if not os.path.isfile(reminder_file):
+            return False
+        with open(reminder_file) as f:
+            store = json.load(f)
+        if not isinstance(store, dict):
+            return False
+        key = f"{console_id}|{chat_id}"
+        return key in store
+    except Exception:
+        return False
+
 def resume_active_timers():
     """On API server restart, find all Active bookings and resume timers."""
     try:
@@ -378,12 +411,14 @@ def resume_active_timers():
                 logger.error(f"resume_active_timers timezone error for booking {r['id']}: {_tz_err} — skipping (manual-only policy)")
                 continue
             
-            # Skip API-side timer if booking was created via bot (has telegram_chat_id).
-            # The sales bot runs its own _remind_loop and would duplicate the notification.
-            # NOTE: expired session cleanup above runs BEFORE this skip.
-            if r.get("telegram_chat_id"):
-                logger.info(f"Booking {r['id']} has telegram_chat_id — bot handles reminders, skipping API timer")
+            # Skip API-side timer only if bot has registered a persistent reminder
+            tg_id = r.get("telegram_chat_id", "")
+            bot_reminder = _bot_has_persistent_reminder(r["console_id"], tg_id) if tg_id and str(tg_id).strip() else False
+            if bot_reminder:
+                logger.info(f"Booking {r['id']} has bot reminder for {r['console_id']} — skipping API timer")
                 continue
+            elif tg_id and str(tg_id).strip():
+                logger.info(f"Booking {r['id']} has telegram_chat_id={tg_id} but no bot reminder — API timer handles it")
             
             schedule_session_timer(r["id"], r["console_id"], r["member_id"], start_time, duration)
             resumed += 1

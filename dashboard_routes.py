@@ -234,10 +234,11 @@ async def dashboard_get_bookings(
 
 @router.delete("/bookings/cleanup")
 async def dashboard_cleanup_bookings(user: dict = Depends(get_current_user)):
-    """Clean up cancelled, rejected, and old bookings."""
+    """Clean up OLD cancelled/rejected/done bookings (30+ days). Never delete recent ones."""
     try:
+        # Only delete bookings in terminal states that are 30+ days old
         d1 = _mysql_delete(
-            "DELETE FROM console_booking WHERE status IN (%s, %s, %s, %s, %s)",
+            "DELETE FROM console_booking WHERE status IN (%s, %s, %s, %s, %s) AND booking_date < DATE_SUB(CURDATE(), INTERVAL 30 DAY)",
             ("cancelled", "Cancelled", "rejected", "Rejected", "Done")
         )
         d2 = _mysql_delete(
@@ -246,7 +247,7 @@ async def dashboard_cleanup_bookings(user: dict = Depends(get_current_user)):
         total = d1 + d2
         return {
             "success": True,
-            "data": {"deleted_count": total, "message": f"Cleaned up {total} bookings"}
+            "data": {"deleted_count": total, "message": f"Cleaned up {total} bookings (30+ days old only)"}
         }
     except Exception as e:
         logger.error(f"DELETE /bookings/cleanup error: {e}")
@@ -292,11 +293,34 @@ async def dashboard_get_booking(booking_id: int, user: dict = Depends(get_curren
 
 @router.put("/bookings/{booking_id}")
 async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depends(get_current_user)):
-    """Update a booking."""
+    """Update a booking (validates console conflicts on reassign)."""
     try:
+        logger.info(f"PUT /bookings/{booking_id}: req={req}")
         existing = _mysql_query_one("SELECT * FROM console_booking WHERE id = %s", (booking_id,))
         if not existing:
             return {"success": False, "error": "Booking not found"}
+
+        # Console reassign validation: block if target console has an overlapping Active session
+        new_console = req.get("console_id", "")
+        if new_console and new_console != (existing.get("console_id") or ""):
+            # Only block if new console has an Active session that overlaps with this booking's time
+            _bk_start = existing.get("start_time")
+            _bk_end = existing.get("end_time")
+            if _bk_start and _bk_end:
+                active_check = _mysql_query_one(
+                    "SELECT id FROM console_booking WHERE console_id=%s AND id!=%s AND status='Active'"
+                    " AND start_time < %s AND end_time > %s LIMIT 1",
+                    (new_console, booking_id, _bk_end, _bk_start)
+                )
+            else:
+                # No time data — just check if console is Active
+                active_check = _mysql_query_one(
+                    "SELECT id FROM console_booking WHERE console_id=%s AND id!=%s AND status='Active' LIMIT 1",
+                    (new_console, booking_id)
+                )
+            if active_check:
+                return {"success": False, "error": f"Console {new_console} has an active session (BK#{active_check['id']}) at this time"}
+            # Admin override: confirmed/pending overlaps are allowed
 
         updates = []
         params = []
@@ -345,16 +369,61 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
         return {"success": False, "error": str(e)}
 
 
+@router.put("/bookings/{booking_id}/timer")
+async def dashboard_adjust_timer(booking_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """Adjust the timer (duration_mins) of an active booking. Recalcs end_time."""
+    try:
+        duration_mins = req.get("duration_mins")
+        if not duration_mins or int(duration_mins) <= 0:
+            return {"success": False, "error": "duration_mins must be > 0"}
+        duration_mins = int(duration_mins)
+
+        existing = _mysql_query_one("SELECT * FROM console_booking WHERE id = %s", (booking_id,))
+        if not existing:
+            return {"success": False, "error": "Booking not found"}
+
+        if existing.get("status") != "Active":
+            return {"success": False, "error": "Can only adjust timer for Active sessions"}
+
+        staff_name = user.get("username", "Dashboard User")
+        _mysql_execute(
+            "UPDATE console_booking SET duration_mins=%s, end_time=DATE_ADD(start_time, INTERVAL %s MINUTE), "
+            "notes=CONCAT(IFNULL(notes,''), ' | Timer adjusted to ', %s, 'min by ', %s) WHERE id=%s",
+            (duration_mins, duration_mins, str(duration_mins), staff_name, booking_id)
+        )
+
+        updated = _mysql_query_one("SELECT id, console_id, start_time, end_time, duration_mins, status FROM console_booking WHERE id=%s", (booking_id,))
+        return {
+            "success": True,
+            "data": {
+                "id": updated["id"],
+                "console_id": updated.get("console_id"),
+                "start_time": str(updated["start_time"]) if updated.get("start_time") else None,
+                "end_time": str(updated["end_time"]) if updated.get("end_time") else None,
+                "duration_mins": updated.get("duration_mins"),
+                "status": updated.get("status"),
+            },
+        }
+    except Exception as e:
+        logger.error(f"PUT /bookings/{booking_id}/timer error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @router.delete("/bookings/{booking_id}")
 async def dashboard_delete_booking(booking_id: int, user: dict = Depends(get_current_user)):
-    """Delete a booking."""
+    """Soft-delete a booking — sets status to 'cancelled' instead of physical DELETE."""
     try:
         existing = _mysql_query_one("SELECT * FROM console_booking WHERE id = %s", (booking_id,))
         if not existing:
             return {"success": False, "error": "Booking not found"}
 
-        _mysql_delete("DELETE FROM console_booking WHERE id = %s", (booking_id,))
-        return {"success": True, "data": {"deleted": booking_id}}
+        # Soft-delete: never physically delete bookings — preserve history
+        staff_name = user.get("username", "Dashboard User")
+        _mysql_execute(
+            "UPDATE console_booking SET status='cancelled', notes=CONCAT(IFNULL(notes,''), ' | Cancelled by ', %s, ' via dashboard') WHERE id=%s",
+            (staff_name, booking_id)
+        )
+        return {"success": True, "data": {"cancelled": booking_id, "message": "Booking soft-deleted (status=cancelled)"}}
     except Exception as e:
         logger.error(f"DELETE /bookings/{booking_id} error: {e}")
         return {"success": False, "error": str(e)}
@@ -1610,6 +1679,50 @@ async def dashboard_get_stock_out(
         logger.error(f"GET /stock-out error: {e}")
         return {"success": False, "error": str(e)}
 
+@router.get("/food-orders")
+async def dashboard_get_food_orders(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """List food orders linked to console sessions (from food_cart)."""
+    try:
+        sql = """
+            SELECT fc.id, fc.booking_id, fc.item_name, fc.quantity, fc.unit_price,
+                   (fc.quantity * fc.unit_price) as line_total,
+                   fc.created_at, fc.fulfilled_at,
+                   cb.console_id, cb.member_id, cb.status as booking_status,
+                   cb.start_time
+            FROM food_cart fc
+            JOIN console_booking cb ON CAST(fc.booking_id AS UNSIGNED) = cb.id
+            ORDER BY fc.id DESC
+            LIMIT %s OFFSET %s
+        """
+        rows = _mysql_query(sql, (limit, offset))
+        count_row = _mysql_query_one("SELECT COUNT(*) as total FROM food_cart")
+        total = count_row["total"] if count_row else 0
+
+        entries = []
+        for r in rows:
+            entries.append({
+                "id": r["id"],
+                "booking_id": r.get("booking_id"),
+                "item_name": r.get("item_name"),
+                "quantity": r.get("quantity"),
+                "unit_price": float(r.get("unit_price") or 0),
+                "line_total": float(r.get("line_total") or 0),
+                "console_id": r.get("console_id"),
+                "member_id": r.get("member_id"),
+                "booking_status": r.get("booking_status"),
+                "start_time": str(r["start_time"]) if r.get("start_time") else None,
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+                "fulfilled_at": str(r["fulfilled_at"]) if r.get("fulfilled_at") else None,
+            })
+        return {"success": True, "data": entries, "total": total}
+    except Exception as e:
+        logger.error(f"GET /food-orders error: {e}")
+        return {"success": False, "error": str(e)}
+
 @router.delete("/stock-out/{entry_id}")
 async def dashboard_delete_stock_out(entry_id: int, user: dict = Depends(get_current_user)):
     """Delete a stock-out record and restore inventory quantity."""
@@ -2089,10 +2202,16 @@ async def get_finance_balances(user: dict = Depends(get_current_user)):
             _k = "inject|" + _r["account"]
             if _k in cash_map:
                 cash_map[_k] -= float(_r["total"] or 0)
+        # Also subtract advance settlement injects — these are recoveries of previously deducted advances, NOT new cash
+        _adv_settle_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND note LIKE CONCAT('Advance settled', CHAR(37)) GROUP BY account")
+        for _r in _adv_settle_rows:
+            _k = "inject|" + _r["account"]
+            if _k in cash_map:
+                cash_map[_k] -= float(_r["total"] or 0)
         key_to_name = {"cash": "Cash", "wave": "Wave", "kpay": "KPay", "aya_pay": "AYA Pay", "kbz_bank": "KBZ Bank", "acm_acc": "ACM's Acc"}
         # Capital expenditure queries (all from KBZ Bank)
         _asset_purchases = _mqo("SELECT COALESCE(SUM(per_price * qty), 0) as total FROM finance_assets WHERE status = 'active'")
-        _advances_total = _mqo("SELECT COALESCE(SUM(amount), 0) as total FROM finance_advances")
+        _advances_total = _mqo("SELECT COALESCE(SUM(amount), 0) as total FROM finance_advances WHERE status='pending' OR status IS NULL")
         _prepaid_total = _mqo("SELECT COALESCE(SUM(amount), 0) as total FROM finance_prepaid")
         _disposal_proceeds = _mqo("SELECT COALESCE(SUM(disposal_amount), 0) as total FROM finance_assets WHERE status = 'disposed' AND disposal_amount > 0")
         result = []
@@ -2425,7 +2544,7 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
             db = db_acct[key]
             t_in = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_in'", (db,))["t"] or 0)
             t_out = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_out'", (db,))["t"] or 0)
-            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37))))", (db,))["t"] or 0)
+            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Advance settled', CHAR(37))))", (db,))["t"] or 0)
             ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject'", (db,))["t"] or 0)
 
             # t_out is stored as negative in DB, so + t_out works (= subtract)
@@ -2433,7 +2552,7 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
 
             if key == "kbz_bank":
                 ded_assets = float(_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active'")["t"] or 0)
-                ded_adv = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances")["t"] or 0)
+                ded_adv = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL")["t"] or 0)
                 ded_prep = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid")["t"] or 0)
                 bal = bal - ded_assets - ded_adv - ded_prep
 
@@ -2517,9 +2636,9 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
         total_liab = member_liab
         total_liab_eq = round(total_liab + total_eq, 0)
         total_assets = round(total_assets, 0)
-        # Small rounding/data-entry gap auto-balance (only for minor discrepancies < 100K)
+        # Data-entry / rounding gap auto-balance (large gaps now handled by advance recovery above)
         _bs_diff = round(total_assets - total_liab_eq, 0)
-        if abs(_bs_diff) > 10 and abs(_bs_diff) < 100000:
+        if abs(_bs_diff) > 10:
             retained += _bs_diff
             retained = round(retained, 0)
             total_eq = icap + retained
@@ -2543,13 +2662,13 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
 # ── Financial Statement: Cash Flow (Redesigned) ──
 @router.get("/financial/cashflow")
 async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(get_current_user)):
-    """Cash Flow Statement — closing balance matches Web Finance Balances."""
+    """Cash Flow Statement — KBZ = Capital Account, Store accounts = Operating."""
     from mysql_db import query as _mq, query_one as _mqo
     ym = f"{year:04d}-{month:02d}"
     try:
-        # Opening: all KBZ capital deposits
-        ki_all = _mq("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account='KBZ Bank' AND movement_type='transfer_in'", ())
-        opener = float(ki_all[0]["t"]) if ki_all else 0
+        # Opening balance from shareholders (NOT from all KBZ transfer_in records)
+        _sh = _mq("SELECT COALESCE(SUM(capital_contribution),0) as tc FROM shareholders")
+        opener = float(_sh[0]["tc"] or 0) if _sh else 0
 
         # ─── Per-account calculation (same as Web Finance) ───
         acct_keys = ["cash","wave","aya_pay","kpay","kbz_bank","acm_acc"]
@@ -2608,18 +2727,24 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
         for _r in _mq("SELECT movement_type, account, COALESCE(SUM(amount),0) as t FROM cash_movements GROUP BY movement_type, account"):
             cm[f"{_r['movement_type']}|{_r['account']}"] = float(_r["t"] or 0)
 
-        # Remove inject entries that duplicate topups
+        # Remove inject entries that duplicate topups + advance settlements (not new cash)
         bi = _mq("SELECT account, COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37))) GROUP BY account")
         for _r in bi:
             k = "inject|" + _r["account"]
             if k in cm: cm[k] -= float(_r["t"] or 0)
+        # Also remove advance settlement injects
+        _as = _mq("SELECT account, COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND note LIKE CONCAT('Advance settled', CHAR(37)) GROUP BY account")
+        for _r in _as:
+            k = "inject|" + _r["account"]
+            if k in cm: cm[k] -= float(_r["t"] or 0)
 
-        # Capital expenditure
+        # Capital expenditure (all paid from KBZ Bank)
         _ap = float((_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active'") or {}).get("t",0))
-        _av = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances") or {}).get("t",0))
+        _av = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL") or {}).get("t",0))
         _pp = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid") or {}).get("t",0))
         _dp = float((_mqo("SELECT COALESCE(SUM(disposal_amount),0) as t FROM finance_assets WHERE status='disposed' AND disposal_amount > 0") or {}).get("t",0))
 
+        # Per-account balances (verification only — closing from total_bal)
         total_bal = 0.0
         for k in acct_keys:
             db = key2name[k]
@@ -2628,46 +2753,67 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                 bal = bal - _ap - _av - _pp + _dp
             total_bal += bal
 
-        # Stock = ejections
-        total_stock = sum(cm.get(f"eject|{db}",0) for db in key2name.values())
+        # ─── KBZ Bank specific flows ───
+        kbz_opex = opex.get("kbz_bank", 0)
+        kbz_eject = cm.get("eject|KBZ Bank", 0)
+        kbz_inject = cm.get("inject|KBZ Bank", 0)  # Already excludes topup + advance settlement injects
+        # Extra capital beyond shareholders (KBZ transfer_in - shareholders capital)
+        _kbz_tin = _mq("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account='KBZ Bank' AND movement_type='transfer_in'", ())
+        kbz_transfer_in_total = float(_kbz_tin[0]["t"]) if _kbz_tin else 0
+        extra_capital = kbz_transfer_in_total - opener  # 300,190,000 - 300,000,000 = 190,000
 
-        # Advance recovery (KBZ inject with Advance settled note)
-        _adv_rec = _mq("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND account='KBZ Bank' AND note LIKE 'Advance settled%%'", ())
-        adv_rec = float(_adv_rec[0]["t"]) if _adv_rec else 0
+        # ─── Build sections ───
 
-        net_op = inc_total - opex_total - total_stock
-        net_inv = adv_rec + _dp - _ap - _av - _pp
+        # Section 1: Capital Activities (KBZ Bank flows)
+        cap_items = []
+        if _ap: cap_items.append({"label": "PS5 Consoles & Equipment", "emoji": "🎮", "amount": round(_ap, 0), "type": "outflow"})
+        if _pp: cap_items.append({"label": "Prepaid Expenses (Rent/Lease)", "emoji": "📅", "amount": round(_pp, 0), "type": "outflow"})
+        if _av: cap_items.append({"label": "Advances (Unsettled)", "emoji": "📋", "amount": round(_av, 0), "type": "outflow"})
+        if kbz_opex: cap_items.append({"label": "KBZ Operating Expenses", "emoji": "📉", "amount": round(kbz_opex, 0), "type": "outflow"})
+        if kbz_eject: cap_items.append({"label": "Other KBZ Outflows", "emoji": "💸", "amount": round(kbz_eject, 0), "type": "outflow"})
+        if extra_capital: cap_items.append({"label": "Additional Capital Injected", "emoji": "💰", "amount": round(extra_capital, 0), "type": "inflow"})
+        # Note: Advance settlement injects are excluded — they are recoveries of previously deducted advances, NOT new capital
+        if kbz_inject > 1: cap_items.append({"label": "Other Injections", "emoji": "➕", "amount": round(kbz_inject, 0), "type": "inflow"})
+        if _dp: cap_items.append({"label": "Asset Sale Proceeds", "emoji": "♻️", "amount": round(_dp, 0), "type": "inflow"})
+
+        cap_net = extra_capital + kbz_inject + _dp - _ap - _pp - _av - kbz_opex - kbz_eject
+
+        # Section 2: Operating Activities (Store accounts: Cash + KPay + Wave + AYA + ACM)
+        store_keys = ["cash", "wave", "aya_pay", "kpay", "acm_acc"]
+        store_inc = sum(inc.get(k, 0) for k in store_keys)
+        store_opex = sum(opex.get(k, 0) for k in store_keys)
+
+        # Stock purchases (eject from non-KBZ accounts)
+        total_stock = sum(cm.get(f"eject|{key2name[k]}",0) for k in store_keys)
+
+        # Net internal transfers between accounts (store transfer_in - transfer_out)
+        net_transfers = 0.0
+        for k in store_keys:
+            db = key2name[k]
+            net_transfers += cm.get(f"transfer_in|{db}",0) - abs(cm.get(f"transfer_out|{db}",0))
 
         op_items = [
-            {"label": "Game & Top-up Income", "emoji": "🎮", "amount": round(inc_total, 0), "type": "inflow"},
-            {"label": "Operating Expenses", "emoji": "📉", "amount": round(opex_total, 0), "type": "outflow"},
+            {"label": "Game & Top-up Income", "emoji": "🎮", "amount": round(store_inc, 0), "type": "inflow"},
+            {"label": "Store Operating Expenses", "emoji": "📉", "amount": round(store_opex, 0), "type": "outflow"},
             {"label": "Stock Purchases", "emoji": "📦", "amount": round(total_stock, 0), "type": "outflow"},
         ]
+        if abs(net_transfers) > 10:
+            op_items.append({"label": "Net Account Transfers", "emoji": "🔄", "amount": round(net_transfers, 0), "type": "inflow" if net_transfers >= 0 else "outflow"})
 
-        inv_items = []
-        if _ap: inv_items.append({"label": "PS5 Consoles & Equipment", "emoji": "🎮", "amount": round(_ap, 0), "type": "outflow"})
-        if _av: inv_items.append({"label": "Advances Paid", "emoji": "📋", "amount": round(_av, 0), "type": "outflow"})
-        if _pp: inv_items.append({"label": "Prepaid Expenses", "emoji": "📅", "amount": round(_pp, 0), "type": "outflow"})
-        if adv_rec: inv_items.append({"label": "Advance Recovered (Furniture)", "emoji": "♻️", "amount": round(adv_rec, 0), "type": "inflow"})
-        if _dp: inv_items.append({"label": "Asset Sale Proceeds", "emoji": "♻️", "amount": round(_dp, 0), "type": "inflow"})
-        if not inv_items:
-            inv_items.append({"label": "No investing activity", "emoji": "➖", "amount": 0, "type": "inflow"})
-
-        total_in = inc_total + adv_rec + _dp
-        total_out = opex_total + total_stock + _ap + _av + _pp
+        op_net = store_inc - store_opex - total_stock + net_transfers
 
         return {"success": True, "data": {
             "period": ym,
             "opening_balance": round(opener, 0),
             "sections": {
-                "operating": {"title": "Daily Operations", "items": op_items, "subtotal": round(net_op, 0)},
-                "investing": {"title": "Investing Activities", "items": inv_items, "subtotal": round(net_inv, 0)}
+                "capital": {"title": "Capital Account (KBZ Bank)", "items": cap_items, "subtotal": round(cap_net, 0)},
+                "operating": {"title": "Store Operations", "items": op_items, "subtotal": round(op_net, 0)}
             },
             "summary": {
                 "opening_balance": round(opener, 0),
-                "total_inflows": round(total_in, 0),
-                "total_outflows": round(total_out, 0),
-                "net_change": round(net_op + net_inv, 0),
+                "capital_net": round(cap_net, 0),
+                "operating_net": round(op_net, 0),
+                "net_change": round(total_bal - opener, 0),
                 "closing_balance": round(total_bal, 0)
             }
         }}
@@ -2769,61 +2915,140 @@ async def capital_eject(req: dict, user: dict = Depends(get_current_user)):
 
 # ── Profit Distribution ──
 @router.get('/profit-distribution/calculate')
-async def calculate_profit_distribution(user: dict = Depends(get_current_user)):
-    """Calculate profit distribution: 10% mgmt fee -> proportional split"""
+async def calculate_profit_distribution(
+    user: dict = Depends(get_current_user),
+    period: str = None
+):
+    """Calculate profit distribution: 10% mgmt fee -> proportional split.
+    Uses the SAME revenue/COGS/depreciation logic as the monthly P&L endpoint.
+    
+    Query params:
+        period (optional): YYYY-MM format, defaults to current month.
+    """
     from mysql_db import query as _mq
     import pymysql
+    import stock_fifo
     from datetime import datetime, date
     
-    try:
-        from fifo_wallet import get_all_fifo
+    # ── Period resolution ──
+    today = date.today()
+    if period:
         try:
-            _fc = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_PASSWORD", ""), database="psvibe_api")
-            _fr = get_all_fifo(_fc); _fc.close()
+            year, month = map(int, period.split('-'))
         except Exception:
-            _fr = {"liability": 0}
+            year, month = today.year, today.month
+    else:
+        year, month = today.year, today.month
+    ym = f"{year:04d}-{month:02d}"
+    first_of_month = f"{year:04d}-{month:02d}-01"
+    
+    # ── 1. Revenue (ALIGNED with PNL) ──
+    # Game revenue: sales_daily net, exclude Topup/New member notes
+    rev_rows = _mq(
+        "SELECT net, gross, notes FROM sales_daily "
+        "WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s AND gross > 0",
+        (ym,)
+    )
+    total_sales = 0.0
+    for r in rev_rows:
+        n = float(r.get("net") or 0)
+        notes = (r.get("notes") or "")
+        if notes.startswith("Topup") or notes.startswith("New member"):
+            continue
+        total_sales += n
+    
+    # Food revenue: stock_out (actual items × unit_price)
+    frows = _mq(
+        "SELECT COALESCE(SUM(total), 0) as t FROM stock_out "
+        "WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s",
+        (ym,)
+    )
+    food_rev = float(frows[0]["t"] or 0) if frows else 0
+    
+    # Game revenue = total_sales - food_rev (food is embedded in sales_daily)
+    game_rev = max(0.0, total_sales - food_rev)
+    
+    # Wallet consumed: FIFO liability consumed during period
+    try:
+        _fc = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+        _fr = __import__("fifo_wallet").get_all_fifo(_fc)
+        _fc.close()
+        wallet_consumed = float(_fr.get("consumed", 0))
     except Exception:
-        _fr = {"liability": 0}
+        wallet_consumed = 0.0
     
-    rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
-    total_income = 0.0
-    for row in rows:
-        note = (row.get("notes") or "")
-        if note.startswith("Topup") or note.startswith("New member"): continue
-        net_amount = float(row.get("net") or 0)
-        total_income += net_amount
+    total_revenue = game_rev + food_rev + wallet_consumed
     
-    opex = _mq("SELECT COALESCE(SUM(amount),0) as t FROM opex")
-    total_expense = float(opex[0]["t"] or 0) if opex else 0
+    # ── 2. Operating expenses (ALIGNED with PNL) ──
+    opex_rows = _mq(
+        "SELECT category, COALESCE(SUM(amount),0) as total FROM opex "
+        "WHERE DATE_FORMAT(expense_date, '%%Y-%%m') = %s "
+        "GROUP BY category ORDER BY total DESC",
+        (ym,)
+    )
+    total_expense = sum(float(r["total"]) for r in opex_rows) if opex_rows else 0.0
     
-    dep = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets")
-    total_dep = float(dep[0]["t"] or 0) if dep else 0
+    # ── 3. COGS — food stock FIFO (ALIGNED with PNL) ──
+    try:
+        _sfc = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+        _sfr = stock_fifo.calc_fifo(_sfc)
+        _sfc.close()
+        cogs = _sfr["cogs"]
+    except Exception:
+        cogs = 0.0
     
-    cogs_sum = 0.0
-    cogs = _mq("SELECT unit_cost, quantity FROM stock_in WHERE unit_cost IS NOT NULL AND unit_cost > 0")
-    for c in cogs:
-        cogs_sum += float(c["unit_cost"] or 0) * float(c["quantity"] or 0)
+    # ── 4. Depreciation (ALIGNED with PNL: purchase_date < first_of_month) ──
+    dep_rows = _mq(
+        "SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets "
+        "WHERE status='active' AND useful_life > 0 AND purchase_date < %s",
+        (first_of_month,)
+    )
+    total_dep = float(dep_rows[0]["t"] or 0) if dep_rows else 0.0
     
-    net_profit = total_income - total_expense - cogs_sum - total_dep - float(_fr.get("liability", 0))
+    # ── 5. Net profit (ALIGNED with PNL) ──
+    gross_profit = total_revenue - cogs
+    net_profit = gross_profit - total_expense - total_dep
     
     mgmt_fee = round(net_profit * 0.10, 0) if net_profit > 0 else 0
     distributable = round(net_profit * 0.90, 0) if net_profit > 0 else 0
     
-    sh = _mq("SELECT id, name, ownership_pct FROM shareholders ORDER BY id")
+    sh = _mq("SELECT id, name, role, ownership_pct FROM shareholders ORDER BY id")
     shares = []
+    mgmt_fee_to = None
+    max_pct = 0
     for s in sh:
         pct = float(s["ownership_pct"] or 0)
         share_amt = round(distributable * pct / 100, 0) if distributable > 0 else 0
         shares.append({"shareholder_id": s["id"], "name": s["name"], "ownership_pct": pct, "share_amount": share_amt})
+        # Management fee goes to Founder, or highest-ownership shareholder
+        if s.get("role") == "Founder":
+            mgmt_fee_to = s["name"]
+        if pct > max_pct:
+            max_pct = pct
+            if mgmt_fee_to is None:
+                mgmt_fee_to = s["name"]
+    if mgmt_fee_to is None:
+        mgmt_fee_to = shares[0]["name"] if shares else "Unknown"
     
     return {"success": True, "data": {
         "net_profit": round(net_profit, 0),
         "management_fee_pct": 10,
         "management_fee": mgmt_fee,
-        "management_fee_to": "Aung Chan Myint",
+        "management_fee_to": mgmt_fee_to,
         "distributable_amount": distributable,
         "shareholders": shares,
-        "period": datetime.now().strftime("%Y-%m"),
+        "period": ym,
+        "pnl_matched": True,
+        "breakdown": {
+            "game_revenue": round(game_rev, 0),
+            "food_revenue": round(food_rev, 0),
+            "wallet_consumed": round(wallet_consumed, 0),
+            "total_revenue": round(total_revenue, 0),
+            "cogs": round(cogs, 0),
+            "gross_profit": round(gross_profit, 0),
+            "total_expense": round(total_expense, 0),
+            "depreciation": round(total_dep, 0)
+        },
         "is_profitable": net_profit > 0
     }}
 
@@ -5023,4 +5248,85 @@ async def dashboard_change_password(req: dict, user: dict = Depends(get_current_
         return {"success": True, "message": "Password changed successfully"}
     except Exception as e:
         logger.error(f"change-password error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  CUSTOMER FEEDBACK
+# ══════════════════════════════════════════════════════════════════
+@router.get("/feedback")
+async def dashboard_feedback_summary(user: dict = Depends(get_current_user), date: str = Query(None), limit: int = Query(100)):
+    """Return all customer feedback with optional date filter."""
+    try:
+        if date:
+            rows = _mysql_query(
+                "SELECT cf.*, cb.member_id, cb.staff_name, cb.console_id as booking_console_id, "
+                "cb.booking_date, cb.duration_mins, cb.game_name "
+                "FROM customer_feedback cf "
+                "LEFT JOIN console_booking cb ON cf.booking_id = cb.id "
+                "WHERE DATE(cf.created_at) = %s "
+                "ORDER BY cf.created_at DESC LIMIT %s",
+                (date, limit)
+            )
+        else:
+            rows = _mysql_query(
+                "SELECT cf.*, cb.member_id, cb.staff_name, cb.console_id as booking_console_id, "
+                "cb.booking_date, cb.duration_mins, cb.game_name "
+                "FROM customer_feedback cf "
+                "LEFT JOIN console_booking cb ON cf.booking_id = cb.id "
+                "ORDER BY cf.created_at DESC LIMIT %s",
+                (limit,)
+            )
+
+        # Stats
+        stats_rows = _mysql_query(
+            "SELECT "
+            "  COUNT(*) AS total, "
+            "  ROUND(AVG(rating), 1) AS avg_rating, "
+            "  SUM(CASE WHEN rating >= 4 THEN 1 ELSE 0 END) AS positive, "
+            "  SUM(CASE WHEN rating = 3 THEN 1 ELSE 0 END) AS neutral, "
+            "  SUM(CASE WHEN rating <= 2 THEN 1 ELSE 0 END) AS negative, "
+            "  COUNT(CASE WHEN comment != '' AND comment IS NOT NULL THEN 1 END) AS with_comments "
+            "FROM customer_feedback"
+            + (" WHERE DATE(created_at) = %s" if date else ""),
+            (date,) if date else ()
+        )
+
+        # Daily breakdown (last 14 days)
+        daily_rows = _mysql_query(
+            "SELECT DATE(created_at) AS day, COUNT(*) AS cnt, ROUND(AVG(rating), 1) AS avg_rating "
+            "FROM customer_feedback "
+            "WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 14 DAY) "
+            "GROUP BY DATE(created_at) ORDER BY day DESC"
+        )
+
+        return {
+            "success": True,
+            "feedbacks": [{
+                "id": r["id"],
+                "tg_id": r.get("tg_id"),
+                "username": r.get("username"),
+                "booking_id": r.get("booking_id"),
+                "rating": r["rating"],
+                "comment": r.get("comment") or "",
+                "console_id": r.get("console_id") or r.get("booking_console_id") or "",
+                "member_id": r.get("member_id") or "",
+                "staff_name": r.get("staff_name") or "",
+                "booking_date": str(r["booking_date"]) if r.get("booking_date") else "",
+                "duration_mins": r.get("duration_mins") or 0,
+                "game_name": r.get("game_name") or "",
+                "created_at": r["created_at"].strftime("%Y-%m-%d %H:%M") if r.get("created_at") else "",
+            } for r in rows],
+            "stats": {
+                "total": stats_rows[0]["total"] if stats_rows else 0,
+                "avg_rating": float(stats_rows[0]["avg_rating"] or 0) if stats_rows else 0,
+                "positive": stats_rows[0]["positive"] or 0 if stats_rows else 0,
+                "neutral": stats_rows[0]["neutral"] or 0 if stats_rows else 0,
+                "negative": stats_rows[0]["negative"] or 0 if stats_rows else 0,
+                "with_comments": stats_rows[0]["with_comments"] or 0 if stats_rows else 0,
+            },
+            "daily": [{"day": str(d["day"]), "cnt": d["cnt"], "avg_rating": float(d["avg_rating"] or 0)} for d in daily_rows],
+        }
+    except Exception as e:
+        logger.error(f"dashboard/feedback error: {e}")
         return {"success": False, "error": str(e)}
