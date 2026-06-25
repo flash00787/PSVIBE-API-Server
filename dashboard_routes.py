@@ -1,7 +1,7 @@
 """PS VIBE Dashboard — Dashboard Data API Endpoints"""
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -341,6 +341,17 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
 
         if not updates:
             return {"success": False, "error": "No fields to update"}
+
+        # 🐛 Fix Jun 25: Auto-calculate end_time when start_time or duration_mins changes
+        if "end_time" not in req:
+            _eff_start = req.get("start_time") or existing.get("start_time")
+            _eff_dur = int(req.get("duration_mins") or existing.get("duration_mins") or 0)
+            if _eff_start and _eff_dur > 0:
+                if isinstance(_eff_start, str):
+                    _eff_start = datetime.fromisoformat(str(_eff_start))
+                _eff_end = _eff_start + timedelta(minutes=_eff_dur)
+                updates.append("end_time = %s")
+                params.append(_eff_end.strftime("%Y-%m-%d %H:%M:%S"))
 
         params.append(booking_id)
         _mysql_execute(f"UPDATE console_booking SET {', '.join(updates)} WHERE id = %s", tuple(params))

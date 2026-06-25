@@ -97,6 +97,10 @@ def _sync_console_status(console_id):
     """Derive console_status from current booking table.
     Called after each booking mutation to prevent status drift."""
     try:
+        # 🐛 Fix Jun 25: Use MMT time for comparisons (DB stores times in MMT, not UTC)
+        _now_mmt = now_mmt()
+        _now_mmt_str = _now_mmt.strftime('%Y-%m-%d %H:%M:%S')
+        _now_plus_60 = (_now_mmt + timedelta(minutes=60)).strftime('%Y-%m-%d %H:%M:%S')
         active = _mysql_query_one(
             "SELECT id, member_id, game_name, start_time FROM console_booking "
             "WHERE console_id=%s AND status='Active' ORDER BY id DESC LIMIT 1",
@@ -132,15 +136,15 @@ def _sync_console_status(console_id):
                     )
                 else:
                     _mysql_exec(
-                        "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=NOW() WHERE console_id=%s",
-                        (active.get('member_id', ''), active.get('game_name', ''), console_id)
+                        "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=%s WHERE console_id=%s",
+                        (active.get('member_id', ''), active.get('game_name', ''), _now_mmt_str, console_id)
                     )
             return
         # Check for confirmed or checked_in bookings within 60-min window
         confirmed = _mysql_query_one(
             "SELECT id, member_id, game_name FROM console_booking "
-            "WHERE console_id=%s AND status IN ('confirmed','checked_in') AND start_time <= DATE_ADD(NOW(), INTERVAL 60 MINUTE) AND end_time >= NOW() ORDER BY id DESC LIMIT 1",
-            (console_id,)
+            "WHERE console_id=%s AND status IN ('confirmed','checked_in') AND start_time <= %s AND end_time >= %s ORDER BY id DESC LIMIT 1",
+            (console_id, _now_plus_60, _now_mmt_str)
         )
         if confirmed:
             _mysql_exec(
@@ -1567,30 +1571,37 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                 _app_conn.close()
                 return JSONResponse(content={"success": False, "message": "Booking already processed or cannot be cancelled"}, status_code=409)
             # ✅ Overlap check BEFORE confirming — prevent double-booking (2026-06-19)
+            # 🐛 Fix Jun 25: Use requested console_id for overlap check, not existing one
             if status == "confirmed":
                 _bk = _mysql_query_one(
                     "SELECT console_id, start_time, end_time FROM console_booking WHERE id=%s",
                     (booking_id,)
                 )
-                if _bk and _bk.get("console_id") and _bk.get("start_time") and _bk.get("end_time"):
-                    _app_cur.execute(
-                        "SELECT id FROM console_booking WHERE console_id=%s"
-                        " AND status IN ('confirmed','pending','pending_check_in','checked_in','Active')"
-                        " AND id != %s"
-                        " AND NOT (end_time <= %s OR start_time >= %s)"
-                        " LIMIT 1 FOR UPDATE",
-                        (_bk["console_id"], booking_id, _bk["start_time"], _bk["end_time"])
-                    )
-                    _conflict = _app_cur.fetchone()
-                    if _conflict:
-                        _app_conn.rollback()
-                        _app_conn.close()
-                        return JSONResponse(content={
-                            "success": False,
-                            "error": f"⏰ Console {_bk['console_id']} already has a confirmed booking (BK#{_conflict['id']}) at this time slot",
-                            "conflict_id": _conflict["id"]
-                        }, status_code=409)
+                if _bk and _bk.get("start_time") and _bk.get("end_time"):
+                    _check_cid = req.get("consoleId") or _bk.get("console_id", "")
+                    if _check_cid:
+                        _app_cur.execute(
+                            "SELECT id FROM console_booking WHERE console_id=%s"
+                            " AND status IN ('confirmed','pending','pending_check_in','checked_in','Active')"
+                            " AND id != %s"
+                            " AND NOT (end_time <= %s OR start_time >= %s)"
+                            " LIMIT 1 FOR UPDATE",
+                            (_check_cid, booking_id, _bk["start_time"], _bk["end_time"])
+                        )
+                        _conflict = _app_cur.fetchone()
+                        if _conflict:
+                            _app_conn.rollback()
+                            _app_conn.close()
+                            return JSONResponse(content={
+                                "success": False,
+                                "error": f"⏰ Console {_check_cid} already has a confirmed booking (BK#{_conflict['id']}) at this time slot",
+                                "conflict_id": _conflict["id"]
+                            }, status_code=409)
+            _old_console_id = None  # track old console for status sync after move
             if req.get("consoleId"):
+                _bk_old = _mysql_query_one("SELECT console_id FROM console_booking WHERE id=%s", (booking_id,))
+                if _bk_old:
+                    _old_console_id = _bk_old.get("console_id", "")
                 _app_cur.execute("UPDATE console_booking SET console_id=%s WHERE id=%s", (req["consoleId"], booking_id))
             # Sync console_status in same transaction — prevent drift on partial failure
             _cid = req.get("consoleId") or _mysql_query_one("SELECT console_id FROM console_booking WHERE id=%s", (booking_id,))
@@ -1608,9 +1619,10 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                         (booking_id,)
                     ) or {}
                     _member_name = _bk_info.get("staff_name", "") or _bk_info.get("member_id", "") or ""
+                    _now_mmt_str = now_mmt().strftime('%Y-%m-%d %H:%M:%S')
                     _app_cur.execute(
-                        "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=NOW() WHERE console_id=%s",
-                        (_member_name, _bk_info.get("game_name", "") or "", _console_id)
+                        "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=%s WHERE console_id=%s",
+                        (_member_name, _bk_info.get("game_name", "") or "", _now_mmt_str, _console_id)
                     )
                 elif status in ("rejected", "cancelled"):
                     _app_cur.execute("UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s", (_console_id,))
@@ -1623,6 +1635,12 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                         _sync_console_status(_console_id)
                     except Exception:
                         pass
+            # 🐛 Fix Jun 25: Also sync old console when booking was moved to a new console
+            if _old_console_id and _old_console_id != (_cid if isinstance(_cid, str) else _cid.get("console_id", "") if _cid else ""):
+                try:
+                    _sync_console_status(_old_console_id)
+                except Exception:
+                    pass
         except Exception:
             _app_conn.rollback()
             raise
@@ -2820,17 +2838,8 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)) -> JSONRe
                 )
                 bk_id = cur.lastrowid
 
-                # Sync console_status inside transaction — prevent drift
-                if console_id:
-                    if _bk_status == "confirmed":
-                        # Only set Reserved if booking starts within 60 minutes
-                        if start_dt <= now_mmt() + timedelta(minutes=60):
-                            cur.execute(
-                                "UPDATE console_status SET status='Reserved', current_member=%s, start_time=NULL WHERE console_id=%s",
-                                (bk_member_id or customer_name, console_id)
-                            )
-                        # else: booking is too far in the future — don't hold the console
-                    # For pending bookings, leave console_status as-is (staff will approve later)
+                # console_status sync deferred to after commit — _sync_console_status()
+                # derives the correct status (Active > Reserved > Free) safely.
 
                 conn.commit()
             except Exception as _tx_err:
@@ -2841,6 +2850,13 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)) -> JSONRe
                 try:
                     conn.close()
                 except:
+                    pass
+
+            # Sync console_status after commit (derives correct status: Active > Reserved > Free)
+            if console_id:
+                try:
+                    _sync_console_status(console_id)
+                except Exception:
                     pass
 
             # Send admin notification (fire-and-forget — don't block response)
