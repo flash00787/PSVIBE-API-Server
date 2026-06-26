@@ -1452,7 +1452,7 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
                 "✅ *Customer Checked In!*\n━━━━━━━━━━━━━━━━━━\n"
                 f"👤 Member: `{booking.get('member_id', '')}`\n"
                 f"🎮 Console: `{console_id}`\n"
-                f"⏱ Time: `{datetime.now(timezone.utc).strftime('%H:%M')} MMT`\n"
+                f"⏱ Time: `{now_mmt().strftime('%H:%M')} MMT`\n"
                 f"📋 Status: Checked In (Session မစသေးပါ)\n"
                 f"━━━━━━━━━━━━━━━━━━"
             )
