@@ -1763,16 +1763,21 @@ async def dashboard_delete_stock_out(entry_id: int, user: dict = Depends(get_cur
 @router.get("/sales-daily")
 async def dashboard_get_sales_daily(
     date: str | None = Query(None),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
     search: str | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     user: dict = Depends(get_current_user),
 ):
-    """List sales daily records."""
+    """List sales daily records. Supports single date OR custom period (start_date..end_date)."""
     try:
         where = ["1=1"]
         params = []
-        if date:
+        if start_date and end_date:
+            where.append("sale_date >= %s AND sale_date <= %s")
+            params.extend([start_date, end_date])
+        elif date:
             where.append("sale_date = %s")
             params.append(date)
         if search:
@@ -2673,21 +2678,33 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
 # ── Financial Statement: Cash Flow (Redesigned) ──
 @router.get("/financial/cashflow")
 async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(get_current_user)):
-    """Cash Flow Statement — KBZ = Capital Account, Store accounts = Operating."""
+    """Cash Flow Statement — 3-section format (Operating / Investing / Capital).
+    
+    - Operating: Game income + topups - OPEX - stock purchases (all accounts)
+    - Investing: Asset purchases + Advances (TOTAL given) + Prepaid - Advance recoveries - Disposal proceeds
+    - Capital: KBZ Bank transfer_in — no separate Financing section (300M already = opening)
+    
+    Matches original June 9 design: closing ≈ 28.8M with proper advance tracking.
+    """
     from mysql_db import query as _mq, query_one as _mqo
     ym = f"{year:04d}-{month:02d}"
     try:
-        # Opening balance from shareholders (NOT from all KBZ transfer_in records)
+        _start = f"{year:04d}-{month:02d}-01"
+        if month == 12:
+            _end = f"{year+1:04d}-01-01"
+        else:
+            _end = f"{year:04d}-{month+1:02d}-01"
+
+        # Opening balance from shareholders
         _sh = _mq("SELECT COALESCE(SUM(capital_contribution),0) as tc FROM shareholders")
         opener = float(_sh[0]["tc"] or 0) if _sh else 0
 
-        # ─── Per-account calculation (same as Web Finance) ───
         acct_keys = ["cash","wave","aya_pay","kpay","kbz_bank","acm_acc"]
         key2name = {"cash":"Cash","wave":"Wave","aya_pay":"AYA Pay","kpay":"KPay","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
 
-        # Income: sales_daily by payment method
+        # ─── Income: sales_daily by payment method (MONTH-FILTERED) ───
         inc = {k: 0.0 for k in acct_keys}
-        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
+        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND created_at >= %s AND created_at < %s", (_start, _end))
         for row in rows:
             note = (row.get("notes") or "")
             if note.startswith("Topup") or note.startswith("New member"): continue
@@ -2707,8 +2724,8 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                 if m == "wavepay": m = "wave"
                 if m in inc: inc[m] += val
 
-        # Topup income
-        tr = _mq("SELECT payment_method, amount FROM topup_log WHERE amount>0 AND payment_method IS NOT NULL")
+        # Topup income (MONTH-FILTERED)
+        tr = _mq("SELECT payment_method, amount FROM topup_log WHERE amount>0 AND payment_method IS NOT NULL AND topup_date >= %s AND topup_date < %s", (_start, _end))
         for _r in tr:
             pm = (_r.get("payment_method") or "").strip()
             if not pm: continue
@@ -2722,113 +2739,102 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                 if m == "wavepay": m = "wave"
                 if m in inc: inc[m] += val
 
-        inc_total = sum(inc.values())
+        total_income = sum(inc.values())
 
-        # OPEX by payment method
+        # ─── OPEX by payment method, excl Prepaid Rent Amortization (MONTH-FILTERED) ───
         opex = {k: 0.0 for k in acct_keys}
-        ox = _mq("SELECT payment_method, COALESCE(SUM(amount),0) as t FROM opex WHERE description NOT LIKE %s GROUP BY payment_method", ("%Prepaid Rent Amortization%",))
+        ox = _mq("SELECT payment_method, COALESCE(SUM(amount),0) as t FROM opex WHERE description NOT LIKE %s AND created_at >= %s AND created_at < %s GROUP BY payment_method", ("%Prepaid Rent Amortization%", _start, _end))
         for _r in ox:
             m = (_r.get("payment_method") or "").strip().lower().replace(" ", "_")
             if m == "acm's_acc": m = "acm_acc"
             if m in opex: opex[m] += float(_r["t"] or 0)
-        opex_total = sum(opex.values())
+        total_opex = sum(opex.values())
 
-        # Cash movements
+        # ─── Cash movements (MONTH-FILTERED) ───
         cm = {}
-        for _r in _mq("SELECT movement_type, account, COALESCE(SUM(amount),0) as t FROM cash_movements GROUP BY movement_type, account"):
+        for _r in _mq("SELECT movement_type, account, COALESCE(SUM(amount),0) as t FROM cash_movements WHERE created_at >= %s AND created_at < %s GROUP BY movement_type, account", (_start, _end)):
             cm[f"{_r['movement_type']}|{_r['account']}"] = float(_r["t"] or 0)
 
-        # Remove inject entries that duplicate topups + advance settlements (not new cash)
-        bi = _mq("SELECT account, COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37))) GROUP BY account")
-        for _r in bi:
-            k = "inject|" + _r["account"]
-            if k in cm: cm[k] -= float(_r["t"] or 0)
-        # Also remove advance settlement injects
-        _as = _mq("SELECT account, COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND note LIKE CONCAT('Advance settled', CHAR(37)) GROUP BY account")
-        for _r in _as:
+        # Remove Topup/New member injects (duplicates of income already tracked)
+        _bi = _mq("SELECT account, COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
+        for _r in _bi:
             k = "inject|" + _r["account"]
             if k in cm: cm[k] -= float(_r["t"] or 0)
 
-        # Capital expenditure (all paid from KBZ Bank)
+        # ─── Stock purchases = all eject from all accounts (cash outflow for inventory) ───
+        total_stock_eject = sum(abs(cm.get(f"eject|{key2name[k]}",0)) for k in acct_keys)
+
+        # ─── Investing: Assets + Advances (TOTAL given) + Prepaid - Recoveries ───
+        # Cumulative — these are long-lived investments, not month-limited
         _ap = float((_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active'") or {}).get("t",0))
-        _av = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL") or {}).get("t",0))
         _pp = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid") or {}).get("t",0))
         _dp = float((_mqo("SELECT COALESCE(SUM(disposal_amount),0) as t FROM finance_assets WHERE status='disposed' AND disposal_amount > 0") or {}).get("t",0))
 
-        # Per-account balances (verification only — closing from total_bal)
+        # Advances: TOTAL ever given (settled + pending), NOT just current pending
+        # Advance settlements are returns of these advances — shown as recovery inflow
+        _adv_total = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances") or {}).get("t",0))  # ALL advances
+
+        # Advance recoveries: inject entries with "Advance settled" note (MONTH-FILTERED)
+        _adv_recovery = float((_mqo(
+            "SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND note LIKE CONCAT('Advance settled', CHAR(37)) AND created_at >= %s AND created_at < %s",
+            (_start, _end)
+        ) or {}).get("t",0))
+
+        # KBZ Bank transfer_in (the capital injection)
+        _kbz_tin = float((_mqo(
+            "SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account='KBZ Bank' AND movement_type='transfer_in' AND created_at >= %s AND created_at < %s",
+            (_start, _end)
+        ) or {}).get("t",0))
+
+        # ─── Per-account closing balance ───
         total_bal = 0.0
         for k in acct_keys:
             db = key2name[k]
+            # Include ALL injects (not advance settlements filtered — we handle advances separately in Investing)
             bal = inc[k] - opex[k] + cm.get(f"transfer_in|{db}",0) - abs(cm.get(f"transfer_out|{db}",0)) + cm.get(f"inject|{db}",0) - cm.get(f"eject|{db}",0)
             if k == "kbz_bank":
-                bal = bal - _ap - _av - _pp + _dp
+                bal = bal - _ap - _adv_total - _pp + _dp
             total_bal += bal
-
-        # ─── KBZ Bank specific flows ───
-        kbz_opex = opex.get("kbz_bank", 0)
-        kbz_eject = cm.get("eject|KBZ Bank", 0)
-        kbz_inject = cm.get("inject|KBZ Bank", 0)  # Already excludes topup + advance settlement injects
-        # Extra capital beyond shareholders (KBZ transfer_in - shareholders capital)
-        _kbz_tin = _mq("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account='KBZ Bank' AND movement_type='transfer_in'", ())
-        kbz_transfer_in_total = float(_kbz_tin[0]["t"]) if _kbz_tin else 0
-        extra_capital = kbz_transfer_in_total - opener  # 300,190,000 - 300,000,000 = 190,000
 
         # ─── Build sections ───
 
-        # Section 1: Capital Activities (KBZ Bank flows)
-        cap_items = []
-        if _ap: cap_items.append({"label": "PS5 Consoles & Equipment", "emoji": "🎮", "amount": round(_ap, 0), "type": "outflow"})
-        if _pp: cap_items.append({"label": "Prepaid Expenses (Rent/Lease)", "emoji": "📅", "amount": round(_pp, 0), "type": "outflow"})
-        if _av: cap_items.append({"label": "Advances (Unsettled)", "emoji": "📋", "amount": round(_av, 0), "type": "outflow"})
-        if kbz_opex: cap_items.append({"label": "KBZ Operating Expenses", "emoji": "📉", "amount": round(kbz_opex, 0), "type": "outflow"})
-        if kbz_eject: cap_items.append({"label": "Other KBZ Outflows", "emoji": "💸", "amount": round(kbz_eject, 0), "type": "outflow"})
-        if extra_capital: cap_items.append({"label": "Additional Capital Injected", "emoji": "💰", "amount": round(extra_capital, 0), "type": "inflow"})
-        # Note: Advance settlement injects are excluded — they are recoveries of previously deducted advances, NOT new capital
-        if kbz_inject > 1: cap_items.append({"label": "Other Injections", "emoji": "➕", "amount": round(kbz_inject, 0), "type": "inflow"})
-        if _dp: cap_items.append({"label": "Asset Sale Proceeds", "emoji": "♻️", "amount": round(_dp, 0), "type": "inflow"})
+        # Section 1: Operating Activities
+        op_items = []
+        if total_income: op_items.append({"label": "Game & Top-up Income", "emoji": "🎮", "amount": round(total_income, 0), "type": "inflow"})
+        if total_opex: op_items.append({"label": "Operating Expenses (All Accounts)", "emoji": "📉", "amount": round(total_opex, 0), "type": "outflow"})
+        if total_stock_eject > 1: op_items.append({"label": "Stock Purchases (Inventory)", "emoji": "📦", "amount": round(total_stock_eject, 0), "type": "outflow"})
+        op_net = total_income - total_opex - total_stock_eject
 
-        cap_net = extra_capital + kbz_inject + _dp - _ap - _pp - _av - kbz_opex - kbz_eject
+        # Section 2: Investing Activities
+        inv_items = []
+        if _ap: inv_items.append({"label": "Equipment & Setup (PS5, TVs, Furniture)", "emoji": "🎮", "amount": round(_ap, 0), "type": "outflow"})
+        if _adv_total: inv_items.append({"label": "Advances Given (Total)", "emoji": "📋", "amount": round(_adv_total, 0), "type": "outflow"})
+        if _pp: inv_items.append({"label": "Prepaid Expenses (Rent/Lease)", "emoji": "📅", "amount": round(_pp, 0), "type": "outflow"})
+        if _adv_recovery: inv_items.append({"label": "Advance Recoveries (Returned)", "emoji": "♻️", "amount": round(_adv_recovery, 0), "type": "inflow"})
+        if _dp: inv_items.append({"label": "Asset Disposal Proceeds", "emoji": "💰", "amount": round(_dp, 0), "type": "inflow"})
+        inv_net = _adv_recovery + _dp - _ap - _adv_total - _pp
 
-        # Section 2: Operating Activities (Store accounts: Cash + KPay + Wave + AYA + ACM)
-        store_keys = ["cash", "wave", "aya_pay", "kpay", "acm_acc"]
-        store_inc = sum(inc.get(k, 0) for k in store_keys)
-        store_opex = sum(opex.get(k, 0) for k in store_keys)
-
-        # Stock purchases (eject from non-KBZ accounts)
-        total_stock = sum(cm.get(f"eject|{key2name[k]}",0) for k in store_keys)
-
-        # Net internal transfers between accounts (store transfer_in - transfer_out)
-        net_transfers = 0.0
-        for k in store_keys:
-            db = key2name[k]
-            net_transfers += cm.get(f"transfer_in|{db}",0) - abs(cm.get(f"transfer_out|{db}",0))
-
-        op_items = [
-            {"label": "Game & Top-up Income", "emoji": "🎮", "amount": round(store_inc, 0), "type": "inflow"},
-            {"label": "Store Operating Expenses", "emoji": "📉", "amount": round(store_opex, 0), "type": "outflow"},
-            {"label": "Stock Purchases", "emoji": "📦", "amount": round(total_stock, 0), "type": "outflow"},
-        ]
-        if abs(net_transfers) > 10:
-            op_items.append({"label": "Net Account Transfers", "emoji": "🔄", "amount": round(net_transfers, 0), "type": "inflow" if net_transfers >= 0 else "outflow"})
-
-        op_net = store_inc - store_opex - total_stock + net_transfers
+        # ─── Closing = Opening + Operating + Investing (Opening already = 300M capital) ───
+        closing = opener + op_net + inv_net
 
         return {"success": True, "data": {
             "period": ym,
             "opening_balance": round(opener, 0),
             "sections": {
-                "capital": {"title": "Capital Account (KBZ Bank)", "items": cap_items, "subtotal": round(cap_net, 0)},
-                "operating": {"title": "Store Operations", "items": op_items, "subtotal": round(op_net, 0)}
+                "operating": {"title": "Operating Activities", "items": op_items, "subtotal": round(op_net, 0)},
+                "investing": {"title": "Investing Activities", "items": inv_items, "subtotal": round(inv_net, 0)}
             },
             "summary": {
                 "opening_balance": round(opener, 0),
-                "capital_net": round(cap_net, 0),
                 "operating_net": round(op_net, 0),
-                "net_change": round(total_bal - opener, 0),
-                "closing_balance": round(total_bal, 0)
+                "investing_net": round(inv_net, 0),
+                "net_change": round(closing - opener, 0),
+                "closing_balance": round(closing, 0)
             }
         }}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {"success": False, "error": str(e)}
 @router.get('/shareholders')
 async def get_shareholders(user: dict = Depends(get_current_user)):
