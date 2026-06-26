@@ -17,6 +17,7 @@ import urllib.error
 # Telegram notifications (direct, no n8n needed)
 # Session timer module for 5-min-before-end reminder
 from session_timer import resume_active_timers, schedule_session_timer, _active_timers
+from booking_reminder import add_booking_reminder, restore_reminders
 
 # Field name normalization (snake_case ↔ camelCase backward compat)
 from field_utils import normalize_list, normalize_response
@@ -193,9 +194,10 @@ def _mysql_get_settings_dict(prefix=None):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: resume active session timers inside the event loop."""
+    """Startup: resume active session timers + booking reminders inside the event loop."""
     try:
         resume_active_timers()
+        restore_reminders()
         active_consoles = _mysql_query(
             "SELECT DISTINCT console_id FROM console_booking WHERE status='Active'"
         )
@@ -673,6 +675,22 @@ async def api_mark_bot_reminder(req: dict, auth=Depends(verify_api_key)):
         return ok({"booking_id": row["id"]})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ═══════════════════════════════════════
+#  WEBHOOK — Booking Reminder (30-min advance)
+# ═══════════════════════════════════════
+@app.post("/webhook/booking-reminder", response_model=GenericResponse, tags=["Webhooks"], summary="Receive booking data for 30-min advance reminder")
+async def webhook_booking_reminder(req: dict):
+    """Webhook called by Sales Bot when a booking is confirmed.
+    Schedules a 30-min-before reminder to STAFF_NOTIFY_CHAT via Telegram."""
+    try:
+        result = add_booking_reminder(req)
+        if result == "ok":
+            return ok({"message": "reminder scheduled"})
+        return ok({"message": result})
+    except Exception as e:
+        logger.error(f"webhook/booking-reminder: {e}")
+        return error_response(message=str(e))
 
 
 # ═══════════════════════════════════════
