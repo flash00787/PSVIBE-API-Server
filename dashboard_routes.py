@@ -5311,10 +5311,10 @@ async def dashboard_feedback_summary(user: dict = Depends(get_current_user), dat
 
         # Daily breakdown (last 14 days)
         daily_rows = _mysql_query(
-            "SELECT DATE(created_at) AS day, COUNT(*) AS cnt, ROUND(AVG(rating), 1) AS avg_rating "
+            "SELECT DATE(CONVERT_TZ(created_at, '+00:00', '+06:30')) AS day, COUNT(*) AS cnt, ROUND(AVG(rating), 1) AS avg_rating "
             "FROM customer_feedback "
-            "WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 14 DAY) "
-            "GROUP BY DATE(created_at) ORDER BY day DESC"
+            "WHERE created_at >= DATE_SUB(CONVERT_TZ(NOW(), '+00:00', '+06:30'), INTERVAL 14 DAY) "
+            "GROUP BY DATE(CONVERT_TZ(created_at, '+00:00', '+06:30')) ORDER BY day DESC"
         )
 
         return {
