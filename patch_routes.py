@@ -925,259 +925,49 @@ async def api_finance_accounts(auth=Depends(verify_api_key)):
 
 @app.get("/api/finance/account-balances", tags=["Finance"])
 async def api_finance_account_balances(auth=Depends(verify_api_key)):
-    """Return real-time account balances calculated from transactions."""
+    """Account balances using same calculation as web finance."""
     try:
-        # 1. Get initial balances from accounts table
-        rows = _mysql_query("""
-            SELECT a.account_name, a.account_type, a.balance, a.notes
-            FROM accounts a
-            INNER JOIN (
-                SELECT account_name, MAX(id) AS max_id
-                FROM accounts
-                GROUP BY account_name
-            ) latest ON a.id = latest.max_id
-            ORDER BY FIELD(a.account_type, 'Cash', 'Digital', 'Bank', 'Capital'), a.account_name
-        """)
+        from dashboard_routes import get_finance_balances
+        mock_user = {"username": "api_transfer", "role": "admin", "display_name": "Transfer Page"}
+        result = await get_finance_balances(mock_user)
         
-        # Map account names to payment method keywords for aggregation
-        account_map = {
-            "Cash": "cash",
-            "KPay": "kpay",
-            "Wave": "wave",
-            "AYA Pay": "aya",
-            "KBZ Bank": None,  # Capital - skip in real-time calc
-        }
+        if not result.get("success"):
+            return ok({"operating": [], "capital": [], "store_total": 0, "acm_total": 0, "total_capital": 0, "grand_total": 0})
         
-        # Initialize balances with existing account values as base
+        accounts = result.get("accounts", [])
+        key_map = {"cash": "Cash", "kpay": "KPay", "wave": "Wave", "aya_pay": "AYA Pay", "acm_acc": "ACM's Acc", "kbz_bank": "KBZ Bank"}
+        
         operating = []
         capital = []
-        total_op = 0.0
-        total_cap = 0.0
-        base_by_acct = {}
+        store_total = 0.0
+        acm_balance = 0.0
         
-        for r in rows:
-            bal = float(r["balance"] or 0)
-            acct = {
-                "name": r["account_name"],
-                "type": r["account_type"],
-                "balance": bal,
-                "notes": r.get("notes", "") or "",
-            }
-            if r["account_type"] == "Capital":
-                capital.append(acct)
-                total_cap += bal
+        for acc in accounts:
+            key = acc.get("key", "")
+            display = key_map.get(key, acc.get("label", key))
+            bal = float(acc.get("balance", 0))
+            if key == "kbz_bank":
+                capital.append({"name": display, "type": "Capital", "balance": bal, "notes": ""})
+            elif key == "acm_acc":
+                acm_balance = bal
+                operating.append({"name": display, "type": "Digital", "balance": bal, "notes": ""})
             else:
-                base_by_acct[r["account_name"]] = bal
+                store_total += bal
+                operating.append({"name": display, "type": acc.get("type", "operating"), "balance": bal, "notes": acc.get("label", "")})
         
-        # 2. Calculate incoming money from sales_daily
-        sale_rows = _mysql_query("""
-            SELECT payment_method, notes
-            FROM sales_daily
-            WHERE sale_date >= '2026-01-01'
-        """)
-        
-        # Parse payment_method field (format: "KPay:amount|Cash:amount") and aggregate
-        income_by_acct = {"cash": 0.0, "kpay": 0.0, "wave": 0.0, "aya": 0.0, "acm": 0.0, "kbz": 0.0}
-        
-        for r in sale_rows:
-            _note = (r.get("notes") or "").strip()
-            if _note.startswith("Topup") or _note.startswith("New member"):
-                continue
-            pm = r["payment_method"] or ""
-
-            if "|" in pm:
-                # Parse each segment
-                segments = pm.split("|")
-                for seg in segments:
-                    seg = seg.strip()
-                    if ":" in seg:
-                        method, amt_str = seg.split(":", 1)
-                        try:
-                            amt = float(amt_str)
-                        except:
-                            amt = 0
-                        method_lower = method.lower().strip()
-                        if method_lower == "cash":
-                            income_by_acct["cash"] += amt
-                        elif method_lower == "kpay":
-                            income_by_acct["kpay"] += amt
-                        elif method_lower in ("wave", "wavepay"):
-                            income_by_acct["wave"] += amt
-                        elif method_lower in ("aya", "aya pay"):
-                            income_by_acct["aya"] += amt
-                        elif "transfer" in method_lower or "bank" in method_lower:
-                            income_by_acct["kpay"] += amt
-                        elif method_lower == "wave":
-                            income_by_acct["wave"] += amt
-                        elif method_lower == "aya" or method_lower == "aya pay":
-                            income_by_acct["aya"] += amt
-            elif ":" in pm:
-                # Single method format
-                method, amt_str = pm.split(":", 1)
-                try:
-                    amt = float(amt_str)
-                except:
-                    amt = total  # fallback: use total
-                method_lower = method.lower().strip()
-                if method_lower == "cash":
-                    income_by_acct["cash"] += amt
-                elif method_lower == "kpay":
-                    income_by_acct["kpay"] += amt
-                elif method_lower in ("wave", "wavepay"):
-                    income_by_acct["wave"] += amt
-                elif method_lower in ("aya", "aya pay"):
-                    income_by_acct["aya"] += amt
-        
-        # 3. Include cash_movements (inject adds, eject subtracts)
-        cm_rows = _mysql_query("SELECT movement_type, account, SUM(amount) as total FROM cash_movements GROUP BY movement_type, account")
-        # Fetch inject entries that overlap with topup (notes start with Topup or New member)
-        _bad_inject = _mysql_query("SELECT account, SUM(amount) as total FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37)))) GROUP BY account")
-        _bad_inject_map = {}
-        for _r in _bad_inject:
-            _bad_inject_map[_r['account'].strip().lower()] = float(_r['total'] or 0)
-        for r in cm_rows:
-            acct_key = r["account"].strip().lower()
-            if acct_key == "kpay": acct_key = "kpay"
-            elif acct_key == "cash": acct_key = "cash"
-            elif acct_key in ("wave", "wavepay"): acct_key = "wave"
-            elif acct_key in ("aya", "aya pay"): acct_key = "aya"
-            elif acct_key in ("acm", "acm\'s acc"): acct_key = "acm"
-            elif acct_key in ("kbz", "kbz bank"): acct_key = "kbz"
-            else: continue
-            amt = float(r["total"] or 0)
-            if r["movement_type"] in ("inject", "transfer_in"):
-                amt_adj = amt
-                if r["movement_type"] == "inject" and acct_key in _bad_inject_map:
-                    amt_adj = amt - _bad_inject_map[acct_key]
-                income_by_acct[acct_key] += amt_adj
-            elif r["movement_type"] == "eject":
-                income_by_acct[acct_key] -= amt
-            elif r["movement_type"] == "transfer_out":
-                income_by_acct[acct_key] += amt  # negative amount = subtract
-        
-        # 4. Also add topup_log income
-        topup_rows = _mysql_query("""
-            SELECT payment_method, amount
-            FROM topup_log
-            WHERE topup_date >= '2026-01-01'
-        """)
-        
-        for r in topup_rows:
-            pm = r["payment_method"] or ""
-
-            if "/" in pm:
-                segments = pm.split("/")
-                for seg in segments:
-                    seg = seg.strip()
-                    if ":" in seg:
-                        method, amt_str = seg.split(":", 1)
-                        try:
-                            amt = float(amt_str)
-                        except:
-                            amt = 0
-                        method_lower = method.lower().strip()
-                        if method_lower == "cash":
-                            income_by_acct["cash"] += amt
-                        elif method_lower == "kpay":
-                            income_by_acct["kpay"] += amt
-                        elif method_lower in ("wave", "wavepay"):
-                            income_by_acct["wave"] += amt
-                        elif method_lower in ("aya", "aya pay"):
-                            income_by_acct["aya"] += amt
-                        elif "transfer" in method_lower or "bank" in method_lower:
-                            income_by_acct["kpay"] += amt
-                        elif method_lower == "wave":
-                            income_by_acct["wave"] += amt
-                        elif method_lower == "aya" or method_lower == "aya pay":
-                            income_by_acct["aya"] += amt
-        
-        # 4. Subtract OPEX expenses by payment method
-        opex_rows = _mysql_query("SELECT payment_method, SUM(amount) as total FROM opex GROUP BY payment_method")
-        for r in opex_rows:
-            pm = (r["payment_method"] or "").lower().strip()
-            amt = float(r["total"] or 0)
-            if pm == "cash":
-                income_by_acct["cash"] -= amt
-            elif pm == "kpay":
-                income_by_acct["kpay"] -= amt
-            elif pm in ("wave", "wavepay"):
-                income_by_acct["wave"] -= amt
-            elif pm in ("aya", "aya pay"):
-                income_by_acct["aya"] -= amt
-            elif pm in ("kbz", "kbz bank"):
-                income_by_acct["kbz"] = income_by_acct.get("kbz", 0) - amt
-            elif pm in ("acm", "acm's acc"):
-                income_by_acct["acm"] = income_by_acct.get("acm", 0) - amt
-
-        # 5. Build final operating list with real-time balances
-        operating_names = ["Cash", "KPay", "Wave", "AYA Pay", "ACM\'s Acc"]
-        for name in operating_names:
-            base = base_by_acct.get(name, 0)
-            keyword = name.lower()
-            # ACM's Acc is stored as "acm" in income_by_acct
-            if keyword in ("acm's acc",):
-                keyword = "acm"
-            elif keyword in ("aya pay",):
-                keyword = "aya"
-            income = income_by_acct.get(keyword, 0)
-            # Real-time balance = income from transactions (no base double-count)
-            final_bal = income
-            icon_notes = {"Cash": "ေငြသား", "KPay": "KPay", "Wave": "Wave", "AYA Pay": "AYA Pay"}
-            operating.append({
-                "name": name,
-                "type": "Cash" if name == "Cash" else "Digital",
-                "balance": final_bal,
-                "notes": icon_notes.get(name, ""),
-            })
-            total_op += final_bal
-        
-        # Capital accounts: KBZ Bank real balance from transactions
-        # Base from accounts table would double-count initial capital (also in cash_movements)
-        kbz_base = 0.0
-        
-        # income_by_acct["kbz"] includes opex + cash movements
-        kbz_balance = kbz_base + income_by_acct.get("kbz", 0)
-        
-        # Deduct capital expenditures from KBZ Bank
-        a_rows = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM finance_assets WHERE status='active'")
-        av_rows = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances")
-        pr_rows = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid")
-        d_rows = _mysql_query("SELECT COALESCE(SUM(disposal_amount),0) as t FROM finance_assets WHERE status='disposed' AND disposal_amount>0")
-        asset_ded = float(a_rows[0]["t"] or 0) + float(av_rows[0]["t"] or 0) + float(pr_rows[0]["t"] or 0)
-        disposal_add = float(d_rows[0]["t"] or 0)
-        kbz_balance = kbz_balance - asset_ded + disposal_add
-        
-        for c in capital:
-            if c["name"] == "KBZ Bank":
-                c["balance"] = round(kbz_balance, 0)
-                break
         total_cap = sum(c["balance"] for c in capital)
         
-        # Separate ACM's Acc from store total
-        acm_balance = 0.0
-        store_balance = 0.0
-        for o in operating:
-            if o["name"] == "ACM's Acc":
-                acm_balance = o["balance"]
-            else:
-                store_balance += o["balance"]
-        
-        # Include ACM in grand total but show separate store_total
         return ok({
             "operating": operating,
             "capital": capital,
-            "store_total": round(store_balance, 0),
+            "store_total": round(store_total, 0),
             "acm_total": round(acm_balance, 0),
             "total_capital": total_cap,
-            "grand_total": round(store_balance + acm_balance + total_cap, 0),
+            "grand_total": round(store_total + acm_balance + total_cap, 0),
         })
     except Exception as e:
         logger.error(f"api_finance_account_balances: {e}")
-        return ok({"operating": [], "capital": [], "total_operating": 0, "total_capital": 0, "grand_total": 0})
-
-
-
-
+        return ok({"operating": [], "capital": [], "store_total": 0, "acm_total": 0, "total_capital": 0, "grand_total": 0})
 
 
 @app.get("/api/finance/depreciation", tags=["Finance"])

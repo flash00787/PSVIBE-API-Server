@@ -20,6 +20,38 @@ from session_timer import resume_active_timers, schedule_session_timer, _active_
 from booking_reminder import add_booking_reminder, restore_reminders, cancel_booking_reminder
 
 # Field name normalization (snake_case ↔ camelCase backward compat)
+
+# ═══════════════════════════════════════
+#  Telegram Customer Notification Helper
+# ═══════════════════════════════════════
+import json as _json_notify
+import threading as _threading_notify
+
+def _send_telegram_customer(chat_id: str, message: str):
+    """Send Telegram message to a customer via the Customer Bot token."""
+    _log = logging.getLogger("psvibe_api")
+    if not chat_id:
+        _log.warning("[NOTIFY] No chat_id, skipping")
+        return
+    token = os.environ.get("CUSTOMER_BOT_TOKEN", "")
+    _log.info("[NOTIFY] chat_id=%s token_len=%s", chat_id, len(token) if token else 0)
+    if not token:
+        _log.warning("[NOTIFY] CUSTOMER_BOT_TOKEN not configured in env")
+        return
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = _json_notify.dumps({
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+        }).encode()
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        resp = urllib.request.urlopen(req)
+        body = resp.read()
+        _log.info("[NOTIFY] Sent to %s: %s", chat_id, body.decode()[:200])
+    except Exception as e:
+        _log.warning("[NOTIFY] Failed to %s: %s", chat_id, e)
+
 from field_utils import normalize_list, normalize_response
 
 from fastapi import FastAPI, HTTPException, Query, Depends, Request, Body
@@ -1668,6 +1700,37 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                 elif status in ("rejected", "cancelled"):
                     _app_cur.execute("UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s", (_console_id,))
             _app_conn.commit()
+            
+            # 📢 Customer notification on confirm/cancel (fire-and-forget)
+            if status in ("confirmed", "cancelled"):
+                logger.info("[NOTIFY] Triggering notification for BK#%s status=%s", booking_id, status)
+                _notify_row = _mysql_query_one(
+                    "SELECT telegram_chat_id, console_id, booking_date, start_time, duration_mins FROM console_booking WHERE id=%s",
+                    (booking_id,)
+                )
+                if _notify_row and _notify_row.get("telegram_chat_id"):
+                    _tg_id = _notify_row["telegram_chat_id"]
+                    _bk_id = str(booking_id)
+                    if status == "confirmed":
+                        _console = _notify_row.get("console_id", "") or "TBD"
+                        _date = str(_notify_row.get("booking_date", ""))
+                        _time = str(_notify_row.get("start_time", ""))[:16] if _notify_row.get("start_time") else ""
+                        _dur = str(_notify_row.get("duration_mins", ""))
+                        _msg = (
+                            f"✅ <b>Booking Confirmed!</b>\n\n"
+                            f"🎫 Booking <b>#{_bk_id}</b>\n"
+                            f"📅 {_date}  ⏰ {_time}\n"
+                            f"🎮 Console: {_console}  ⏱️ {_dur} min\n\n"
+                            f"📲 Booking ချိန်ရောက်ရင် Staff ကို Check-in ပြပေးပါ။ ပျော်ရွှင်ပါစေ! 🎮"
+                        )
+                    else:
+                        _msg = (
+                            f"❌ <b>Booking #{_bk_id} Cancelled</b>\n\n"
+                            f"Slot မအားတာ သို့မဟုတ် အကြောင်းတစ်စုံတစ်ရာကြောင့် Booking ကို cancel လုပ်လိုက်ပါတယ်။\n"
+                            f"📲 နောက်ထပ် Booking အသစ် တင်ပေးပါ။"
+                        )
+                    _threading_notify.Thread(target=_send_telegram_customer, args=(_tg_id, _msg), daemon=True).start()
+
             # Safety: sync console_status in case of edge-case drift
             if _cid:
                 _console_id = _cid if isinstance(_cid, str) else _cid.get("console_id", "")
@@ -1885,7 +1948,10 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
                 "telegram_chat_id": r.get("telegram_chat_id",""),
                 "telegramChatId": r.get("telegram_chat_id",""),
                 "status": r.get("status",""),
-                "created_at": _created_str
+                "created_at": _created_str,
+                "end_time": str(r.get("end_time","") or ""),
+                "cancelled_at": str(r.get("cancelled_at","") or ""),
+                "cancelledAt": str(r.get("cancelled_at","") or "")
             })
         return ok({"bookings": normalized})
     except Exception as e:
@@ -2876,14 +2942,24 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key)) -> JSONRe
                 # Staff bookings auto-confirm; customer bookings need approval
                 _bk_status = "confirmed" if req.get("source") == "staff" else "pending"
 
-                # Resolve actual member_id from phone or telegram_chat_id
-                bk_member_id = ""
-                if phone:
+                # Resolve actual member_id from payload, phone, or telegram_chat_id
+                bk_member_id = req.get("memberId", req.get("member_id", ""))
+
+                # If member_id from payload, verify it exists in member_wallets
+                if bk_member_id:
+                    cur.execute("SELECT member_id FROM member_wallets WHERE member_id=%s", (bk_member_id,))
+                    if not cur.fetchone():
+                        bk_member_id = ""  # Invalid — clear it
+
+                # Fallback: resolve from phone
+                if not bk_member_id and phone:
                     cur.execute("SELECT member_id FROM member_wallets WHERE phone=%s AND member_id IS NOT NULL AND member_id != ''", (phone,))
                     _pm_rows = cur.fetchall()
                     if _pm_rows:
                         bk_member_id = _pm_rows[0]["member_id"]
-                if not bk_member_id:
+
+                # Fallback: telegram_chat_id as member_id
+                if not bk_member_id and telegram_chat_id:
                     cur.execute("SELECT member_id FROM member_wallets WHERE member_id=%s", (telegram_chat_id,))
                     _pm_rows = cur.fetchall()
                     if _pm_rows:

@@ -3298,7 +3298,8 @@ async def dashboard_get_staff(
             params.append(role)
 
         sql = f"""
-            SELECT staff_id, staff_name, base_salary, hourly_rate, role, is_active, last_updated
+            SELECT staff_id, staff_name, email, base_salary, food_allowance, transport_allowance,
+                   attendance_bonus, commission_rate_food, role, is_active, last_updated
             FROM staff_records
             WHERE {' AND '.join(where)}
             ORDER BY staff_name ASC
@@ -3318,8 +3319,12 @@ async def dashboard_get_staff(
             staff_list.append({
                 "staff_id": r["staff_id"],
                 "staff_name": r.get("staff_name"),
+                "email": r.get("email") or "",
                 "base_salary": float(r.get("base_salary") or 0),
-                "hourly_rate": float(r.get("hourly_rate") or 0),
+                "food_allowance": float(r.get("food_allowance") or 0),
+                "transport_allowance": float(r.get("transport_allowance") or 0),
+                "attendance_bonus": float(r.get("attendance_bonus") or 0),
+                "commission_rate_food": float(r.get("commission_rate_food") or 0),
                 "role": r.get("role"),
                 "is_active": bool(r.get("is_active")),
                 "last_updated": str(r["last_updated"]) if r.get("last_updated") else None,
@@ -3339,13 +3344,19 @@ async def dashboard_create_staff(req: dict, user: dict = Depends(get_current_use
             return {"success": False, "error": "staff_name is required"}
 
         base_salary = req.get("base_salary", 0)
-        hourly_rate = req.get("hourly_rate", 0)
+        email = req.get("email", "").strip()
+        food_allowance = req.get("food_allowance", 0)
+        transport_allowance = req.get("transport_allowance", 0)
+        attendance_bonus = req.get("attendance_bonus", 0)
+        commission_rate_food = req.get("commission_rate_food", 0)
         role = req.get("role", "")
 
         new_id = _mysql_execute(
-            """INSERT INTO staff_records (staff_name, base_salary, hourly_rate, role, is_active, last_updated)
-               VALUES (%s, %s, %s, %s, 1, NOW())""",
-            (staff_name, base_salary, hourly_rate, role),
+            """INSERT INTO staff_records (staff_name, email, base_salary, food_allowance, transport_allowance,
+                   attendance_bonus, commission_rate_food, role, is_active, last_updated)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, NOW())""",
+            (staff_name, email or None, base_salary, food_allowance, transport_allowance,
+             attendance_bonus, commission_rate_food, role),
         )
 
         return {
@@ -3353,8 +3364,12 @@ async def dashboard_create_staff(req: dict, user: dict = Depends(get_current_use
             "data": {
                 "staff_id": new_id,
                 "staff_name": staff_name,
+                "email": email or "",
                 "base_salary": base_salary,
-                "hourly_rate": hourly_rate,
+                "food_allowance": food_allowance,
+                "transport_allowance": transport_allowance,
+                "attendance_bonus": attendance_bonus,
+                "commission_rate_food": commission_rate_food,
                 "role": role,
                 "is_active": True,
             },
@@ -3374,7 +3389,8 @@ async def dashboard_update_staff(staff_id: int, req: dict, user: dict = Depends(
 
         updates = []
         params = []
-        for field in ["staff_name", "base_salary", "hourly_rate", "role", "is_active"]:
+        for field in ["staff_name", "email", "base_salary", "food_allowance", "transport_allowance",
+                       "attendance_bonus", "commission_rate_food", "role", "is_active"]:
             if field in req:
                 updates.append(f"{field} = %s")
                 params.append(req[field])
@@ -3392,8 +3408,12 @@ async def dashboard_update_staff(staff_id: int, req: dict, user: dict = Depends(
             "data": {
                 "staff_id": updated["staff_id"],
                 "staff_name": updated.get("staff_name"),
+                "email": updated.get("email") or "",
                 "base_salary": float(updated.get("base_salary") or 0),
-                "hourly_rate": float(updated.get("hourly_rate") or 0),
+                "food_allowance": float(updated.get("food_allowance") or 0),
+                "transport_allowance": float(updated.get("transport_allowance") or 0),
+                "attendance_bonus": float(updated.get("attendance_bonus") or 0),
+                "commission_rate_food": float(updated.get("commission_rate_food") or 0),
                 "role": updated.get("role"),
                 "is_active": bool(updated.get("is_active")),
                 "last_updated": str(updated["last_updated"]) if updated.get("last_updated") else None,
@@ -3427,6 +3447,90 @@ async def dashboard_deactivate_staff(staff_id: int, user: dict = Depends(get_cur
         }
     except Exception as e:
         logger.error(f"PUT /staff/{staff_id}/deactivate error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════ Staff Leave ═══════════
+@router.get("/staff/{staff_id}/leave")
+async def dashboard_get_staff_leave(staff_id: int, month: str | None = Query(None), user: dict = Depends(get_current_user)):
+    """Get leave days for a staff member (optionally filtered by month)."""
+    try:
+        where = "staff_id = %s"
+        params = [staff_id]
+        if month and len(month) == 7:
+            where += " AND DATE_FORMAT(leave_date, '%%Y-%%m') = %s"
+            params.append(month)
+        rows = _mysql_query(f"SELECT * FROM staff_leave WHERE {where} ORDER BY leave_date DESC", tuple(params))
+        total_days = len(rows)
+        return {"success": True, "data": [{
+            "id": r["id"], "staff_id": r["staff_id"],
+            "leave_date": str(r["leave_date"]), "reason": r.get("reason") or ""
+        } for r in rows], "total": total_days, "free_limit": 2,
+           "bonus_at_risk": total_days > 2}
+    except Exception as e:
+        logger.error(f"GET staff leave error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/salary/leaves")
+async def dashboard_get_all_leaves(month: str | None = Query(None), user: dict = Depends(get_current_user)):
+    """Get all leave records with staff names (optionally filtered by month)."""
+    try:
+        where = "1=1"
+        params = []
+        if month and len(month) == 7:
+            where += " AND DATE_FORMAT(l.leave_date, '%%Y-%%m') = %s"
+            params.append(month)
+        rows = _mysql_query(f"""
+            SELECT l.id, l.staff_id, s.staff_name, l.leave_date, l.reason, l.created_at
+            FROM staff_leave l JOIN staff_records s ON l.staff_id = s.staff_id
+            WHERE {where} ORDER BY l.leave_date DESC
+        """, tuple(params))
+        return {"success": True, "data": [{
+            "id": r["id"], "staff_id": r["staff_id"],
+            "staff_name": r["staff_name"],
+            "leave_date": str(r["leave_date"]),
+            "reason": r.get("reason") or ""
+        } for r in rows]}
+    except Exception as e:
+        logger.error(f"GET salary/leaves error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/staff/{staff_id}/leave")
+async def dashboard_add_staff_leave(staff_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """Record a leave day for a staff member."""
+    try:
+        leave_date = req.get("leave_date", "")
+        reason = req.get("reason", "")
+        if not leave_date:
+            return {"success": False, "error": "leave_date required"}
+        
+        existing = _mysql_query_one(
+            "SELECT id FROM staff_leave WHERE staff_id = %s AND leave_date = %s",
+            (staff_id, leave_date)
+        )
+        if existing:
+            return {"success": False, "error": "Leave already recorded for this date"}
+        
+        new_id = _mysql_execute(
+            "INSERT INTO staff_leave (staff_id, leave_date, reason) VALUES (%s, %s, %s)",
+            (staff_id, leave_date, reason)
+        )
+        return {"success": True, "data": {"id": new_id, "staff_id": staff_id, "leave_date": leave_date, "reason": reason}}
+    except Exception as e:
+        logger.error(f"POST staff leave error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/staff/{staff_id}/leave/{leave_id}")
+async def dashboard_remove_staff_leave(staff_id: int, leave_id: int, user: dict = Depends(get_current_user)):
+    """Remove a leave record."""
+    try:
+        _mysql_execute("DELETE FROM staff_leave WHERE id = %s AND staff_id = %s", (leave_id, staff_id))
+        return {"success": True, "message": "Leave removed"}
+    except Exception as e:
+        logger.error(f"DELETE staff leave error: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -3753,45 +3857,212 @@ async def dashboard_get_salary(
 
 @router.post("/salary")
 async def dashboard_create_salary(req: dict, user: dict = Depends(get_current_user)):
-    """Create a payroll record."""
+    """Record a salary payment. Creates OPEX entry when status=paid."""
     try:
         staff_name = req.get("staff_name", "").strip()
         if not staff_name:
             return {"success": False, "error": "staff_name is required"}
 
-        base_salary = req.get("base_salary", 0)
-        bonus = req.get("bonus", 0)
-        deductions = req.get("deductions", 0)
-        net_salary = base_salary + bonus - deductions
         pay_period = req.get("pay_period", "")
+        
+        # Look up auto-generated payroll for amount
+        gen_row = _mysql_query_one(
+            "SELECT net_salary, notes FROM salary_payroll WHERE staff_name = %s AND pay_period = %s",
+            (staff_name, pay_period)
+        )
+        if gen_row:
+            net_salary = float(gen_row["net_salary"] or 0)
+            notes = gen_row.get("notes") or ""
+        else:
+            # Manual: use provided amounts
+            base_salary = req.get("base_salary", 0)
+            bonus = req.get("bonus", 0)
+            deductions = req.get("deductions", 0)
+            net_salary = float(base_salary) + float(bonus) - float(deductions)
+            notes = req.get("notes", "[manual entry]")
+
         pay_date = req.get("pay_date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
         status = req.get("status", "pending")
-        notes = req.get("notes", "")
-
         new_id = _mysql_execute(
             """INSERT INTO salary_payroll
-               (staff_name, base_salary, bonus, deductions, net_salary, pay_period, pay_date, status, notes, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
-            (staff_name, base_salary, bonus, deductions, net_salary, pay_period, pay_date, status, notes),
+               (staff_name, base_salary, bonus, deductions, net_salary, pay_period, pay_date, status, payment_method, notes, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+            (staff_name, 0, net_salary, 0, net_salary, pay_period, pay_date, status, payment_method, notes),
         )
+
+        # If marked as paid, create OPEX entry
+        if status == "paid":
+            _mysql_execute(
+                """INSERT INTO opex (category, description, amount, expense_date, payment_method, staff_name, created_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, NOW())""",
+                ("Staff Salary", f"{staff_name} - {pay_period}", net_salary, pay_date, payment_method, staff_name),
+            )
 
         return {
             "success": True,
             "data": {
-                "id": new_id,
-                "staff_name": staff_name,
-                "base_salary": base_salary,
-                "bonus": bonus,
-                "deductions": deductions,
-                "net_salary": net_salary,
-                "pay_period": pay_period,
-                "pay_date": pay_date,
-                "status": status,
-                "notes": notes,
+                "id": new_id, "staff_name": staff_name,
+                "net_salary": net_salary, "pay_period": pay_period,
+                "pay_date": pay_date, "status": status,
+                "payment_method": payment_method, "notes": notes,
             },
         }
     except Exception as e:
         logger.error(f"POST /salary error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/salary/generate")
+async def dashboard_generate_salary(req: dict, user: dict = Depends(get_current_user)):
+    """Auto-generate payroll for a given month.
+    Net Pay = base_salary + transport_allowance + attendance_bonus
+            + commission_food + game_target_bonus
+            + food_allowance_val - unpaid_advances
+    Game bonus: SHOP-WIDE tier by total play hours (non-stacking, highest qualifying).
+    All staff get the same game bonus if shop target is met."""
+    try:
+        month = req.get("month", "").strip()
+        if not month or len(month) != 7:
+            return {"success": False, "error": "month required (YYYY-MM)"}
+
+        staff_ids = req.get("staff_ids", None)
+
+        where = "WHERE is_active = 1"
+        extra = ()
+        if staff_ids:
+            ids = tuple(staff_ids) if isinstance(staff_ids, list) else (staff_ids,)
+            placeholders = ",".join(["%s"] * len(ids))
+            where += f" AND staff_id IN ({placeholders})"
+            extra = ids
+
+        staff_rows = _mysql_query(f"SELECT * FROM staff_records {where} ORDER BY staff_name", extra)
+
+        # Read game bonus tiers from config
+        tier_cfg = _mysql_query_one(
+            "SELECT config_value FROM settings_config WHERE config_key = 'game_bonus_tiers'"
+        )
+        import json as _json
+        tiers = _json.loads(tier_cfg["config_value"]) if tier_cfg else {}
+
+        # ── SHOP-WIDE total play hours ──
+        shop_row = _mysql_query_one(
+            "SELECT COALESCE(SUM(CAST(REGEXP_REPLACE(IFNULL(notes,''), '.*Mins?:? *([0-9]+).*', '$1') AS UNSIGNED)), 0) AS total_mins "
+            "FROM sales_daily WHERE DATE_FORMAT(sale_date, '%%Y-%%m') = %s",
+            (month,)
+        )
+        shop_total_mins = int(shop_row["total_mins"] or 0)
+        shop_total_hrs = round(shop_total_mins / 60.0, 1)
+
+        # ── Food Profit (same as PNL): stock_out revenue − FIFO COGS ──
+        food_rev_row = _mysql_query_one(
+            "SELECT COALESCE(SUM(total), 0) AS t FROM stock_out WHERE DATE_FORMAT(sale_date, '%%Y-%%m') = %s",
+            (month,)
+        )
+        food_revenue = float(food_rev_row["t"] or 0)
+        try:
+            import stock_fifo, pymysql
+            _sfc = pymysql.connect(host='127.0.0.1', user='root', password='PsVibe@MySQL2024!', database='psvibe_api')
+            _sfr = stock_fifo.calc_fifo(_sfc)
+            _sfc.close()
+            food_cogs = _sfr["cogs"]
+        except Exception:
+            food_cogs = 0
+        total_food_profit = food_revenue - food_cogs
+
+        # Determine shop-wide game bonus (non-stacking, highest qualifying tier)
+        game_bonus = 0
+        qualified_tier = None
+        if tiers:
+            hrs_thresholds = sorted([(int(k), int(v)) for k, v in tiers.items()], key=lambda x: x[0], reverse=True)
+            for threshold_hrs, bonus_amt in hrs_thresholds:
+                if shop_total_hrs >= threshold_hrs:
+                    game_bonus = bonus_amt
+                    qualified_tier = f"{threshold_hrs}hr"
+                    break
+
+        generated = []
+        for s in staff_rows:
+            sname = s["staff_name"]
+            sid = s["staff_id"]
+            base = float(s.get("base_salary") or 0)
+            food_allowance_val = float(s.get("food_allowance") or 0)
+            transport = float(s.get("transport_allowance") or 0)
+            attendance_bonus = float(s.get("attendance_bonus") or 0)
+            cr_food = float(s.get("commission_rate_food") or 0)
+
+            # Leave policy:
+            #   - ANY leave day → forfeit attendance bonus
+            #   - >2 leave days → 15,000 Ks per extra day deducted
+            leave_row = _mysql_query_one(
+                "SELECT COUNT(*) AS lc FROM staff_leave WHERE staff_id = %s AND DATE_FORMAT(leave_date, '%%Y-%%m') = %s",
+                (sid, month)
+            )
+            leave_days = int(leave_row["lc"] or 0)
+            actual_att_bonus = 0 if leave_days > 0 else attendance_bonus
+            extra_leave = max(0, leave_days - 2)
+            leave_penalty = extra_leave * 15000
+
+            # Food commission — SHOP-WIDE: staff rate × total shop food profit
+            commission_food = round(total_food_profit * cr_food, 0)
+
+            # Unpaid advances
+            adv_row = _mysql_query_one(
+                "SELECT COALESCE(SUM(amount), 0) AS ta FROM salary_advance "
+                "WHERE staff_name = %s AND repayment_status != 'paid'", (sname,)
+            )
+            unpaid_adv = int(adv_row["ta"] or 0)
+
+            deductions = unpaid_adv + leave_penalty
+            additions = transport + food_allowance_val + actual_att_bonus + commission_food + game_bonus
+            net_pay = round(base + additions - deductions, 0)
+
+            total_commission = commission_food + game_bonus
+
+            exist = _mysql_query_one(
+                "SELECT id FROM salary_payroll WHERE staff_name = %s AND pay_period = %s",
+                (sname, month)
+            )
+            bonus_note = f"[auto: food_com={commission_food:,.0f}({cr_food*100:.0f}% of profit={total_food_profit:,.0f}(rev{food_revenue:,.0f}-cogs{food_cogs:,.0f})), game_bonus={game_bonus:,.0f}@{qualified_tier or 'none'}(shop={shop_total_hrs}hr), transport={transport:,.0f}, att_bonus={actual_att_bonus:,.0f}(leave={leave_days}d, forfeit)" if leave_days > 0 else f"[auto: food_com={commission_food:,.0f}({cr_food*100:.0f}% of profit={total_food_profit:,.0f}(rev{food_revenue:,.0f}-cogs{food_cogs:,.0f})), game_bonus={game_bonus:,.0f}@{qualified_tier or 'none'}(shop={shop_total_hrs}hr), transport={transport:,.0f}, att_bonus={actual_att_bonus:,.0f}(leave=0d)"
+            if extra_leave > 0:
+                bonus_note = bonus_note[:-1] + f", penalty={leave_penalty}(extra={extra_leave}d×15K)]"
+            if exist:
+                _mysql_execute(
+                    "UPDATE salary_payroll SET base_salary=%s, bonus=%s, deductions=%s, net_salary=%s, status='pending', notes=%s WHERE id=%s",
+                    (base, total_commission, deductions, net_pay, bonus_note, exist["id"])
+                )
+                rid = exist["id"]
+            else:
+                rid = _mysql_execute(
+                    "INSERT INTO salary_payroll (staff_name, base_salary, bonus, deductions, net_salary, pay_period, pay_date, status, notes, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, CURDATE(), 'pending', %s, NOW())",
+                    (sname, base, total_commission, deductions, net_pay, month, bonus_note)
+                )
+
+            generated.append({
+                "id": rid,
+                "staff_name": sname,
+                "staff_id": sid,
+                "base_salary": base,
+                "food_allowance": food_allowance_val,
+                "transport_allowance": transport,
+                "attendance_bonus": actual_att_bonus,
+                "leave_days": leave_days,
+                "leave_penalty": leave_penalty,
+                "commission_food": commission_food,
+                "game_bonus": game_bonus,
+                "total_food_profit": total_food_profit, "food_revenue": food_revenue, "food_cogs": food_cogs,
+                "shop_total_hrs": shop_total_hrs,
+                "qualified_tier": qualified_tier,
+                "unpaid_advances": unpaid_adv,
+                "deductions": deductions,
+                "net_salary": net_pay,
+                "pay_period": month,
+                "commission_rate_food": cr_food,
+            })
+
+        return {"success": True, "data": generated, "count": len(generated), "shop_total_hrs": shop_total_hrs, "game_bonus": game_bonus, "qualified_tier": qualified_tier, "total_food_profit": total_food_profit, "food_revenue": food_revenue, "food_cogs": food_cogs}
+    except Exception as e:
+        logger.error(f"POST /salary/generate error: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -3849,24 +4120,30 @@ async def dashboard_get_salary_advances(
 
 @router.post("/salary/advances")
 async def dashboard_create_salary_advance(req: dict, user: dict = Depends(get_current_user)):
-    """Record a salary advance."""
+    """Record a salary advance. Creates OPEX entry automatically."""
     try:
         staff_name = req.get("staff_name", "").strip()
         amount = req.get("amount", 0)
         if not staff_name:
             return {"success": False, "error": "staff_name is required"}
-        if amount <= 0:
+        if float(amount) <= 0:
             return {"success": False, "error": "amount must be positive"}
 
         advance_date = req.get("advance_date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-        repayment_status = req.get("repayment_status", "pending")
+        repayment_status = req.get("repayment_status", "unpaid")
         notes = req.get("notes", "")
-
         new_id = _mysql_execute(
             """INSERT INTO salary_advance
-               (staff_name, amount, advance_date, repayment_status, notes, created_at)
-               VALUES (%s, %s, %s, %s, %s, NOW())""",
-            (staff_name, amount, advance_date, repayment_status, notes),
+               (staff_name, amount, advance_date, repayment_status, notes, payment_method, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, NOW())""",
+            (staff_name, amount, advance_date, repayment_status, notes, payment_method),
+        )
+
+        # Auto-create OPEX entry for staff salary advance
+        _mysql_execute(
+            """INSERT INTO opex (category, description, amount, expense_date, payment_method, staff_name, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, NOW())""",
+            ("Staff Salary", f"Advance: {staff_name}", amount, advance_date, payment_method, staff_name),
         )
 
         return {
@@ -3882,6 +4159,17 @@ async def dashboard_create_salary_advance(req: dict, user: dict = Depends(get_cu
         }
     except Exception as e:
         logger.error(f"POST /salary/advances error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/salary/advances/{advance_id}")
+async def dashboard_delete_salary_advance(advance_id: int, user: dict = Depends(get_current_user)):
+    """Delete a salary advance record."""
+    try:
+        _mysql_execute("DELETE FROM salary_advance WHERE id = %s", (advance_id,))
+        return {"success": True, "message": "Advance deleted"}
+    except Exception as e:
+        logger.error(f"DELETE /salary/advances error: {e}")
         return {"success": False, "error": str(e)}
 
 
