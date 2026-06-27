@@ -1701,9 +1701,10 @@ async def dashboard_get_food_orders(
         sql = """
             SELECT fc.id, fc.booking_id, fc.item_name, fc.quantity, fc.unit_price,
                    (fc.quantity * fc.unit_price) as line_total,
-                   fc.created_at, fc.fulfilled_at,
+                   CONVERT_TZ(fc.created_at, '+00:00', '+06:30') as created_at,
+                   CONVERT_TZ(fc.fulfilled_at, '+00:00', '+06:30') as fulfilled_at,
                    cb.console_id, cb.member_id, cb.status as booking_status,
-                   cb.start_time
+                   CONVERT_TZ(cb.start_time, '+00:00', '+06:30') as start_time
             FROM food_cart fc
             JOIN console_booking cb ON CAST(fc.booking_id AS UNSIGNED) = cb.id
             ORDER BY fc.id DESC
@@ -1729,9 +1730,10 @@ async def dashboard_get_food_orders(
                 "created_at": str(r["created_at"]) if r.get("created_at") else None,
                 "fulfilled_at": str(r["fulfilled_at"]) if r.get("fulfilled_at") else None,
             })
+        logger.info(f"GET /food-orders: returning {len(entries)} entries, total={total}")
         return {"success": True, "data": entries, "total": total}
     except Exception as e:
-        logger.error(f"GET /food-orders error: {e}")
+        logger.error(f"GET /food-orders error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 @router.delete("/stock-out/{entry_id}")
@@ -1788,7 +1790,8 @@ async def dashboard_get_sales_daily(
         sql = f"""
             SELECT id, voucher_no, sale_date, console_id, member_id,
                    amount, gross, discount, net, staff_name,
-                   payment_method, notes, created_at
+                   payment_method, notes, created_at,
+                   CONVERT_TZ(created_at, '+00:00', '+06:30') as sale_time
             FROM sales_daily
             WHERE {' AND '.join(where)}
             ORDER BY id DESC
@@ -1837,6 +1840,7 @@ async def dashboard_get_sales_daily(
                 "staff_name": r.get("staff_name"),
                 "payment_method": r.get("payment_method"),
                 "notes": notes,
+                "sale_time": str(r["sale_time"])[:16] if r.get("sale_time") else None,  # MMT HH:MM
                 "created_at": str(r["created_at"]) if r.get("created_at") else None,
             })
         return {

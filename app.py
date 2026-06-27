@@ -17,7 +17,7 @@ import urllib.error
 # Telegram notifications (direct, no n8n needed)
 # Session timer module for 5-min-before-end reminder
 from session_timer import resume_active_timers, schedule_session_timer, _active_timers
-from booking_reminder import add_booking_reminder, restore_reminders
+from booking_reminder import add_booking_reminder, restore_reminders, cancel_booking_reminder
 
 # Field name normalization (snake_case ↔ camelCase backward compat)
 from field_utils import normalize_list, normalize_response
@@ -690,6 +690,19 @@ async def webhook_booking_reminder(req: dict):
         return ok({"message": result})
     except Exception as e:
         logger.error(f"webhook/booking-reminder: {e}")
+        return error_response(message=str(e))
+
+@app.post("/webhook/booking-reminder/cancel", response_model=GenericResponse, tags=["Webhooks"], summary="Cancel a pending booking reminder")
+async def webhook_booking_reminder_cancel(req: dict):
+    """Called when a booking is cancelled/rejected — removes any pending reminder."""
+    try:
+        bk_id = str(req.get("bk_id") or req.get("booking_id", ""))
+        if not bk_id:
+            return ok({"message": "missing bk_id"})
+        cancelled = cancel_booking_reminder(bk_id)
+        return ok({"message": "cancelled" if cancelled else "none pending"})
+    except Exception as e:
+        logger.error(f"webhook/booking-reminder/cancel: {e}")
         return error_response(message=str(e))
 
 
@@ -1575,14 +1588,24 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
         _app_conn.start_transaction()
         _app_cur = _app_conn.cursor()
         try:
-            # Allow cancel from pending/confirmed/pending_check_in/checked_in; approve/reject from pending only
+            # Allow cancel from pending/confirmed/pending_check_in/checked_in
+            # Allow Active from checked_in (session start for checked-in customer)
+            # All other transitions from pending only
             if status == "cancelled":
                 _allowed_from = "('pending','confirmed','pending_check_in','checked_in')"
+            elif status == "Active":
+                _allowed_from = "('pending','checked_in')"
             else:
                 _allowed_from = "('pending')"
-            _app_cur.execute(
-                f"UPDATE console_booking SET status=%s, staff_name=COALESCE(NULLIF(%s, ''), staff_name), notes=COALESCE(NULLIF(%s, ''), notes) WHERE id=%s AND status IN {_allowed_from}",
-                (status, req.get("staffName", ""), req.get("staffNote", ""), booking_id))
+            # For cancelled status, also stamp cancelled_at
+            if status == "cancelled":
+                _app_cur.execute(
+                    f"UPDATE console_booking SET status=%s, cancelled_at=NOW(), staff_name=COALESCE(NULLIF(%s, ''), staff_name), notes=COALESCE(NULLIF(%s, ''), notes) WHERE id=%s AND status IN {_allowed_from}",
+                    (status, req.get("staffName", ""), req.get("staffNote", ""), booking_id))
+            else:
+                _app_cur.execute(
+                    f"UPDATE console_booking SET status=%s, staff_name=COALESCE(NULLIF(%s, ''), staff_name), notes=COALESCE(NULLIF(%s, ''), notes) WHERE id=%s AND status IN {_allowed_from}",
+                    (status, req.get("staffName", ""), req.get("staffNote", ""), booking_id))
             affected = _app_cur.rowcount
             if affected == 0:
                 _app_conn.rollback()
@@ -1750,7 +1773,7 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
 async def api_get_bookings(status: str = "", member_id: str = Query(""), date: str = Query(""), auth=Depends(verify_api_key)):
     """List bookings with optional status, member_id, and date filters."""
     try:
-        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name, created_at FROM console_booking"
+        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name, created_at, cancelled_at FROM console_booking"
         where_clauses = []
         params = []
         if status:
@@ -1776,6 +1799,10 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
             params.append(_clean_date)
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
+        # Server-side filter: cancelled bookings — only show within last 2 hours
+        if status == "cancelled":
+            sql += " AND " if where_clauses else " WHERE "
+            sql += "cancelled_at >= NOW() - INTERVAL 2 HOUR"
         sql += " ORDER BY booking_date DESC, start_time DESC"
         rows = _mysql_query(sql, tuple(params)) if params else _mysql_query(sql)
         if not rows:
@@ -2346,7 +2373,7 @@ async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
         _cancel_cur = _cancel_conn.cursor()
         try:
             _cancel_cur.execute(
-                "UPDATE console_booking SET status='cancelled' WHERE id=%s AND status NOT IN ('Active','Done')",
+                "UPDATE console_booking SET status='cancelled', cancelled_at=NOW() WHERE id=%s AND status NOT IN ('Active','Done')",
                 (booking_id,)
             )
             affected = _cancel_cur.rowcount
@@ -2520,17 +2547,29 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 conn.close()
                 return JSONResponse(content={"success": False, "error": f"Console {console_id} already has active session (BK#{active_conflict['id']})"}, status_code=409)
 
-            # H2: Check for pending/confirmed bookings — block only if overlap > 30 min (grace period)
+            # H2: Check for pending/confirmed/checked_in bookings — block only if overlap > 30 min (grace period)
             # No Timer (duration=0): use 480 min (8 hr max session) as conflict window
+            # Exclude linked_booking itself (we're transitioning IT to Active)
             _conflict_dur = duration_mins if duration_mins > 0 else 480
-            cur.execute(
-                "SELECT id, status FROM console_booking WHERE console_id=%s"
-                " AND status IN ('pending','confirmed','pending_check_in')"
-                " AND start_time < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
-                " AND end_time > DATE_ADD(%s, INTERVAL 30 MINUTE)"
-                " LIMIT 1 FOR UPDATE",
-                (console_id, _now_ref, _conflict_dur, _now_ref)
-            )
+            if linked_booking:
+                cur.execute(
+                    "SELECT id, status FROM console_booking WHERE console_id=%s"
+                    " AND id != %s"
+                    " AND status IN ('pending','confirmed','pending_check_in','checked_in')"
+                    " AND start_time < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
+                    " AND end_time > DATE_ADD(%s, INTERVAL 30 MINUTE)"
+                    " LIMIT 1 FOR UPDATE",
+                    (console_id, linked_booking_id, _now_ref, _conflict_dur, _now_ref)
+                )
+            else:
+                cur.execute(
+                    "SELECT id, status FROM console_booking WHERE console_id=%s"
+                    " AND status IN ('pending','confirmed','pending_check_in','checked_in')"
+                    " AND start_time < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
+                    " AND end_time > DATE_ADD(%s, INTERVAL 30 MINUTE)"
+                    " LIMIT 1 FOR UPDATE",
+                    (console_id, _now_ref, _conflict_dur, _now_ref)
+                )
             _warn_bk = cur.fetchone()
             if _warn_bk:
                 conn.rollback()
@@ -4857,7 +4896,7 @@ def _auto_cancel_expired_pending():
             for row in (rows or []):
                 try:
                     mysql_execute(
-                        "UPDATE console_booking SET status='cancelled', notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: expired pending') WHERE id=%s AND status='pending'",
+                        "UPDATE console_booking SET status='cancelled', cancelled_at=NOW(), notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: expired pending') WHERE id=%s AND status='pending'",
                         (row['id'],)
                     )
                     cancelled += 1

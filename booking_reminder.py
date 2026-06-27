@@ -22,13 +22,14 @@ logger = logging.getLogger(__name__)
 
 REMINDER_FILE = "/root/psvibe_api_server/data/booking_reminders.json"
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+CUSTOMER_BOT_TOKEN = os.environ.get("CUSTOMER_BOT_TOKEN", "")
 STAFF_NOTIFY_CHAT = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
 STAFF_NOTIFY_THREAD = int(os.environ.get("STAFF_NOTIFY_THREAD", "0") or 0)
 MMT = timezone(timedelta(hours=6, minutes=30))
 
 # In-memory state
 _pending_reminders: dict[str, dict] = {}  # key → reminder dict
-_lock = threading.Lock()
+_lock = threading.RLock()  # Reentrant lock — allows nested acquire
 
 
 def _load_reminders() -> dict:
@@ -132,7 +133,7 @@ def _reminder_thread(key: str, delay_seconds: float) -> None:
 
 
 def _send_reminder_notification(rem: dict) -> None:
-    """Send 30-min advance reminder to admin group via Telegram."""
+    """Send 30-min advance reminder to admin group + customer via Telegram."""
     if not BOT_TOKEN or not STAFF_NOTIFY_CHAT:
         logger.warning("booking_reminder: BOT_TOKEN or STAFF_NOTIFY_CHAT not configured")
         return
@@ -145,6 +146,7 @@ def _send_reminder_notification(rem: dict) -> None:
     date_str = rem["date"]
     time_str = rem["time_slot"]
     dur = rem["duration_mins"]
+    tg_chat = rem.get("tg_chat", "")
 
     notify_text = (
         f"⏰ <b>Booking #{bk_id} Reminder!</b>\n"
@@ -179,16 +181,43 @@ def _send_reminder_notification(rem: dict) -> None:
     except Exception as e:
         logger.error("booking_reminder send: %s", e)
 
+    # 📱 Also notify customer if they have a Telegram chat ID
+    if tg_chat and CUSTOMER_BOT_TOKEN:
+        try:
+            cust_text = (
+                f"\u23f0 <b>PS VIBE — Booking Reminder!</b>\n"
+                f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                f"\u267f {date_str}  \u23f0 {time_str}\n"
+                f"\u267f Duration: <b>{dur} mins</b>\n"
+                f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                f"\u23f1\ufe0f <b>30 \u1019\u102d\u1014\u1037\u1001\u103a\u1021\u101c\u102d\u102f</b> \u1000\u103c\u102d\u102f\u1010\u1000\u103a \u101b\u1031\u102c\u1000\u103a\u1015\u102b\n"
+                f"\u26a0\ufe0f \u1021\u1001\u103b\u102d\u1014\u103a\u1019\u103e\u102c \u101c\u102c\u101c\u102c\u1019\u103b\u1010\u103a \u1015\u103c\u1004\u103a\u1006\u1004\u103a\u1015\u102b!"
+            )
+            payload2 = json.dumps({"chat_id": tg_chat, "text": cust_text, "parse_mode": "HTML"})
+            req2 = urllib.request.Request(
+                f"https://api.telegram.org/bot{CUSTOMER_BOT_TOKEN}/sendMessage",
+                data=payload2.encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req2, timeout=10)
+            logger.info("booking_reminder: bk#%s customer reminder sent to %s", bk_id, tg_chat)
+        except Exception as e:
+            logger.warning("booking_reminder customer send: %s", e)
+
 
 def cancel_booking_reminder(bk_id: str) -> bool:
     """Remove a pending booking reminder (e.g., when booking is cancelled)."""
     key = f"bk_{bk_id}"
+    removed = False
     with _lock:
         if key in _pending_reminders:
             del _pending_reminders[key]
-            _save_reminders()
-            logger.info("booking_reminder: bk#%s cancelled", bk_id)
-            return True
+            removed = True
+    if removed:
+        _save_reminders()
+        logger.info("booking_reminder: bk#%s cancelled", bk_id)
+        return True
     return False
 
 
