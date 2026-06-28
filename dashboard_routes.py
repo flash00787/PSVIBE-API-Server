@@ -356,6 +356,52 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
         params.append(booking_id)
         _mysql_execute(f"UPDATE console_booking SET {', '.join(updates)} WHERE id = %s", tuple(params))
 
+        # 📢 Customer notification on confirm/cancel from web dashboard
+        new_status = req.get("status", "")
+        if new_status in ("confirmed", "cancelled"):
+            logger.info("[DASH-NOTIFY] Triggering notification for BK#%s status=%s", booking_id, new_status)
+            _notify_row = _mysql_query_one(
+                "SELECT telegram_chat_id, console_id, booking_date, start_time, duration_mins FROM console_booking WHERE id=%s",
+                (booking_id,)
+            )
+            if _notify_row and _notify_row.get("telegram_chat_id"):
+                try:
+                    import threading as _threading_notify, urllib.request as _urllib_notify, json as _json_notify, os as _os_notify
+                    _tg_id = _notify_row["telegram_chat_id"]
+                    _bk_id_str = str(booking_id)
+                    if new_status == "confirmed":
+                        _console = _notify_row.get("console_id", "") or "TBD"
+                        _date = str(_notify_row.get("booking_date", ""))
+                        _time = str(_notify_row.get("start_time", ""))[:16] if _notify_row.get("start_time") else ""
+                        _dur = str(_notify_row.get("duration_mins", ""))
+                        _msg = (
+                            f"✅ <b>Booking Confirmed!</b>\n\n"
+                            f"🎫 Booking <b>#{_bk_id_str}</b>\n"
+                            f"📅 {_date}  ⏰ {_time}\n"
+                            f"🎮 Console: {_console}  ⏱️ {_dur} min\n\n"
+                            f"📲 Booking ချိန်ရောက်ရင် Staff ကို Check-in ပြပေးပါ။ ပျော်ရွှင်ပါစေ! 🎮"
+                        )
+                    else:
+                        _msg = (
+                            f"❌ <b>Booking #{_bk_id_str} Cancelled</b>\n\n"
+                            f"Slot မအားတာ သို့မဟုတ် အကြောင်းတစ်စုံတစ်ရာကြောင့် Booking ကို cancel လုပ်လိုက်ပါတယ်။\n"
+                            f"📲 နောက်ထပ် Booking အသစ် တင်ပေးပါ။"
+                        )
+                    _token = _os_notify.environ.get("CUSTOMER_BOT_TOKEN", "")
+                    if _token:
+                        def _send_cust_notify():
+                            try:
+                                _url = f"https://api.telegram.org/bot{_token}/sendMessage"
+                                _data = _json_notify.dumps({"chat_id": _tg_id, "text": _msg, "parse_mode": "HTML"}).encode()
+                                _req = _urllib_notify.Request(_url, data=_data, headers={"Content-Type": "application/json"})
+                                _urllib_notify.urlopen(_req, timeout=5)
+                                logger.info("[DASH-NOTIFY] Sent to chat_id=%s for BK#%s", _tg_id, booking_id)
+                            except Exception as _ex:
+                                logger.warning("[DASH-NOTIFY] Failed for BK#%s: %s", booking_id, _ex)
+                        _threading_notify.Thread(target=_send_cust_notify, daemon=True).start()
+                except Exception as _ex:
+                    logger.warning("[DASH-NOTIFY] Error for BK#%s: %s", booking_id, _ex)
+
         updated = _mysql_query_one("SELECT * FROM console_booking WHERE id = %s", (booking_id,))
         return {
             "success": True,
@@ -3953,6 +3999,17 @@ async def dashboard_generate_salary(req: dict, user: dict = Depends(get_current_
         shop_total_mins = int(shop_row["total_mins"] or 0)
         shop_total_hrs = round(shop_total_mins / 60.0, 1)
 
+        # ── Member Card Commission (shop-wide, split equally) ──
+        # Count new member registrations (non-gift): balance_mins_before=0 + amount>0
+        card_total_row = _mysql_query_one(
+            "SELECT COUNT(*) AS card_count FROM topup_log "
+            "WHERE balance_mins_before = 0 AND amount > 0 AND LEFT(topup_date, 7) = %s",
+            (month,)
+        )
+        total_cards = int(card_total_row["card_count"] or 0) if card_total_row else 0
+        CARD_COMMISSION_PER_CARD = 1000  # Ks per card
+        shop_per_staff_card_com = total_cards * CARD_COMMISSION_PER_CARD
+
         # ── Food Profit (same as PNL): stock_out revenue − FIFO COGS ──
         food_rev_row = _mysql_query_one(
             "SELECT COALESCE(SUM(total), 0) AS t FROM stock_out WHERE DATE_FORMAT(sale_date, '%%Y-%%m') = %s",
@@ -4005,6 +4062,9 @@ async def dashboard_generate_salary(req: dict, user: dict = Depends(get_current_
             # Food commission — SHOP-WIDE: staff rate × total shop food profit
             commission_food = round(total_food_profit * cr_food, 0)
 
+            # Member card commission — shop-wide, split equally among all staff
+            commission_card = shop_per_staff_card_com
+
             # Unpaid advances
             adv_row = _mysql_query_one(
                 "SELECT COALESCE(SUM(amount), 0) AS ta FROM salary_advance "
@@ -4013,16 +4073,17 @@ async def dashboard_generate_salary(req: dict, user: dict = Depends(get_current_
             unpaid_adv = int(adv_row["ta"] or 0)
 
             deductions = unpaid_adv + leave_penalty
-            additions = transport + food_allowance_val + actual_att_bonus + commission_food + game_bonus
+            additions = transport + food_allowance_val + actual_att_bonus + commission_food + game_bonus + commission_card
             net_pay = round(base + additions - deductions, 0)
 
-            total_commission = commission_food + game_bonus
+            total_commission = commission_food + game_bonus + commission_card
 
             exist = _mysql_query_one(
                 "SELECT id FROM salary_payroll WHERE staff_name = %s AND pay_period = %s",
                 (sname, month)
             )
-            bonus_note = f"[auto: food_com={commission_food:,.0f}({cr_food*100:.0f}% of profit={total_food_profit:,.0f}(rev{food_revenue:,.0f}-cogs{food_cogs:,.0f})), game_bonus={game_bonus:,.0f}@{qualified_tier or 'none'}(shop={shop_total_hrs}hr), transport={transport:,.0f}, att_bonus={actual_att_bonus:,.0f}(leave={leave_days}d, forfeit)" if leave_days > 0 else f"[auto: food_com={commission_food:,.0f}({cr_food*100:.0f}% of profit={total_food_profit:,.0f}(rev{food_revenue:,.0f}-cogs{food_cogs:,.0f})), game_bonus={game_bonus:,.0f}@{qualified_tier or 'none'}(shop={shop_total_hrs}hr), transport={transport:,.0f}, att_bonus={actual_att_bonus:,.0f}(leave=0d)"
+            card_note = f", card_com={commission_card:,.0f}({total_cards}cards×{CARD_COMMISSION_PER_CARD})" if total_cards > 0 else ""
+            bonus_note = f"[auto: food_com={commission_food:,.0f}({cr_food*100:.0f}% of profit={total_food_profit:,.0f}(rev{food_revenue:,.0f}-cogs{food_cogs:,.0f})), game_bonus={game_bonus:,.0f}@{qualified_tier or 'none'}(shop={shop_total_hrs}hr){card_note}, transport={transport:,.0f}, att_bonus={actual_att_bonus:,.0f}(leave={leave_days}d, forfeit)" if leave_days > 0 else f"[auto: food_com={commission_food:,.0f}({cr_food*100:.0f}% of profit={total_food_profit:,.0f}(rev{food_revenue:,.0f}-cogs{food_cogs:,.0f})), game_bonus={game_bonus:,.0f}@{qualified_tier or 'none'}(shop={shop_total_hrs}hr){card_note}, transport={transport:,.0f}, att_bonus={actual_att_bonus:,.0f}(leave=0d)"
             if extra_leave > 0:
                 bonus_note = bonus_note[:-1] + f", penalty={leave_penalty}(extra={extra_leave}d×15K)]"
             if exist:
@@ -4049,6 +4110,9 @@ async def dashboard_generate_salary(req: dict, user: dict = Depends(get_current_
                 "leave_days": leave_days,
                 "leave_penalty": leave_penalty,
                 "commission_food": commission_food,
+                "commission_card": commission_card,
+                "total_cards": total_cards,
+                "card_commission_rate": CARD_COMMISSION_PER_CARD,
                 "game_bonus": game_bonus,
                 "total_food_profit": total_food_profit, "food_revenue": food_revenue, "food_cogs": food_cogs,
                 "shop_total_hrs": shop_total_hrs,
