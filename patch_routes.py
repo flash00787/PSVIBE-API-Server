@@ -1351,7 +1351,7 @@ async def food_cart_hold(data: dict, auth=Depends(verify_api_key)):
                     (booking_id, item_name, qty, price)
                 )
         # Also mark food_cart entries as held
-        _mysql_exec("UPDATE food_cart SET fulfilled_at = NOW() WHERE booking_id = %s AND fulfilled_at IS NULL", (booking_id,))
+        _mysql_exec("UPDATE food_cart SET fulfilled_at = DATE_ADD(NOW(), INTERVAL 390 MINUTE) WHERE booking_id = %s AND fulfilled_at IS NULL", (booking_id,))
         return ok({"message": f"Held {len(items)} items for booking {booking_id}"})
     except Exception as e:
         logger.error("food_cart_hold: %s", e)
@@ -1403,7 +1403,7 @@ async def food_cart_release(data: dict, auth=Depends(verify_api_key)):
                     except Exception:
                         pass
         # Mark food_cart entries as fulfilled
-        _mysql_exec("UPDATE food_cart SET fulfilled_at = NOW() WHERE booking_id = %s AND fulfilled_at IS NULL", (booking_id,))
+        _mysql_exec("UPDATE food_cart SET fulfilled_at = DATE_ADD(NOW(), INTERVAL 390 MINUTE) WHERE booking_id = %s AND fulfilled_at IS NULL", (booking_id,))
         return ok({"message": f"Released {len(items)} items for booking {booking_id}"})
     except Exception as e:
         logger.error("food_cart_release: %s", e)
