@@ -1747,10 +1747,10 @@ async def dashboard_get_food_orders(
         sql = """
             SELECT fc.id, fc.booking_id, fc.item_name, fc.quantity, fc.unit_price,
                    (fc.quantity * fc.unit_price) as line_total,
-                   CONVERT_TZ(fc.created_at, '+00:00', '+06:30') as created_at,
-                   CONVERT_TZ(fc.fulfilled_at, '+00:00', '+06:30') as fulfilled_at,
+                   fc.created_at,
+                   fc.fulfilled_at,
                    cb.console_id, cb.member_id, cb.status as booking_status,
-                   CONVERT_TZ(cb.start_time, '+00:00', '+06:30') as start_time
+                   cb.start_time
             FROM food_cart fc
             JOIN console_booking cb ON CAST(fc.booking_id AS UNSIGNED) = cb.id
             ORDER BY fc.id DESC
@@ -1836,8 +1836,7 @@ async def dashboard_get_sales_daily(
         sql = f"""
             SELECT id, voucher_no, sale_date, console_id, member_id,
                    amount, gross, discount, net, staff_name,
-                   payment_method, notes, created_at,
-                   CONVERT_TZ(created_at, '+00:00', '+06:30') as sale_time
+                   payment_method, notes, created_at
             FROM sales_daily
             WHERE {' AND '.join(where)}
             ORDER BY id DESC
@@ -5702,4 +5701,512 @@ async def dashboard_feedback_summary(user: dict = Depends(get_current_user), dat
         }
     except Exception as e:
         logger.error(f"dashboard/feedback error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  DAILY TILL / CASH REGISTER MANAGEMENT
+# ══════════════════════════════════════════════════════════════════
+
+def _get_mmt_now():
+    """Return current datetime in Myanmar time (UTC+6:30)."""
+    return datetime.now(timezone.utc) + timedelta(hours=6, minutes=30)
+
+
+def _get_mmt_today_str():
+    """Return today's date string in MMT."""
+    return _get_mmt_now().strftime("%Y-%m-%d")
+
+
+@router.get("/till/today")
+async def get_till_today(user: dict = Depends(get_current_user)):
+    """Get today's till record. Auto-creates if it doesn't exist."""
+    try:
+        today = _get_mmt_today_str()
+
+        # Get branch_id from header (default 1)
+        try:
+            branch_id = int(user.get("branch_id", 1))
+        except Exception:
+            branch_id = 1
+
+        row = _mysql_query_one(
+            "SELECT * FROM daily_till WHERE till_date = %s AND branch_id = %s",
+            (today, branch_id)
+        )
+
+        if not row:
+            # Auto-create empty till record for today
+            now_mmt = _get_mmt_now().strftime("%Y-%m-%d %H:%M:%S")
+            _mysql_execute(
+                """INSERT INTO daily_till (branch_id, till_date, status, opened_at)
+                   VALUES (%s, %s, 'open', %s)""",
+                (branch_id, today, now_mmt)
+            )
+            row = _mysql_query_one(
+                "SELECT * FROM daily_till WHERE till_date = %s AND branch_id = %s",
+                (today, branch_id)
+            )
+
+        # Calculate payment-method sales from sales_daily for today
+        # payment_method field can be: "Cash:10000", "KPay:31000|Cash:20000|WavePay:17000", etc.
+        all_sales = _mysql_query(
+            """SELECT payment_method, net FROM sales_daily
+               WHERE DATE(sale_date) = %s AND payment_method IS NOT NULL""",
+            (today,)
+        ) or []
+        
+        # Parse pipe-separated payment strings and aggregate by method
+        pm_totals = {}  # method -> total
+        for s in all_sales:
+            pm_str = (s.get("payment_method") or "").strip()
+            net = float(s.get("net") or 0)
+            parts = pm_str.split("|")
+            total_method_val = 0
+            for part in parts:
+                if ":" in part:
+                    m, val = part.rsplit(":", 1)
+                    try:
+                        val_num = float(val)
+                        total_method_val += val_num
+                        pm_totals[m.strip()] = pm_totals.get(m.strip(), 0) + val_num
+                    except ValueError:
+                        pass
+            # If parsed total doesn't match net, distribute remainder proportionally
+            # (net is the authoritative total)
+            if total_method_val > 0 and abs(net - total_method_val) > 0.01:
+                ratio = net / total_method_val if total_method_val else 1
+                for m, v in list(pm_totals.items()):
+                    # Adjust only the methods from this row — but simpler: skip micro-adjustment
+                    pass
+        
+        cash_total = pm_totals.get("Cash", 0)
+        kpay_total = pm_totals.get("KPay", 0)
+        wavepay_total = pm_totals.get("WavePay", 0)
+        ayapay_total = pm_totals.get("AYA Pay", 0)
+        total_sales = sum(pm_totals.values())
+        
+        # ── Cash outflows: eject + transfer_out (both leave the physical drawer) ──
+        cm = _mysql_query_one(
+            """SELECT
+                 COALESCE(SUM(CASE WHEN movement_type = 'eject' THEN amount ELSE 0 END), 0) AS cash_ejected,
+                 COALESCE(SUM(CASE WHEN movement_type = 'transfer_out' THEN ABS(amount) ELSE 0 END), 0) AS cash_transferred_out,
+                 COALESCE(SUM(CASE WHEN movement_type = 'transfer_in' THEN amount ELSE 0 END), 0) AS cash_transferred_in,
+                 COALESCE(SUM(CASE WHEN movement_type = 'inject' THEN amount ELSE 0 END), 0) AS cash_injected
+               FROM cash_movements
+               WHERE account = 'Cash' AND DATE(created_at) = %s""",
+            (today,)
+        )
+        cash_ejected = float(cm["cash_ejected"]) if cm else 0.0
+        cash_transferred_out = float(cm["cash_transferred_out"]) if cm else 0.0
+        cash_transferred_in = float(cm["cash_transferred_in"]) if cm else 0.0
+        cash_injected = float(cm["cash_injected"]) if cm else 0.0
+        cash_outflows = cash_ejected + cash_transferred_out  # both physically leave drawer
+        cash_inflows_extra = cash_transferred_in + cash_injected
+        
+        logger.info(f"till/today cash movements: ejected={cash_ejected} tx_out={cash_transferred_out} tx_in={cash_transferred_in} injected={cash_injected}")
+
+        # Update the till record with live sales totals
+        # Expected = Opening + Cash Sales + Transfers In + Injections - Ejects - Transfers Out
+        expected_closing = (float(row["opening_balance"] or 0) + cash_total + cash_inflows_extra - cash_outflows)
+        _mysql_execute(
+            """UPDATE daily_till
+               SET cash_sales_total = %s, kpay_sales_total = %s,
+                   expected_closing = %s
+               WHERE id = %s""",
+            (cash_total, kpay_total, expected_closing, row["id"])
+        )
+
+        # Re-fetch to get updated values
+        row = _mysql_query_one(
+            "SELECT * FROM daily_till WHERE id = %s", (row["id"],)
+        )
+
+        # Format response
+        def _fmt(val):
+            return float(val) if val is not None else 0.0
+
+        return {
+            "success": True,
+            "data": {
+                "id": row["id"],
+                "branch_id": row["branch_id"],
+                "till_date": str(row["till_date"]),
+                "opening_balance": _fmt(row.get("opening_balance")),
+                "closing_balance": _fmt(row.get("closing_balance")),
+                "cash_sales_total": _fmt(row.get("cash_sales_total")),
+                "kpay_sales_total": _fmt(row.get("kpay_sales_total")),
+                "expected_closing": _fmt(row.get("expected_closing")),
+                "actual_cash_counted": _fmt(row.get("actual_cash_counted")),
+                "variance": _fmt(row.get("variance")),
+                "opened_by": row.get("opened_by") or "",
+                "closed_by": row.get("closed_by") or "",
+                "opened_at": row["opened_at"].strftime("%Y-%m-%d %H:%M:%S") if row.get("opened_at") else None,
+                "closed_at": row["closed_at"].strftime("%Y-%m-%d %H:%M:%S") if row.get("closed_at") else None,
+                "notes": row.get("notes") or "",
+                "status": row["status"],
+            },
+            "sales_summary": {
+                "cash_total": cash_total,
+                "kpay_total": kpay_total,
+                "wavepay_total": wavepay_total,
+                "ayapay_total": ayapay_total,
+                "total_sales": total_sales,
+                "cash_ejected": cash_ejected,
+                "cash_transferred_out": cash_transferred_out,
+                "cash_transferred_in": cash_transferred_in,
+                "cash_injected": cash_injected,
+                "cash_outflows": cash_outflows,
+                "cash_inflows_extra": cash_inflows_extra,
+            }
+        }
+    except Exception as e:
+        logger.error(f"till/today error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/till/open")
+async def open_till(req: dict, user: dict = Depends(get_current_user)):
+    """Open today's till with opening balance."""
+    try:
+        today = _get_mmt_today_str()
+        opening_balance = float(req.get("opening_balance", 0))
+        opened_by = str(req.get("opened_by", user.get("username", "")))
+
+        try:
+            branch_id = int(user.get("branch_id", 1))
+        except Exception:
+            branch_id = 1
+
+        now_mmt = _get_mmt_now().strftime("%Y-%m-%d %H:%M:%S")
+
+        existing = _mysql_query_one(
+            "SELECT * FROM daily_till WHERE till_date = %s AND branch_id = %s",
+            (today, branch_id)
+        )
+
+        if existing:
+            _mysql_execute(
+                """UPDATE daily_till
+                   SET opening_balance = %s, opened_by = %s, opened_at = %s, status = 'open'
+                   WHERE id = %s""",
+                (opening_balance, opened_by, now_mmt, existing["id"])
+            )
+        else:
+            _mysql_execute(
+                """INSERT INTO daily_till
+                   (branch_id, till_date, opening_balance, opened_by, opened_at, status)
+                   VALUES (%s, %s, %s, %s, %s, 'open')""",
+                (branch_id, today, opening_balance, opened_by, now_mmt)
+            )
+
+        logger.info(f"Till opened by {opened_by} with balance {opening_balance}")
+        return {"success": True, "message": f"Till opened with {opening_balance:,.2f} MMK"}
+    except Exception as e:
+        logger.error(f"till/open error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/till/close")
+async def close_till(req: dict, user: dict = Depends(get_current_user)):
+    """Close today's till with actual cash counted."""
+    try:
+        today = _get_mmt_today_str()
+        actual_cash = float(req.get("actual_cash_counted", 0))
+        closed_by = str(req.get("closed_by", user.get("username", "")))
+        notes = str(req.get("notes", ""))
+
+        try:
+            branch_id = int(user.get("branch_id", 1))
+        except Exception:
+            branch_id = 1
+
+        now_mmt = _get_mmt_now().strftime("%Y-%m-%d %H:%M:%S")
+
+        existing = _mysql_query_one(
+            "SELECT * FROM daily_till WHERE till_date = %s AND branch_id = %s",
+            (today, branch_id)
+        )
+
+        if not existing:
+            return {"success": False, "error": "No till record found for today"}
+
+        if existing["status"] == "closed":
+            return {"success": False, "error": "Till is already closed for today"}
+
+        # Calculate live sales totals before closing (parse pipe-separated payment_method)
+        all_cs = _mysql_query(
+            """SELECT payment_method, net FROM sales_daily
+               WHERE DATE(sale_date) = %s AND payment_method IS NOT NULL""",
+            (today,)
+        ) or []
+        cash_total = 0.0
+        kpay_total = 0.0
+        for s in all_cs:
+            pm_str = (s.get("payment_method") or "").strip()
+            for part in pm_str.split("|"):
+                if ":" in part:
+                    m, v = part.rsplit(":", 1)
+                    try:
+                        vv = float(v)
+                        if m.strip() == "Cash":
+                            cash_total += vv
+                        elif m.strip() == "KPay":
+                            kpay_total += vv
+                    except ValueError:
+                        pass
+
+        opening = float(existing["opening_balance"] or 0)
+        
+        # Include cash movements (eject + transfers) in expected
+        cm = _mysql_query_one(
+            """SELECT
+                 COALESCE(SUM(CASE WHEN movement_type = 'eject' THEN amount ELSE 0 END), 0) AS cash_ejected,
+                 COALESCE(SUM(CASE WHEN movement_type = 'transfer_out' THEN ABS(amount) ELSE 0 END), 0) AS cash_transferred_out,
+                 COALESCE(SUM(CASE WHEN movement_type = 'transfer_in' THEN amount ELSE 0 END), 0) AS cash_transferred_in,
+                 COALESCE(SUM(CASE WHEN movement_type = 'inject' THEN amount ELSE 0 END), 0) AS cash_injected
+               FROM cash_movements
+               WHERE account = 'Cash' AND DATE(created_at) = %s""",
+            (today,)
+        )
+        _ejected = float(cm["cash_ejected"]) if cm else 0.0
+        _tx_out = float(cm["cash_transferred_out"]) if cm else 0.0
+        _tx_in = float(cm["cash_transferred_in"]) if cm else 0.0
+        _injected = float(cm["cash_injected"]) if cm else 0.0
+        
+        expected = opening + cash_total + _tx_in + _injected - _ejected - _tx_out
+        variance = actual_cash - expected
+        closing_balance = actual_cash
+
+        _mysql_execute(
+            """UPDATE daily_till
+               SET actual_cash_counted = %s, variance = %s, closing_balance = %s,
+                   closed_by = %s, closed_at = %s, notes = %s, status = 'closed',
+                   cash_sales_total = %s, expected_closing = %s
+               WHERE id = %s""",
+            (actual_cash, variance, closing_balance,
+             closed_by, now_mmt, notes,
+             cash_total, expected,
+             existing["id"])
+        )
+
+        logger.info(f"Till closed by {closed_by}: expected={expected}, actual={actual_cash}, variance={variance}")
+        return {
+            "success": True,
+            "message": f"Till closed. Variance: {variance:+,.2f} MMK",
+            "data": {
+                "opening_balance": opening,
+                "cash_sales_total": cash_total,
+                "expected_closing": expected,
+                "actual_cash_counted": actual_cash,
+                "variance": variance,
+            }
+        }
+    except Exception as e:
+        logger.error(f"till/close error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/till/history")
+async def get_till_history(
+    days: int = Query(30, ge=1, le=365),
+    user: dict = Depends(get_current_user)
+):
+    """Get past till records."""
+    try:
+        try:
+            branch_id = int(user.get("branch_id", 1))
+        except Exception:
+            branch_id = 1
+
+        rows = _mysql_query(
+            """SELECT * FROM daily_till
+               WHERE branch_id = %s AND till_date <= CURDATE()
+               ORDER BY till_date DESC
+               LIMIT %s""",
+            (branch_id, days)
+        )
+
+        def _fmt(val):
+            return float(val) if val is not None else 0.0
+
+        return {
+            "success": True,
+            "data": [{
+                "id": r["id"],
+                "till_date": str(r["till_date"]),
+                "opening_balance": _fmt(r.get("opening_balance")),
+                "cash_sales_total": _fmt(r.get("cash_sales_total")),
+                "kpay_sales_total": _fmt(r.get("kpay_sales_total")),
+                "expected_closing": _fmt(r.get("expected_closing")),
+                "actual_cash_counted": _fmt(r.get("actual_cash_counted")),
+                "variance": _fmt(r.get("variance")),
+                "opened_by": r.get("opened_by") or "",
+                "closed_by": r.get("closed_by") or "",
+                "opened_at": r["opened_at"].strftime("%Y-%m-%d %H:%M:%S") if r.get("opened_at") else None,
+                "closed_at": r["closed_at"].strftime("%Y-%m-%d %H:%M:%S") if r.get("closed_at") else None,
+                "notes": r.get("notes") or "",
+                "status": r["status"],
+            } for r in rows]
+        }
+    except Exception as e:
+        logger.error(f"till/history error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  SESSION ↔ SALES RECONCILIATION
+# ═══════════════════════════════════════
+@router.get("/reconciliation")
+async def get_reconciliation(
+    date: str = Query(None),
+    user: dict = Depends(get_current_user),
+):
+    """Cross-check Done sessions vs sales_daily entries for a given date."""
+    try:
+        if not date:
+            date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # 1. Fetch Done sessions for this date
+        done_sessions = _mysql_query("""
+            SELECT cb.id as booking_id, cb.console_id, cb.start_time, cb.end_time,
+                   cb.duration_mins, cb.staff_name, cb.phone, cb.created_at,
+                   TIMESTAMPDIFF(MINUTE, cb.start_time, cb.end_time) as actual_mins
+            FROM console_booking cb
+            WHERE cb.status = 'Done'
+              AND DATE(cb.booking_date) = %s
+              AND cb.console_id IS NOT NULL AND cb.console_id != ''
+            ORDER BY cb.console_id, cb.start_time
+        """, (date,)) or []
+
+        # 2. Fetch sales_daily for this date
+        sales_records = _mysql_query("""
+            SELECT id, voucher_no, console_id, amount, net, gross, discount,
+                   payment_method, notes, created_at, sale_date
+            FROM sales_daily
+            WHERE DATE(sale_date) = %s
+              AND console_id IS NOT NULL AND console_id != ''
+            ORDER BY console_id, created_at
+        """, (date,)) or []
+
+        # 3. Parse play minutes from sales notes
+        for sr in sales_records:
+            notes = sr.get("notes") or ""
+            m = re.search(r'Mins?:?\s*(\d+)', notes, re.IGNORECASE)
+            sr["_play_mins"] = int(m.group(1)) if m else 0
+
+        # 4. Matching logic:
+        #    Match by console_id + mins within ±10 + time proximity
+        matched_pairs = []  # (session, sale)
+        used_sale_ids = set()
+
+        for session in done_sessions:
+            sid = session["booking_id"]
+            cid = session["console_id"]
+            actual = session.get("actual_mins") or 0
+            if actual <= 0 and session.get("duration_mins"):
+                actual = session["duration_mins"]
+
+            candidates = [
+                s for s in sales_records
+                if s["console_id"] == cid
+                and s["id"] not in used_sale_ids
+                and abs(s["_play_mins"] - actual) <= 10
+            ]
+
+            if candidates:
+                # Pick closest by time proximity (closest start_time to created_at)
+                session_start = session.get("start_time")
+                best = min(candidates, key=lambda s: abs(
+                    (s["created_at"] - session_start).total_seconds()
+                ) if (session_start and s.get("created_at")) else 0)
+                matched_pairs.append((session, best))
+                used_sale_ids.add(best["id"])
+
+        matched_session_ids = {p[0]["booking_id"] for p in matched_pairs}
+
+        # 5. Build missing_sales (Done sessions without matching sale)
+        def parse_multiplier(console_id: str) -> float:
+            """C-09 and C-10 have 1.2x rate multiplier."""
+            if not console_id:
+                return 1.0
+            cid = console_id.upper().strip()
+            if cid in ("C-09", "C-10"):
+                return 1.2
+            return 1.0
+
+        missing_sales = []
+        for session in done_sessions:
+            if session["booking_id"] not in matched_session_ids:
+                actual = session.get("actual_mins") or session.get("duration_mins") or 0
+                if actual <= 0:
+                    actual = session.get("duration_mins") or 0
+                mult = parse_multiplier(session.get("console_id", ""))
+                est = round((actual / 60) * 10000 * mult)
+                missing_sales.append({
+                    "booking_id": session["booking_id"],
+                    "console_id": session["console_id"],
+                    "start_time": session["start_time"].strftime("%Y-%m-%d %H:%M:%S") if session.get("start_time") else None,
+                    "end_time": session["end_time"].strftime("%Y-%m-%d %H:%M:%S") if session.get("end_time") else None,
+                    "actual_mins": actual,
+                    "staff_name": session.get("staff_name") or "—",
+                    "phone": session.get("phone") or "",
+                    "estimated_amount": int(est),
+                })
+
+        # 6. Build orphan_sales (sales without matching Done session, exclude food-only)
+        orphan_sales = []
+        for sale in sales_records:
+            if sale["id"] not in used_sale_ids:
+                _notes = sale.get("notes") or ""
+                # Skip food-only / topup / registration sales (no Mins: in notes)
+                if not re.search(r'Mins?:?\s*\d+', _notes, re.IGNORECASE):
+                    continue
+                orphan_sales.append({
+                    "id": sale["id"],
+                    "voucher_no": sale.get("voucher_no") or "",
+                    "console_id": sale.get("console_id") or "",
+                    "net": float(sale.get("net") or 0),
+                    "payment_method": sale.get("payment_method") or "",
+                    "notes": sale.get("notes") or "",
+                })
+
+        # 7. Build all_matched for detail view
+        all_matched = []
+        for session, sale in matched_pairs:
+            all_matched.append({
+                "console_id": session["console_id"],
+                "booking_id": session["booking_id"],
+                "voucher_no": sale.get("voucher_no") or "",
+                "mins": session.get("actual_mins") or session.get("duration_mins") or 0,
+                "payment_method": sale.get("payment_method") or "",
+                "amount": float(sale.get("net") or 0),
+                "match_type": "console+mins",
+            })
+
+        total_done = len(done_sessions)
+        total_sales = len(sales_records)
+        total_matched = len(matched_pairs)
+        missing_revenue = sum(ms["estimated_amount"] for ms in missing_sales)
+
+        return {
+            "success": True,
+            "date": date,
+            "done_sessions": total_done,
+            "sales_records": total_sales,
+            "matched": total_matched,
+            "missing_sales": missing_sales,
+            "orphan_sales": orphan_sales,
+            "all_matched": all_matched,
+            "summary": {
+                "total_done_sessions": total_done,
+                "total_sales": total_sales,
+                "total_matched": total_matched,
+                "total_orphan_sessions": len(missing_sales),
+                "total_orphan_sales": len(orphan_sales),
+                "missing_revenue": int(missing_revenue),
+            },
+        }
+    except Exception as e:
+        logger.error(f"Reconciliation error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}

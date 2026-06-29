@@ -4355,7 +4355,7 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
         if extra_notes:
             combined_notes = (notes + " | " if notes else "") + " | ".join(extra_notes)
 
-        sale_date = created_at if created_at else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        sale_date = created_at if created_at else datetime.now(timezone(timedelta(hours=6, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
         gross = game_amt + food_total
 
         _mysql_exec(
@@ -4395,7 +4395,7 @@ async def api_stock_out_log(req: dict, auth=Depends(verify_api_key)):
         if not item_name or qty <= 0:
             return error_response(message="item_name and qty > 0 required")
 
-        sale_date = created_at if created_at else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        sale_date = created_at if created_at else datetime.now(timezone(timedelta(hours=6, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
 
         _mysql_exec(
             "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, staff_name, notes) "
