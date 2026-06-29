@@ -3542,6 +3542,133 @@ async def api_bot_users_stats(auth=Depends(verify_api_key)):
     except Exception as e:
         return error_response(message=str(e))
 
+@app.get("/api/bot-users/booking-success-rate", response_model=GenericResponse, tags=["Bot Users"], summary="Customer Bot booking success rate")
+async def api_bot_booking_success_rate(since: str = Query("2026-06-02", description="Filter bookings from this date (YYYY-MM-DD). Default: 2026-06-02 (all data). Use 2026-06-25 for post-bind-fix only."), auth=Depends(verify_api_key)):
+    """Return booking success rate for Customer Bot users: Done vs Cancelled vs Rejected.
+    Excludes test bookings (6296803251) and rebooked cancellations (cancelled then rebooked → Done).
+    Query param: since — filter from date (default 2026-06-02 = all data; 2026-06-25 = post-bind-fix).
+    """
+    try:
+        _base = f"WHERE telegram_chat_id IS NOT NULL AND telegram_chat_id != '' AND telegram_chat_id != '-1003686032747' AND telegram_chat_id != '6296803251' AND booking_date >= '{since}'"
+
+        # Count rebooked cancellations: cancelled bookings that were rebooked and completed (Done)
+        # Match: same phone + same booking_date + same game_name → has a Done/Active booking
+        rebooked = _mysql_query_one(f"""
+            SELECT COUNT(*) AS cnt FROM console_booking c
+            {_base} AND c.status = 'cancelled'
+            AND c.phone IS NOT NULL AND c.phone != ''
+            AND c.game_name IS NOT NULL AND c.game_name != ''
+            AND EXISTS (
+                SELECT 1 FROM console_booking d
+                WHERE d.phone = c.phone
+                  AND d.booking_date = c.booking_date
+                  AND d.game_name = c.game_name
+                  AND d.status IN ('Done','Active')
+                  AND d.id != c.id
+                  AND d.telegram_chat_id IS NOT NULL AND d.telegram_chat_id != ''
+            )
+        """)
+        rebooked_count = rebooked["cnt"] if rebooked else 0
+
+        # Totals by status (raw)
+        totals = _mysql_query(f"SELECT status, COUNT(*) AS cnt FROM console_booking {_base} GROUP BY status")
+        total_map = {r["status"]: r["cnt"] for r in (totals or [])}
+        done = total_map.get("Done", 0)
+        active = total_map.get("Active", 0)
+        confirmed = total_map.get("confirmed", 0)
+        cancelled_raw = total_map.get("cancelled", 0)
+        rejected = total_map.get("rejected", 0)
+        pending = total_map.get("pending", 0)
+        # Adjusted: rebooked cancellations don't count as negative
+        cancelled_adj = cancelled_raw - rebooked_count
+        total = sum(total_map.values())
+        # Success rate: (Done + Active) / Total (rebooked exclusion doesn't change total, only affects interpretation)
+        success_rate = round((done + active) / total * 100, 1) if total > 0 else 0
+        # Adjusted success rate excluding rebooked cancellations from the failure pool
+        adjusted_base = total - rebooked_count
+        success_rate_adj = round((done + active) / adjusted_base * 100, 1) if adjusted_base > 0 else 0
+
+        # Daily trend — last 14 days (raw counts, rebook flag separate)
+        daily = _mysql_query(f"""
+            SELECT booking_date AS d,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN status='Done' THEN 1 ELSE 0 END) AS done,
+                   SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
+                   SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected,
+                   SUM(CASE WHEN status='Active' THEN 1 ELSE 0 END) AS active
+            FROM console_booking {_base}
+            AND booking_date >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
+            GROUP BY booking_date ORDER BY d DESC
+        """)
+
+        # Weekly trend — last 4 weeks
+        weekly = _mysql_query(f"""
+            SELECT YEARWEEK(booking_date,1) AS w,
+                   MIN(booking_date) AS week_start,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN status='Done' THEN 1 ELSE 0 END) AS done,
+                   SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
+                   SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected
+            FROM console_booking {_base}
+            AND booking_date >= DATE_SUB(CURDATE(), INTERVAL 4 WEEK)
+            GROUP BY YEARWEEK(booking_date,1) ORDER BY w DESC
+        """)
+
+        # Console breakdown
+        console = _mysql_query(f"""
+            SELECT console_id,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN status IN ('Done','Active') THEN 1 ELSE 0 END) AS success,
+                   SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled
+            FROM console_booking {_base} AND console_id != ''
+            GROUP BY console_id ORDER BY console_id
+        """)
+
+        # All users with booking success (no minimum — includes 1-booking users), with Telegram details
+        top_users = _mysql_query(f"""
+            SELECT b.staff_name AS name, b.phone, b.telegram_chat_id AS tg_id,
+                   u.username, u.first_name,
+                   COUNT(*) AS total_bookings,
+                   SUM(CASE WHEN b.status IN ('Done','Active') THEN 1 ELSE 0 END) AS success_count,
+                   SUM(CASE WHEN b.status='cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
+                   SUM(CASE WHEN b.status='rejected' THEN 1 ELSE 0 END) AS rejected_count,
+                   ROUND(SUM(CASE WHEN b.status IN ('Done','Active') THEN 1 ELSE 0 END)/(COUNT(*) - SUM(CASE WHEN b.status='cancelled' AND b.phone IS NOT NULL AND b.phone!='' AND b.game_name IS NOT NULL AND b.game_name!='' AND EXISTS (SELECT 1 FROM console_booking d WHERE d.phone=b.phone AND d.booking_date=b.booking_date AND d.game_name=b.game_name AND d.status IN ('Done','Active') AND d.id!=b.id AND d.telegram_chat_id IS NOT NULL AND d.telegram_chat_id!='') THEN 1 ELSE 0 END))*100, 1) AS success_pct
+            FROM console_booking b
+            LEFT JOIN customer_bot_users u ON b.telegram_chat_id = u.tg_id
+            {_base}
+            GROUP BY b.staff_name, b.phone, b.telegram_chat_id, u.username, u.first_name
+            ORDER BY total_bookings DESC, success_pct DESC
+        """)
+
+        return ok({
+            "totals": {"total": total, "done": done, "active": active, "confirmed": confirmed,
+                       "cancelled_raw": cancelled_raw, "cancelled_adj": cancelled_adj,
+                       "rebooked": rebooked_count, "rejected": rejected, "pending": pending},
+            "success_rate_pct": success_rate,
+            "success_rate_adj_pct": success_rate_adj,
+            "rebooked_count": rebooked_count,
+            "note": f"{rebooked_count} cancelled bookings were rebooked and completed (excluded from failure count). Adjusted success rate: {success_rate_adj}%",
+            "daily_trend": [{"date": str(r["d"]), "total": r["total"], "done": r["done"],
+                            "cancelled": r["cancelled"], "rejected": r["rejected"], "active": r["active"]}
+                           for r in (daily or [])],
+            "weekly_trend": [{"week": r["w"], "week_start": str(r["week_start"]), "total": r["total"],
+                              "done": r["done"], "cancelled": r["cancelled"], "rejected": r["rejected"]}
+                             for r in (weekly or [])],
+            "console_breakdown": [{"console_id": r["console_id"], "total": r["total"],
+                                    "success": r["success"], "cancelled": r["cancelled"],
+                                    "rate_pct": round(r["success"]/r["total"]*100,1) if r["total"]>0 else 0}
+                                   for r in (console or [])],
+            "top_users": [{"name": r["name"] or "Unknown", "phone": r["phone"] or "",
+                           "tg_id": r["tg_id"] or "", "username": r["username"] or "",
+                           "first_name": r["first_name"] or "",
+                           "total_bookings": r["total_bookings"], "success_count": r["success_count"],
+                           "cancelled_count": r["cancelled_count"], "rejected_count": r["rejected_count"],
+                           "success_pct": r["success_pct"]}
+                          for r in (top_users or [])],
+        })
+    except Exception as e:
+        return error_response(message=str(e))
+
 
 @app.get("/api/bot-users/list", response_model=GenericResponse, tags=["Bot Users"], summary="List bot users")
 async def api_bot_users_list(limit: int = 50, offset: int = 0, search: str = "", auth=Depends(verify_api_key)):
