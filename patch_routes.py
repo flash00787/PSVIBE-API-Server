@@ -340,6 +340,10 @@ async def api_sheets_pnl(m: str = Query("", description="Month in YYYY-MM format
         mmt = now_mmt()
         month = m if m else f"{mmt.year}-{mmt.month:02d}"
         month_slash = month.replace("-", "/")
+        # Parse year/month from m parameter for filtering
+        parts = month.split("-")
+        year_val = int(parts[0])
+        month_val = int(parts[1])
 
         result = {
             "month": month,
@@ -354,7 +358,7 @@ async def api_sheets_pnl(m: str = Query("", description="Month in YYYY-MM format
         try:
             rows = _mysql_query(
                 "SELECT amount FROM sales_daily WHERE YEAR(sale_date)=%s AND MONTH(sale_date)=%s",
-                (mmt.year, mmt.month))
+                (year_val, month_val))
             for r in rows:
                 result["revenue"]["console_rental"] += int(float(r["amount"] or 0))
         except Exception as e:
@@ -364,7 +368,7 @@ async def api_sheets_pnl(m: str = Query("", description="Month in YYYY-MM format
         try:
             rows = _mysql_query(
                 "SELECT amount FROM topup_log WHERE YEAR(topup_date)=%s AND MONTH(topup_date)=%s",
-                (mmt.year, mmt.month))
+                (year_val, month_val))
             for r in rows:
                 result["revenue"]["topup_sales"] += int(float(r["amount"] or 0))
         except Exception as e:

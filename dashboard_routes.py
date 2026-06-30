@@ -2166,9 +2166,22 @@ async def dashboard_dispose_asset(asset_id: int, req: dict = {}, user: dict = De
         return {"success": False, "error": str(e)}
 
 @router.get("/finance/balances")
-async def get_finance_balances(user: dict = Depends(get_current_user)):
+async def get_finance_balances(year: int = Query(None), month: int = Query(None), user: dict = Depends(get_current_user)):
     """Returns live balance for each payment account."""
     accounts = [{"key": "cash", "label": "Cash", "icon": "💰", "type": "operating"},{"key": "wave", "label": "WavePay", "icon": "📱", "type": "digital"},{"key": "aya_pay", "label": "AYA Pay", "icon": "💳", "type": "bank"},{"key": "kpay", "label": "KPay", "icon": "💳", "type": "digital"},{"key": "kbz_bank", "label": "KBZ Bank", "icon": "🏦", "type": "capital"},{"key": "acm_acc", "label": "ACM's Acc", "icon": "🏦", "type": "transfer"}]
+    # Month filter: default to current MMT month
+    from datetime import datetime, timedelta, timezone as _tz
+    _mmt_offset = timedelta(hours=6, minutes=30)
+    _now_mmt = datetime.now(_tz.utc) + _mmt_offset
+    if not year:
+        year = _now_mmt.year
+    if not month:
+        month = _now_mmt.month
+    _start = f"{year:04d}-{month:02d}-01"
+    if month == 12:
+        _end = f"{year+1:04d}-01-01"
+    else:
+        _end = f"{year:04d}-{month+1:02d}-01"
     try:
         from mysql_db import query as _mq, query_one as _mqo, execute as _me
         import re
@@ -2180,7 +2193,7 @@ async def get_finance_balances(user: dict = Depends(get_current_user)):
             _fifo_conn.close()
         except Exception:
             _fifo_result = {"liability": 0, "consumed": 0}
-        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
+        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date >= %s AND sale_date < %s", (_start, _end))
         income_by_account = {acc["key"]: 0.0 for acc in accounts}
         for row in rows:
             note = (row.get("notes") or "")
@@ -2207,7 +2220,7 @@ async def get_finance_balances(user: dict = Depends(get_current_user)):
                 if method in income_by_account:
                     income_by_account[method] += val
         # Topup income
-        topup_rows = _mq("SELECT payment_method, amount FROM topup_log WHERE amount > 0 AND payment_method IS NOT NULL")
+        topup_rows = _mq("SELECT payment_method, amount FROM topup_log WHERE amount > 0 AND payment_method IS NOT NULL AND topup_date >= %s AND topup_date < %s", (_start, _end))
         for _tr in topup_rows:
             _pm = (_tr.get("payment_method") or "").strip()
             if not _pm: continue
@@ -2224,7 +2237,7 @@ async def get_finance_balances(user: dict = Depends(get_current_user)):
                     if _method in income_by_account:
                         income_by_account[_method] += _val
 
-        opex_rows = _mq("SELECT payment_method, COALESCE(SUM(amount), 0) as total FROM opex WHERE description NOT LIKE %s GROUP BY payment_method", ("%Prepaid Rent Amortization%",))
+        opex_rows = _mq("SELECT payment_method, COALESCE(SUM(amount), 0) as total FROM opex WHERE description NOT LIKE %s AND expense_date >= %s AND expense_date < %s GROUP BY payment_method", ("%Prepaid Rent Amortization%", _start, _end))
         opex_by_acct = {acc["key"]: 0.0 for acc in accounts}
         for row in opex_rows:
             pm = (row.get("payment_method") or "").strip().lower().replace(" ", "_")
@@ -2255,20 +2268,20 @@ async def get_finance_balances(user: dict = Depends(get_current_user)):
                                 pass
                             break
 
-        cash_rows = _mq("SELECT movement_type, account, COALESCE(SUM(amount), 0) as total FROM cash_movements GROUP BY movement_type, account")
+        cash_rows = _mq("SELECT movement_type, account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE created_at >= %s AND created_at < %s GROUP BY movement_type, account", (_start, _end))
         cash_map = {}
         for row in cash_rows:
             key = f"{row['movement_type']}|{row['account']}"
             cash_map[key] = cash_map.get(key, 0) + float(row["total"] or 0)
         # Map account keys to DB account names for cash_movements lookup
         # Subtract inject entries that overlap with topup (notes start with Topup or New member)
-        _bad_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37)))) GROUP BY account")
+        _bad_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
         for _r in _bad_inject_rows:
             _k = "inject|" + _r["account"]
             if _k in cash_map:
                 cash_map[_k] -= float(_r["total"] or 0)
         # Also subtract advance settlement injects — these are recoveries of previously deducted advances, NOT new cash
-        _adv_settle_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND note LIKE CONCAT('Advance settled', CHAR(37)) GROUP BY account")
+        _adv_settle_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND note LIKE CONCAT('Advance settled', CHAR(37)) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
         for _r in _adv_settle_rows:
             _k = "inject|" + _r["account"]
             if _k in cash_map:
@@ -2522,10 +2535,23 @@ async def dashboard_settle_advance(advance_id: int, body: dict = {}, user: dict 
     except Exception as e:
         return {"success": False, "error": str(e)}
 @router.get("/financial/balance-sheet")
-async def get_balance_sheet(user: dict = Depends(get_current_user)):
+async def get_balance_sheet(year: int = Query(None), month: int = Query(None), user: dict = Depends(get_current_user)):
     """Balance Sheet: Assets = Liabilities + Equity. Uses same calc as finance/balances."""
     from mysql_db import query as _mq, query_one as _mqo
     import re, pymysql
+    # Month filter: default to current MMT month
+    from datetime import datetime, timedelta, timezone as _tz
+    _mmt_offset = timedelta(hours=6, minutes=30)
+    _now_mmt = datetime.now(_tz.utc) + _mmt_offset
+    if not year:
+        year = _now_mmt.year
+    if not month:
+        month = _now_mmt.month
+    _start = f"{year:04d}-{month:02d}-01"
+    if month == 12:
+        _end = f"{year+1:04d}-01-01"
+    else:
+        _end = f"{year:04d}-{month+1:02d}-01"
     try:
         from fifo_wallet import get_all_fifo
         try:
@@ -2548,7 +2574,7 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
         total_ca = 0.0
 
         # --- Income from sales_daily (exact same logic as finance/balances) ---
-        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
+        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date >= %s AND sale_date < %s", (_start, _end))
         income_by_account = {a["key"]: 0.0 for a in accounts}
         for row in rows:
             note = (row.get("notes") or "")
@@ -2571,7 +2597,7 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
                     income_by_account[method] += val
 
         # 🆕 ADD topup_log income (member card purchases were MISSING!)
-        trows = _mq("SELECT payment_method, amount FROM topup_log WHERE amount > 0 AND payment_method IS NOT NULL")
+        trows = _mq("SELECT payment_method, amount FROM topup_log WHERE amount > 0 AND payment_method IS NOT NULL AND topup_date >= %s AND topup_date < %s", (_start, _end))
         for _tr in trows:
             _pm = (_tr.get("payment_method") or "").strip()
             _amt = float(_tr.get("amount") or 0)
@@ -2598,7 +2624,7 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
 
             # OPEX — KBZ Bank pays all, others get 0
             opex = 0.0
-            opr = _mq("SELECT payment_method, COALESCE(SUM(amount),0) as total FROM opex WHERE description NOT LIKE '%%Prepaid Rent Amortization%%' GROUP BY payment_method")
+            opr = _mq("SELECT payment_method, COALESCE(SUM(amount),0) as total FROM opex WHERE description NOT LIKE '%%Prepaid Rent Amortization%%' AND expense_date >= %s AND expense_date < %s GROUP BY payment_method", (_start, _end))
             opex_by_method = {}
             for r in opr:
                 pm = (r.get("payment_method") or "").strip().lower().replace(" ", "_").replace("acm's_acc", "acm_acc")
@@ -2607,10 +2633,10 @@ async def get_balance_sheet(user: dict = Depends(get_current_user)):
 
             # Cash movements — use DB account name (label), not key
             db = db_acct[key]
-            t_in = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_in'", (db,))["t"] or 0)
-            t_out = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_out'", (db,))["t"] or 0)
-            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Advance settled', CHAR(37))))", (db,))["t"] or 0)
-            ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject'", (db,))["t"] or 0)
+            t_in = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_in' AND created_at >= %s AND created_at < %s", (db, _start, _end))["t"] or 0)
+            t_out = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_out' AND created_at >= %s AND created_at < %s", (db, _start, _end))["t"] or 0)
+            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Advance settled', CHAR(37)))) AND created_at >= %s AND created_at < %s", (db, _start, _end))["t"] or 0)
+            ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject' AND created_at >= %s AND created_at < %s", (db, _start, _end))["t"] or 0)
 
             # t_out is stored as negative in DB, so + t_out works (= subtract)
             bal = income - opex + t_in + t_out + inj - ej
@@ -2866,6 +2892,14 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
         # ─── Closing = Opening + Operating + Investing (Opening already = 300M capital) ───
         closing = opener + op_net + inv_net
 
+        # ─── Compute total inflows and outflows for frontend display ───
+        operating_inflows = total_income
+        operating_outflows = total_opex + total_stock_eject
+        investing_inflows = _adv_recovery + _dp
+        investing_outflows = _ap + _adv_total + _pp
+        total_inflows = operating_inflows + investing_inflows
+        total_outflows = operating_outflows + investing_outflows
+
         return {"success": True, "data": {
             "period": ym,
             "opening_balance": round(opener, 0),
@@ -2879,7 +2913,9 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                 "investing_net": round(inv_net, 0),
                 "net_change": round(closing - opener, 0),
                 "closing_balance": round(closing, 0)
-            }
+            },
+            "total_inflows": round(total_inflows, 0),
+            "total_outflows": round(total_outflows, 0)
         }}
     except Exception as e:
         import traceback
@@ -3863,11 +3899,14 @@ async def dashboard_get_salary(
             params.append(status)
 
         sql = f"""
-            SELECT id, staff_name, base_salary, bonus, deductions, net_salary,
-                   pay_period, pay_date, status, notes, created_at
-            FROM salary_payroll
+            SELECT sp.id, sp.staff_name, sp.base_salary, sp.bonus, sp.deductions, sp.net_salary,
+                   sp.pay_period, sp.pay_date, sp.status, sp.notes, sp.created_at,
+                   COALESCE(sr.food_allowance, 0) AS food_allowance,
+                   COALESCE(sr.transport_allowance, 0) AS transport_allowance
+            FROM salary_payroll sp
+            LEFT JOIN staff_records sr ON sp.staff_name = sr.staff_name
             WHERE {' AND '.join(where)}
-            ORDER BY pay_date DESC, id DESC
+            ORDER BY sp.pay_date DESC, sp.id DESC
             LIMIT %s OFFSET %s
         """
         params.extend([limit, offset])
@@ -3879,19 +3918,28 @@ async def dashboard_get_salary(
         )
         total = count_row["total"] if count_row else 0
 
+        import re as _re
         records = []
         for r in rows:
+            # Extract attendance_bonus from notes: e.g. "att_bonus=50,000"
+            notes_text = r.get("notes") or ""
+            att_match = _re.search(r'att_bonus=([0-9,]+)', notes_text)
+            attendance_bonus = float(att_match.group(1).replace(",","")) if att_match else 0.0
+            
             records.append({
                 "id": r["id"],
                 "staff_name": r.get("staff_name"),
                 "base_salary": float(r.get("base_salary") or 0),
+                "food_allowance": float(r.get("food_allowance") or 0),
+                "transport_allowance": float(r.get("transport_allowance") or 0),
+                "attendance_bonus": attendance_bonus,
                 "bonus": float(r.get("bonus") or 0),
                 "deductions": float(r.get("deductions") or 0),
                 "net_salary": float(r.get("net_salary") or 0),
                 "pay_period": r.get("pay_period"),
                 "pay_date": str(r["pay_date"]) if r.get("pay_date") else None,
                 "status": r.get("status"),
-                "notes": r.get("notes"),
+                "notes": notes_text,
                 "created_at": str(r["created_at"]) if r.get("created_at") else None,
             })
         return {"success": True, "data": records, "total": total}
@@ -3954,6 +4002,40 @@ async def dashboard_create_salary(req: dict, user: dict = Depends(get_current_us
         }
     except Exception as e:
         logger.error(f"POST /salary error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/salary/{payroll_id}")
+async def dashboard_update_salary(payroll_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """Update a payroll entry (e.g. mark as paid). Auto-settles unpaid advances when paid."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM salary_payroll WHERE id = %s", (payroll_id,))
+        if not existing:
+            return {"success": False, "error": "Payroll entry not found"}
+
+        status = req.get("status", existing.get("status"))
+        pay_date = req.get("pay_date", existing.get("pay_date"))
+        payment_method = req.get("payment_method", existing.get("payment_method") or "Cash")
+        notes = req.get("notes", existing.get("notes") or "")
+
+        _mysql_execute(
+            "UPDATE salary_payroll SET status=%s, pay_date=%s, payment_method=%s, notes=%s WHERE id=%s",
+            (status, pay_date, payment_method, notes, payroll_id)
+        )
+
+        # Auto-settle unpaid advances for this staff when marking as paid
+        settled = 0
+        if status == "paid" and existing.get("status") != "paid":
+            staff_name = existing.get("staff_name", "")
+            if staff_name:
+                settled = _mysql_execute(
+                    "UPDATE salary_advance SET repayment_status='paid' WHERE staff_name=%s AND (repayment_status != 'paid' OR repayment_status IS NULL)",
+                    (staff_name,)
+                )
+
+        return {"success": True, "message": f"Payroll #{payroll_id} updated to {status}, {settled} advance(s) settled"}
+    except Exception as e:
+        logger.error(f"PUT /salary/{payroll_id} error: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -4194,7 +4276,8 @@ async def dashboard_create_salary_advance(req: dict, user: dict = Depends(get_cu
 
         advance_date = req.get("advance_date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
         repayment_status = req.get("repayment_status", "unpaid")
-        notes = req.get("notes", "")
+        notes = req.get("notes") or req.get("reason", "")
+        payment_method = req.get("payment_method", "Cash")
         new_id = _mysql_execute(
             """INSERT INTO salary_advance
                (staff_name, amount, advance_date, repayment_status, notes, payment_method, created_at)
@@ -5628,7 +5711,7 @@ async def dashboard_change_password(req: dict, user: dict = Depends(get_current_
 # ══════════════════════════════════════════════════════════════════
 @router.get("/feedback")
 async def dashboard_feedback_summary(user: dict = Depends(get_current_user), date: str = Query(None), limit: int = Query(100)):
-    """Return all customer feedback with optional date filter."""
+    """Return all customer feedback with optional date filter. All timestamps in MMT."""
     try:
         if date:
             rows = _mysql_query(
@@ -5664,12 +5747,12 @@ async def dashboard_feedback_summary(user: dict = Depends(get_current_user), dat
             (date,) if date else ()
         )
 
-        # Daily breakdown (last 14 days)
+        # Daily breakdown (last 14 days) — data now stored in MMT
         daily_rows = _mysql_query(
-            "SELECT DATE(CONVERT_TZ(created_at, '+00:00', '+06:30')) AS day, COUNT(*) AS cnt, ROUND(AVG(rating), 1) AS avg_rating "
+            "SELECT DATE(created_at) AS day, COUNT(*) AS cnt, ROUND(AVG(rating), 1) AS avg_rating "
             "FROM customer_feedback "
-            "WHERE created_at >= DATE_SUB(CONVERT_TZ(NOW(), '+00:00', '+06:30'), INTERVAL 14 DAY) "
-            "GROUP BY DATE(CONVERT_TZ(created_at, '+00:00', '+06:30')) ORDER BY day DESC"
+            "WHERE created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 14 DAY) "
+            "GROUP BY DATE(created_at) ORDER BY day DESC"
         )
 
         return {
@@ -6209,4 +6292,253 @@ async def get_reconciliation(
         }
     except Exception as e:
         logger.error(f"Reconciliation error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+# ── Daily Stock Check ──
+
+@router.get("/stock-check")
+async def dashboard_get_stock_check(date: str = None, user: dict = Depends(get_current_user)):
+    """Get daily stock check — system qty vs actual count.
+    If no date given, use today. Returns all inventory items with system qty
+    and any previously saved actual counts for that date."""
+    try:
+        if not date:
+            date = _get_mmt_now().strftime("%Y-%m-%d")
+        
+        # Get all inventory items with system quantity
+        items = _mysql_query(
+            "SELECT id, item_name, category, quantity as system_qty, unit_price "
+            "FROM inventory WHERE branch_id = 1 ORDER BY category, item_name"
+        ) or []
+        
+        # Get saved actual counts for this date
+        checks = _mysql_query(
+            "SELECT item_name, actual_qty, variance, notes, checked_by, updated_at "
+            "FROM daily_stock_check WHERE check_date = %s AND branch_id = 1",
+            (date,)
+        ) or []
+        check_map = {c["item_name"]: c for c in checks}
+        
+        # Merge
+        result = []
+        has_any_actual = False
+        for item in items:
+            name = item["item_name"]
+            saved = check_map.get(name, {})
+            actual = saved.get("actual_qty")
+            variance = saved.get("variance")
+            if actual is not None:
+                has_any_actual = True
+                variance = int(item["system_qty"]) - int(actual)
+            result.append({
+                "item_name": name,
+                "category": item.get("category", ""),
+                "system_qty": int(item["system_qty"]),
+                "actual_qty": actual,
+                "variance": variance if actual is not None else None,
+                "unit_price": float(item.get("unit_price", 0)),
+                "notes": saved.get("notes", ""),
+                "checked_by": saved.get("checked_by", ""),
+                "updated_at": str(saved.get("updated_at", "")) if saved.get("updated_at") else None,
+            })
+        
+        checked_count = sum(1 for r in result if r["actual_qty"] is not None)
+        total_items = len(result)
+        
+        return {
+            "success": True,
+            "data": {
+                "date": date,
+                "total_items": total_items,
+                "checked_count": checked_count,
+                "progress_pct": round(checked_count / total_items * 100, 1) if total_items else 0,
+                "items": result,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Stock check GET error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/stock-check")
+async def dashboard_save_stock_check(req: dict, user: dict = Depends(get_current_user)):
+    """Save actual count for one or more items.
+    Body: { date, items: [{ item_name, actual_qty, notes? }] }"""
+    try:
+        check_date = req.get("date") or _get_mmt_now().strftime("%Y-%m-%d")
+        items = req.get("items", [])
+        checked_by = req.get("checked_by") or user.get("username", "")
+        
+        if not items:
+            return {"success": False, "error": "No items provided"}
+        
+        saved = 0
+        for it in items:
+            name = it.get("item_name", "").strip()
+            if not name:
+                continue
+            actual_qty = it.get("actual_qty")
+            if actual_qty is None:
+                continue
+            notes = it.get("notes", "")
+            
+            # Get system qty
+            inv = _mysql_query_one(
+                "SELECT quantity FROM inventory WHERE item_name = %s AND branch_id = 1",
+                (name,)
+            )
+            system_qty = int(inv["quantity"]) if inv else 0
+            variance = system_qty - int(actual_qty)
+            
+            _mysql_execute(
+                """INSERT INTO daily_stock_check 
+                   (branch_id, check_date, item_name, system_qty, actual_qty, variance, notes, checked_by)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE 
+                   system_qty = VALUES(system_qty), actual_qty = VALUES(actual_qty),
+                   variance = VALUES(variance), notes = VALUES(notes),
+                   checked_by = VALUES(checked_by)""",
+                (1, check_date, name, system_qty, actual_qty, variance, notes, checked_by)
+            )
+            saved += 1
+        
+        logger.info(f"Stock check saved: {saved} items for {check_date} by {checked_by}")
+        return {
+            "success": True,
+            "message": f"{saved} item(s) saved",
+            "data": {"saved": saved, "date": check_date}
+        }
+    except Exception as e:
+        logger.error(f"Stock check POST error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/stock-check/history")
+async def dashboard_stock_check_history(limit: int = 30, user: dict = Depends(get_current_user)):
+    """Get list of past stock check dates with summary."""
+    try:
+        rows = _mysql_query(
+            """SELECT check_date, COUNT(*) as items_checked,
+                      SUM(CASE WHEN variance != 0 THEN 1 ELSE 0 END) as items_with_variance,
+                      SUM(ABS(variance)) as total_variance_qty
+               FROM daily_stock_check
+               WHERE branch_id = 1
+               GROUP BY check_date
+               ORDER BY check_date DESC
+               LIMIT %s""",
+            (limit,)
+        ) or []
+        
+        return {
+            "success": True,
+            "data": [{
+                "date": str(r["check_date"]),
+                "items_checked": int(r["items_checked"]),
+                "items_with_variance": int(r["items_with_variance"]),
+                "total_variance_qty": int(r["total_variance_qty"] or 0),
+            } for r in rows]
+        }
+    except Exception as e:
+        logger.error(f"Stock check history error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/stock-check/resolve")
+async def dashboard_stock_check_resolve(req: dict, user: dict = Depends(get_current_user)):
+    """Resolve stock check variances — adjust inventory to match actual counts.
+    Creates stock_in (price 0) for surplus or stock_out (price 0) for shortage.
+    Body: { date, items?: [{ item_name }] } — if items omitted, resolves ALL variances."""
+    try:
+        check_date = req.get("date") or _get_mmt_now().strftime("%Y-%m-%d")
+        item_names = [it["item_name"].strip() for it in req.get("items", [])] if req.get("items") else None
+        resolved_by = user.get("username", "system")
+
+        # Fetch variances for this date (only items with variance != 0)
+        if item_names:
+            placeholders = ','.join(['%s'] * len(item_names))
+            variances = _mysql_query(
+                f"""SELECT dsc.*, inv.quantity as current_system_qty, inv.id as inventory_id
+                    FROM daily_stock_check dsc
+                    JOIN inventory inv ON inv.item_name = dsc.item_name AND inv.branch_id = 1
+                    WHERE dsc.check_date = %s AND dsc.branch_id = 1
+                    AND dsc.variance != 0
+                    AND dsc.item_name IN ({placeholders})""",
+                (check_date, *item_names)
+            ) or []
+        else:
+            variances = _mysql_query(
+                """SELECT dsc.*, inv.quantity as current_system_qty, inv.id as inventory_id
+                    FROM daily_stock_check dsc
+                    JOIN inventory inv ON inv.item_name = dsc.item_name AND inv.branch_id = 1
+                    WHERE dsc.check_date = %s AND dsc.branch_id = 1
+                    AND dsc.variance != 0""",
+                (check_date,)
+            ) or []
+
+        if not variances:
+            return {"success": True, "message": "No variances to resolve", "data": {"resolved": 0}}
+
+        import uuid
+        resolved = 0
+        details = []
+
+        for v in variances:
+            item_name = v["item_name"]
+            actual_qty = int(v["actual_qty"])
+            inventory_id = v["inventory_id"]
+            current_qty = int(v["current_system_qty"] or 0)
+
+            # Use actual inventory delta (not stored variance) — stock may have moved
+            # since the stock check was saved (e.g. food cart sales)
+            delta = actual_qty - current_qty
+
+            if delta < 0:
+                # Current inventory > actual → shortage → stock_out
+                qty = abs(delta)
+                _mysql_execute(
+                    """INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, notes)
+                       VALUES (%s, %s, 0, 0, NOW(), %s)""",
+                    (item_name, qty, f"Stock check adjustment [{check_date}] — resolved by {resolved_by}")
+                )
+                details.append(f"{item_name}: -{qty} (stock_out, price 0)")
+            elif delta > 0:
+                # Current inventory < actual → surplus → stock_in
+                qty = delta
+                adj_batch = "SI-ADJ-" + uuid.uuid4().hex[:8].upper()
+                _mysql_execute(
+                    """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
+                       VALUES (%s, %s, %s, 0, 'Stock Check Adjustment', %s, '', '', %s)""",
+                    (adj_batch, item_name, qty, adj_batch, resolved_by)
+                )
+                details.append(f"{item_name}: +{qty} (stock_in, price 0)")
+            else:
+                # delta == 0 → already matches, just mark as reviewed
+                details.append(f"{item_name}: already matched (no adjustment needed)")
+
+            # Update inventory quantity to match actual
+            _mysql_execute(
+                "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE id = %s",
+                (actual_qty, inventory_id)
+            )
+
+            # Mark as resolved in daily_stock_check
+            _mysql_execute(
+                """UPDATE daily_stock_check
+                   SET system_qty = %s, variance = 0,
+                       notes = CONCAT(IFNULL(notes,''), ' [Resolved ', %s, ' by ', %s, ']')
+                   WHERE check_date = %s AND item_name = %s AND branch_id = 1""",
+                (actual_qty, check_date, resolved_by, check_date, item_name)
+            )
+
+            resolved += 1
+
+        logger.info(f"Stock check resolved: {resolved} items for {check_date} by {resolved_by}")
+        return {
+            "success": True,
+            "message": f"{resolved} variance(s) resolved",
+            "data": {"resolved": resolved, "date": check_date, "details": details}
+        }
+    except Exception as e:
+        logger.error(f"Stock check resolve error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
