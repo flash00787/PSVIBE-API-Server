@@ -10,22 +10,23 @@ import os
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Optional, Union
 import mysql.connector
 
 logger = logging.getLogger(__name__)
 
 # In-memory active session timers
 # Format: { booking_id: { "task": asyncio.Task, "console_id": str, "member_id": str, "end_time": datetime } }
-_active_timers = {}
+_active_timers: Dict[int, Dict[str, Any]] = {}
 
 # Telegram config (loaded from env)
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-STAFF_NOTIFY_CHAT = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
+BOT_TOKEN: str = os.environ.get("BOT_TOKEN", "")
+STAFF_NOTIFY_CHAT: str = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
 
-CALLBACK_BASE = os.environ.get("API_BASE_URL", "http://localhost:8000")
+CALLBACK_BASE: str = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
 # MySQL config
-MYSQL_CFG = {
+MYSQL_CFG: Dict[str, Union[str, int]] = {
     "host": os.environ.get("MYSQL_HOST", "127.0.0.1"),
     "port": int(os.environ.get("MYSQL_PORT", "3306")),
     "user": os.environ.get("MYSQL_USER", "psvibe_user"),
@@ -36,7 +37,7 @@ MYSQL_CFG = {
 }
 
 # ── Helper: send Telegram message ──────────────────────────────────────
-def _send_telegram(chat_id: str, text: str, keyboard: list = None) -> bool:
+def _send_telegram(chat_id: str, text: str, keyboard: Optional[List[List[Dict[str, str]]]] = None) -> bool:
     """Send Telegram message with optional inline keyboard."""
     if not BOT_TOKEN:
         logger.warning("No BOT_TOKEN set, cannot send Telegram")
@@ -54,7 +55,7 @@ def _send_telegram(chat_id: str, text: str, keyboard: list = None) -> bool:
         logger.warning(f"_send_telegram: {e}")
         return False
 
-def _edit_telegram(chat_id: str, message_id: str, text: str, keyboard: list = None) -> bool:
+def _edit_telegram(chat_id: str, message_id: str, text: str, keyboard: Optional[List[List[Dict[str, str]]]] = None) -> bool:
     """Edit existing Telegram message."""
     if not BOT_TOKEN:
         return False
@@ -71,7 +72,7 @@ def _edit_telegram(chat_id: str, message_id: str, text: str, keyboard: list = No
         logger.warning(f"_edit_telegram: {e}")
         return False
 
-def _answer_callback(callback_id: str, text: str = ""):
+def _answer_callback(callback_id: str, text: str = "") -> None:
     """Answer Telegram callback query (loading spinner stop)."""
     if not BOT_TOKEN:
         return
@@ -83,19 +84,30 @@ def _answer_callback(callback_id: str, text: str = ""):
     except Exception as e:
         logger.warning(f"_answer_callback: {e}")
 
-# ── MySQL access (lazy import from app) ────────────────────────────────
-def _mysql_exec(sql, params=None):
-    from app import _mysql_exec as me
-    return me(sql, params)
+# ── MySQL helpers (local, no circular dependency) ─────────────────────
+def _mysql_exec(sql: str, params: Optional[tuple] = None) -> int:
+    """Execute SQL using mysql.connector directly — avoids circular import with app.py."""
+    conn = mysql.connector.connect(**MYSQL_CFG)
+    cur = conn.cursor()
+    cur.execute(sql, params or ())
+    conn.commit()
+    rid = cur.lastrowid
+    conn.close()
+    return rid
 
-def _mysql_query(sql, params=None):
-    from app import _mysql_query as mq
-    return mq(sql, params)
+def _mysql_query(sql: str, params: Optional[tuple] = None) -> List[dict]:
+    """Query using mysql.connector directly — avoids circular import with app.py."""
+    conn = mysql.connector.connect(**MYSQL_CFG)
+    cur = conn.cursor(dictionary=True)
+    cur.execute(sql, params or ())
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 # ── Session reminder timer ─────────────────────────────────────────────
 async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
                                start_time: datetime, duration_mins: int,
-                               telegram_msg_id: str = None):
+                               telegram_msg_id: Optional[str] = None) -> None:
     """Background task: wait until 5 min before end, then send reminder.
     
     If extend happens, this task gets cancelled and a new one is scheduled.
@@ -104,8 +116,8 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
     try:
         # Normalize: MySQL DATETIME is stored in MMT (UTC+6:30) without timezone.
         # When passed from move-session or other endpoints, start_time may be naive.
+        MMT = timezone(timedelta(hours=6, minutes=30))
         if start_time.tzinfo is None:
-            MMT = timezone(timedelta(hours=6, minutes=30))
             start_time = start_time.replace(tzinfo=MMT)
         
         # Calculate end time
@@ -119,10 +131,14 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
             await asyncio.sleep(sleep_seconds)
         
         # Check if session is still active
-        booking = _mysql_query("SELECT status, telegram_chat_id FROM console_booking WHERE id=%s", (booking_id,))
+        booking = _mysql_query("SELECT id, status, telegram_chat_id FROM console_bookings WHERE id=%s", (booking_id,))
         if not booking or booking[0]["status"] != "Active":
             logger.info(f"Session {booking_id} no longer active, skipping reminder")
             return
+        
+        # ⚠️ Race-condition fix: Give bot 5 seconds to call persist_reminder() before
+        # checking. Without this delay, both bot and API can fire the same reminder.
+        await asyncio.sleep(5)
         
         # Skip API-side reminder if booking was created via bot (has non-empty telegram_chat_id).
         # The sales bot runs its own _remind_loop and would duplicate the notification.
@@ -136,7 +152,12 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
         # Recalculate remaining time (may have extended)
         now = datetime.now(timezone.utc)
         booking_data = _mysql_query(
-            "SELECT end_time, duration_mins, console_id, member_id FROM console_booking WHERE id=%s",
+            "SELECT COALESCE(cs.actual_end, cb.planned_end) AS end_time, "
+            "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, "
+            "cb.console_id, cb.member_id "
+            "FROM console_bookings cb "
+            "LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
+            "WHERE cb.id=%s",
             (booking_id,))
         if not booking_data:
             return
@@ -184,7 +205,7 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
 
 # ── API: Schedule session timer ──────────────────────────────────────
 def schedule_session_timer(booking_id: int, console_id: str, member_id: str,
-                           start_time: datetime, duration_mins: int):
+                           start_time: datetime, duration_mins: int) -> None:
     """Schedule a background timer for the session.
     
     Called from checkin/create_booking endpoints.
@@ -214,11 +235,11 @@ def schedule_session_timer(booking_id: int, console_id: str, member_id: str,
 
 
 # ── API: Extend session ──────────────────────────────────────────────
-def extend_session(booking_id: int, extra_mins: int) -> dict:
+def extend_session(booking_id: int, extra_mins: int) -> Dict[str, Any]:
     """Extend a session by N minutes. Returns updated info."""
     try:
         booking = _mysql_query(
-            "SELECT id, console_id, member_id, start_time, duration_mins, status FROM console_booking WHERE id=%s",
+            "SELECT id, console_id, member_id, actual_start AS start_time, actual_duration_mins AS duration_mins, status FROM console_sessions WHERE id=%s",
             (booking_id,))
         if not booking:
             return {"ok": False, "error": "Booking not found"}
@@ -229,7 +250,11 @@ def extend_session(booking_id: int, extra_mins: int) -> dict:
         
         new_duration = (b["duration_mins"] or 0) + extra_mins
         _mysql_exec(
-            "UPDATE console_booking SET duration_mins=%s, end_time=DATE_ADD(start_time, INTERVAL %s MINUTE) WHERE id=%s",
+            "UPDATE console_sessions SET actual_duration_mins=%s, actual_end=DATE_ADD(actual_start, INTERVAL %s MINUTE) WHERE booking_id=%s AND status='active'",
+            (new_duration, new_duration, booking_id))
+        # Also update console_bookings planned_duration_mins
+        _mysql_exec(
+            "UPDATE console_bookings SET planned_duration_mins=%s, planned_end=DATE_ADD(planned_start, INTERVAL %s MINUTE) WHERE id=%s",
             (new_duration, new_duration, booking_id))
         
         console_id = b["console_id"]
@@ -241,12 +266,13 @@ def extend_session(booking_id: int, extra_mins: int) -> dict:
         # Reschedule timer
         schedule_session_timer(booking_id, console_id, member_id, start_time, new_duration)
         
-        # Notify admin group
-        _send_telegram(STAFF_NOTIFY_CHAT,
-            f"✅ *Session Extended!*\n"
-            f"🎮 Console: `{console_id}`\n"
-            f"👤 Member: `{member_id}`\n"
-            f"⏱️ +{extra_mins} min (Total: {new_duration} min)")
+        # ⚠️ Admin notification REMOVED — the bot's _do_extend already sends a richer
+        # notification with inline buttons. Keeping both causes double messages.
+        # _send_telegram(STAFF_NOTIFY_CHAT,
+        #     f"✅ *Session Extended!*\n"
+        #     f"🎮 Console: `{console_id}`\n"
+        #     f"👤 Member: `{member_id}`\n"
+        #     f"⏱️ +{extra_mins} min (Total: {new_duration} min)")
         
         return {"ok": True, "new_duration": new_duration, "console_id": console_id}
     except Exception as e:
@@ -255,11 +281,11 @@ def extend_session(booking_id: int, extra_mins: int) -> dict:
 
 
 # ── API: End session (from timer button) ─────────────────────────────
-def end_session_now(booking_id: int) -> dict:
+def end_session_now(booking_id: int) -> Dict[str, Any]:
     """End a session immediately. Returns updated info."""
     try:
         booking = _mysql_query(
-            "SELECT id, console_id, member_id FROM console_booking WHERE id=%s",
+            "SELECT id, console_id, member_id FROM console_sessions WHERE id=%s",
             (booking_id,))
         if not booking:
             return {"ok": False, "error": "Booking not found"}
@@ -273,7 +299,8 @@ def end_session_now(booking_id: int) -> dict:
         conn.start_transaction()
         cur = conn.cursor(dictionary=True)
         try:
-            cur.execute("UPDATE console_booking SET status='Done', end_time=NOW() WHERE id=%s", (booking_id,))
+            cur.execute("UPDATE console_bookings SET status='Done' WHERE id=%s", (booking_id,))
+            cur.execute("UPDATE console_sessions SET status='done', actual_end=NOW() WHERE booking_id=%s", (booking_id,))
             cur.execute(
                 "UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s",
                 (console_id,))
@@ -304,8 +331,8 @@ def end_session_now(booking_id: int) -> dict:
 
 
 # ── API: Handle Telegram callback query ──────────────────────────────
-def handle_callback(callback_data: str, callback_id: str = None,
-                    chat_id: str = None, message_id: str = None) -> dict:
+def handle_callback(callback_data: str, callback_id: Optional[str] = None,
+                    chat_id: Optional[str] = None, message_id: Optional[str] = None) -> Dict[str, Any]:
     """Process Telegram inline button callback.
     
     callback_data format:
@@ -343,8 +370,12 @@ def handle_callback(callback_data: str, callback_id: str = None,
 
 # ── Resume active sessions on startup ────────────────────────────────
 
-def _bot_has_persistent_reminder(console_id: str, chat_id) -> bool:
-    """Check if the sales bot has registered a persistent reminder for this console."""
+def _bot_has_persistent_reminder(console_id: str, chat_id: Optional[str] = None) -> bool:
+    """Check if the sales bot has registered a persistent reminder for this console.
+    
+    Uses console_id prefix match (ignores chat_id) since the bot's chat_id
+    (admin group) differs from the booking's telegram_chat_id (customer).
+    """
     try:
         reminder_file = "/root/psvibe-sales-bot/data/session_reminders.json"
         if not os.path.isfile(reminder_file):
@@ -353,16 +384,26 @@ def _bot_has_persistent_reminder(console_id: str, chat_id) -> bool:
             store = json.load(f)
         if not isinstance(store, dict):
             return False
-        key = f"{console_id}|{chat_id}"
-        return key in store
+        # Match by console_id prefix (e.g., "C-01|") regardless of chat_id
+        prefix = f"{console_id}|"
+        for key in store:
+            if key.startswith(prefix):
+                return True
+        return False
     except Exception:
         return False
 
-def resume_active_timers():
+def resume_active_timers() -> None:
     """On API server restart, find all Active bookings and resume timers."""
     try:
         rows = _mysql_query(
-            "SELECT id, console_id, member_id, start_time, duration_mins, telegram_chat_id FROM console_booking WHERE status='Active' AND start_time IS NOT NULL")
+            "SELECT cb.id, cb.console_id, cb.member_id, "
+            "COALESCE(cs.actual_start, cb.planned_start) AS start_time, "
+            "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, "
+            "cb.telegram_chat_id "
+            "FROM console_bookings cb "
+            "LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
+            "WHERE cb.status='Active' AND cb.planned_start IS NOT NULL")
         if not rows:
             logger.info("No active sessions to resume timers for")
             return
@@ -430,7 +471,7 @@ def resume_active_timers():
 
 # ── Flask/FastAPI route handler for Telegram callback ───────────────
 # This is called by the API server when Telegram sends a callback query
-async def api_telegram_callback(req: dict):
+async def api_telegram_callback(req: Dict[str, Any]) -> Dict[str, Any]:
     """Handle Telegram callback query from inline button.
     
     POST /api/telegram/callback

@@ -1,7 +1,21 @@
+"""PS VIBE API — patch_routes module."""
+# NOTE: patch_routes.py imports from app.py via `from app import *
+import mysql.connector as _mc
+from mysql_db import get_connection as _get_db_conn`.
+# This works because app.py registers its router BEFORE patch_routes defines
+# its own endpoints. _mysql_query, _mysql_exec, _mysql_get_setting, and
+# _mysql_get_settings_dict are all available via the wildcard import.
 from app import *
 
+# Additional imports for FIFO inventory
+from inventory_fifo import get_fifo_valuation
 
-# Lazy imports to avoid circular dependency with app.py
+def now_mmt():
+    """Return current datetime in MMT (UTC+6:30)"""
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(timezone(timedelta(hours=6, minutes=30)))
+
+# Lazy import wrappers for DB functions (avoid circular import during module load)
 def _mysql_query(sql, params=None):
     from app import _mysql_query as _mq
     return _mq(sql, params)
@@ -17,9 +31,6 @@ def _mysql_get_setting(key, default=None):
 def _mysql_get_settings_dict(prefix=None):
     from app import _mysql_get_settings_dict as _mgsd
     return _mgsd(prefix)
-
-# Additional imports for FIFO inventory
-from inventory_fifo import get_fifo_valuation
 
 def _map_booking_row(row: dict) -> dict:
     """Map MySQL snake_case columns to camelCase for admin_bookings compatibility.
@@ -74,475 +85,46 @@ def _map_booking_row(row: dict) -> dict:
     if "start_time" in row and row["start_time"]:
         try:
             result["timeSlot"] = row["start_time"].strftime("%H:%M")
-        except:
+        except Exception:
             result["timeSlot"] = str(row["start_time"])[11:16]
     if "end_time" in row and row["end_time"]:
         try:
             result["endTime"] = row["end_time"].strftime("%H:%M")
-        except:
-            pass
+        except Exception:
+            pass  # non-critical: time formatting
     if "staff_name" in row and row["staff_name"]:
         result["staffName"] = row["staff_name"]
 
     return result
 
 
-SHEET_STOCK_IN = "Stock_In"
-SHEET_STOCK_OUT = "Stock_Out"
-
-# ═══════════════════════════════════════
-#  SHEETS — inventory
-# ═══════════════════════════════════════
-@app.get("/api/sheets/inventory", tags=["Sheets"])
-async def api_sheets_inventory(auth=Depends(verify_api_key)):
-    """Return inventory data using MySQL FIFO valuation (real-time from stock_in/stock_out)."""
-    try:
-        fifo = get_fifo_valuation()
-        items = []
-        total_cost = 0
-        categories = {}
-        for i in fifo.get("items", []):
-            name = i["item_name"]
-            qty = max(0, i["quantity"])
-            total = int(i["fifo_value"])
-            cost = int(round(total / qty)) if qty > 0 else 0
-            cat = "Uncategorized"
-            total_cost += total
-            if cat not in categories:
-                categories[cat] = 0
-            categories[cat] += total
-            items.append({
-                "name": name, "category": cat, "qty": qty,
-                "cost": cost, "price": 0, "total": total,
-            })
-        return ok({
-            "items": items,
-            "categories": categories,
-            "total_cost": total_cost,
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
-#  SHEETS — config
-# ═══════════════════════════════════════
-@app.get("/api/sheets/config", tags=["Sheets"])
-async def api_sheets_config(auth=Depends(verify_api_key)):
-    """Return config (base_rate, console_multipliers) from MySQL settings_config."""
-    try:
-        base_rate = _mysql_get_setting("base_rate", 10000)
-        multipliers = _mysql_get_setting("console_multipliers", {})
-        if isinstance(multipliers, str):
-            import json as _json
-            multipliers = _json.loads(multipliers)
-        return ok({
-            "base_rate": base_rate,
-            "console_multipliers": multipliers,
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
-#  SHEETS — consoles
-# ═══════════════════════════════════════
-@app.get("/api/sheets/consoles", tags=["Sheets"])
-async def api_sheets_consoles(auth=Depends(verify_api_key)):
-    """Return console list with live status from MySQL. Marks Reserved if confirmed booking within 2 hours."""
-    try:
-        rows = _mysql_query("SELECT console_id, status, current_game, current_member, start_time FROM console_status ORDER BY console_id")
-        
-        # Check for confirmed bookings whose time slot includes NOW
-        try:
-            upcoming = _mysql_query(
-                "SELECT console_id, start_time, end_time FROM console_booking "
-                "WHERE status IN ('confirmed', 'pending_check_in') "
-                "AND start_time <= NOW() AND end_time > NOW()"
-            )
-            reserved_consoles = {r["console_id"].strip() for r in upcoming}
-        except Exception:
-            reserved_consoles = set()
-        
-        for r in rows:
-            cid = r["console_id"].strip()
-            if r["status"] == "Free" and cid in reserved_consoles:
-                r["status"] = "Reserved"
-        
-        return ok({"consoles": rows, "date": today_str()})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
-#  SHEETS — stock-today
-# ═══════════════════════════════════════
-@app.get("/api/sheets/stock-today", tags=["Sheets"])
-async def api_sheets_stock_today(auth=Depends(verify_api_key)):
-    """Return today's stock movement summary from MySQL stock_in / stock_out."""
-    try:
-        today = today_str()
-        result = {"date": today, "stock_in": [], "stock_out": [], "in_total": 0, "out_total": 0}
-
-        # Stock In (MySQL)
-        try:
-            rows = _mysql_query("SELECT item_name, quantity, unit_cost FROM stock_in WHERE receipt_no = %s", (today,))
-            for r in rows:
-                item = r["item_name"]
-                qty = r["quantity"]
-                cost = int(float(r["unit_cost"]))
-                result["stock_in"].append({"item": item, "qty": qty, "cost": cost})
-                result["in_total"] += cost * qty
-        except Exception as e:
-            logger.warning("Stock_In read error: %s", e)
-
-        # Stock Out (MySQL)
-        try:
-            rows = _mysql_query(
-                "SELECT item_name, quantity, COALESCE(unit_price, 0) AS unit_price FROM stock_out WHERE DATE(sale_date) = CURDATE()")
-            for r in rows:
-                item = r.get("item_name", "")
-                qty = r.get("quantity", 0) or 0
-                cost = int(float(r.get("unit_price", 0) or 0))
-                result["stock_out"].append({"item": item, "qty": qty, "cost": cost})
-                result["out_total"] += cost * qty
-        except Exception as e:
-            logger.warning("Stock_Out read error: %s", e)
-
-        return ok(result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
-#  SHEETS — report-data
-# ═══════════════════════════════════════
-@app.get("/api/sheets/report-data", tags=["Sheets"])
-async def api_sheets_report_data(auth=Depends(verify_api_key)):
-    """Return aggregated daily report data from MySQL."""
-    try:
-        today = today_str()
-        result = {
-            "date": today,
-            "total_sales": 0,
-            "voucher_count": 0,
-            "payment_breakdown": {},
-            "console_usage": {},
-            "top_ups": {"count": 0, "amount": 0, "mins": 0},
-            "members_served": 0,
-        }
-
-        # Sales_Daily (MySQL)
-        try:
-            rows = _mysql_query("SELECT amount, payment_method, member_id FROM sales_daily WHERE sale_date = CURDATE()")
-            members_set = set()
-            for r in rows:
-                amt = int(float(r["amount"] or 0))
-                payment = (r["payment_method"] or "Unknown").strip().title()
-                member = (r["member_id"] or "").strip()
-                result["total_sales"] += amt
-                result["voucher_count"] += 1
-                if payment not in result["payment_breakdown"]:
-                    result["payment_breakdown"][payment] = 0
-                result["payment_breakdown"][payment] += amt
-                if member:
-                    members_set.add(member)
-            result["members_served"] = len(members_set)
-        except Exception as e:
-            logger.warning("report-data sales error: %s", e)
-
-        # Console usage from bookings (MySQL)
-        try:
-            rows = _mysql_query("SELECT console_id FROM console_booking WHERE booking_date = CURDATE()")
-            for r in rows:
-                cid = (r["console_id"] or "").strip()
-                if cid:
-                    result["console_usage"][cid] = result["console_usage"].get(cid, 0) + 1
-        except Exception as e:
-            logger.warning("report-data console error: %s", e)
-
-        # Top-ups (MySQL)
-        try:
-            rows = _mysql_query("SELECT amount, mins_added FROM topup_log WHERE DATE(topup_date) = CURDATE()")
-            for r in rows:
-                result["top_ups"]["count"] += 1
-                result["top_ups"]["amount"] += int(float(r["amount"] or 0))
-                result["top_ups"]["mins"] += int(r["mins_added"] or 0)
-        except Exception as e:
-            logger.warning("report-data topup error: %s", e)
-
-        return ok(result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
-#  SHEETS — staff-breakdown
-# ═══════════════════════════════════════
-@app.get("/api/sheets/staff-breakdown", tags=["Sheets"])
-async def api_sheets_staff_breakdown(auth=Depends(verify_api_key)):
-    """Return staff salary/stats breakdown from MySQL."""
-    try:
-        mmt = now_mmt()
-        month_ym = f"{mmt.year}-{mmt.month:02d}"
-        month_slash = f"{mmt.month}/{mmt.year}"
-
-        # Base salaries from staff_records
-        rows = _mysql_query("SELECT staff_name, base_salary FROM staff_records WHERE is_active=1 ORDER BY staff_name")
-        result = {}
-        for r in rows:
-            name = r["staff_name"].strip()
-            sal = int(float(r["base_salary"] or 0))
-            result[name] = {"base_salary": sal, "deductions": 0, "advances": 0, "net_pay": sal}
-
-        # Attendance deductions (current month, non-present days)
-        try:
-            att_rows = _mysql_query(
-                "SELECT staff_name, COUNT(*) AS late_count FROM attendance_log "
-                "WHERE DATE_FORMAT(date, %s) = %s AND status != %s GROUP BY staff_name",
-                ("%c/%Y", month_slash, "Present"))
-            for r in att_rows:
-                staff = r["staff_name"].strip()
-                if staff in result:
-                    late = r["late_count"]
-                    result[staff]["deductions"] = late * 500
-                    result[staff]["net_pay"] = result[staff]["base_salary"] - result[staff]["deductions"]
-        except Exception as e:
-            logger.warning("staff-breakdown attendance error: %s", e)
-
-        # Salary advances (current month)
-        try:
-            adv_rows = _mysql_query(
-                "SELECT staff_name, COALESCE(SUM(amount), 0) AS total_advance FROM salary_advance "
-                "WHERE DATE_FORMAT(advance_date, %s) = %s GROUP BY staff_name",
-                ("%Y-%m", month_ym))
-            for r in adv_rows:
-                staff = r["staff_name"].strip()
-                if staff in result:
-                    amt = int(float(r["total_advance"] or 0))
-                    result[staff]["advances"] = amt
-                    result[staff]["net_pay"] -= amt
-        except Exception as e:
-            logger.warning("staff-breakdown advance error: %s", e)
-
-        return ok(result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
-#  SHEETS — pnl
-# ═══════════════════════════════════════
-@app.get("/api/sheets/pnl", tags=["Sheets"])
-async def api_sheets_pnl(m: str = Query("", description="Month in YYYY-MM format"), auth=Depends(verify_api_key)):
-    """Return P&L summary for a month."""
-    try:
-        mmt = now_mmt()
-        month = m if m else f"{mmt.year}-{mmt.month:02d}"
-        month_slash = month.replace("-", "/")
-        # Parse year/month from m parameter for filtering
-        parts = month.split("-")
-        year_val = int(parts[0])
-        month_val = int(parts[1])
-
-        result = {
-            "month": month,
-            "revenue": {"console_rental": 0, "food_sales": 0, "product_sales": 0, "topup_sales": 0},
-            "expenses": {"salaries": 0, "utilities": 0, "supplies": 0, "rent": 0, "other": 0},
-            "total_revenue": 0,
-            "total_expenses": 0,
-            "net_profit": 0,
-        }
-
-        # Revenue from Sales_Daily (MySQL)
-        try:
-            rows = _mysql_query(
-                "SELECT amount FROM sales_daily WHERE YEAR(sale_date)=%s AND MONTH(sale_date)=%s",
-                (year_val, month_val))
-            for r in rows:
-                result["revenue"]["console_rental"] += int(float(r["amount"] or 0))
-        except Exception as e:
-            logger.warning("pnl sales error: %s", e)
-
-        # TopUp revenue (MySQL)
-        try:
-            rows = _mysql_query(
-                "SELECT amount FROM topup_log WHERE YEAR(topup_date)=%s AND MONTH(topup_date)=%s",
-                (year_val, month_val))
-            for r in rows:
-                result["revenue"]["topup_sales"] += int(float(r["amount"] or 0))
-        except Exception as e:
-            logger.warning("pnl topup error: %s", e)
-
-        # Expenses from salaries (MySQL)
-        try:
-            rows = _mysql_query("SELECT COALESCE(SUM(base_salary), 0) AS total FROM staff_records WHERE is_active=1")
-            result["expenses"]["salaries"] = int(rows[0]["total"]) if rows else 0
-        except Exception as e:
-            logger.warning("pnl salary error: %s", e)
-
-        result["total_revenue"] = sum(result["revenue"].values())
-        result["total_expenses"] = sum(result["expenses"].values())
-        result["net_profit"] = result["total_revenue"] - result["total_expenses"]
-
-        return ok(result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
-#  SHEETS — liability
-# ═══════════════════════════════════════
-@app.get("/api/sheets/liability", tags=["Sheets"])
-async def api_sheets_liability(auth=Depends(verify_api_key)):
-    """Return liability summary from MySQL."""
-    try:
-        result = {
-            "wallet_liability_mins": 0,
-            "wallet_liability_ks": 0,
-            "salary_advances": 0,
-            "outstanding_payables": 0,
-            "total_liability": 0,
-        }
-
-        # Wallet liability (MySQL)
-        rows = _mysql_query("SELECT COALESCE(SUM(balance_mins), 0) AS total_mins FROM member_wallets")
-        result["wallet_liability_mins"] = int(rows[0]["total_mins"]) if rows else 0
-
-        # Base rate from settings for KS conversion
-        try:
-            base_rate = int(float(_mysql_get_setting("base_rate", 0)))
-            if base_rate > 0:
-                result["wallet_liability_ks"] = int(result["wallet_liability_mins"] * base_rate / 60)
-        except Exception:
-            pass
-
-        # Salary advances (current month, MySQL)
-        try:
-            mmt = now_mmt()
-            month_slash = f"{mmt.month}/{mmt.year}"
-            rows = _mysql_query(
-                "SELECT COALESCE(SUM(amount), 0) AS total FROM salary_advance "
-                "WHERE DATE_FORMAT(advance_date, %s) = %s",
-                ("%c/%Y", month_slash))
-            result["salary_advances"] = int(float(rows[0]["total"] or 0)) if rows else 0
-        except Exception as e:
-            logger.warning("liability advance error: %s", e)
-
-        result["total_liability"] = result["wallet_liability_ks"] + result["salary_advances"]
-        return ok(result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
-#  SHEETS — payment-methods
-# ═══════════════════════════════════════
-@app.get("/api/sheets/payment-methods", tags=["Sheets"])
-async def api_sheets_payment_methods(auth=Depends(verify_api_key)):
-    """Get payment methods from MySQL settings."""
-    try:
-        val = _mysql_get_setting("payment_methods", [])
-        return ok({"payment_methods": val if isinstance(val, list) else []})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
-#  SHEETS — promotions
-# ═══════════════════════════════════════
-@app.get("/api/sheets/promotions", tags=["Sheets"])
-async def api_sheets_promotions(auth=Depends(verify_api_key)):
-    """Get promotions from MySQL."""
-    try:
-        rows = _mysql_query("SELECT id, promo_name, discount_type, discount_value, start_date, end_date, status FROM promotions ORDER BY id")
-        return ok({"promotions": rows})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/sheets/promotions/all", tags=["Sheets"])
-async def api_sheets_promotions_all(auth=Depends(verify_api_key)):
-    """Get all promotions from MySQL."""
-    try:
-        rows = _mysql_query("SELECT id, promo_name, discount_type, discount_value, start_date, end_date, status, notes FROM promotions ORDER BY id")
-        return ok({"promotions": rows})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/sheets/promotions-log", tags=["Sheets"])
-async def api_sheets_promotions_log(auth=Depends(verify_api_key)):
-    """Get promotions log from MySQL."""
-    try:
-        rows = _mysql_query("SELECT id, voucher_no, promo_id, promo_title, member_id, console_id, gross_total, discount_amt, net_total, staff_name, promo_date FROM promotions_log ORDER BY id DESC LIMIT 500")
-        return ok({"promotions_log": rows})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/sheets/promotions-log", tags=["Sheets"])
-async def api_sheets_promotions_log_post(req: dict, auth=Depends(verify_api_key)):
-    """Log promotion usage to MySQL."""
-    try:
-        _mysql_exec("INSERT INTO promotions_log (voucher_no, promo_id, promo_title, member_id, console_id, gross_total, discount_amt, net_total, staff_name, promo_date) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (req.get("voucher_no",""), req.get("promo_id",""), req.get("promo_title",""), req.get("member_id",""), req.get("console_id",""), req.get("gross_total",0), req.get("discount_amt",0), req.get("net_total",0), req.get("staff_name",""), req.get("promo_date", today_str())))
-        return ok({"saved": True})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
-#  SHEETS — weekly-report
-# ═══════════════════════════════════════
-@app.get("/api/sheets/weekly-report", tags=["Sheets"])
-async def api_sheets_weekly_report(auth=Depends(verify_api_key)):
-    """Return weekly aggregated report data."""
-    try:
-        mmt = now_mmt()
-        weekday = mmt.weekday()
-        week_start = mmt - timedelta(days=weekday)
-        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        result = {
-            "week_start": week_start.strftime("%Y-%m-%d"),
-            "week_end": (week_start + timedelta(days=7)).strftime("%Y-%m-%d"),
-            "daily_revenue": {},
-            "total_revenue": 0,
-            "total_vouchers": 0,
-            "total_topups": 0,
-            "topup_revenue": 0,
-        }
 
-        try:
-            sd_rows = _mysql_query(
-                "SELECT amount, sale_date FROM sales_daily WHERE sale_date >= %s AND sale_date < %s",
-                (week_start.strftime("%Y-%m-%d"), week_end.strftime("%Y-%m-%d")))
-            for r in sd_rows:
-                day_key = r["sale_date"].strftime("%Y-%m-%d")
-                amt = int(float(r["amount"] or 0))
-                if day_key not in result["daily_revenue"]:
-                    result["daily_revenue"][day_key] = 0
-                result["daily_revenue"][day_key] += amt
-                result["total_revenue"] += amt
-                result["total_vouchers"] += 1
-        except Exception as e:
-            logger.warning("weekly-report sales error: %s", e)
-
-        try:
-            tu_rows = _mysql_query(
-                "SELECT amount FROM topup_log WHERE topup_date >= %s AND topup_date < %s",
-                (week_start.strftime("%Y-%m-%d 00:00:00"), week_end.strftime("%Y-%m-%d 00:00:00")))
-            for r in tu_rows:
-                amt = int(float(r["amount"] or 0))
-                result["total_topups"] += 1
-                result["topup_revenue"] += amt
-                result["total_revenue"] += amt
-        except Exception as e:
-            logger.warning("weekly-report topup error: %s", e)
-
-        return ok(result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ═══════════════════════════════════════
@@ -555,12 +137,12 @@ async def api_bookings_list(
 ):
     """List all bookings from MySQL. Optional ?status=pending|confirmed|rejected filter."""
     try:
-        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking"
+        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id"
         params = []
         if status:
-            sql += " WHERE status = %s"
+            sql += " WHERE cb.status = %s"
             params.append(status)
-        sql += " ORDER BY id DESC LIMIT 500"
+        sql += " ORDER BY cb.id DESC LIMIT 500"
         rows = _mysql_query(sql, tuple(params))
         return ok({"bookings": [_map_booking_row(r) for r in rows]})
     except Exception as e:
@@ -577,21 +159,21 @@ async def api_bookings_search(
 ):
     """Search bookings from MySQL by date, status, or chat_id."""
     try:
-        sql = "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE 1=1"
+        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE 1=1"
         params = []
         if date:
-            sql += " AND booking_date = %s"
+            sql += " AND cb.booking_date = %s"
             params.append(date)
         if status:
-            sql += " AND status = %s"
+            sql += " AND cb.status = %s"
             params.append(status)
         if chat_id:
-            sql += " AND member_id = %s"
+            sql += " AND cb.member_id = %s"
             params.append(chat_id)
         if telegram_chat_id:
-            sql += " AND telegram_chat_id = %s"
+            sql += " AND cb.telegram_chat_id = %s"
             params.append(telegram_chat_id)
-        sql += " ORDER BY id DESC LIMIT 200"
+        sql += " ORDER BY cb.id DESC LIMIT 200"
         rows = _mysql_query(sql, tuple(params))
         return ok({"bookings": [_map_booking_row(r) for r in rows]})
     except Exception as e:
@@ -602,7 +184,7 @@ async def api_bookings_search(
 async def api_bookings_get(booking_id: str, auth=Depends(verify_api_key)):
     """Get a booking from MySQL."""
     try:
-        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE id=%s", (booking_id,))
+        rows = _mysql_query("SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE cb.id=%s", (booking_id,))
         if not rows:
             raise HTTPException(status_code=404, detail="Booking not found")
         return ok({"booking": _map_booking_row(rows[0])})
@@ -619,7 +201,7 @@ async def api_bookings_get(booking_id: str, auth=Depends(verify_api_key)):
 async def api_waitlist_list(auth=Depends(verify_api_key)):
     """List waitlist from MySQL."""
     try:
-        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, status, staff_name, notes FROM console_booking WHERE status='Waiting' ORDER BY id")
+        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, planned_start AS start_time, status, staff_name, notes FROM console_bookings WHERE status='waiting' ORDER BY id")
         return ok({"waitlist": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -629,7 +211,7 @@ async def api_waitlist_list(auth=Depends(verify_api_key)):
 async def api_waitlist_get(entry_id: str, auth=Depends(verify_api_key)):
     """Get waitlist entry from MySQL."""
     try:
-        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, start_time, status, staff_name, notes FROM console_booking WHERE id=%s AND status='Waiting'", (entry_id,))
+        rows = _mysql_query("SELECT id, console_id, member_id, booking_date, planned_start AS start_time, status, staff_name, notes FROM console_bookings WHERE id=%s AND status='waiting'", (entry_id,))
         if not rows:
             raise HTTPException(status_code=404, detail="Waitlist entry not found")
         return ok({"entry": rows[0]})
@@ -643,7 +225,7 @@ async def api_waitlist_get(entry_id: str, auth=Depends(verify_api_key)):
 async def api_waitlist_create(req: dict, auth=Depends(verify_api_key)):
     """Add to waitlist in MySQL."""
     try:
-        _mysql_exec("INSERT INTO console_booking (console_id, member_id, booking_date, start_time, status, staff_name, notes) VALUES (%s,%s,CURDATE(),NOW(),'Waiting',%s,%s)", (req.get("console_id",""), req.get("member_id",""), req.get("staff_name",""), req.get("notes","")))
+        _mysql_exec("INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, status, staff_name, notes) VALUES (%s,%s,CURDATE(),NOW(),'waiting',%s,%s)", (req.get("console_id",""), req.get("member_id",""), req.get("staff_name",""), req.get("notes","")))
         return ok({"saved": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -653,7 +235,7 @@ async def api_waitlist_create(req: dict, auth=Depends(verify_api_key)):
 async def api_waitlist_delete(entry_id: str, auth=Depends(verify_api_key)):
     """Remove from waitlist in MySQL."""
     try:
-        _mysql_exec("DELETE FROM console_booking WHERE id=%s AND status='Waiting'", (entry_id,))
+        _mysql_exec("DELETE FROM console_bookings WHERE id=%s AND status='waiting'", (entry_id,))
         return ok({"deleted": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -663,7 +245,7 @@ async def api_waitlist_delete(entry_id: str, auth=Depends(verify_api_key)):
 async def api_waitlist_notify(req: dict, auth=Depends(verify_api_key)):
     """Notify waitlist entry in MySQL."""
     try:
-        _mysql_exec("UPDATE console_booking SET status='Notified' WHERE id=%s", (req.get("entry_id",""),))
+        _mysql_exec("UPDATE console_bookings SET status='Notified' WHERE id=%s", (req.get("entry_id",""),))
         return ok({"notified": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -698,7 +280,7 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
         import stock_fifo, pymysql
         try:
             _sfc = pymysql.connect(host="127.0.0.1", user="psvibe_user", password="PsVibe@2026_Rotated!", database="psvibe_api")
-            _sfr = stock_fifo.calc_fifo(_sfc)
+            _sfr = stock_fifo.calc_fifo(_sfc, ym)
             _sfc.close()
             cogs = _sfr["cogs"]
         except Exception:
@@ -718,7 +300,7 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
         import pymysql
         try:
             _fc = pymysql.connect(host="127.0.0.1", user="psvibe_user", password="PsVibe@2026_Rotated!", database="psvibe_api")
-            _fr = get_all_fifo(_fc); _fc.close()
+            _fr = get_all_fifo(_fc, ym); _fc.close()
         except Exception:
             _fr = {"consumed": 0}
         wallet_consumed = float(_fr.get("consumed", 0))
@@ -729,7 +311,7 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
             (first_of_month,))
         depreciation_exp = float(_dep_rows[0]["t"] or 0) if _dep_rows else 0
         total_expense_all = total_expense + depreciation_exp
-        game_profit = game_rev
+        game_profit = game_rev + wallet_consumed
         food_profit = food_rev - cogs
         total_gross_profit = game_profit + food_profit
         net_profit = total_gross_profit - total_expense_all
@@ -933,7 +515,7 @@ async def api_finance_account_balances(auth=Depends(verify_api_key)):
     try:
         from dashboard_routes import get_finance_balances
         mock_user = {"username": "api_transfer", "role": "admin", "display_name": "Transfer Page"}
-        result = await get_finance_balances(mock_user)
+        result = await get_finance_balances(year=None, month=None, user=mock_user)
         
         if not result.get("success"):
             return ok({"operating": [], "capital": [], "store_total": 0, "acm_total": 0, "total_capital": 0, "grand_total": 0})
@@ -1063,15 +645,7 @@ async def api_stock_migrate_remaining(auth=Depends(verify_api_key)):
         return ok({"migrated": 0, "message": "Use n8n stock sync workflow"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-#  SHEETS — config
-@app.get("/api/sheets/config", tags=["Sheets"])
-async def api_sheets_config(auth=Depends(verify_api_key)):
-    """Return all config settings from MySQL."""
-    try:
-        data = _mysql_get_settings_dict()
-        return ok({"config": data})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.patch("/api/bookings/{booking_id}/status", tags=["Bookings"])
@@ -1090,23 +664,23 @@ async def api_bookings_update_status(booking_id: int, req: dict, auth=Depends(ve
         if console_id and new_status == "confirmed":
             if staff_name_val:
                 _mysql_exec(
-                    "UPDATE console_booking SET status=%s, staff_name=%s, notes=CONCAT(IFNULL(notes,''), %s), console_id=%s WHERE id=%s",
+                    "UPDATE console_bookings SET status=%s, staff_name=%s, notes=CONCAT(IFNULL(notes,''), %s), console_id=%s WHERE id=%s",
                     (new_status, staff_name_val, staff_note, console_id, booking_id)
                 )
             else:
                 _mysql_exec(
-                    "UPDATE console_booking SET status=%s, notes=CONCAT(IFNULL(notes,''), %s), console_id=%s WHERE id=%s",
+                    "UPDATE console_bookings SET status=%s, notes=CONCAT(IFNULL(notes,''), %s), console_id=%s WHERE id=%s",
                     (new_status, staff_note, console_id, booking_id)
                 )
         else:
             if staff_name_val:
                 _mysql_exec(
-                    "UPDATE console_booking SET status=%s, staff_name=%s, notes=CONCAT(IFNULL(notes,''), %s) WHERE id=%s",
+                    "UPDATE console_bookings SET status=%s, staff_name=%s, notes=CONCAT(IFNULL(notes,''), %s) WHERE id=%s",
                     (new_status, staff_name_val, staff_note, booking_id)
                 )
             else:
                 _mysql_exec(
-                    "UPDATE console_booking SET status=%s, notes=CONCAT(IFNULL(notes,''), %s) WHERE id=%s",
+                    "UPDATE console_bookings SET status=%s, notes=CONCAT(IFNULL(notes,''), %s) WHERE id=%s",
                     (new_status, staff_note, booking_id)
                 )
 
@@ -1124,7 +698,7 @@ async def api_bookings_update_status(booking_id: int, req: dict, auth=Depends(ve
         elif new_status == "cancelled":
             try:
                 old_bk = _mysql_query(
-                    "SELECT console_id FROM console_booking WHERE id = %s",
+                    "SELECT console_id FROM console_bookings WHERE id = %s",
                     (booking_id,)
                 )
                 if old_bk and old_bk[0].get("console_id"):
@@ -1141,7 +715,7 @@ async def api_bookings_update_status(booking_id: int, req: dict, auth=Depends(ve
             try:
                 from app import _auto_notify_waitlist
                 bk_info = _mysql_query(
-                    "SELECT booking_date, start_time, console_id FROM console_booking WHERE id = %s",
+                    "SELECT booking_date, planned_start AS start_time, console_id FROM console_bookings WHERE id = %s",
                     (booking_id,)
                 )
                 if bk_info and bk_info[0]:
@@ -1156,7 +730,13 @@ async def api_bookings_update_status(booking_id: int, req: dict, auth=Depends(ve
         
         # Return updated booking
         rows = _mysql_query(
-            "SELECT id, console_id, member_id, booking_date, start_time, end_time, status, staff_name, notes, telegram_chat_id, duration_mins, phone, game_name FROM console_booking WHERE id=%s",
+            "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, "
+            "COALESCE(cs.actual_start, cb.planned_start) AS start_time, "
+            "COALESCE(cs.actual_end, cb.planned_end) AS end_time, "
+            "cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, "
+            "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, "
+            "cb.phone, cb.game_name FROM console_bookings cb "
+            "LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE cb.id=%s",
             (booking_id,)
         )
         if not rows:
@@ -1168,10 +748,10 @@ async def api_bookings_update_status(booking_id: int, req: dict, auth=Depends(ve
             from datetime import timedelta
             try:
                 new_end = b["start_time"] + timedelta(minutes=b["duration_mins"])
-                _mysql_exec("UPDATE console_booking SET end_time=%s WHERE id=%s", (new_end, booking_id))
+                _mysql_exec("UPDATE console_bookings SET planned_end=%s WHERE id=%s", (new_end, booking_id))
                 b["end_time"] = new_end
-            except:
-                pass
+            except Exception:
+                pass  # non-critical: end_time update
         
         return ok({"booking": _map_booking_row(b)})
     except HTTPException:
@@ -1198,7 +778,7 @@ async def api_cash_movement(data: dict, auth=Depends(verify_api_key)):
             return error(f"Account must be Cash/KPay/Wave/AYA Pay")
         try:
             amount = float(data.get("amount", 0))
-        except:
+        except Exception:
             return error("Invalid amount")
         if amount <= 0:
             return error("Amount must be positive")
@@ -1378,7 +958,7 @@ async def food_cart_release(data: dict, auth=Depends(verify_api_key)):
             price = int(item.get("unit_price", 0))
             if item_name and qty > 0:
                 # Wrap release + stock_out + inventory in a transaction for atomicity
-                _rel_conn = _mc.connect(**_MYSQL_CFG)
+                _rel_conn = _mc.connect(host=os.environ.get("MYSQL_HOST","localhost"),user=os.environ.get("MYSQL_USER","root"),password=os.environ.get("MYSQL_PASSWORD",""),database=os.environ.get("MYSQL_DATABASE","psvibe"),port=int(os.environ.get("MYSQL_PORT","3306")),charset="utf8mb4")
                 try:
                     _rel_cur = _rel_conn.cursor()
                     _rel_conn.start_transaction()
@@ -1450,12 +1030,13 @@ async def cleanup_stale_checkins(data: dict = None, auth=Depends(verify_api_key)
         # Find stale checkins — today + yesterday (covers late-night cases)
         rows = _mysql_query("""
             SELECT cb.id, cb.console_id, cb.staff_name, cb.member_id,
-                   cb.start_time, cb.booking_date, cb.status,
-                   cb.duration_mins
-            FROM console_booking cb
+                   cb.planned_start AS start_time, cb.booking_date, cb.status,
+                   cb.planned_duration_mins AS duration_mins
+            FROM console_bookings cb
+            LEFT JOIN console_sessions cs ON cs.booking_id=cb.id
             WHERE cb.status IN ('checked_in', 'pending_check_in')
               AND cb.booking_date >= DATE_SUB(CURDATE(), INTERVAL 1 DAY)
-              AND cb.start_time < NOW()
+              AND cb.planned_start < NOW()
             ORDER BY cb.id
         """)
         
@@ -1467,7 +1048,7 @@ async def cleanup_stale_checkins(data: dict = None, auth=Depends(verify_api_key)
             
             # Check if console has an Active session (safety check)
             active = _mysql_query(
-                "SELECT id FROM console_booking WHERE console_id=%s AND status='Active' LIMIT 1",
+                "SELECT id FROM console_bookings WHERE console_id=%s AND status='Active' LIMIT 1",
                 (cid,)
             )
             if active:
@@ -1479,7 +1060,7 @@ async def cleanup_stale_checkins(data: dict = None, auth=Depends(verify_api_key)
                 continue
             
             _mysql_exec(
-                "UPDATE console_booking SET status='cancelled', notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: stale check-in (day-end cleanup)') WHERE id=%s",
+                "UPDATE console_bookings SET status='cancelled', notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: stale check-in (day-end cleanup)') WHERE id=%s",
                 (bid,)
             )
             # Free console if still occupied by stale checkin
@@ -1502,3 +1083,340 @@ async def cleanup_stale_checkins(data: dict = None, auth=Depends(verify_api_key)
     except Exception as e:
         logger.error(f"cleanup_stale_checkins: {e}")
         return error_response(str(e))
+
+@app.patch("/api/admin-notify/{booking_id}")
+async def api_admin_notify_store(booking_id: int, req: dict, auth=Depends(verify_api_key)):
+    """Store admin notification message_id on booking (called by Sale Bot after sending notif)."""
+    try:
+        msg_id = req.get("admin_notify_msg_id", "")
+        if msg_id:
+            _mysql_exec(
+                "UPDATE console_bookings SET admin_notify_msg_id=%s WHERE id=%s",
+                (str(msg_id), booking_id)
+            )
+            return {"success": True}
+        return {"success": False, "error": "No admin_notify_msg_id provided"}
+    except Exception as e:
+        logger.error(f"admin-notify store failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  NEW CLEAN ENDPOINTS (GSheet-free, MySQL-only)
+#  Wraps existing /api/sheets/* handlers with clean /api/* paths
+# ═══════════════════════════════════════
+
+@app.get("/api/config", tags=["Config"])
+async def api_config_v2(auth=Depends(verify_api_key)):
+    """Return all config settings from MySQL (new endpoint)."""
+    try:
+        data = _mysql_get_settings_dict()
+        return ok({"config": data})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/consoles", tags=["Consoles"])
+async def api_consoles_v2(auth=Depends(verify_api_key)):
+    """Return console list with live status from MySQL (new endpoint)."""
+    try:
+        rows = _mysql_query("SELECT console_id, status, current_game, current_member, start_time FROM console_status ORDER BY console_id")
+        try:
+            upcoming = _mysql_query(
+                "SELECT console_id, planned_start AS start_time, planned_end AS end_time FROM console_bookings "
+                "WHERE status IN ('confirmed', 'pending_check_in') "
+                "AND start_time <= NOW() AND end_time > NOW()"
+            )
+            reserved_consoles = {r["console_id"].strip() for r in upcoming}
+        except Exception:
+            reserved_consoles = set()
+        for r in rows:
+            cid = r["console_id"].strip()
+            if r["status"] == "Free" and cid in reserved_consoles:
+                r["status"] = "Reserved"
+        return ok({"consoles": rows, "date": today_str()})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/stock/daily", tags=["Stock"])
+async def api_stock_daily_v2(auth=Depends(verify_api_key)):
+    """Return today's stock movement summary from MySQL (new endpoint)."""
+    try:
+        today = today_str()
+        result = {"date": today, "stock_in": [], "stock_out": [], "in_total": 0, "out_total": 0}
+        try:
+            rows = _mysql_query("SELECT item_name, quantity, unit_cost FROM stock_in WHERE receipt_no = %s", (today,))
+            for r in rows:
+                item = r["item_name"]
+                qty = r["quantity"]
+                cost = int(float(r["unit_cost"]))
+                result["stock_in"].append({"item": item, "qty": qty, "cost": cost})
+                result["in_total"] += cost * qty
+        except Exception as e:
+            logger.warning("Stock_In read error: %s", e)
+        try:
+            rows = _mysql_query(
+                "SELECT item_name, quantity, COALESCE(unit_price, 0) AS unit_price FROM stock_out WHERE DATE(sale_date) = CURDATE()")
+            for r in rows:
+                item = r.get("item_name", "")
+                qty = r.get("quantity", 0) or 0
+                cost = int(float(r.get("unit_price", 0) or 0))
+                result["stock_out"].append({"item": item, "qty": qty, "cost": cost})
+                result["out_total"] += cost * qty
+        except Exception as e:
+            logger.warning("Stock_Out read error: %s", e)
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/stock/valuation", tags=["Stock"])
+async def api_stock_valuation_v2(auth=Depends(verify_api_key)):
+    """Return inventory data using MySQL FIFO valuation (new endpoint)."""
+    try:
+        fifo = get_fifo_valuation()
+        items = []
+        total_cost = 0
+        categories = {}
+        for i in fifo.get("items", []):
+            name = i["item_name"]
+            qty = max(0, i["quantity"])
+            total = int(i["fifo_value"])
+            cost = int(round(total / qty)) if qty > 0 else 0
+            cat = "Uncategorized"
+            total_cost += total
+            if cat not in categories:
+                categories[cat] = 0
+            categories[cat] += total
+            items.append({
+                "name": name, "category": cat, "qty": qty,
+                "cost": cost, "price": 0, "total": total,
+            })
+        return ok({
+            "items": items,
+            "categories": categories,
+            "total_cost": total_cost,
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/reports/daily", tags=["Reports"])
+async def api_reports_daily_v2(auth=Depends(verify_api_key)):
+    """Return aggregated daily report data from MySQL (new endpoint)."""
+    try:
+        today = today_str()
+        result = {
+            "date": today,
+            "total_sales": 0,
+            "voucher_count": 0,
+            "payment_breakdown": {},
+            "console_usage": {},
+            "top_ups": {"count": 0, "amount": 0, "mins": 0},
+            "members_served": 0,
+        }
+        try:
+            rows = _mysql_query("SELECT amount, payment_method, member_id FROM sales_daily WHERE sale_date = CURDATE()")
+            members_set = set()
+            for r in rows:
+                amt = int(float(r["amount"] or 0))
+                payment = (r["payment_method"] or "Unknown").strip().title()
+                member = (r["member_id"] or "").strip()
+                result["total_sales"] += amt
+                result["voucher_count"] += 1
+                if payment not in result["payment_breakdown"]:
+                    result["payment_breakdown"][payment] = 0
+                result["payment_breakdown"][payment] += amt
+                if member:
+                    members_set.add(member)
+            result["members_served"] = len(members_set)
+        except Exception as e:
+            logger.warning("report-data sales error: %s", e)
+        try:
+            rows = _mysql_query("SELECT console_id FROM console_bookings WHERE booking_date = CURDATE()")
+            for r in rows:
+                cid = (r["console_id"] or "").strip()
+                if cid:
+                    result["console_usage"][cid] = result["console_usage"].get(cid, 0) + 1
+        except Exception as e:
+            logger.warning("report-data console error: %s", e)
+        try:
+            rows = _mysql_query("SELECT amount, mins_added FROM topup_log WHERE DATE(topup_date) = CURDATE()")
+            for r in rows:
+                result["top_ups"]["count"] += 1
+                result["top_ups"]["amount"] += int(float(r["amount"] or 0))
+                result["top_ups"]["mins"] += int(r["mins_added"] or 0)
+        except Exception as e:
+            logger.warning("report-data topup error: %s", e)
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/reports/weekly", tags=["Reports"])
+async def api_reports_weekly_v2(auth=Depends(verify_api_key)):
+    """Return weekly aggregated report data (new endpoint)."""
+    try:
+        mmt = now_mmt()
+        weekday = mmt.weekday()
+        week_start = mmt - timedelta(days=weekday)
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        result = {
+            "week_start": week_start.strftime("%Y-%m-%d"),
+            "week_end": (week_start + timedelta(days=7)).strftime("%Y-%m-%d"),
+            "daily_revenue": {},
+            "total_revenue": 0,
+            "total_vouchers": 0,
+            "total_topups": 0,
+            "topup_revenue": 0,
+        }
+        try:
+            sd_rows = _mysql_query(
+                "SELECT amount, sale_date FROM sales_daily WHERE sale_date >= %s AND sale_date < %s",
+                (week_start.strftime("%Y-%m-%d"), week_end.strftime("%Y-%m-%d")))
+            for r in sd_rows:
+                day_key = r["sale_date"].strftime("%Y-%m-%d")
+                amt = int(float(r["amount"] or 0))
+                if day_key not in result["daily_revenue"]:
+                    result["daily_revenue"][day_key] = 0
+                result["daily_revenue"][day_key] += amt
+                result["total_revenue"] += amt
+                result["total_vouchers"] += 1
+        except Exception as e:
+            logger.warning("weekly-report sales error: %s", e)
+        try:
+            tu_rows = _mysql_query(
+                "SELECT amount FROM topup_log WHERE topup_date >= %s AND topup_date < %s",
+                (week_start.strftime("%Y-%m-%d 00:00:00"), week_end.strftime("%Y-%m-%d 00:00:00")))
+            for r in tu_rows:
+                amt = int(float(r["amount"] or 0))
+                result["total_topups"] += 1
+                result["topup_revenue"] += amt
+                result["total_revenue"] += amt
+        except Exception as e:
+            logger.warning("weekly-report topup error: %s", e)
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/reports/pnl", tags=["Reports"])
+async def api_reports_pnl_v2(m: str = Query("", description="Month in YYYY-MM format"), auth=Depends(verify_api_key)):
+    """Return P&L summary for a month (new endpoint)."""
+    try:
+        mmt = now_mmt()
+        month = m if m else f"{mmt.year}-{mmt.month:02d}"
+        month_slash = month.replace("-", "/")
+        parts = month.split("-")
+        year_val = int(parts[0])
+        month_val = int(parts[1])
+        result = {
+            "month": month,
+            "revenue": {"console_rental": 0, "food_sales": 0, "product_sales": 0, "topup_sales": 0},
+            "expenses": {"salaries": 0, "utilities": 0, "supplies": 0, "rent": 0, "other": 0},
+            "total_revenue": 0,
+            "total_expenses": 0,
+            "net_profit": 0,
+        }
+        try:
+            rows = _mysql_query(
+                "SELECT amount FROM sales_daily WHERE YEAR(sale_date)=%s AND MONTH(sale_date)=%s",
+                (year_val, month_val))
+            for r in rows:
+                result["revenue"]["console_rental"] += int(float(r["amount"] or 0))
+        except Exception as e:
+            logger.warning("pnl sales error: %s", e)
+        try:
+            rows = _mysql_query(
+                "SELECT amount FROM topup_log WHERE YEAR(topup_date)=%s AND MONTH(topup_date)=%s",
+                (year_val, month_val))
+            for r in rows:
+                result["revenue"]["topup_sales"] += int(float(r["amount"] or 0))
+        except Exception as e:
+            logger.warning("pnl topup error: %s", e)
+        try:
+            rows = _mysql_query("SELECT COALESCE(SUM(base_salary), 0) AS total FROM staff_records WHERE is_active=1")
+            result["expenses"]["salaries"] = int(rows[0]["total"]) if rows else 0
+        except Exception as e:
+            logger.warning("pnl salary error: %s", e)
+        result["total_revenue"] = sum(result["revenue"].values())
+        result["total_expenses"] = sum(result["expenses"].values())
+        result["net_profit"] = result["total_revenue"] - result["total_expenses"]
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/staff/breakdown", tags=["Staff"])
+async def api_staff_breakdown_v2(auth=Depends(verify_api_key)):
+    """Return staff salary/stats breakdown from MySQL (new endpoint)."""
+    try:
+        mmt = now_mmt()
+        month_ym = f"{mmt.year}-{mmt.month:02d}"
+        month_slash = f"{mmt.month}/{mmt.year}"
+        rows = _mysql_query("SELECT staff_name, base_salary FROM staff_records WHERE is_active=1 ORDER BY staff_name")
+        result = {}
+        for r in rows:
+            name = r["staff_name"].strip()
+            sal = int(float(r["base_salary"] or 0))
+            result[name] = {"base_salary": sal, "deductions": 0, "advances": 0, "net_pay": sal}
+        try:
+            att_rows = _mysql_query(
+                "SELECT staff_name, COUNT(*) AS late_count FROM attendance_log "
+                "WHERE DATE_FORMAT(date, %s) = %s AND status != %s GROUP BY staff_name",
+                ("%c/%Y", month_slash, "Present"))
+            for r in att_rows:
+                staff = r["staff_name"].strip()
+                if staff in result:
+                    late = r["late_count"]
+                    result[staff]["deductions"] = late * 500
+                    result[staff]["net_pay"] = result[staff]["base_salary"] - result[staff]["deductions"]
+        except Exception as e:
+            logger.warning("staff-breakdown attendance error: %s", e)
+        try:
+            adv_rows = _mysql_query(
+                "SELECT staff_name, COALESCE(SUM(amount), 0) AS total_advance FROM salary_advance "
+                "WHERE DATE_FORMAT(advance_date, %s) = %s GROUP BY staff_name",
+                ("%Y-%m", month_ym))
+            for r in adv_rows:
+                staff = r["staff_name"].strip()
+                if staff in result:
+                    amt = int(float(r["total_advance"] or 0))
+                    result[staff]["advances"] = amt
+                    result[staff]["net_pay"] -= amt
+        except Exception as e:
+            logger.warning("staff-breakdown advance error: %s", e)
+        return ok(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/promotions", tags=["Promotions"])
+async def api_promotions_v2(auth=Depends(verify_api_key)):
+    """Get all promotions from MySQL (new endpoint)."""
+    try:
+        rows = _mysql_query("SELECT id, promo_name, discount_type, discount_value, start_date, end_date, status, notes FROM promotions ORDER BY id")
+        return ok({"promotions": rows})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/promotions/log", tags=["Promotions"])
+async def api_promotions_log_v2(auth=Depends(verify_api_key)):
+    """Get promotions log from MySQL (new endpoint)."""
+    try:
+        rows = _mysql_query("SELECT id, voucher_no, promo_id, promo_title, member_id, console_id, gross_total, discount_amt, net_total, staff_name, promo_date FROM promotions_log ORDER BY id DESC LIMIT 500")
+        return ok({"promotions_log": rows})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/promotions/log", tags=["Promotions"])
+async def api_promotions_log_post_v2(req: dict, auth=Depends(verify_api_key)):
+    """Log promotion usage to MySQL (new endpoint)."""
+    try:
+        _mysql_exec("INSERT INTO promotions_log (voucher_no, promo_id, promo_title, member_id, console_id, gross_total, discount_amt, net_total, staff_name, promo_date) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", (req.get("voucher_no",""), req.get("promo_id",""), req.get("promo_title",""), req.get("member_id",""), req.get("console_id",""), req.get("gross_total",0), req.get("discount_amt",0), req.get("net_total",0), req.get("staff_name",""), req.get("promo_date", today_str())))
+        return ok({"saved": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

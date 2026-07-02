@@ -1,6 +1,8 @@
+"""PS VIBE API — inventory_fifo module."""
 import mysql.connector
 import json
 import uuid
+from typing import Any, Dict, List, Optional
 
 DB_CONFIG = {
     'host': '127.0.0.1',
@@ -9,10 +11,10 @@ DB_CONFIG = {
     'database': 'psvibe_api'
 }
 
-def _conn():
+def _conn() -> mysql.connector.connection.MySQLConnection:
     return mysql.connector.connect(**DB_CONFIG)
 
-def get_fifo_stock(item_name=None):
+def get_fifo_stock(item_name: Optional[str] = None) -> List[Dict[str, Any]]:
     conn = _conn()
     cur = conn.cursor(dictionary=True)
     if item_name:
@@ -38,7 +40,7 @@ def get_fifo_stock(item_name=None):
     conn.close()
     return result
 
-def compute_fifo_cost(item_name, qty_to_sell):
+def compute_fifo_cost(item_name: str, qty_to_sell: int) -> Dict[str, Any]:
     conn = _conn()
     cur = conn.cursor(dictionary=True)
 
@@ -78,7 +80,7 @@ def compute_fifo_cost(item_name, qty_to_sell):
 
     return {'total_cost': round(total_cost, 2), 'qty_sold': qty_to_sell, 'consumed': consumed, 'shortfall': max(remaining, 0)}
 
-def get_fifo_valuation(item_name=None):
+def get_fifo_valuation(item_name: Optional[str] = None) -> Dict[str, Any]:
     conn = _conn()
     cur = conn.cursor(dictionary=True)
     cur.execute('SELECT DISTINCT item_name FROM inventory')
@@ -124,7 +126,7 @@ def get_fifo_valuation(item_name=None):
     result['total_inventory_value'] = round(result['total_inventory_value'], 2)
     return result
 
-def get_batches(item_name):
+def get_batches(item_name: str) -> List[Dict[str, Any]]:
     conn = _conn()
     cur = conn.cursor(dictionary=True)
     cur.execute('SELECT id, batch_id, item_name, quantity, unit_cost, total_cost, source, receipt_no, created_at FROM stock_in WHERE item_name=%s ORDER BY created_at ASC', (item_name,))
@@ -135,7 +137,7 @@ def get_batches(item_name):
         result.append({'id': b['id'], 'batch_id': b['batch_id'], 'item_name': b['item_name'], 'quantity': b['quantity'], 'unit_cost': float(b['unit_cost']), 'total_cost': float(b['total_cost']), 'source': b['source'] or '', 'receipt_no': b['receipt_no'] or '', 'created_at': b['created_at'].isoformat() if b['created_at'] else None})
     return result
 
-def add_stock_in(item_name, quantity, unit_cost, source='', receipt_no='', payment_method='', paid_by='', staff_name=''):
+def add_stock_in(item_name: str, quantity: int, unit_cost: float, source: str = '', receipt_no: str = '', payment_method: str = '', paid_by: str = '', staff_name: str = '') -> Dict[str, Any]:
     batch_id = 'SI-' + uuid.uuid4().hex[:12].upper()
     conn = _conn()
     cur = conn.cursor(dictionary=True)

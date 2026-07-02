@@ -1,3 +1,4 @@
+"""PS VIBE API — loyalty_endpoints module."""
 # ═══════════════════════════════════════════════════
 #  LOYALTY SYSTEM — Customer Loyalty & Rewards
 # ═══════════════════════════════════════════════════

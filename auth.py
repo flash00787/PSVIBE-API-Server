@@ -2,7 +2,7 @@
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -13,7 +13,9 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 # --- Constants ---
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "psvibe-dashboard-secret-key-2026")
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("JWT_SECRET_KEY env var is required — cannot start without it")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE = timedelta(minutes=30)
 REFRESH_TOKEN_EXPIRE = timedelta(days=7)
@@ -30,7 +32,7 @@ security = HTTPBearer(auto_error=False)
 
 
 # --- Database-backed credentials ---
-def _get_credentials_from_db() -> dict:
+def _get_credentials_from_db() -> Dict[str, Dict[str, str]]:
     """Load all active users from dashboard_users table."""
     try:
         from mysql_db import query as _q
@@ -50,35 +52,39 @@ def _get_credentials_from_db() -> dict:
         return {}
 
 # Cache credentials (refreshed each call)
-_creds_cache = None
-_creds_cache_time = None
-_CREDS_CACHE_TTL = timedelta(seconds=30)
+_creds_cache: Optional[Dict[str, Dict[str, Any]]] = None
+_creds_cache_time: Optional[datetime] = None
+_CREDS_CACHE_TTL: timedelta = timedelta(seconds=30)
 
-def _auto_create_admin_if_empty():
-    """If dashboard_users table is empty, create default admin user."""
+def _auto_create_admin_if_empty() -> None:
+    """If dashboard_users table is empty, create default admin user with a random password.
+    The password is printed ONCE during setup — it MUST be changed after first login."""
     try:
         from mysql_db import query_one as _qo, execute as _e
         existing = _qo("SELECT COUNT(*) as cnt FROM dashboard_users")
         if not existing or existing["cnt"] == 0:
-            logger.info("No dashboard_users found — creating default admin")
-            admin_hash = _hash_pw("admin123")
+            import secrets, hashlib
+            random_pw = secrets.token_hex(8)
+            admin_hash = _hash_pw(random_pw)
             _e(
                 "INSERT INTO dashboard_users (username, password_hash, role, display_name) VALUES (%s, %s, %s, %s)",
                 ("admin", admin_hash, "admin", "Administrator"),
             )
-            logger.info("Default admin user created (admin/admin123)")
+            print(f"🔐 Default admin created! Username: admin, Password: {random_pw}")
+            print("⚠️  CHANGE THIS PASSWORD IMMEDIATELY after first login!")
+            logger.info("Default admin user created with random password")
     except Exception as e:
         logger.warning(f"Auto-create admin skipped: {e}")
 
 
 
-def flush_credentials_cache():
+def flush_credentials_cache() -> None:
     """Force refresh credentials cache (called after password changes)."""
     global _creds_cache, _creds_cache_time
     _creds_cache = None
     _creds_cache_time = None
 
-def get_credentials() -> dict:
+def get_credentials() -> Dict[str, Dict[str, Any]]:
     global _creds_cache, _creds_cache_time
     now = datetime.now(timezone.utc)
     if _creds_cache is None or _creds_cache_time is None or (now - _creds_cache_time) > _CREDS_CACHE_TTL:
@@ -88,7 +94,7 @@ def get_credentials() -> dict:
     return _creds_cache
 
 # Keep _get_credentials for compatibility but deprecate
-def _get_credentials():
+def _get_credentials() -> Dict[str, Dict[str, Any]]:
     """Deprecated — kept for backward compatibility only."""
     return get_credentials()
 
@@ -101,7 +107,7 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
-    user: dict
+    user: Dict[str, Any]
 
 class RefreshRequest(BaseModel):
     refresh_token: str
@@ -112,13 +118,13 @@ class RefreshRequest(BaseModel):
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return _verify_pw(plain_password, hashed_password)
 
-def get_user(username: str) -> Optional[dict]:
+def get_user(username: str) -> Optional[Dict[str, Any]]:
     user = get_credentials().get(username)
     if user:
         return {**user, "username": username}
     return None
 
-def authenticate_user(username: str, password: str) -> Optional[dict]:
+def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
     user = get_user(username)
     if not user:
         return None
@@ -126,19 +132,19 @@ def authenticate_user(username: str, password: str) -> Optional[dict]:
         return None
     return user
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (expires_delta or ACCESS_TOKEN_EXPIRE)
     to_encode.update({"exp": expire, "type": "access"})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def create_refresh_token(data: dict) -> str:
+def create_refresh_token(data: Dict[str, Any]) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + REFRESH_TOKEN_EXPIRE
     to_encode.update({"exp": expire, "type": "refresh"})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def decode_token(token: str) -> dict:
+def decode_token(token: str) -> Dict[str, Any]:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
@@ -149,7 +155,7 @@ def decode_token(token: str) -> dict:
 
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
-) -> dict:
+) -> Dict[str, Any]:
     if credentials is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     payload = decode_token(credentials.credentials)
@@ -161,14 +167,14 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
-async def require_admin(user: dict = Depends(get_current_user)):
+async def require_admin(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
 
 # --- Update last_login ---
-def _update_last_login(username: str):
+def _update_last_login(username: str) -> None:
     try:
         from mysql_db import execute as _e
         _e("UPDATE dashboard_users SET last_login = NOW() WHERE username = %s", (username,))

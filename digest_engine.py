@@ -200,7 +200,7 @@ def check_topup_chain_integrity(date=None):
 # ═══════════════════════════════════════════════════════════════════
 def check_sales_vs_bookings(date=None):
     """
-    Cross-reference sales_daily with console_booking:
+    Cross-reference sales_daily with console_bookings:
       - Each completed/cancelled booking should have a corresponding sales_daily record
       - Each sales_daily record with a console_id should have a corresponding booking
       - Flag orphans on both sides
@@ -212,10 +212,12 @@ def check_sales_vs_bookings(date=None):
     try:
         # ── Bookings with no matching sales ──
         bk_sql = (
-            "SELECT id, console_id, member_id, booking_date, start_time, status "
-            "FROM console_booking "
-            "WHERE status IN ('Done', 'Active', 'cancelled') "
-            "  AND console_id IS NOT NULL AND console_id != ''"
+            "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, "
+            "COALESCE(cs.actual_start, cb.planned_start) AS start_time, cb.status "
+            "FROM console_bookings cb "
+            "LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
+            "WHERE cb.status IN ('Done', 'Active', 'cancelled') "
+            "  AND cb.console_id IS NOT NULL AND cb.console_id != ''"
         )
         bk_params = ()
         if date:
@@ -524,8 +526,12 @@ def check_booking_status_integrity():
     try:
         # ── Check end_time < start_time ──
         bad_times = _query(
-            "SELECT id, console_id, member_id, start_time, end_time, status FROM console_booking "
-            "WHERE start_time IS NOT NULL AND end_time IS NOT NULL AND end_time < start_time"
+            "SELECT id, console_id, member_id, COALESCE(cs.actual_start, cb.planned_start) AS start_time, "
+            "COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status FROM console_bookings cb "
+            "LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
+            "WHERE COALESCE(cs.actual_start, cb.planned_start) IS NOT NULL "
+            "  AND COALESCE(cs.actual_end, cb.planned_end) IS NOT NULL "
+            "  AND COALESCE(cs.actual_end, cb.planned_end) < COALESCE(cs.actual_start, cb.planned_start)"
         )
         for b in bad_times:
             issues.append({
@@ -539,14 +545,18 @@ def check_booking_status_integrity():
             })
 
         # ── Check overlapping bookings on same console ──
-        consoles = _query("SELECT DISTINCT console_id FROM console_booking WHERE console_id IS NOT NULL AND console_id != ''")
+        consoles = _query("SELECT DISTINCT console_id FROM console_bookings WHERE console_id IS NOT NULL AND console_id != ''")
         for crow in consoles:
             cid = crow["console_id"]
             bookings = _query(
-                "SELECT id, start_time, end_time, status FROM console_booking "
-                "WHERE console_id = %s AND start_time IS NOT NULL AND end_time IS NOT NULL "
-                "  AND status NOT IN ('cancelled', 'rejected') "
-                "ORDER BY start_time ASC",
+                "SELECT id, COALESCE(cs.actual_start, cb.planned_start) AS start_time, "
+                "COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status FROM console_bookings cb "
+                "LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
+                "WHERE cb.console_id = %s "
+                "  AND COALESCE(cs.actual_start, cb.planned_start) IS NOT NULL "
+                "  AND COALESCE(cs.actual_end, cb.planned_end) IS NOT NULL "
+                "  AND cb.status NOT IN ('cancelled', 'rejected') "
+                "ORDER BY COALESCE(cs.actual_start, cb.planned_start) ASC",
                 (cid,)
             )
             for i in range(len(bookings)):
@@ -576,8 +586,14 @@ def check_booking_status_integrity():
         # ── Check Active bookings stuck in the past ──
         now = datetime.utcnow()
         stuck = _query(
-            "SELECT id, console_id, member_id, start_time, end_time, status, duration_mins FROM console_booking "
-            "WHERE status = 'Active' AND end_time IS NOT NULL AND end_time < NOW()"
+            "SELECT cb.id, cb.console_id, cb.member_id, "
+            "COALESCE(cs.actual_start, cb.planned_start) AS start_time, "
+            "COALESCE(cs.actual_end, cb.planned_end) AS end_time, "
+            "cb.status, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins "
+            "FROM console_bookings cb "
+            "LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
+            "WHERE cb.status = 'Active' AND COALESCE(cs.actual_end, cb.planned_end) IS NOT NULL "
+            "  AND COALESCE(cs.actual_end, cb.planned_end) < NOW()"
         )
         for b in stuck:
             issues.append({
@@ -720,11 +736,14 @@ def generate_daily_digest(date=None):
 
         # ── Active vs Completed Sessions ──
         active = _query_one(
-            "SELECT COUNT(*) as cnt FROM console_booking WHERE status = 'Active' AND booking_date = %s",
+            "SELECT COUNT(*) as cnt FROM console_bookings cb "
+            "LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
+            "WHERE cs.status = 'active' AND cb.booking_date = %s",
             (target_date,)
         )
         completed = _query_one(
-            "SELECT COUNT(*) as cnt FROM console_booking WHERE status = 'Done' AND booking_date = %s",
+            "SELECT COUNT(*) as cnt FROM console_sessions "
+            "WHERE status = 'done' AND DATE(actual_start) = %s",
             (target_date,)
         )
         summary["active_sessions"] = int(active["cnt"]) if active else 0
@@ -750,11 +769,12 @@ def generate_daily_digest(date=None):
 
         # ── Top Consoles by hours ──
         top_consoles = _query(
-            "SELECT console_id, COALESCE(SUM(duration_mins), 0) as total_mins "
-            "FROM console_booking "
-            "WHERE booking_date = %s AND status IN ('Done', 'Active') "
-            "  AND console_id IS NOT NULL AND console_id != '' "
-            "GROUP BY console_id ORDER BY total_mins DESC LIMIT 5",
+            "SELECT cb.console_id, COALESCE(SUM(cs.actual_duration_mins), SUM(cb.planned_duration_mins), 0) as total_mins "
+            "FROM console_bookings cb "
+            "LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
+            "WHERE cb.booking_date = %s AND cb.status IN ('Done', 'Active') "
+            "  AND cb.console_id IS NOT NULL AND cb.console_id != '' "
+            "GROUP BY cb.console_id ORDER BY total_mins DESC LIMIT 5",
             (target_date,)
         )
         summary["top_consoles"] = [
@@ -765,7 +785,7 @@ def generate_daily_digest(date=None):
         # ── Top Games by sessions ──
         top_games = _query(
             "SELECT game_name, COUNT(*) as sessions "
-            "FROM console_booking "
+            "FROM console_bookings "
             "WHERE booking_date = %s AND game_name IS NOT NULL AND game_name != '' "
             "GROUP BY game_name ORDER BY sessions DESC LIMIT 5",
             (target_date,)

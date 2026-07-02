@@ -1,0 +1,581 @@
+"""PS VIBE API — Stock & Inventory Routes."""
+import logging
+import uuid
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, Query
+
+from auth import get_current_user
+from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api", tags=["Stock"])
+
+
+# ═══════════════════════════════════════
+#  INVENTORY — CRUD
+# ═══════════════════════════════════════
+
+@router.get("/dashboard/inventory")
+async def dashboard_get_inventory(
+    search: str | None = Query(None),
+    category: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """List inventory items with optional filters."""
+    try:
+        where = ["1=1"]
+        params = []
+        if search:
+            where.append("item_name LIKE %s")
+            like = f"%{search}%"
+            params.append(like)
+        if category:
+            where.append("category = %s")
+            params.append(category)
+
+        sql = f"""
+            SELECT id, item_name, category, quantity, unit_price, reorder_level, last_updated
+            FROM inventory
+            WHERE {' AND '.join(where)}
+            ORDER BY quantity DESC, item_name ASC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        rows = _mysql_query(sql, tuple(params))
+
+        count_row = _mysql_query_one(
+            f"SELECT COUNT(*) as total FROM inventory WHERE {' AND '.join(where)}",
+            tuple(params[:-2])
+        )
+        total = count_row["total"] if count_row else 0
+
+        items = []
+        for r in rows:
+            items.append({
+                "id": r["id"],
+                "item_name": r["item_name"],
+                "category": r.get("category"),
+                "quantity": r.get("quantity", 0),
+                "unit_price": float(r.get("unit_price") or 0),
+                "reorder_level": r.get("reorder_level", 0),
+                "last_updated": str(r["last_updated"]) if r.get("last_updated") else None,
+            })
+        return {"success": True, "data": items, "total": total}
+    except Exception as e:
+        logger.error(f"GET /inventory error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/dashboard/inventory")
+async def dashboard_create_inventory(req: dict, user: dict = Depends(get_current_user)):
+    """Create a new inventory item."""
+    try:
+        item_name = req.get("item_name", "")
+        if not item_name:
+            return {"success": False, "error": "item_name is required"}
+
+        new_id = _mysql_execute(
+            """INSERT INTO inventory (item_name, category, quantity, unit_price, reorder_level, last_updated)
+               VALUES (%s, %s, %s, %s, %s, NOW())""",
+            (
+                item_name,
+                req.get("category", ""),
+                req.get("quantity", 0),
+                req.get("unit_price", 0),
+                req.get("reorder_level", 0),
+            ),
+        )
+        return {
+            "success": True,
+            "data": {
+                "id": new_id,
+                "item_name": item_name,
+                "category": req.get("category", ""),
+                "quantity": req.get("quantity", 0),
+                "unit_price": req.get("unit_price", 0),
+                "reorder_level": req.get("reorder_level", 0),
+            },
+        }
+    except Exception as e:
+        logger.error(f"POST /inventory error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/dashboard/inventory/{item_id}")
+async def dashboard_update_inventory(item_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """Update an inventory item."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM inventory WHERE id = %s", (item_id,))
+        if not existing:
+            return {"success": False, "error": "Inventory item not found"}
+
+        updates = []
+        params = []
+        # Track old item_name for stock_in/stock_out sync on rename
+        old_name = existing.get("item_name", "")
+        for field in ["item_name", "category", "quantity", "unit_price", "reorder_level"]:
+            if field in req:
+                updates.append(f"{field} = %s")
+                params.append(req[field])
+
+        if not updates:
+            return {"success": False, "error": "No fields to update"}
+
+        updates.append("last_updated = NOW()")
+        params.append(item_id)
+        _mysql_execute(f"UPDATE inventory SET {', '.join(updates)} WHERE id = %s", tuple(params))
+
+        # Sync stock_in/stock_out on rename
+        new_name = req.get("item_name", "")
+        if old_name and new_name and old_name != new_name:
+            _mysql_execute("UPDATE stock_in SET item_name = %s WHERE item_name = %s", (new_name, old_name))
+            _mysql_execute("UPDATE stock_out SET item_name = %s WHERE item_name = %s", (new_name, old_name))
+            logger.info("dashboard: renamed '%s' -> '%s' (synced stock_in, stock_out)", old_name, new_name)
+
+        updated = _mysql_query_one("SELECT * FROM inventory WHERE id = %s", (item_id,))
+        return {
+            "success": True,
+            "data": {
+                "id": updated["id"],
+                "item_name": updated["item_name"],
+                "category": updated.get("category"),
+                "quantity": updated.get("quantity", 0),
+                "unit_price": float(updated.get("unit_price") or 0),
+                "reorder_level": updated.get("reorder_level", 0),
+                "last_updated": str(updated["last_updated"]) if updated.get("last_updated") else None,
+            },
+        }
+    except Exception as e:
+        logger.error(f"PUT /inventory/{item_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/dashboard/inventory/{item_id}")
+async def dashboard_delete_inventory(item_id: int, user: dict = Depends(get_current_user)):
+    """Delete an inventory item."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM inventory WHERE id = %s", (item_id,))
+        if not existing:
+            return {"success": False, "error": "Inventory item not found"}
+
+        _mysql_delete("DELETE FROM inventory WHERE id = %s", (item_id,))
+        return {"success": True, "data": {"deleted": item_id}}
+    except Exception as e:
+        logger.error(f"DELETE /inventory/{item_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  STOCK IN
+# ═══════════════════════════════════════
+
+@router.post("/dashboard/stock-in")
+async def dashboard_stock_in(req: dict, user: dict = Depends(get_current_user)):
+    """Record stock-in for an inventory item."""
+    try:
+        item_id = req.get("item_id")
+        quantity = req.get("quantity", 0)
+        unit_cost = req.get("unit_cost", 0)
+        source = req.get("source", "")
+        receipt_no = req.get("receipt_no", "")
+        payment_method = req.get("payment_method", "")
+        paid_by = req.get("paid_by", "")
+        staff_name = req.get("staff_name", "")
+
+        if not item_id or quantity <= 0:
+            return {"success": False, "error": "item_id and positive quantity are required"}
+
+        # Fetch item
+        item = _mysql_query_one("SELECT * FROM inventory WHERE id = %s", (item_id,))
+        if not item:
+            return {"success": False, "error": "Inventory item not found"}
+
+        batch_id = "SI-" + uuid.uuid4().hex[:12].upper()
+
+        # Insert into stock_in
+        _mysql_execute(
+            """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (batch_id, item["item_name"], quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
+        )
+
+        # Update inventory quantity
+        new_qty = int(item["quantity"] or 0) + quantity
+        _mysql_execute(
+            "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE id = %s",
+            (new_qty, item_id)
+        )
+
+        # Record cash_movements eject for payment
+        total_cost_val = quantity * unit_cost
+        if payment_method and total_cost_val > 0:
+            note = f"Stock In: {item['item_name']} x{quantity}"
+            _mysql_execute(
+                "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) VALUES (%s, %s, %s, %s, %s, NOW())",
+                ("eject", payment_method, total_cost_val, note, staff_name)
+            )
+
+        return {
+            "success": True,
+            "data": {
+                "batch_id": batch_id,
+                "item_name": item["item_name"],
+                "quantity_added": quantity,
+                "new_quantity": new_qty,
+                "unit_cost": unit_cost,
+                "payment_method": payment_method,
+                "paid_by": paid_by,
+                "staff_name": staff_name,
+            }
+        }
+    except Exception as e:
+        logger.error(f"POST /stock-in error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/dashboard/stock-in/{entry_id}")
+async def dashboard_update_stock_in(entry_id: int, req: dict, user: dict = Depends(get_current_user)):
+    """Update a stock-in record."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM stock_in WHERE id = %s", (entry_id,))
+        if not existing:
+            return {"success": False, "error": "Stock-in record not found"}
+
+        item_name = req.get("item_name", existing.get("item_name"))
+        quantity = req.get("quantity", existing.get("quantity"))
+        unit_cost = req.get("unit_cost", existing.get("unit_cost"))
+        source = req.get("source", existing.get("source"))
+        receipt_no = req.get("receipt_no", existing.get("receipt_no"))
+        payment_method = req.get("payment_method", existing.get("payment_method"))
+        paid_by = req.get("paid_by", existing.get("paid_by"))
+        staff_name = req.get("staff_name", existing.get("staff_name"))
+
+        old_qty = int(existing.get("quantity") or 0)
+        new_qty = int(quantity or 0)
+
+        # Reverse old inventory
+        old_item = _mysql_query_one("SELECT * FROM inventory WHERE item_name = %s", (existing["item_name"],))
+        if old_item:
+            old_inv_qty = max(0, int(old_item["quantity"] or 0) - old_qty)
+            _mysql_execute(
+                "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE id = %s",
+                (old_inv_qty, old_item["id"])
+            )
+
+        # Apply new inventory
+        new_item = _mysql_query_one("SELECT * FROM inventory WHERE item_name = %s", (item_name,))
+        if new_item:
+            new_inv_qty = int(new_item["quantity"] or 0) + new_qty
+            _mysql_execute(
+                "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE id = %s",
+                (new_inv_qty, new_item["id"])
+            )
+
+        _mysql_execute(
+            """UPDATE stock_in SET item_name=%s, quantity=%s, unit_cost=%s, source=%s,
+               receipt_no=%s, payment_method=%s, paid_by=%s, staff_name=%s WHERE id=%s""",
+            (item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name, entry_id)
+        )
+
+        return {"success": True, "data": {"id": entry_id, "updated": item_name}}
+    except Exception as e:
+        logger.error(f"PUT /stock-in/{entry_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  STOCK OUT
+# ═══════════════════════════════════════
+
+@router.post("/dashboard/stock-out")
+async def dashboard_stock_out(req: dict, user: dict = Depends(get_current_user)):
+    """Record stock-out (deduction) for an inventory item."""
+    try:
+        item_id = req.get("item_id")
+        quantity = req.get("quantity", 0)
+        unit_price = req.get("unit_price", 0)
+        notes = req.get("notes", "")
+
+        if not item_id or quantity <= 0:
+            return {"success": False, "error": "item_id and positive quantity are required"}
+
+        # Fetch item
+        item = _mysql_query_one("SELECT * FROM inventory WHERE id = %s", (item_id,))
+        if not item:
+            return {"success": False, "error": "Inventory item not found"}
+
+        current_qty = int(item["quantity"] or 0)
+        if quantity > current_qty:
+            return {"success": False, "error": f"Not enough stock. Available: {current_qty}"}
+
+        # Insert into stock_out
+        total_amount = quantity * unit_price
+        _mysql_execute(
+            """INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, notes)
+               VALUES (%s, %s, %s, %s, NOW(), %s)""",
+            (item["item_name"], quantity, unit_price, total_amount, notes)
+        )
+
+        # Update inventory quantity
+        new_qty = current_qty - quantity
+        _mysql_execute(
+            "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE id = %s",
+            (new_qty, item_id)
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "item_name": item["item_name"],
+                "quantity_deducted": quantity,
+                "new_quantity": new_qty,
+                "unit_price": unit_price,
+                "total": total_amount,
+            }
+        }
+    except Exception as e:
+        logger.error(f"POST /stock-out error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/dashboard/stock-in")
+async def dashboard_get_stock_in(
+    search: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """List stock-in records."""
+    try:
+        where = ["1=1"]
+        params = []
+        if search:
+            where.append("(item_name LIKE %s OR batch_id LIKE %s OR source LIKE %s OR staff_name LIKE %s)")
+            like = f"%{search}%"
+            params.extend([like, like, like, like])
+
+        sql = f"""
+            SELECT id, batch_id, item_name, quantity, unit_cost, source,
+                   receipt_no, payment_method, paid_by, staff_name, created_at
+            FROM stock_in
+            WHERE {' AND '.join(where)}
+            ORDER BY id DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        rows = _mysql_query(sql, tuple(params))
+
+        count_row = _mysql_query_one(
+            f"SELECT COUNT(*) as total FROM stock_in WHERE {' AND '.join(where)}",
+            tuple(params[:-2])
+        )
+        total = count_row["total"] if count_row else 0
+
+        entries = []
+        for r in rows:
+            entries.append({
+                "id": r["id"],
+                "batch_id": r.get("batch_id"),
+                "item_name": r.get("item_name"),
+                "quantity": r.get("quantity"),
+                "unit_cost": float(r.get("unit_cost") or 0),
+                "source": r.get("source"),
+                "receipt_no": r.get("receipt_no"),
+                "payment_method": r.get("payment_method"),
+                "paid_by": r.get("paid_by"),
+                "staff_name": r.get("staff_name"),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+        return {"success": True, "data": entries, "total": total}
+    except Exception as e:
+        logger.error(f"GET /stock-in error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/dashboard/stock-in/{entry_id}")
+async def dashboard_delete_stock_in(entry_id: int, user: dict = Depends(get_current_user)):
+    """Delete a stock-in record and reverse inventory quantity."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM stock_in WHERE id = %s", (entry_id,))
+        if not existing:
+            return {"success": False, "error": "Stock-in record not found"}
+
+        # Reverse inventory: find item by name and subtract quantity
+        item = _mysql_query_one("SELECT * FROM inventory WHERE item_name = %s", (existing["item_name"],))
+        if item:
+            new_qty = max(0, int(item["quantity"] or 0) - int(existing["quantity"] or 0))
+            _mysql_execute(
+                "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE id = %s",
+                (new_qty, item["id"])
+            )
+
+        _mysql_delete("DELETE FROM stock_in WHERE id = %s", (entry_id,))
+        return {"success": True, "data": {"deleted": entry_id}}
+    except Exception as e:
+        logger.error(f"DELETE /stock-in/{entry_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/dashboard/stock-out")
+async def dashboard_get_stock_out(
+    search: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """List stock-out records."""
+    try:
+        where = ["1=1"]
+        params = []
+        if search:
+            where.append("(item_name LIKE %s OR staff_name LIKE %s OR notes LIKE %s)")
+            like = f"%{search}%"
+            params.extend([like, like, like])
+
+        sql = f"""
+            SELECT id, item_name, quantity, unit_price, total, sale_date,
+                   staff_name, notes, created_at
+            FROM stock_out
+            WHERE {' AND '.join(where)}
+            ORDER BY id DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        rows = _mysql_query(sql, tuple(params))
+
+        count_row = _mysql_query_one(
+            f"SELECT COUNT(*) as total FROM stock_out WHERE {' AND '.join(where)}",
+            tuple(params[:-2])
+        )
+        total = count_row["total"] if count_row else 0
+
+        entries = []
+        for r in rows:
+            entries.append({
+                "id": r["id"],
+                "item_name": r.get("item_name"),
+                "quantity": r.get("quantity"),
+                "unit_price": float(r.get("unit_price") or 0),
+                "total": float(r.get("total") or 0),
+                "sale_date": str(r["sale_date"]) if r.get("sale_date") else None,
+                "staff_name": r.get("staff_name"),
+                "notes": r.get("notes"),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+        return {"success": True, "data": entries, "total": total}
+    except Exception as e:
+        logger.error(f"GET /stock-out error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/dashboard/food-orders")
+async def dashboard_get_food_orders(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(get_current_user),
+):
+    """List food orders linked to console sessions (from food_cart)."""
+    try:
+        sql = """
+            SELECT fc.id, fc.booking_id, fc.item_name, fc.quantity, fc.unit_price,
+                   (fc.quantity * fc.unit_price) as line_total,
+                   fc.created_at,
+                   fc.fulfilled_at,
+                   cb.console_id, cb.member_id, cb.status as booking_status,
+                   cb.planned_start AS start_time
+            FROM food_cart fc
+            JOIN console_bookings cb ON CAST(fc.booking_id AS UNSIGNED) = cb.id
+            ORDER BY fc.id DESC
+            LIMIT %s OFFSET %s
+        """
+        rows = _mysql_query(sql, (limit, offset))
+        count_row = _mysql_query_one("SELECT COUNT(*) as total FROM food_cart")
+        total = count_row["total"] if count_row else 0
+
+        entries = []
+        for r in rows:
+            entries.append({
+                "id": r["id"],
+                "booking_id": r.get("booking_id"),
+                "item_name": r.get("item_name"),
+                "quantity": r.get("quantity"),
+                "unit_price": float(r.get("unit_price") or 0),
+                "line_total": float(r.get("line_total") or 0),
+                "console_id": r.get("console_id"),
+                "member_id": r.get("member_id"),
+                "booking_status": r.get("booking_status"),
+                "start_time": str(r["start_time"]) if r.get("start_time") else None,
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+                "fulfilled_at": str(r["fulfilled_at"]) if r.get("fulfilled_at") else None,
+            })
+        logger.info(f"GET /food-orders: returning {len(entries)} entries, total={total}")
+        return {"success": True, "data": entries, "total": total}
+    except Exception as e:
+        logger.error(f"GET /food-orders error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/dashboard/stock-out/{entry_id}")
+async def dashboard_delete_stock_out(entry_id: int, user: dict = Depends(get_current_user)):
+    """Delete a stock-out record and restore inventory quantity."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM stock_out WHERE id = %s", (entry_id,))
+        if not existing:
+            return {"success": False, "error": "Stock-out record not found"}
+
+        # Restore inventory: find item by name and add quantity back
+        item = _mysql_query_one("SELECT * FROM inventory WHERE item_name = %s", (existing["item_name"],))
+        if item:
+            new_qty = int(item["quantity"] or 0) + int(existing["quantity"] or 0)
+            _mysql_execute(
+                "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE id = %s",
+                (new_qty, item["id"])
+            )
+
+        _mysql_delete("DELETE FROM stock_out WHERE id = %s", (entry_id,))
+        return {"success": True, "data": {"deleted": entry_id}}
+    except Exception as e:
+        logger.error(f"DELETE /stock-out/{entry_id} error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+#  INVENTORY ALERTS
+# ═══════════════════════════════════════
+
+@router.get("/dashboard/inventory/alerts")
+async def dashboard_inventory_alerts(
+    user: dict = Depends(get_current_user),
+):
+    """Get inventory items below reorder level."""
+    try:
+        rows = _mysql_query("""
+            SELECT id, item_name, category, quantity, unit_price, reorder_level, last_updated
+            FROM inventory
+            WHERE quantity <= reorder_level AND reorder_level > 0
+            ORDER BY (reorder_level - quantity) DESC, item_name ASC
+        """)
+
+        items = []
+        for r in rows:
+            shortage = int(r.get("reorder_level", 0)) - int(r.get("quantity", 0))
+            items.append({
+                "id": r["id"],
+                "item_name": r["item_name"],
+                "category": r.get("category"),
+                "quantity": r.get("quantity", 0),
+                "unit_price": float(r.get("unit_price") or 0),
+                "reorder_level": r.get("reorder_level", 0),
+                "shortage": shortage,
+                "status": "critical" if shortage >= int(r.get("reorder_level", 0)) else "low",
+                "last_updated": str(r["last_updated"]) if r.get("last_updated") else None,
+            })
+
+        return {"success": True, "data": items, "total": len(items)}
+    except Exception as e:
+        logger.error(f"GET /inventory/alerts error: {e}")
+        return {"success": False, "error": str(e)}

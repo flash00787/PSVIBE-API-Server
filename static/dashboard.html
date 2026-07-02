@@ -777,7 +777,10 @@ async function rejectBooking(id) {
 async function loadTimelineTab(container) {
   container.innerHTML = '<div class="loading">Loading timeline...</div>';
   try {
-    const today = new Date().toISOString().split('T')[0];
+    // Use MMT date (not UTC) to match Myanmar lounge hours
+    const now = new Date();
+    const mmt = new Date(now.getTime() + (6.5 * 60 * 60 * 1000));
+    const today = mmt.toISOString().split('T')[0];
     const res = await apiGet('/api/dashboard/bookings?date=' + today + '&limit=200');
     if (!res.success) {
       container.innerHTML = '<div class="error">' + (res.error || 'Failed') + '</div>';
@@ -785,7 +788,7 @@ async function loadTimelineTab(container) {
     }
     const bookings = res.data || [];
     if (!bookings.length) {
-      container.innerHTML = '<div class="empty">No bookings for today</div>';
+      container.innerHTML = '<div class="empty">No bookings for today (' + today + ' MMT)</div>';
       return;
     }
 
@@ -796,37 +799,69 @@ async function loadTimelineTab(container) {
       return;
     }
 
+    // Show hours 9 AM to 11 PM (MMT lounge hours)
     const hours = [];
-    for (let h = 10; h <= 23; h++) hours.push(h);
+    for (let h = 9; h <= 23; h++) hours.push(h);
 
-    let html = '<div class="panel"><div class="panel-header">⏱️ Today\'s Timeline (' + today + ')</div><div class="panel-body" style="overflow-x:auto">';
+    // Helper: parse time from datetime string (handles both "HH:MM" and "YYYY-MM-DD HH:MM:SS")
+    const parseHour = (t) => {
+      if (!t) return 0;
+      const timePart = t.includes(' ') ? t.split(' ')[1] : t;
+      return parseInt(timePart.split(':')[0]) || 0;
+    };
+    const parseMin = (t) => {
+      if (!t) return 0;
+      const timePart = t.includes(' ') ? t.split(' ')[1] : t;
+      return parseInt(timePart.split(':')[1]) || 0;
+    };
+
+    let html = '<div class="panel"><div class="panel-header">⏱️ Today\'s Timeline (' + today + ' MMT)</div><div class="panel-body" style="overflow-x:auto">';
     html += '<div class="timeline-grid">';
     // Header
     html += '<div class="timeline-header console-label">Console</div>';
+    const totalHours = hours.length;
     hours.forEach(h => {
-      html += `<div class="timeline-header">${h}:00</div>`;
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const h12 = h % 12 || 12;
+      html += `<div class="timeline-header">${h12}${ampm}</div>`;
     });
 
     // Rows
-    const colors = { confirmed: 'confirmed', pending: 'pending', active: 'active' };
+    const colors = { confirmed: 'confirmed', pending: 'pending', active: 'active', checked_in: 'active' };
     const defaultColor = 'done';
-    const hourWidth = 100 / 14; // 14 hours
 
     consoles.forEach(cid => {
       html += `<div class="timeline-row">`;
       html += `<div class="timeline-header console-label" style="background:var(--card);text-align:right;padding-right:0.5rem">${cid}</div>`;
+      
+      // Collect bookings for this console, compute slot positions
+      const consoleBookings = bookings.filter(b => b.console_id === cid);
+      const slots = [];
+      consoleBookings.forEach(b => {
+        const sh = parseHour(b.start_time);
+        const sm = parseMin(b.start_time);
+        const eh = parseHour(b.end_time);
+        const em = parseMin(b.end_time);
+        const startDecimal = sh + sm / 60;
+        const endDecimal = eh + em / 60;
+        if (endDecimal > startDecimal) {
+          slots.push({
+            ...b,
+            startDecimal,
+            endDecimal,
+            cls: colors[(b.status || '').toLowerCase()] || defaultColor
+          });
+        }
+      });
+
       hours.forEach(h => {
         html += `<div class="timeline-cell">`;
-        bookings.filter(b => b.console_id === cid).forEach(b => {
-          const startH = b.start_time ? parseInt(b.start_time.split(':')[0]) : 0;
-          const endH = b.end_time ? parseInt(b.end_time.split(':')[0]) : 0;
-          if (h >= startH && h < endH) {
-            const cls = colors[(b.status || '').toLowerCase()] || defaultColor;
-            const spanH = endH - startH;
-            const left = ((startH - 10) / 14) * 100;
-            const w = (spanH / 14) * 100;
-            html += `<div class="timeline-booking ${cls}" style="left:${left}%;width:${w}%" title="${b.member_id||''}: ${b.game_name||''}">${b.member_id||b.id} ${b.game_name||''}</div>`;
-          }
+        slots.filter(s => h >= Math.floor(s.startDecimal) && h < Math.ceil(s.endDecimal)).forEach(s => {
+          const spanH = s.endDecimal - s.startDecimal;
+          const leftPct = ((s.startDecimal - hours[0]) / totalHours) * 100;
+          const widthPct = (spanH / totalHours) * 100;
+          const label = (s.member_id || s.staff_name || '#' + s.id) + (s.game_name ? ' ' + s.game_name : '');
+          html += `<div class="timeline-booking ${s.cls}" style="left:${leftPct}%;width:${widthPct}%" title="${label} | ${s.start_time} - ${s.end_time}">${label}</div>`;
         });
         html += '</div>';
       });

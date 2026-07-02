@@ -1,4 +1,5 @@
 
+"""PS VIBE API — insert_config_helper module."""
 import json
 
 with open('/root/psvibe_api_server/app.py', 'r') as f:

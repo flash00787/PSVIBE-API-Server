@@ -2,6 +2,17 @@
 """PS VIBE Daily Summary Report."""
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
+
+# Load env vars from secrets file (needed for cron/non-systemd runs)
+_secrets_file = '/etc/psvibe/secrets.env'
+if os.path.exists(_secrets_file):
+    with open(_secrets_file) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, _, val = line.partition('=')
+                if key.strip() not in os.environ:
+                    os.environ[key.strip()] = val.strip()
 from mysql_db import query, execute
 from datetime import date
 
@@ -10,7 +21,7 @@ today = date.today()
 # Today's bookings
 bks = query("""
     SELECT status, COUNT(*) as cnt, COALESCE(SUM(duration_mins),0) as total_mins
-    FROM console_booking WHERE booking_date = %s
+    FROM console_bookings WHERE booking_date = %s
     GROUP BY status
 """, (today,))
 

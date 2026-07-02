@@ -1,0 +1,606 @@
+"""PS VIBE API — Admin, Sales & OPEX Routes."""
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi.responses import JSONResponse
+from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
+from helpers import _mysql_get_setting, ok, error_response, _parse_pm_and_inject
+from deps import verify_api_key
+from auth import get_current_user
+from models import GenericResponse
+import logging, json as _json, os
+from datetime import datetime, timezone, timedelta
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api", tags=['Admin'])
+
+# ═══════════════════════════════════════
+@router.get("/fetch_staff", response_model=GenericResponse, tags=["Staff"], summary="Fetch staff list [MySQL]")
+async def api_fetch_staff(auth=Depends(verify_api_key)):
+    """Fetch staff list from MySQL staff_records."""
+    try:
+        rows = _mysql_query("SELECT staff_name FROM staff_records WHERE is_active=1 ORDER BY staff_name")
+        return ok([r["staff_name"] for r in rows])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/fetch_staff_names", response_model=GenericResponse, tags=["Staff"], summary="Fetch staff names [MySQL]")
+async def api_fetch_staff_names(auth=Depends(verify_api_key)):
+    """Fetch active staff names from MySQL."""
+    try:
+        rows = _mysql_query("SELECT staff_name FROM staff_records WHERE is_active=1 ORDER BY staff_name")
+        return ok([r["staff_name"] for r in rows])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_food_prices / fetch_food_costs
+# ==============================================
+
+
+
+@router.post("/inventory/stock-out", response_model=GenericResponse, tags=["Inventory"], summary="Record stock-out (sale) and update inventory [MySQL]")
+async def api_inventory_stock_out(req: dict, auth=Depends(verify_api_key)):
+    """Record a stock-out from a food sale and decrement inventory quantity."""
+    try:
+        item_name = req.get("item_name", "")
+        qty = int(req.get("qty", 0))
+        unit_price = float(req.get("unit_price", 0))
+        subtotal = float(req.get("subtotal", 0))
+        sale_date = req.get("date", "")
+        voucher_no = req.get("voucher_no", "")
+
+        if not item_name or qty <= 0:
+            return error_response(message="item_name and qty > 0 required")
+
+        # Insert into stock_out table
+        _mysql_exec(
+            "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, notes) VALUES (%s, %s, %s, %s, %s, %s)",
+            (item_name, qty, unit_price, subtotal, sale_date, f"Voucher: {voucher_no}")
+        )
+
+        # Decrement inventory.quantity (legacy summary column — NOTE: FIFO stock_in-stock_out is authoritative; use reconcile_inventory_quantities() to sync)
+        _mysql_exec(
+            "UPDATE inventory SET quantity = GREATEST(0, quantity - %s), last_updated = NOW() WHERE item_name = %s",
+            (qty, item_name)
+        )
+
+        return ok({"success": True, "item_name": item_name, "qty_deducted": qty})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+
+# ═══════════════════════════════════════
+#  reconcile_inventory_quantities — sync inventory.quantity from FIFO
+# ═══════════════════════════════════════
+def reconcile_inventory_quantities():
+    """Sync inventory.quantity to match authoritative FIFO calculation.
+    
+    inventory.quantity is a legacy summary column that can drift from stock_in/stock_out.
+    This function recalculates it from: SUM(stock_in.quantity) - SUM(stock_out.quantity).
+    Call this periodically or after batch stock operations.
+    
+    Returns dict with {item_name: old_qty, new_qty, drift} for changed items.
+    """
+    conn = _mc.connect(**_MYSQL_CFG)
+    try:
+        cur = conn.cursor(dictionary=True)
+        # Get all inventory items with their current quantities
+        cur.execute("SELECT item_name, quantity FROM inventory")
+        items = cur.fetchall()
+        changes = []
+        for item in items:
+            item_name = item["item_name"]
+            old_qty = int(item["quantity"] or 0)
+            # FIFO calculation: stock_in - stock_out (same as inventory_fifo.py get_fifo_stock)
+            cur.execute(
+                "SELECT COALESCE((SELECT SUM(quantity) FROM stock_in WHERE item_name=%s), 0) "
+                "- COALESCE((SELECT SUM(quantity) FROM stock_out WHERE item_name=%s), 0) AS fifo_qty",
+                (item_name, item_name)
+            )
+            row = cur.fetchone()
+            fifo_qty = int(row["fifo_qty"] or 0)
+            if fifo_qty != old_qty:
+                cur.execute(
+                    "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE item_name = %s",
+                    (fifo_qty, item_name)
+                )
+                changes.append({"item_name": item_name, "old_quantity": old_qty, "new_quantity": fifo_qty, "drift": fifo_qty - old_qty})
+        conn.commit()
+        return changes
+    finally:
+        conn.close()
+
+
+@router.get("/inventory/reconcile", response_model=GenericResponse, tags=["Inventory"], summary="Reconcile inventory.quantity from FIFO tracking")
+async def api_reconcile_inventory(auth=Depends(verify_api_key)):
+    """Recalculate inventory.quantity from authoritative FIFO stock_in/stock_out.
+    
+    inventory.quantity is a legacy summary column. The true stock is derived from
+    stock_in - stock_out (FIFO). This endpoint syncs the summary column.
+    """
+    try:
+        changes = reconcile_inventory_quantities()
+        return ok({
+            "message": f"Reconciled {len(changes)} items",
+            "changes": changes
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ═══════════════════════════════════════
+#  fetch_games / fetch_game_library
+# ═══════════════════════════════════════
+
+# ═══════════════════════════════════════
+@router.get("/fetch_alltime_effective_rate", response_model=GenericResponse, tags=["Analytics"], summary="All-time average effective rate [MySQL]")
+async def api_fetch_alltime_effective_rate(auth=Depends(verify_api_key)):
+    """All-time average effective rate (Ks/min) from MySQL."""
+    try:
+        rows = _mysql_query(
+            "SELECT SUM(total_spend) as total_spend, SUM(balance_mins) as total_mins FROM member_wallets WHERE total_spend > 0")
+        r = rows[0] if rows else {"total_spend": 0, "total_mins": 0}
+        total_spend = float(r["total_spend"] or 0)
+        total_mins = float(r["total_mins"] or 0)
+        rate = round(total_spend / total_mins, 2) if total_mins > 0 else 0.0
+        return ok({"alltime_effective_rate": rate, "total_spend": total_spend, "total_mins": total_mins})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_member_effective_rate
+# ═══════════════════════════════════════
+
+# ═══════════════════════════════════════
+@router.get("/fetch_base_salaries", response_model=GenericResponse, tags=["Staff"], summary="Fetch base salaries [MySQL]")
+async def api_fetch_base_salaries(auth=Depends(verify_api_key)):
+    """Fetch base salaries from MySQL staff_records."""
+    try:
+        rows = _mysql_query("SELECT staff_name, base_salary, role FROM staff_records WHERE is_active=1 ORDER BY staff_name")
+        return ok({"salaries": rows})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_attendance
+# ═══════════════════════════════════════
+@router.get("/fetch_attendance/{month_str}", response_model=GenericResponse, tags=["Staff"], summary="Fetch attendance [MySQL]")
+async def api_fetch_attendance(month_str: str, auth=Depends(verify_api_key)):
+    """Fetch attendance for a month from MySQL."""
+    try:
+        rows = _mysql_query(
+            "SELECT staff_name, login_time, logout_time, date, hours_worked, status FROM attendance_log WHERE DATE_FORMAT(date, %s)=%s ORDER BY date DESC",
+            ("%Y-%m", month_str))
+        return ok({"attendance": rows, "month": month_str})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/save_attendance", response_model=GenericResponse, tags=["Staff"], summary="Save attendance [MySQL]")
+async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
+    """Save attendance record to MySQL."""
+    try:
+        _mysql_exec(
+            "INSERT INTO attendance_log (staff_name, login_time, date, status) VALUES (%s, NOW(), CURDATE(), %s)",
+            (req.get("staff_name") or req.get("staff", ""), req.get("status", "Present")))
+        return ok({"saved": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_salary_advances
+# ═══════════════════════════════════════
+@router.get("/fetch_salary_advances/{month_str}", response_model=GenericResponse, tags=["Staff"], summary="Fetch salary advances [MySQL]")
+async def api_fetch_salary_advances(month_str: str, auth=Depends(verify_api_key)):
+    """Fetch salary advances for a month from MySQL."""
+    try:
+        rows = _mysql_query(
+            "SELECT staff_name, amount, advance_date, repayment_status, notes FROM salary_advance WHERE DATE_FORMAT(advance_date, %s)=%s ORDER BY advance_date DESC",
+            ("%Y-%m", month_str))
+        return ok({"advances": rows, "month": month_str})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_promotions_cached
+# ═══════════════════════════════════════
+@router.get("/fetch_promotions_cached", response_model=GenericResponse, tags=["Promotions"], summary="Fetch promotions [MySQL]")
+async def api_fetch_promotions_cached(auth=Depends(verify_api_key)):
+    """Fetch active promotions from MySQL."""
+    try:
+        rows = _mysql_query(
+            "SELECT id, promo_name, discount_type, discount_value, start_date, end_date, status FROM promotions WHERE status='active'")
+        return ok({"promotions": rows})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  fetch_allowed_staff_ids
+# ═══════════════════════════════════════
+@router.get("/fetch_allowed_staff_ids", response_model=GenericResponse, tags=["Staff"], summary="Fetch allowed staff IDs [MySQL]")
+async def api_fetch_allowed_staff_ids(auth=Depends(verify_api_key)):
+    """Fetch allowed staff Telegram user IDs from MySQL settings."""
+    try:
+        val = _mysql_get_setting("allowed_staff_ids", "")
+        if isinstance(val, str) and val.strip():
+            ids = [int(x.strip()) for x in val.split(",") if x.strip().isdigit()]
+            return ok(ids)
+        return ok([])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  next_voucher / next_member_id / next_member_row_no
+# ═══════════════════════════════════════
+@router.get("/next_member_id", tags=["Utility"], summary="Get next member ID [MySQL]")
+async def api_next_member_id(auth=Depends(verify_api_key)):
+    """Get next available member ID from MySQL."""
+    try:
+        rows = _mysql_query("SELECT MAX(CAST(REPLACE(member_id, 'PSV_A_', '') AS UNSIGNED)) as max_id FROM member_wallets")
+        last = rows[0]["max_id"] if rows and rows[0]["max_id"] else 0
+        return ok(f"PSV_A_{last + 1:03d}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/next_member_row_no", tags=["Utility"], summary="Get next member row [MySQL]")
+async def api_next_member_row_no(auth=Depends(verify_api_key)):
+    """Get next member row number from MySQL."""
+    try:
+        rows = _mysql_query("SELECT COUNT(*) as cnt FROM member_wallets")
+        count = rows[0]["cnt"] if rows else 0
+        return ok(count + 1)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@router.get("/promotions/active", response_model=GenericResponse, tags=["Promotions"])
+async def api_promotions_active(auth=Depends(verify_api_key)):
+    try:
+        rows = _mysql_query("SELECT * FROM promotions WHERE promo_type='cashback_coupon' AND start_date <= CURDATE() AND end_date >= CURDATE() ORDER BY id DESC LIMIT 1")
+        if rows:
+            row = rows[0]
+            return ok({"promotion": {
+                "id": row["id"],
+                "name": row["name"],
+                "promo_type": row["promo_type"],
+                "start_date": str(row["start_date"]),
+                "end_date": str(row["end_date"]),
+                "coupon_expiry_date": str(row["coupon_expiry_date"])
+            }})
+        return ok({"promotion": None})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+
+# ═══════════════════════════════════════
+
+@router.post("/sales/record", response_model=GenericResponse, tags=["Sales"], summary="Save sales record [MySQL]")
+async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
+    """Save a sales record to MySQL sales_daily table (replaces direct GSheets write)."""
+    try:
+        voucher_no = req.get("voucher_no", "")
+        member_id = req.get("member_id", "")
+        console_id = req.get("console_id", "")
+        mins = req.get("mins", 0)
+        base_rate = float(req.get("base_rate", 0))
+        multiplier = float(req.get("multiplier", 1.0))
+        game_amt = float(req.get("game_amt", 0))
+        food_items = req.get("food_items", "")
+        food_total = float(req.get("food_total", 0))
+        discount = float(req.get("discount", 0))
+        net_total = float(req.get("net_total", 0))
+        payment_method = req.get("payment_method", "")
+        staff = req.get("staff", "")
+        created_at = req.get("created_at", "")
+        notes = req.get("notes", "")
+        promotion_name = req.get("promotion_name", "")
+        coupon_code = req.get("coupon_code", "")
+
+        if not voucher_no:
+            return error_response(message="voucher_no required")
+
+        # Build enriched notes with extended fields
+        extra_notes = []
+        if promotion_name:
+            extra_notes.append(f"Promotion: {promotion_name}")
+        if coupon_code:
+            extra_notes.append(f"Coupon: {coupon_code}")
+        if mins:
+            extra_notes.append(f"Mins: {mins}")
+        if base_rate:
+            extra_notes.append(f"BaseRate: {base_rate}")
+        if multiplier and multiplier != 1.0:
+            extra_notes.append(f"Multiplier: {multiplier}")
+        if food_items:
+            extra_notes.append(f"Food: {food_items}")
+        combined_notes = notes
+        if extra_notes:
+            combined_notes = (notes + " | " if notes else "") + " | ".join(extra_notes)
+
+        sale_date = created_at if created_at else datetime.now(timezone(timedelta(hours=6, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
+        gross = game_amt + food_total
+
+        _mysql_exec(
+            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, payment_method, notes) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (voucher_no, sale_date, console_id, member_id, game_amt, gross, discount, net_total, staff, payment_method, combined_notes)
+        )
+
+        # Deduct wallet balance for member sales
+        _wallet_deduct = int(req.get("wallet_deduct", 0))
+        if _wallet_deduct > 0 and member_id and member_id.strip() not in ("", "0 (Guest)", "-"):
+            _mysql_exec(
+                "UPDATE member_wallets SET balance_mins = GREATEST(0, COALESCE(balance_mins, 0) - %s), total_used_mins = COALESCE(total_used_mins, 0) + %s WHERE member_id=%s",
+                (_wallet_deduct, _wallet_deduct, member_id)
+            )
+            logger.info("Wallet deducted: %s mins for member %s (total_used +%s)", _wallet_deduct, member_id, _wallet_deduct)
+
+        logger.info("Sales record saved: voucher=%s member=%s console=%s net=%s", voucher_no, member_id, console_id, net_total)
+        return ok({"voucher_no": voucher_no, "success": True})
+    except Exception as e:
+        logger.error(f"api_sales_record: {e}")
+        return error_response(str(e))
+
+
+@router.post("/stock-out/log", response_model=GenericResponse, tags=["Stock"], summary="Log stock-out record [MySQL]")
+async def api_stock_out_log(req: dict, auth=Depends(verify_api_key)):
+    """Insert a stock-out record into stock_out table (replaces direct GSheets append)."""
+    try:
+        item_name = req.get("item_name", "")
+        qty = int(req.get("qty", 0))
+        unit_cost = float(req.get("unit_cost", 0))
+        total_cost = float(req.get("total_cost", 0))
+        staff = req.get("staff", "")
+        notes = req.get("notes", "")
+        created_at = req.get("created_at", "")
+
+        if not item_name or qty <= 0:
+            return error_response(message="item_name and qty > 0 required")
+
+        sale_date = created_at if created_at else datetime.now(timezone(timedelta(hours=6, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
+
+        _mysql_exec(
+            "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, staff_name, notes) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (item_name, qty, unit_cost, total_cost, sale_date, staff, notes)
+        )
+
+        # Decrement inventory quantity
+        _mysql_exec(
+            "UPDATE inventory SET quantity = GREATEST(0, quantity - %s), last_updated = NOW() WHERE item_name = %s",
+            (qty, item_name)
+        )
+
+        logger.info("Stock-out logged: item=%s qty=%s staff=%s", item_name, qty, staff)
+        return ok({"item_name": item_name, "qty": qty, "success": True})
+    except Exception as e:
+        logger.error(f"api_stock_out_log: {e}")
+        return error_response(str(e))
+
+
+@router.post("/stock-in/log", response_model=GenericResponse, tags=["Stock"], summary="Log stock-in record [MySQL]")
+async def api_stock_in_log(req: dict, auth=Depends(verify_api_key)):
+    """Insert a stock-in record into stock_in table (replaces direct GSheets append)."""
+    try:
+        item_name = req.get("item_name", "")
+        qty = int(req.get("qty", 0))
+        unit_cost = float(req.get("unit_cost", 0))
+        staff = req.get("staff", "")
+        supplier = req.get("supplier", "")
+        notes = req.get("notes", "")
+        created_at = req.get("created_at", "")
+
+        if not item_name or qty <= 0:
+            return error_response(message="item_name and qty > 0 required")
+
+        batch_id = f"IN-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{item_name[:20].replace(' ', '_')}"
+
+        # Note: total_cost is STORED GENERATED column (= quantity * unit_cost), do not insert
+        _mysql_exec(
+            "INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, staff_name) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (batch_id, item_name, qty, unit_cost, supplier or "Manual", notes or "", staff)
+        )
+
+        # Update inventory quantity
+        _mysql_exec(
+            "INSERT INTO inventory (item_name, category, quantity, unit_price, reorder_level, last_updated) "
+            "VALUES (%s, %s, %s, %s, %s, NOW()) "
+            "ON DUPLICATE KEY UPDATE quantity = quantity + %s, unit_price = %s, last_updated = NOW()",
+            (item_name, "", qty, unit_cost, 0, qty, unit_cost)
+        )
+
+        logger.info("Stock-in logged: batch=%s item=%s qty=%s", batch_id, item_name, qty)
+        return ok({"batch_id": batch_id, "item_name": item_name, "qty": qty, "success": True})
+    except Exception as e:
+        logger.error(f"api_stock_in_log: {e}")
+        return error_response(str(e))
+
+
+@router.post("/stock/in", response_model=GenericResponse, tags=["Stock"], summary="Stock-in purchase with payment deduction [MySQL]")
+async def api_stock_in(req: dict, auth=Depends(verify_api_key)):
+    """Record stock-in purchase AND deduct from payment account balance.
+
+    Creates a stock_in record and corresponding cash_movements eject entry.
+    Supports both single-payment (Cash/KPay) and split-payment (Cash/KPay combo).
+    """
+    try:
+        item_name = req.get("item_name", "")
+        quantity = int(req.get("quantity", 0))
+        unit_cost = float(req.get("unit_cost", 0))
+        payment_method = req.get("payment_method", "")  # display string, may be composite
+        paid_by = req.get("paid_by", "")
+        staff_name = req.get("staff_name", "")
+        source = req.get("source", "")
+        receipt_no = req.get("receipt_no", "")
+        # Split-payment amounts (optional — used when payment_method is composite like "Cash X / KPay Y")
+        cash_amount = req.get("cash_amount")
+        kpay_amount = req.get("kpay_amount")
+
+        if not item_name or quantity <= 0:
+            return error_response(message="item_name and quantity > 0 required")
+
+        import uuid
+        batch_id = "SI-" + uuid.uuid4().hex[:12].upper()
+        total_amount = quantity * unit_cost
+
+        # Insert into stock_in
+        _mysql_exec(
+            """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (batch_id, item_name, quantity, unit_cost, source or "", receipt_no or "", payment_method, paid_by, staff_name)
+        )
+
+        # Update inventory quantity
+        _mysql_exec(
+            """INSERT INTO inventory (item_name, category, quantity, unit_price, reorder_level, last_updated)
+               VALUES (%s, %s, %s, %s, %s, NOW())
+               ON DUPLICATE KEY UPDATE quantity = quantity + %s, unit_price = %s, last_updated = NOW()""",
+            (item_name, "", quantity, unit_cost, 0, quantity, unit_cost)
+        )
+
+        # Create cash_movements entries to deduct from account balance
+        note = f"Stock In: {item_name} x{quantity}"
+        if cash_amount is not None and kpay_amount is not None:
+            # Split payment: create separate eject entries for Cash and KPay
+            if float(cash_amount) > 0:
+                _mysql_exec(
+                    """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    ("eject", "Cash", float(cash_amount), note, staff_name)
+                )
+            if float(kpay_amount) > 0:
+                _mysql_exec(
+                    """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    ("eject", "KPay", float(kpay_amount), note, staff_name)
+                )
+        elif payment_method:
+            # Single payment: one eject entry for the payment method
+            _mysql_exec(
+                """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                ("eject", payment_method, total_amount, note, staff_name)
+            )
+
+        logger.info(
+            "Stock-in via /api/stock/in: batch=%s item=%s qty=%s cost=%s payment=%s amount=%s split=Cash%s/KPay%s",
+            batch_id, item_name, quantity, unit_cost, payment_method, total_amount,
+            cash_amount or 0, kpay_amount or 0
+        )
+        return ok({
+            "batch_id": batch_id,
+            "item_name": item_name,
+            "qty": quantity,
+            "unit_cost": unit_cost,
+            "total": total_amount,
+            "payment_method": payment_method,
+            "success": True
+        })
+    except Exception as e:
+        logger.error(f"api_stock_in: {e}")
+        return error_response(str(e))
+
+
+
+
+
+# ── OPEX / Operating Expenses ─────────────────────────────────────────────────
+@router.get("/opex/list", tags=["OPEX"], summary="List expenses")
+async def api_opex_list(
+    date_from: str = "", date_to: str = "",
+    category: str = "", limit: int = 100,
+    user: dict = Depends(get_current_user),
+):
+    from datetime import datetime as _dt, timedelta as _td
+    import calendar
+    _mmt_now = _dt.utcnow() + _td(hours=6, minutes=30)
+    # Default to current month if no date filter provided
+    if not date_from and not date_to:
+        date_from = _mmt_now.strftime("%Y-%m-01")
+        _last_day = calendar.monthrange(_mmt_now.year, _mmt_now.month)[1]
+        date_to = _mmt_now.replace(day=_last_day).strftime("%Y-%m-%d")
+    sql = "SELECT * FROM opex WHERE 1=1"
+    params = []
+    if date_from:
+        sql += " AND expense_date >= %s"
+        params.append(date_from)
+    if date_to:
+        sql += " AND expense_date <= %s"
+        params.append(date_to)
+    if category:
+        sql += " AND category = %s"
+        params.append(category)
+    sql += " ORDER BY expense_date DESC, created_at DESC LIMIT %s"
+    params.append(limit)
+    rows = _mysql_query(sql, tuple(params))
+    return {"success": True, "data": list(rows)}
+
+
+@router.post("/opex/add", tags=["OPEX"], summary="Add expense")
+async def api_opex_add(body: dict = Body(...), user: dict = Depends(get_current_user)):
+    from datetime import datetime as _dt, timedelta as _td
+    _mmt_now = _dt.utcnow() + _td(hours=6, minutes=30)
+    cat = body.get("category", "").strip()
+    desc = body.get("description", "").strip()
+    amt = int(body.get("amount", 0))
+    pmt = body.get("payment_method", "Cash").strip()
+    by = body.get("recorded_by", "").strip()
+    dt = body.get("expense_date", _mmt_now.strftime("%Y-%m-%d")).strip()
+    if not cat or amt <= 0:
+        return {"success": False, "error": "Category and amount required"}
+    _mysql_exec("INSERT INTO opex (category,description,amount,payment_method,recorded_by,expense_date) VALUES (%s,%s,%s,%s,%s,%s)", (cat, desc, amt, pmt, by, dt))
+    # Deduct from account balance if payment method matches an account name
+    try:
+        acc = _mysql_query_one("SELECT id, balance FROM accounts WHERE account_name = %s", (pmt,))
+        if acc:
+            new_bal = float(acc["balance"]) - amt
+            _mysql_exec("UPDATE accounts SET balance = %s WHERE id = %s", (new_bal, acc["id"]))
+    except Exception:
+        pass
+    return {"success": True, "data": {"msg": f"{cat}: {amt:,} Ks recorded"}}
+
+
+@router.get("/opex/summary", tags=["OPEX"], summary="Expense summary by category + date")
+async def api_opex_summary(
+    date_from: str = "", date_to: str = "",
+    user: dict = Depends(get_current_user),
+):
+    from datetime import datetime as _dt, timedelta as _td
+    import calendar
+    _mmt_now = _dt.utcnow() + _td(hours=6, minutes=30)
+    # Default to current month if no date filter provided
+    if not date_from and not date_to:
+        date_from = _mmt_now.strftime("%Y-%m-01")
+        _last_day = calendar.monthrange(_mmt_now.year, _mmt_now.month)[1]
+        date_to = _mmt_now.replace(day=_last_day).strftime("%Y-%m-%d")
+    sql = "SELECT category, SUM(amount) as total, COUNT(*) as count FROM opex WHERE 1=1"
+    params = []
+    if date_from:
+        sql += " AND expense_date >= %s"
+        params.append(date_from)
+    if date_to:
+        sql += " AND expense_date <= %s"
+        params.append(date_to)
+    sql += " GROUP BY category ORDER BY total DESC"
+    rows = _mysql_query(sql, tuple(params)) if params else _mysql_query(sql)
+    grand_total = sum(r["total"] for r in rows) if rows else 0
+    return {"success": True, "data": {"categories": list(rows), "grand_total": grand_total}}
+
+
+
+
+
+# ================================================================
+#  WALLET — deduct/bonus (Sale Bot calls this when member plays)
+# ================================================================

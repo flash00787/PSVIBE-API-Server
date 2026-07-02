@@ -1,0 +1,94 @@
+{"success":true,"data":{"timestamp":"2026-07-01T17:30:21.041152Z","date":"2026-07-01","summary":{"total_sales":{"count":43,"gross":675650.0,"net":675300.0},"total_topups":{"count":0,"amount":0.0,"mins_added":0},"active_sessions":0,"completed_sessions":35,"food_sales":{"count":47,"total":143000.0},"new_members":0,"top_consoles":[{"console_id":"C-02","hours":8.0},{"console_id":"C-06","hours":7.0},{"console_id":"C-08","hours":7.0},{"console_id":"C-10","hours":6.0},{"console_id":"C-01","hours":5.7}],"top_games":[{"game":"Any","sessions":7},{"game":"Split Fiction","sessions":6},{"game":"FC 26","sessions":4},{"game":"It Takes Two","sessions":2},{"game":"Tekken 8","sessions":1}],"revenue_by_payment":[{"method":"Cash:10000","count":12,"total":120000.0},{"method":"KPay:60000","count":1,"total":60000.0},{"method":"Cash:28000","count":2,"total":56000.0},{"method":"Cash:24000","count":2,"total":48000.0},{"method":"KPay:36000","count":1,"total":36000.0},{"method":"KPay:34000","count":1,"total":34000.0},{"method":"KPay:32000|Cash:2000","count":1,"total":34000.0},{"method":"Cash:30000","count":1,"total":30000.0},{"method":"KPay:30000","count":1,"total":30000.0},{"method":"KPay:10000","count":3,"total":30000.0},{"method":"WavePay:24500","count":1,"total":24500.0},{"method":"Cash:20000","count":1,"total":20000.0},{"method":"Cash:18000","count":1,"total":18000.0},{"method":"Cash:17600","count":1,"total":17600.0},{"method":"Cash:16000","count":1,"total":16000.0},{"method":"Cash:15500","count":1,"total":15500.0},{"method":"KPay:14100","count":1,"total":14100.0},{"method":"KPay:12000","count":1,"total":12000.0},{"method":"Cash:12000","count":1,"total":12000.0},{"method":"KPay:11800","count":1,"total":11800.0},{"method":"Cash:7500","count":1,"total":7500.0},{"method":"KPay:7300","count":1,"total":7300.0},{"method":"KPay:6500","count":1,"total":6500.0},{"method":"KPay:4500","count":1,"total":4500.0},{"method":"KPay:4000","count":1,"total":4000.0},{"method":"Cash:3500","count":1,"total":3500.0},{"method":"KPay:1500","count":1,"total":1500.0},{"method":"Cash:1000","count":1,"total":1000.0}]},"alerts":[],"recommendations":[]}}      "method": "WavePay:24500",
+        "count": 1,
+        "total": 24500.0
+      },
+      {
+        "method": "Cash:20000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "Cash:18000",
+        "count": 1,
+        "total": 18000.0
+      },
+      {
+        "method": "Cash:17600",
+        "count": 1,
+        "total": 17600.0
+      },
+      {
+        "method": "Cash:16000",
+        "count": 1,
+        "total": 16000.0
+      },
+      {
+        "method": "Cash:15500",
+        "count": 1,
+        "total": 15500.0
+      },
+      {
+        "method": "KPay:14100",
+        "count": 1,
+        "total": 14100.0
+      },
+      {
+        "method": "KPay:12000",
+        "count": 1,
+        "total": 12000.0
+      },
+      {
+        "method": "Cash:12000",
+        "count": 1,
+        "total": 12000.0
+      },
+      {
+        "method": "KPay:11800",
+        "count": 1,
+        "total": 11800.0
+      },
+      {
+        "method": "Cash:7500",
+        "count": 1,
+        "total": 7500.0
+      },
+      {
+        "method": "KPay:7300",
+        "count": 1,
+        "total": 7300.0
+      },
+      {
+        "method": "KPay:6500",
+        "count": 1,
+        "total": 6500.0
+      },
+      {
+        "method": "KPay:4500",
+        "count": 1,
+        "total": 4500.0
+      },
+      {
+        "method": "KPay:4000",
+        "count": 1,
+        "total": 4000.0
+      },
+      {
+        "method": "Cash:3500",
+        "count": 1,
+        "total": 3500.0
+      },
+      {
+        "method": "KPay:1500",
+        "count": 1,
+        "total": 1500.0
+      },
+      {
+        "method": "Cash:1000",
+        "count": 1,
+        "total": 1000.0
+      }
+    ]
+  },
+  "alerts": [],
+  "recommendations": []
+}
