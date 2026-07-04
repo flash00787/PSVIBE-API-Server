@@ -295,7 +295,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
     if _cumulative:
         # Live balance: from business start to now
         _start = "2026-06-01"
-        _end = (_now_mmt + timedelta(days=1)).strftime('%Y-%m-01')
+        _end = (_now_mmt + timedelta(days=1)).strftime('%Y-%m-%d')
     else:
         _start = f"{year:04d}-{month:02d}-01"
         if month == 12:
@@ -368,7 +368,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                 opex_by_acct[pm] += float(row["total"] or 0)
         # Stock-in purchase payments (deducted from accounts)
         # Note: use CONCAT to avoid LIKE '%/%' conflicting with PyMySQL %-formatting
-        si_all_rows = _mq("SELECT payment_method, COALESCE(SUM(quantity * unit_cost), 0) as total FROM stock_in WHERE payment_method IS NOT NULL AND payment_method != '' GROUP BY payment_method")
+        si_all_rows = _mq("SELECT payment_method, COALESCE(SUM(quantity * unit_cost), 0) as total FROM stock_in WHERE payment_method IS NOT NULL AND payment_method != '' AND created_at >= %s AND created_at < %s GROUP BY payment_method", (_start, _end))
         si_payments = {"Cash": 0.0, "KPay": 0.0, "Wave": 0.0, "AYA Pay": 0.0, "KBZ Bank": 0.0, "ACM's Acc": 0.0}
         for row in si_all_rows:
             pm = (row.get("payment_method") or "").strip()
@@ -453,12 +453,12 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
         
         # Revenue breakdown — food has NO discount, ALL discount on game
         # Game revenue = sales_daily net (food with no discount) + wallet consumption (FIFO)
-        _game = float(_mqo("SELECT COALESCE(ROUND(SUM(GREATEST(net - (gross - amount), 0))),0) as t FROM sales_daily").get("t",0) or 0) + _fifo_result["consumed"]
-        _food = _mqo("SELECT COALESCE(ROUND(SUM(LEAST(gross - amount, net))),0) as t FROM sales_daily")
-        _topup = _mqo("SELECT COALESCE(ROUND(SUM(amount)),0) as t FROM topup_log")
+        _game = float(_mqo("SELECT COALESCE(ROUND(SUM(GREATEST(net - (gross - amount), 0))),0) as t FROM sales_daily WHERE sale_date >= %s AND sale_date < %s", (_start, _end)).get("t",0) or 0) + _fifo_result["consumed"]
+        _food = _mqo("SELECT COALESCE(ROUND(SUM(LEAST(gross - amount, net))),0) as t FROM sales_daily WHERE sale_date >= %s AND sale_date < %s", (_start, _end))
+        _topup = _mqo("SELECT COALESCE(ROUND(SUM(amount)),0) as t FROM topup_log WHERE topup_date >= %s AND topup_date < %s", (_start, _end))
         # Member liability = FIFO: oldest topups consumed first
         _liability = _fifo_result["liability"]
-        _discount = _mqo("SELECT COALESCE(ROUND(SUM(gross - net)),0) as t FROM sales_daily")
+        _discount = _mqo("SELECT COALESCE(ROUND(SUM(gross - net)),0) as t FROM sales_daily WHERE sale_date >= %s AND sale_date < %s", (_start, _end))
         game_revenue = float(_game or 0)
         food_revenue = float(_food.get("t", 0) or 0)
         topup_revenue = float(_topup.get("t", 0) or 0)

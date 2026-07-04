@@ -218,7 +218,7 @@ async def api_bot_booking_success_rate(since: str = Query("2026-06-02", descript
                 WHERE d.phone = c.phone
                   AND d.booking_date = c.booking_date
                   AND d.game_name = c.game_name
-                  AND d.status IN ('Done','Active')
+                  AND d.status IN ('done','active')
                   AND d.id != c.id
                   AND d.telegram_chat_id IS NOT NULL AND d.telegram_chat_id != ''
             )
@@ -228,8 +228,8 @@ async def api_bot_booking_success_rate(since: str = Query("2026-06-02", descript
         # Totals by status (raw)
         totals = _mysql_query(f"SELECT status, COUNT(*) AS cnt FROM console_bookings {_base} GROUP BY status", (since,))
         total_map = {r["status"]: r["cnt"] for r in (totals or [])}
-        done = total_map.get("Done", 0)
-        active = total_map.get("Active", 0)
+        done = total_map.get("done", 0)
+        active = total_map.get("active", 0)
         confirmed = total_map.get("confirmed", 0)
         cancelled_raw = total_map.get("cancelled", 0)
         rejected = total_map.get("rejected", 0)
@@ -247,10 +247,10 @@ async def api_bot_booking_success_rate(since: str = Query("2026-06-02", descript
         daily = _mysql_query(f"""
             SELECT booking_date AS d,
                    COUNT(*) AS total,
-                   SUM(CASE WHEN status='Done' THEN 1 ELSE 0 END) AS done,
+                   SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) AS done,
                    SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
                    SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected,
-                   SUM(CASE WHEN status='Active' THEN 1 ELSE 0 END) AS active
+                   SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active
             FROM console_bookings {_base}
             AND booking_date >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
             GROUP BY booking_date ORDER BY d DESC
@@ -261,7 +261,7 @@ async def api_bot_booking_success_rate(since: str = Query("2026-06-02", descript
             SELECT YEARWEEK(booking_date,1) AS w,
                    MIN(booking_date) AS week_start,
                    COUNT(*) AS total,
-                   SUM(CASE WHEN status='Done' THEN 1 ELSE 0 END) AS done,
+                   SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) AS done,
                    SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
                    SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected
             FROM console_bookings {_base}
@@ -273,7 +273,7 @@ async def api_bot_booking_success_rate(since: str = Query("2026-06-02", descript
         console = _mysql_query(f"""
             SELECT console_id,
                    COUNT(*) AS total,
-                   SUM(CASE WHEN status IN ('Done','Active') THEN 1 ELSE 0 END) AS success,
+                   SUM(CASE WHEN status IN ('done','active') THEN 1 ELSE 0 END) AS success,
                    SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled
             FROM console_bookings {_base} AND console_id != ''
             GROUP BY console_id ORDER BY console_id
@@ -284,10 +284,10 @@ async def api_bot_booking_success_rate(since: str = Query("2026-06-02", descript
             SELECT b.staff_name AS name, b.phone, b.telegram_chat_id AS tg_id,
                    u.username, u.first_name,
                    COUNT(*) AS total_bookings,
-                   SUM(CASE WHEN b.status IN ('Done','Active') THEN 1 ELSE 0 END) AS success_count,
+                   SUM(CASE WHEN b.status IN ('done','active') THEN 1 ELSE 0 END) AS success_count,
                    SUM(CASE WHEN b.status='cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
                    SUM(CASE WHEN b.status='rejected' THEN 1 ELSE 0 END) AS rejected_count,
-                   ROUND(SUM(CASE WHEN b.status IN ('Done','Active') THEN 1 ELSE 0 END)/(COUNT(*) - SUM(CASE WHEN b.status='cancelled' AND b.phone IS NOT NULL AND b.phone!='' AND b.game_name IS NOT NULL AND b.game_name!='' AND EXISTS (SELECT 1 FROM console_bookings d WHERE d.phone=b.phone AND d.booking_date=b.booking_date AND d.game_name=b.game_name AND d.status IN ('Done','Active') AND d.id!=b.id AND d.telegram_chat_id IS NOT NULL AND d.telegram_chat_id!='') THEN 1 ELSE 0 END))*100, 1) AS success_pct
+                   ROUND(SUM(CASE WHEN b.status IN ('done','active') THEN 1 ELSE 0 END)/(COUNT(*) - SUM(CASE WHEN b.status='cancelled' AND b.phone IS NOT NULL AND b.phone!='' AND b.game_name IS NOT NULL AND b.game_name!='' AND EXISTS (SELECT 1 FROM console_bookings d WHERE d.phone=b.phone AND d.booking_date=b.booking_date AND d.game_name=b.game_name AND d.status IN ('done','active') AND d.id!=b.id AND d.telegram_chat_id IS NOT NULL AND d.telegram_chat_id!='') THEN 1 ELSE 0 END))*100, 1) AS success_pct
             FROM console_bookings b
             LEFT JOIN customer_bot_users u ON b.telegram_chat_id = u.tg_id
             {_base}

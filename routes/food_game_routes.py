@@ -1,6 +1,6 @@
 """PS VIBE API — Food & Game Library Routes."""
 from fastapi import APIRouter, Depends, HTTPException, Query
-from mysql_db import query as _mysql_query, execute as _mysql_exec
+from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
 from helpers import ok, error_response, _mysql_get_setting
 from deps import verify_api_key
 from models import GenericResponse

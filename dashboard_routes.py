@@ -263,9 +263,9 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
         new_console = req.get("console_id", "")
         if new_console and new_console != (existing.get("console_id") or ""):
             # Use requested times (if provided) for overlap check, otherwise existing times
-            _bk_start = req.get("start_time") or existing.get("start_time")
+            _bk_start = req.get("start_time") or existing.get("planned_start")
             _bk_end = req.get("end_time") or None
-            _req_dur = req.get("duration_mins") or existing.get("duration_mins") or 0
+            _req_dur = req.get("duration_mins") or existing.get("planned_duration_mins") or 0
             # Compute end_time from requested start + duration if not explicitly provided
             if not _bk_end and _bk_start and int(_req_dur) > 0:
                 from datetime import datetime as _dt, timedelta as _td
@@ -273,13 +273,13 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
                     _st_dt = _dt.fromisoformat(str(_bk_start)) if isinstance(_bk_start, str) else _bk_start
                     _bk_end = _st_dt + _td(minutes=int(_req_dur))
                 except Exception:
-                    _bk_end = existing.get("end_time")
+                    _bk_end = existing.get("planned_end")
             if not _bk_end:
-                _bk_end = existing.get("end_time")
+                _bk_end = existing.get("planned_end")
             if _bk_start and _bk_end:
                 active_check = _mysql_query_one(
                     "SELECT id FROM console_bookings WHERE console_id=%s AND id!=%s AND status='Active'"
-                    " AND start_time < %s AND end_time > %s LIMIT 1",
+                    " AND planned_start < %s AND planned_end > %s LIMIT 1",
                     (new_console, booking_id, _bk_end, _bk_start)
                 )
             else:
@@ -296,7 +296,7 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
         updates = []
         params = []
         for field in ["console_id", "member_id", "status", "staff_name", "notes",
-                       "duration_mins", "phone", "game_name"]:
+                       "planned_duration_mins", "phone", "game_name"]:
             if field in req:
                 updates.append(f"{field} = %s")
                 params.append(req[field])
@@ -304,24 +304,27 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
             updates.append("booking_date = %s")
             params.append(req["booking_date"])
         if "start_time" in req and req["start_time"]:
-            updates.append("start_time = %s")
+            updates.append("planned_start = %s")
             params.append(req["start_time"])
         if "end_time" in req and req["end_time"]:
-            updates.append("end_time = %s")
+            updates.append("planned_end = %s")
             params.append(req["end_time"])
+        if "duration_mins" in req and req["duration_mins"]:
+            updates.append("planned_duration_mins = %s")
+            params.append(req["duration_mins"])
 
         if not updates:
             return {"success": False, "error": "No fields to update"}
 
         # 🐛 Fix Jun 25: Auto-calculate end_time when start_time or duration_mins changes
         if "end_time" not in req:
-            _eff_start = req.get("start_time") or existing.get("start_time")
-            _eff_dur = int(req.get("duration_mins") or existing.get("duration_mins") or 0)
+            _eff_start = req.get("start_time") or existing.get("planned_start")
+            _eff_dur = int(req.get("duration_mins") or existing.get("planned_duration_mins") or 0)
             if _eff_start and _eff_dur > 0:
                 if isinstance(_eff_start, str):
                     _eff_start = datetime.fromisoformat(str(_eff_start))
                 _eff_end = _eff_start + timedelta(minutes=_eff_dur)
-                updates.append("end_time = %s")
+                updates.append("planned_end = %s")
                 params.append(_eff_end.strftime("%Y-%m-%d %H:%M:%S"))
 
         params.append(booking_id)
@@ -345,7 +348,7 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
         if new_status in ("confirmed", "cancelled"):
             logger.info("[DASH-NOTIFY] Triggering notification for BK#%s status=%s", booking_id, new_status)
             _notify_row = _mysql_query_one(
-                "SELECT telegram_chat_id, console_id, booking_date, start_time, duration_mins FROM console_bookings WHERE id=%s",
+                "SELECT telegram_chat_id, console_id, booking_date, planned_start, planned_duration_mins FROM console_bookings WHERE id=%s",
                 (booking_id,)
             )
             if _notify_row and _notify_row.get("telegram_chat_id"):
@@ -356,8 +359,8 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
                     if new_status == "confirmed":
                         _console = _notify_row.get("console_id", "") or "TBD"
                         _date = str(_notify_row.get("booking_date", ""))
-                        _time = str(_notify_row.get("start_time", ""))[:16] if _notify_row.get("start_time") else ""
-                        _dur = str(_notify_row.get("duration_mins", ""))
+                        _time = str(_notify_row.get("planned_start", ""))[:16] if _notify_row.get("planned_start") else ""
+                        _dur = str(_notify_row.get("planned_duration_mins", ""))
                         _msg = (
                             f"✅ <b>Booking Confirmed!</b>\n\n"
                             f"🎫 Booking <b>#{_bk_id_str}</b>\n"
@@ -394,12 +397,12 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
                 "console_id": updated.get("console_id"),
                 "member_id": updated.get("member_id"),
                 "booking_date": str(updated["booking_date"]) if updated.get("booking_date") else None,
-                "start_time": str(updated["start_time"]) if updated.get("start_time") else None,
-                "end_time": str(updated["end_time"]) if updated.get("end_time") else None,
+                "start_time": str(updated["planned_start"]) if updated.get("planned_start") else None,
+                "end_time": str(updated["planned_end"]) if updated.get("planned_end") else None,
                 "status": updated.get("status"),
                 "staff_name": updated.get("staff_name"),
                 "notes": updated.get("notes"),
-                "duration_mins": updated.get("duration_mins"),
+                "duration_mins": updated.get("planned_duration_mins"),
                 "phone": updated.get("phone"),
                 "game_name": updated.get("game_name"),
                 "created_at": str(updated["created_at"]) if updated.get("created_at") else None,
@@ -437,6 +440,29 @@ async def dashboard_adjust_timer(booking_id: int, req: dict, user: dict = Depend
             "UPDATE console_bookings SET planned_duration_mins=%s, planned_end=DATE_ADD(planned_start, INTERVAL %s MINUTE) WHERE id=%s",
             (duration_mins, duration_mins, booking_id)
         )
+
+        # ── Reschedule API-side session timer (fix: old timer used stale end time) ──
+        try:
+            from session_timer import schedule_session_timer
+            from datetime import datetime as _dt
+            sess = _mysql_query_one(
+                "SELECT actual_start, console_id, COALESCE(member_id,'') AS member_id FROM console_sessions WHERE booking_id=%s AND status='active'",
+                (booking_id,))
+            if sess:
+                start_dt = sess.get("actual_start")
+                if isinstance(start_dt, str):
+                    start_dt = _dt.fromisoformat(start_dt)
+                if start_dt:
+                    schedule_session_timer(booking_id, sess["console_id"], sess["member_id"], start_dt, duration_mins)
+                    logger.info(f"Timer rescheduled for booking {booking_id} (new duration={duration_mins}min)")
+                    # Also update bot's session_reminders.json so bot picks up the change
+                    try:
+                        from routes.console_routes import _persist_session_for_bot
+                        _persist_session_for_bot(sess["console_id"], sess["member_id"], duration_mins, start_dt)
+                    except Exception:
+                        pass
+        except Exception as timer_err:
+            logger.warning(f"Failed to reschedule API timer for booking {booking_id}: {timer_err}")
 
         updated = _mysql_query_one("SELECT id, console_id, planned_start AS start_time, planned_end AS end_time, planned_duration_mins AS duration_mins, status FROM console_bookings WHERE id=%s", (booking_id,))
         return {
@@ -2756,7 +2782,7 @@ async def dashboard_feedback_summary(user: dict = Depends(get_current_user), dat
             "  SUM(CASE WHEN rating <= 2 THEN 1 ELSE 0 END) AS negative, "
             "  COUNT(CASE WHEN comment != '' AND comment IS NOT NULL THEN 1 END) AS with_comments "
             "FROM customer_feedback"
-            + (" WHERE DATE(created_at) = %s" if date else ""),
+            + (" WHERE DATE(DATE_ADD(created_at, INTERVAL 390 MINUTE)) = %s" if date else ""),
             (date,) if date else ()
         )
 
@@ -2764,7 +2790,7 @@ async def dashboard_feedback_summary(user: dict = Depends(get_current_user), dat
         daily_rows = _mysql_query(
             "SELECT DATE(created_at) AS day, COUNT(*) AS cnt, ROUND(AVG(rating), 1) AS avg_rating "
             "FROM customer_feedback "
-            "WHERE created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 14 DAY) "
+            "WHERE created_at >= DATE_SUB(NOW(), INTERVAL 14 DAY) "
             "GROUP BY DATE(created_at) ORDER BY day DESC"
         )
 
@@ -2783,7 +2809,7 @@ async def dashboard_feedback_summary(user: dict = Depends(get_current_user), dat
                 "booking_date": str(r["booking_date"]) if r.get("booking_date") else "",
                 "duration_mins": r.get("duration_mins") or 0,
                 "game_name": r.get("game_name") or "",
-                "created_at": r["created_at"].strftime("%Y-%m-%d %H:%M") if r.get("created_at") else "",
+                "created_at": (r["created_at"]).strftime("%Y-%m-%d %H:%M") if r.get("created_at") else "",
             } for r in rows],
             "stats": {
                 "total": stats_rows[0]["total"] if stats_rows else 0,
@@ -2797,6 +2823,443 @@ async def dashboard_feedback_summary(user: dict = Depends(get_current_user), dat
         }
     except Exception as e:
         logger.error(f"dashboard/feedback error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  CONSOLE SWAP
+# ══════════════════════════════════════════════════════════════════
+
+
+@router.get("/swap/confirmed")
+async def get_swap_confirmed_bookings(user: dict = Depends(get_current_user)):
+    """List confirmed future bookings eligible for console swap."""
+    try:
+        now_mmt = _get_mmt_now().strftime("%Y-%m-%d %H:%M:%S")
+        rows = _mysql_query("""
+            SELECT id, console_id, booking_date,
+                   planned_start, planned_end, planned_duration_mins,
+                   member_id, game_name, staff_name, phone, notes
+            FROM console_bookings
+            WHERE status = 'confirmed'
+              AND planned_start > %s
+            ORDER BY planned_start ASC
+        """, (now_mmt,))
+
+        return {"success": True, "data": [
+            {
+                "id": r["id"],
+                "console_id": r["console_id"],
+                "booking_date": str(r["booking_date"]) if r.get("booking_date") else None,
+                "planned_start": str(r["planned_start"]) if r.get("planned_start") else None,
+                "planned_end": str(r["planned_end"]) if r.get("planned_end") else None,
+                "planned_duration_mins": r.get("planned_duration_mins"),
+                "member_id": r["member_id"],
+                "game_name": r.get("game_name", "") or "",
+                "staff_name": r.get("staff_name", "") or "",
+                "phone": r.get("phone", "") or "",
+                "notes": r.get("notes", "") or "",
+            }
+            for r in rows
+        ]}
+    except Exception as e:
+        logger.error(f"swap/confirmed GET error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/swap/confirmed")
+async def swap_confirmed_bookings(body: dict, user: dict = Depends(get_current_user)):
+    """Swap consoles between two confirmed future bookings."""
+    try:
+        booking_1_id = body.get("booking_1_id")
+        booking_2_id = body.get("booking_2_id")
+        if not booking_1_id or not booking_2_id:
+            raise HTTPException(400, "booking_1_id and booking_2_id are required")
+        if booking_1_id == booking_2_id:
+            raise HTTPException(400, "Cannot swap a booking with itself")
+
+        # Fetch both bookings
+        b1 = _mysql_query_one(
+            "SELECT id, console_id, planned_start, planned_end, planned_duration_mins, status FROM console_bookings WHERE id=%s",
+            (booking_1_id,))
+        b2 = _mysql_query_one(
+            "SELECT id, console_id, planned_start, planned_end, planned_duration_mins, status FROM console_bookings WHERE id=%s",
+            (booking_2_id,))
+
+        if not b1:
+            raise HTTPException(404, f"Booking {booking_1_id} not found")
+        if not b2:
+            raise HTTPException(404, f"Booking {booking_2_id} not found")
+        if b1["status"] != "confirmed":
+            raise HTTPException(400, f"Booking {booking_1_id} is not confirmed (status: {b1['status']})")
+        if b2["status"] != "confirmed":
+            raise HTTPException(400, f"Booking {booking_2_id} is not confirmed (status: {b2['status']})")
+
+        # Check no active session on target consoles
+        for bid, target_console in [(booking_1_id, b2["console_id"]), (booking_2_id, b1["console_id"])]:
+            active = _mysql_query_one(
+                "SELECT cs.id FROM console_sessions cs JOIN console_bookings cb ON cs.booking_id=cb.id WHERE cb.console_id=%s AND cs.status='active' LIMIT 1",
+                (target_console,))
+            if active:
+                raise HTTPException(409, f"Target console {target_console} (for booking {bid}) has an active session — cannot swap")
+
+        # Swap using transaction
+        _mysql_execute("START TRANSACTION")
+        try:
+            _mysql_execute(
+                "UPDATE console_bookings SET console_id=%s, planned_start=%s, planned_end=%s, planned_duration_mins=%s WHERE id=%s",
+                (b2["console_id"], b2["planned_start"], b2["planned_end"], b2["planned_duration_mins"], booking_1_id))
+            _mysql_execute(
+                "UPDATE console_bookings SET console_id=%s, planned_start=%s, planned_end=%s, planned_duration_mins=%s WHERE id=%s",
+                (b1["console_id"], b1["planned_start"], b1["planned_end"], b1["planned_duration_mins"], booking_2_id))
+            _mysql_execute("COMMIT")
+        except Exception:
+            _mysql_execute("ROLLBACK")
+            raise
+
+        logger.info(f"Console swap: booking {booking_1_id} ↔ {booking_2_id} by user {user.get('user_id','?')}")
+        return {"success": True, "message": f"Successfully swapped consoles for bookings {booking_1_id} and {booking_2_id}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"swap/confirmed POST error: {e}")
+        try:
+            _mysql_execute("ROLLBACK")
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/swap/active")
+async def get_swap_active_sessions(user: dict = Depends(get_current_user)):
+    """List active console sessions eligible for swap."""
+    try:
+        rows = _mysql_query("""
+            SELECT cb.id AS booking_id, cb.console_id, cb.member_id,
+                   cb.game_name, cb.staff_name,
+                   cs.actual_start, cs.actual_duration_mins
+            FROM console_bookings cb
+            JOIN console_sessions cs ON cs.booking_id = cb.id
+            WHERE cs.status = 'active'
+            ORDER BY cs.actual_start ASC
+        """)
+
+        return {"success": True, "data": [
+            {
+                "booking_id": r["booking_id"],
+                "console_id": r["console_id"],
+                "member_id": r["member_id"],
+                "game_name": r.get("game_name", "") or "",
+                "staff_name": r.get("staff_name", "") or "",
+                "actual_start": str(r["actual_start"]) if r.get("actual_start") else None,
+                "actual_duration_mins": r.get("actual_duration_mins"),
+            }
+            for r in rows
+        ]}
+    except Exception as e:
+        logger.error(f"swap/active GET error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/swap/active")
+async def swap_active_sessions(body: dict, user: dict = Depends(get_current_user)):
+    """Swap consoles between two active sessions."""
+    try:
+        booking_1_id = body.get("booking_1_id")
+        booking_2_id = body.get("booking_2_id")
+        if not booking_1_id or not booking_2_id:
+            raise HTTPException(400, "booking_1_id and booking_2_id are required")
+        if booking_1_id == booking_2_id:
+            raise HTTPException(400, "Cannot swap a session with itself")
+
+        # Validate both have active sessions
+        s1 = _mysql_query_one(
+            "SELECT cs.id AS session_id, cb.console_id FROM console_sessions cs JOIN console_bookings cb ON cs.booking_id=cb.id WHERE cb.id=%s AND cs.status='active'",
+            (booking_1_id,))
+        s2 = _mysql_query_one(
+            "SELECT cs.id AS session_id, cb.console_id FROM console_sessions cs JOIN console_bookings cb ON cs.booking_id=cb.id WHERE cb.id=%s AND cs.status='active'",
+            (booking_2_id,))
+
+        if not s1:
+            raise HTTPException(404, f"No active session found for booking {booking_1_id}")
+        if not s2:
+            raise HTTPException(404, f"No active session found for booking {booking_2_id}")
+
+        # Swap console_id in BOTH tables
+        _mysql_execute("START TRANSACTION")
+        try:
+            _mysql_execute(
+                "UPDATE console_bookings SET console_id=%s WHERE id=%s",
+                (s2["console_id"], booking_1_id))
+            _mysql_execute(
+                "UPDATE console_bookings SET console_id=%s WHERE id=%s",
+                (s1["console_id"], booking_2_id))
+            _mysql_execute(
+                "UPDATE console_sessions SET console_id=%s WHERE id=%s",
+                (s2["console_id"], s1["session_id"]))
+            _mysql_execute(
+                "UPDATE console_sessions SET console_id=%s WHERE id=%s",
+                (s1["console_id"], s2["session_id"]))
+            _mysql_execute("COMMIT")
+        except Exception:
+            _mysql_execute("ROLLBACK")
+            raise
+
+        logger.info(f"Active session swap: booking {booking_1_id} ↔ {booking_2_id} by user {user.get('user_id','?')}")
+        return {"success": True, "message": f"Successfully swapped active sessions for bookings {booking_1_id} and {booking_2_id}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"swap/active POST error: {e}")
+        try:
+            _mysql_execute("ROLLBACK")
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  ALL-TIME CUMULATIVE STATS — Business Overview
+# ══════════════════════════════════════════════════════════════════
+
+@router.get("/cumulative")
+async def get_cumulative_stats(user: dict = Depends(require_admin)):
+    """All-time cumulative business stats for the dashboard overview. [Admin only]
+    
+    Sections:
+      - summary: key metrics (revenue, profit, bookings, members, hours)
+      - monthly: revenue/profit/bookings by month
+      - top_members: top 15 by total spend
+      - top_games: top 10 by play count
+      - revenue_breakdown: gaming vs food vs topup
+      - console_utilization: pct busy time per console type
+      - member_growth: new members per month
+      - hourly_distribution: bookings by hour of day
+    """
+    try:
+        result = {}
+
+        # ── 1. Summary Cards ──
+        summary = _mysql_query_one("""
+            SELECT
+                COUNT(DISTINCT cb.id) AS total_bookings,
+                COUNT(DISTINCT CASE WHEN cb.status IN ('Done','Active') THEN cb.id END) AS completed_sessions,
+                COUNT(DISTINCT CASE WHEN cb.status = 'cancelled' THEN cb.id END) AS cancelled_bookings,
+                COUNT(DISTINCT CASE WHEN cb.member_id IS NOT NULL AND cb.member_id != '' AND cb.member_id != 'Guest' THEN cb.member_id END) AS unique_members,
+                COALESCE(SUM(CASE WHEN cb.status IN ('Done','Active') THEN COALESCE(cs.actual_duration_mins, cb.planned_duration_mins, 0) END), 0) AS total_play_mins,
+                COALESCE(AVG(CASE WHEN cb.status IN ('Done','Active') THEN COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) END), 0) AS avg_session_mins
+            FROM console_bookings cb
+            LEFT JOIN console_sessions cs ON cs.booking_id = cb.id
+        """)
+
+        # Revenue from sales_daily (gaming) + food_cart + topup_log
+        rev = _mysql_query_one("""
+            SELECT
+                COALESCE((SELECT SUM(amount) FROM sales_daily), 0) AS total_gaming_rev,
+                COALESCE((SELECT SUM(quantity * unit_price) FROM food_cart), 0) AS total_food_rev,
+                COALESCE((SELECT SUM(amount) FROM topup_log), 0) AS total_topup_rev,
+                COALESCE((SELECT SUM(amount) FROM sales_daily), 0) + COALESCE((SELECT SUM(quantity * unit_price) FROM food_cart), 0) AS total_revenue
+        """)
+
+        result["summary"] = {
+            "total_bookings": summary.get("total_bookings", 0) or 0,
+            "completed_sessions": summary.get("completed_sessions", 0) or 0,
+            "cancelled_bookings": summary.get("cancelled_bookings", 0) or 0,
+            "cancellation_rate": round(
+                (summary.get("cancelled_bookings", 0) or 0) / max(1, summary.get("total_bookings", 1) or 1) * 100, 1
+            ),
+            "unique_members": summary.get("unique_members", 0) or 0,
+            "total_play_hours": round((summary.get("total_play_mins", 0) or 0) / 60, 1),
+            "avg_session_mins": round(summary.get("avg_session_mins", 0) or 0, 1),
+            "total_gaming_revenue": int(rev.get("total_gaming_rev", 0) or 0),
+            "total_food_revenue": int(rev.get("total_food_rev", 0) or 0),
+            "total_topup_revenue": int(rev.get("total_topup_rev", 0) or 0),
+            "total_revenue": int(rev.get("total_revenue", 0) or 0),
+        }
+
+        # ── 2. Monthly Trends ──
+        monthly_rows = _mysql_query("""
+            SELECT
+                d.month,
+                COALESCE(s.gaming_rev, 0) AS gaming_rev,
+                COALESCE(f.food_rev, 0) AS food_rev,
+                COALESCE(t.topup_rev, 0) AS topup_rev,
+                COALESCE(s.gaming_rev, 0) + COALESCE(f.food_rev, 0) AS total_rev,
+                COALESCE(s.session_count, 0) AS session_count,
+                COALESCE(s.play_mins, 0) AS play_mins
+            FROM (
+                SELECT DISTINCT DATE_FORMAT(sale_date, '%%Y-%%m') AS month FROM sales_daily
+                UNION SELECT DISTINCT DATE_FORMAT(created_at, '%%Y-%%m') FROM food_cart
+                UNION SELECT DISTINCT DATE_FORMAT(topup_date, '%%Y-%%m') FROM topup_log
+                UNION SELECT DISTINCT DATE_FORMAT(booking_date, '%%Y-%%m') FROM console_bookings
+            ) d
+            LEFT JOIN (
+                SELECT DATE_FORMAT(sale_date, '%%Y-%%m') AS m, SUM(amount) AS gaming_rev,
+                       COUNT(*) AS session_count, SUM(0) AS play_mins
+                FROM sales_daily GROUP BY m
+            ) s ON s.m = d.month
+            LEFT JOIN (
+                SELECT DATE_FORMAT(created_at, '%%Y-%%m') AS m, SUM(quantity * unit_price) AS food_rev
+                FROM food_cart GROUP BY m
+            ) f ON f.m = d.month
+            LEFT JOIN (
+                SELECT DATE_FORMAT(topup_date, '%%Y-%%m') AS m, SUM(amount) AS topup_rev
+                FROM topup_log GROUP BY m
+            ) t ON t.m = d.month
+            ORDER BY d.month ASC
+        """)
+        result["monthly"] = [
+            {
+                "month": r["month"],
+                "gaming_revenue": int(r.get("gaming_rev", 0) or 0),
+                "food_revenue": int(r.get("food_rev", 0) or 0),
+                "topup_revenue": int(r.get("topup_rev", 0) or 0),
+                "total_revenue": int(r.get("total_rev", 0) or 0),
+                "sessions": int(r.get("session_count", 0) or 0),
+                "play_hours": round((r.get("play_mins", 0) or 0) / 60, 1),
+            }
+            for r in monthly_rows
+        ]
+
+        # ── 3. Top 15 Members by Spend ──
+        top_members_rows = _mysql_query("""
+            SELECT
+                cb.member_id AS member,
+                COUNT(DISTINCT cb.id) AS visits,
+                COALESCE(SUM(COALESCE(cs.actual_duration_mins, cb.planned_duration_mins)), 0) AS total_mins,
+                COALESCE((SELECT SUM(sd2.amount) FROM sales_daily sd2 WHERE sd2.member_id = cb.member_id), 0) AS gaming_spend,
+                COALESCE((SELECT SUM(fc2.quantity * fc2.unit_price) FROM food_cart fc2 JOIN console_bookings cb3 ON cb3.id = fc2.booking_id WHERE cb3.member_id = cb.member_id), 0) AS food_spend
+            FROM console_bookings cb
+            LEFT JOIN console_sessions cs ON cs.booking_id = cb.id
+            WHERE cb.member_id IS NOT NULL AND cb.member_id != '' AND cb.member_id != 'Guest'
+            GROUP BY cb.member_id
+            ORDER BY (COALESCE((SELECT SUM(sd2.amount) FROM sales_daily sd2 WHERE sd2.member_id = cb.member_id), 0) + COALESCE((SELECT SUM(fc2.quantity * fc2.unit_price) FROM food_cart fc2 JOIN console_bookings cb3 ON cb3.id = fc2.booking_id WHERE cb3.member_id = cb.member_id), 0)) DESC
+            LIMIT 15
+        """)
+        result["top_members"] = [
+            {
+                "member": r["member"],
+                "visits": int(r.get("visits", 0) or 0),
+                "total_hours": round((r.get("total_mins", 0) or 0) / 60, 1),
+                "gaming_spend": int(r.get("gaming_spend", 0) or 0),
+                "food_spend": int(r.get("food_spend", 0) or 0),
+                "total_spend": int(r.get("gaming_spend", 0) or 0) + int(r.get("food_spend", 0) or 0),
+            }
+            for r in top_members_rows
+        ]
+
+        # ── 4. Top 10 Games ──
+        top_games_rows = _mysql_query("""
+            SELECT
+                COALESCE(cb.game_name, 'Unknown') AS game,
+                COUNT(*) AS play_count,
+                COALESCE(SUM(cs.actual_duration_mins), SUM(cb.planned_duration_mins), 0) AS total_mins
+            FROM console_bookings cb
+            LEFT JOIN console_sessions cs ON cs.booking_id = cb.id
+            WHERE cb.status IN ('Done','Active')
+            GROUP BY cb.game_name
+            ORDER BY play_count DESC
+            LIMIT 10
+        """)
+        result["top_games"] = [
+            {
+                "game": r["game"],
+                "play_count": int(r.get("play_count", 0) or 0),
+                "total_hours": round((r.get("total_mins", 0) or 0) / 60, 1),
+            }
+            for r in top_games_rows
+        ]
+
+        # ── 5. Revenue Breakdown (pie chart data) ──
+        result["revenue_breakdown"] = [
+            {"category": "Gaming", "amount": result["summary"]["total_gaming_revenue"]},
+            {"category": "Food & Drinks", "amount": result["summary"]["total_food_revenue"]},
+            {"category": "Top-ups", "amount": result["summary"]["total_topup_revenue"]},
+        ]
+
+        # ── 6. Console Utilization ──
+        util_rows = _mysql_query("""
+            SELECT
+                SUBSTRING_INDEX(cb.console_id, '-', 1) AS console_type,
+                COUNT(DISTINCT cb.console_id) AS console_count,
+                COUNT(DISTINCT cb.id) AS sessions,
+                COALESCE(SUM(cs.actual_duration_mins), SUM(cb.planned_duration_mins), 0) AS total_mins
+            FROM console_bookings cb
+            LEFT JOIN console_sessions cs ON cs.booking_id = cb.id
+            WHERE cb.status IN ('Done','Active')
+              AND cb.console_id IS NOT NULL AND cb.console_id != ''
+            GROUP BY SUBSTRING_INDEX(cb.console_id, '-', 1)
+            ORDER BY total_mins DESC
+        """)
+        # Estimate: days since first booking * 12h/day * console_count
+        first_day = _mysql_query_one("SELECT MIN(booking_date) AS d FROM console_bookings")
+        days_since = 30  # fallback
+        if first_day and first_day.get("d"):
+            from datetime import date as _date
+            try:
+                _fd = first_day["d"]
+                if isinstance(_fd, str):
+                    _fd = _date.fromisoformat(_fd)
+                days_since = max(1, (_get_mmt_now().date() - _fd).days + 1)
+            except Exception:
+                pass
+        result["console_utilization"] = [
+            {
+                "type": r["console_type"],
+                "count": int(r.get("console_count", 1) or 1),
+                "sessions": int(r.get("sessions", 0) or 0),
+                "total_hours": round((r.get("total_mins", 0) or 0) / 60, 1),
+                "utilization_pct": round(
+                    ((r.get("total_mins", 0) or 0) / 60) / max(1, int(r.get("console_count", 1) or 1) * 12 * days_since) * 100, 1
+                ),
+            }
+            for r in util_rows
+        ]
+
+        # ── 7. Member Growth (new members per month) ──
+        growth_rows = _mysql_query("""
+            SELECT
+                DATE_FORMAT(MIN(cb.created_at), '%%Y-%%m') AS month,
+                COUNT(DISTINCT cb.member_id) AS new_members
+            FROM (
+                SELECT member_id, MIN(created_at) AS created_at
+                FROM console_bookings
+                WHERE member_id IS NOT NULL AND member_id != '' AND member_id != 'Guest'
+                GROUP BY member_id
+            ) cb
+            GROUP BY DATE_FORMAT(cb.created_at, '%%Y-%%m')
+            ORDER BY month ASC
+        """)
+        result["member_growth"] = [
+            {
+                "month": r["month"],
+                "new_members": int(r.get("new_members", 0) or 0),
+            }
+            for r in growth_rows
+        ]
+
+        # ── 8. Hourly Distribution (popular hours) ──
+        hourly_rows = _mysql_query("""
+            SELECT
+                HOUR(cb.planned_start) AS hour_of_day,
+                COUNT(*) AS booking_count
+            FROM console_bookings cb
+            WHERE cb.planned_start IS NOT NULL
+            GROUP BY HOUR(cb.planned_start)
+            ORDER BY hour_of_day ASC
+        """)
+        result["hourly_distribution"] = [
+            {
+                "hour": r["hour_of_day"],
+                "label": f"{r['hour_of_day']:02d}:00",
+                "count": int(r.get("booking_count", 0) or 0),
+            }
+            for r in hourly_rows
+        ]
+
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error(f"cumulative GET error: {e}")
         return {"success": False, "error": str(e)}
 
 

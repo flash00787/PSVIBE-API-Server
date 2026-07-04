@@ -15,6 +15,56 @@ import logging, os, json
 from datetime import datetime, timezone, timedelta
 import asyncio
 
+# ── Session Reminder Bridge (API → Bot) ─────────────────────────────────────
+_BOT_REMINDER_FILE = "/root/psvibe-sales-bot/data/session_reminders.json"
+
+def _persist_session_for_bot(console_id: str, member_id: str, duration_mins: int,
+                               start_dt, chat_id: int = 0, message_thread_id: int = 0):
+    """Write session info to the bot's session_reminders.json so the bot can
+    pick up API-started sessions and spawn _remind_loop tasks."""
+    if not duration_mins or duration_mins <= 0 or not console_id:
+        return
+    try:
+        # Use bot's target chat as default (STAFF_NOTIFY_CHAT)
+        if not chat_id:
+            # Try to read from env — fall back to 0 (bot will use default)
+            chat_id = 0
+        end_dt = start_dt + timedelta(minutes=duration_mins) if start_dt else datetime.now(timezone(timedelta(hours=6, minutes=30))) + timedelta(minutes=duration_mins)
+        end_t = end_dt.strftime("%H:%M")
+        end_dt_iso = end_dt.isoformat()
+        key = f"{console_id}|{abs(chat_id)}"
+        
+        store = {}
+        if os.path.isfile(_BOT_REMINDER_FILE):
+            try:
+                with open(_BOT_REMINDER_FILE, "r") as f:
+                    store = json.load(f)
+                if not isinstance(store, dict):
+                    store = {}
+            except (json.JSONDecodeError, OSError):
+                store = {}
+        
+        store[key] = {
+            "cid": console_id,
+            "chat_id": chat_id,
+            "member_id": member_id or "Guest",
+            "planned_mins": duration_mins,
+            "end_t": end_t,
+            "end_dt_iso": end_dt_iso,
+            "message_thread_id": message_thread_id,
+            "total_plan_mins": duration_mins,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        tmp = _BOT_REMINDER_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(store, f, indent=2)
+        os.replace(tmp, _BOT_REMINDER_FILE)
+        logger.info(f"session_reminder_bridge: wrote {key} (dur={duration_mins}min)")
+    except Exception as e:
+        logger.warning(f"session_reminder_bridge: write failed for {console_id}: {e}")
+
+
 def now_mmt():
     """Return current datetime in MMT (UTC+6:30)"""
     from datetime import datetime, timezone, timedelta
@@ -306,6 +356,8 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
                     except Exception: pass
+                    try: _persist_session_for_bot(console_id, member_id, duration_mins, _now_ref)
+                    except Exception: pass
             else:
                 _dur_end5 = 360 if duration_mins == 0 else duration_mins
                 # Walk-in: create booking row in console_bookings
@@ -321,6 +373,8 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 )
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
+                    except Exception: pass
+                    try: _persist_session_for_bot(console_id, member_id, duration_mins, _now_ref)
                     except Exception: pass
 
             _start_cur.execute(
@@ -501,6 +555,8 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
                     except Exception: pass
+                    try: _persist_session_for_bot(console_id, member_id, duration_mins, _now_ref)
+                    except Exception: pass
             else:
                 # Create booking + session rows for walk-in
                 _dur_end4 = 360 if duration_mins == 0 else duration_mins
@@ -515,6 +571,8 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 )
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
+                    except Exception: pass
+                    try: _persist_session_for_bot(console_id, member_id, duration_mins, _now_ref)
                     except Exception: pass
             
             # Sync console_status

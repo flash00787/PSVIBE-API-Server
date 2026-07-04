@@ -1,7 +1,7 @@
 """PS VIBE API — patch_routes module."""
 # NOTE: patch_routes.py imports from app.py via `from app import *
 import mysql.connector as _mc
-from mysql_db import get_connection as _get_db_conn`.
+from mysql_db import get_connection as _get_db_conn
 # This works because app.py registers its router BEFORE patch_routes defines
 # its own endpoints. _mysql_query, _mysql_exec, _mysql_get_setting, and
 # _mysql_get_settings_dict are all available via the wildcard import.
@@ -513,7 +513,7 @@ async def api_finance_accounts(auth=Depends(verify_api_key)):
 async def api_finance_account_balances(auth=Depends(verify_api_key)):
     """Account balances using same calculation as web finance."""
     try:
-        from dashboard_routes import get_finance_balances
+        from routes.finance_routes import get_finance_balances
         mock_user = {"username": "api_transfer", "role": "admin", "display_name": "Transfer Page"}
         result = await get_finance_balances(year=None, month=None, user=mock_user)
         

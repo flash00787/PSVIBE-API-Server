@@ -20,7 +20,7 @@ today = date.today()
 
 # Today's bookings
 bks = query("""
-    SELECT status, COUNT(*) as cnt, COALESCE(SUM(duration_mins),0) as total_mins
+    SELECT status, COUNT(*) as cnt, COALESCE(SUM(planned_duration_mins),0) as total_mins
     FROM console_bookings WHERE booking_date = %s
     GROUP BY status
 """, (today,))

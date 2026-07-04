@@ -225,12 +225,19 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
             # Insert a session row for checked_in (new schema: sessions track checked_in)
             _chk_cur.execute(
                 "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, notes, created_at) "
-                "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, staff_name, notes, NOW() "
+                "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, staff_name, notes, %s "
                 "FROM console_bookings WHERE id=%s",
-                (booking_id, booking_id)
+                (booking_id, datetime.now(timezone(timedelta(hours=6, minutes=30))), booking_id)
             )
             # Don't start timer — session start is a separate action
             # Don't set console_status to Active — console remains Free/Reserved until session starts
+            
+            # Also update booking status to checked_in
+            _chk_cur.execute(
+                "UPDATE console_bookings SET status=%s WHERE id=%s",
+                ("checked_in", booking_id)
+            )
+
             _chk_conn.commit()
         except Exception:
             _chk_conn.rollback()
@@ -243,6 +250,14 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
         
         
         # ⏰ Timer is now handled by Sale Bot's _remind_loop (admin_bookings.py schedules it after checkin)
+        
+        # 🐛 Fix: Cancel pending booking reminders after check-in (prevents stale "Booking Confirmed" messages)
+        try:
+            from booking_reminder import cancel_booking_reminder
+            cancel_booking_reminder(str(booking_id))
+            logger.info("Cancelled booking reminders for checked-in booking %s", booking_id)
+        except Exception as _ce:
+            logger.debug("Cancel booking reminder failed (non-critical): %s", _ce)
         
         # 📢 Send Telegram notification to admin group
         STAFF_NOTIFY_CHAT = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
@@ -431,6 +446,20 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                     # console stays Free so walk-in customers can still use it until booked time.
                     pass
                 elif status == "Active":
+                    # C2: Checkin race condition fix — FOR UPDATE lock on console_status
+                    # Serialize console activation to prevent double-Active race on same console
+                    _app_cur.execute(
+                        "SELECT status FROM console_status WHERE console_id=%s FOR UPDATE",
+                        (_console_id,)
+                    )
+                    _cs_row = _app_cur.fetchone()
+                    if _cs_row and _cs_row.get('status') == 'Active':
+                        _app_conn.rollback()
+                        _app_conn.close()
+                        return JSONResponse(content={
+                            "success": False,
+                            "message": f"Console {_console_id} already has an active session"
+                        }, status_code=409)
                     # Checkin bind / session start — mark console as Active
                     _bk_info = _mysql_query_one(
                         "SELECT staff_name, member_id, game_name FROM console_bookings WHERE id=%s",
@@ -558,12 +587,21 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
                 pass
         _staff_name = row.get("staff_name", "") or ""
         _phone = row.get("phone", "") or ""
-        if not _staff_name.strip():
-            _staff_name = _phone
+        _member_id = row.get("member_id", "") or ""
+        # customerName priority: member_id → staff_name → phone → 'Guest'
+        _customer_name = ""
+        if _member_id and _member_id.strip() and _member_id.strip() != "Guest":
+            _customer_name = _member_id.strip()
+        elif _staff_name.strip():
+            _customer_name = _staff_name.strip()
+        elif _phone.strip():
+            _customer_name = _phone.strip()
+        else:
+            _customer_name = _member_id.strip() if _member_id.strip() else "Guest"
         return ok({
             "booking": {
                 "id": row.get("id"),
-                "customerName": _staff_name,
+                "customerName": _customer_name,
                 "phone": _phone,
                 "date": bd_str,
                 "timeSlot": time_slot,
@@ -678,10 +716,19 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
                     bd_str = bd_o.strftime("%Y-%m-%d")
                 except Exception:
                     bd_str = str(bd)[:10]
-            _phone = r.get("phone", "") or r.get("telegram_chat_id", "") or ""
+            _phone = r.get("phone", "") or ""
+            _member_id = r.get("member_id", "") or ""
             _staff_name = r.get("staff_name","") or ""
-            if not _staff_name.strip():
-                _staff_name = _phone
+            # customerName priority: member_id → staff_name → phone → 'Guest'
+            _customer_name = ""
+            if _member_id and _member_id.strip() and _member_id.strip() != "Guest":
+                _customer_name = _member_id.strip()
+            elif _staff_name.strip():
+                _customer_name = _staff_name.strip()
+            elif _phone.strip():
+                _customer_name = _phone.strip()
+            else:
+                _customer_name = _member_id.strip() if _member_id.strip() else "Guest"
             _created = r.get("created_at")
             _created_str = ""
             if _created:
@@ -698,7 +745,7 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
                     _created_str = str(_created)
             normalized.append({
                 "id": r.get("id",""),
-                "customerName": _staff_name,
+                "customerName": _customer_name,
                 "phone": _phone,
                 "date": bd_str,
                 "timeSlot": time_slot,
@@ -1316,7 +1363,7 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
                 # Staff bookings auto-confirm; customer bookings need approval
                 _bk_status = "confirmed" if req.get("source") == "staff" else "pending"
 
-                # Resolve actual member_id from payload, phone, or telegram_chat_id
+                # ── H8 FIX: Resolve member_id from payload, phone, telegram_chat_id ──
                 bk_member_id = req.get("memberId", req.get("member_id", ""))
 
                 # If member_id from payload, verify it exists in member_wallets
@@ -1325,19 +1372,50 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
                     if not cur.fetchone():
                         bk_member_id = ""  # Invalid — clear it
 
-                # Fallback: resolve from phone
+                # Fallback 1: resolve from phone (member_wallets)
                 if not bk_member_id and phone:
                     cur.execute("SELECT member_id FROM member_wallets WHERE phone=%s AND member_id IS NOT NULL AND member_id != ''", (phone,))
                     _pm_rows = cur.fetchall()
                     if _pm_rows:
                         bk_member_id = _pm_rows[0]["member_id"]
 
-                # Fallback: telegram_chat_id as member_id
+                # Fallback 2: telegram_chat_id → member_wallets (direct match)
                 if not bk_member_id and telegram_chat_id:
                     cur.execute("SELECT member_id FROM member_wallets WHERE member_id=%s", (telegram_chat_id,))
                     _pm_rows = cur.fetchall()
                     if _pm_rows:
                         bk_member_id = _pm_rows[0]["member_id"]
+
+                # Fallback 3: telegram_chat_id → customer_bot_users → member_wallets
+                if not bk_member_id and telegram_chat_id:
+                    cur.execute("SELECT member_id FROM customer_bot_users WHERE tg_id=%s AND member_id IS NOT NULL AND member_id != ''", (telegram_chat_id,))
+                    _cbu_rows = cur.fetchall()
+                    if _cbu_rows:
+                        _cbu_member = _cbu_rows[0]["member_id"]
+                        # Verify this member_id actually exists in member_wallets
+                        cur.execute("SELECT member_id FROM member_wallets WHERE member_id=%s", (_cbu_member,))
+                        if cur.fetchone():
+                            bk_member_id = _cbu_member
+
+                # Fallback 4: auto-create member record if phone provided but no member found
+                if not bk_member_id and phone:
+                    _auto_member_id = f"MEM{phone.replace('+','').replace(' ','')[-8:]}"
+                    try:
+                        cur.execute(
+                            "INSERT INTO member_wallets (member_id, phone, member_name, balance_mins, tier, created_at) "
+                            "VALUES (%s, %s, %s, 0, 'standard', NOW()) "
+                            "ON DUPLICATE KEY UPDATE phone=VALUES(phone)",
+                            (_auto_member_id, phone, customer_name or "Unknown")
+                        )
+                        bk_member_id = _auto_member_id
+                        logger.info("H8: Auto-created member %s for phone=%s during booking", _auto_member_id, phone)
+                    except Exception as _ac_err:
+                        logger.warning("H8: Auto-create member failed for phone=%s: %s", phone, _ac_err)
+
+                # H8: Convert empty string to None (NULL in DB) + log warning for monitoring
+                if not bk_member_id:
+                    logger.warning("H8: booking created without member_id for phone=%s telegram_chat_id=%s", phone, telegram_chat_id)
+                    bk_member_id = None  # Store NULL instead of ""
 
                 cur.execute(
                     "INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, planned_end, status, staff_name, notes, telegram_chat_id, planned_duration_mins, phone, game_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
@@ -1607,7 +1685,7 @@ async def api_feedback_submit(req: dict, auth=Depends(verify_api_key)) -> JSONRe
         # Insert into MySQL
         _mysql_exec(
             "INSERT INTO customer_feedback (tg_id, username, booking_id, rating, comment, console_id, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, NOW())",
+            "VALUES (%s, %s, %s, %s, %s, %s, DATE_ADD(NOW(), INTERVAL 390 MINUTE))",
             (tg_id, username, str(booking_id), rating, comment, console_id)
         )
         logger.info("FEEDBACK: tg=%s rating=%d bk=%s comment=%.50s", tg_id, rating, booking_id, comment)
@@ -1707,9 +1785,6 @@ async def api_booking_conflicts(req: dict, auth=Depends(verify_api_key)):
         conflicts: list of conflicting bookings
     """
     try:
-        if not _use_mysql():
-            return error_response(message="MySQL not available")
-        
         date_str = req.get("date", "")
         time_slot = req.get("time_slot", "")
         duration_mins = int(req.get("duration_mins", 0))
@@ -1733,7 +1808,7 @@ async def api_booking_conflicts(req: dict, auth=Depends(verify_api_key)):
         # Query conflicting bookings (exclude cancelled/done)
         where_clause = """
             status IN ('pending','confirmed','pending_check_in','checked_in','Active')
-            AND NOT (end_time <= %s OR start_time >= %s)
+            AND NOT (COALESCE(cs.actual_end, cb.planned_end) <= %s OR COALESCE(cs.actual_start, cb.planned_start) >= %s)
         """
         params = [start_dt, end_dt]
         
@@ -1778,9 +1853,6 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
     Grace period: 15 minutes after start_time — cancels ANY no-show regardless of end_time.
     """
     try:
-        if not _use_mysql():
-            return error_response(message="MySQL not available")
-        
         _now = now_mmt()
         _grace_minutes = 15
         

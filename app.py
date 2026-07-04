@@ -722,6 +722,34 @@ try:
 
         import patch_routes  # noqa: E402,F401
 
+
+        # === AKT Clothing Shop ERP Proxy ===
+        @app.api_route("/akt-clothing-shop/{path:path}", methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS"])
+        async def proxy_akt_clothing(request: Request, path: str):
+            import httpx
+            target = f"http://127.0.0.1:8010/{path}"
+            qs = str(request.url.query)
+            if qs:
+                target += f"?{qs}"
+            body = await request.body() if request.method in ("POST","PUT","PATCH") else None
+            headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "transfer-encoding")}
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.request(
+                    method=request.method, url=target,
+                    headers=headers, content=body or None
+                )
+            from starlette.responses import Response
+            # Build response headers + no-cache for Cloudflare
+            resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in ("transfer-encoding", "content-encoding", "content-length")}
+            resp_headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            resp_headers["Pragma"] = "no-cache"
+            resp_headers["Expires"] = "0"
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers=resp_headers
+            )
+
         # Catch-all: Serve SPA for all non-API paths
         @app.get("/{full_path:path}")
         async def serve_spa_fallback(full_path: str):

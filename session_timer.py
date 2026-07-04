@@ -300,7 +300,8 @@ def end_session_now(booking_id: int) -> Dict[str, Any]:
         cur = conn.cursor(dictionary=True)
         try:
             cur.execute("UPDATE console_bookings SET status='Done' WHERE id=%s", (booking_id,))
-            cur.execute("UPDATE console_sessions SET status='done', actual_end=NOW() WHERE booking_id=%s", (booking_id,))
+            now_mmt = datetime.now(timezone(timedelta(hours=6, minutes=30)))
+            cur.execute("UPDATE console_sessions SET status='done', actual_end=%s WHERE booking_id=%s", (now_mmt, booking_id))
             cur.execute(
                 "UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s",
                 (console_id,))
