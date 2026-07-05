@@ -1,0 +1,104 @@
+{"success":true,"data":{"timestamp":"2026-07-04T17:30:29.289648Z","date":"2026-07-04","summary":{"total_sales":{"count":36,"gross":939250.0,"net":904300.0},"total_topups":{"count":1,"amount":90000.0,"mins_added":600},"active_sessions":0,"completed_sessions":35,"food_sales":{"count":71,"total":229700.0},"new_members":0,"top_consoles":[{"console_id":"C-01","hours":12.0},{"console_id":"C-09","hours":8.0},{"console_id":"C-10","hours":8.0},{"console_id":"C-07","hours":6.0},{"console_id":"C-08","hours":6.0}],"top_games":[{"game":"FC 26","sessions":9},{"game":"Any","sessions":2},{"game":"Black Myth: Wukong","sessions":2},{"game":"A Way Out","sessions":2},{"game":"Resident Evil 9","sessions":1}],"revenue_by_payment":[{"method":"KPay:0/Cash:90000","count":1,"total":90000.0},{"method":"KPay:75700","count":1,"total":75700.0},{"method":"Cash:20000","count":2,"total":40000.0},{"method":"Cash:10000","count":4,"total":40000.0},{"method":"Cash:38600","count":1,"total":38600.0},{"method":"KPay:38000","count":1,"total":38000.0},{"method":"Cash:37000","count":1,"total":37000.0},{"method":"Cash:36500","count":1,"total":36500.0},{"method":"Cash:36000","count":1,"total":36000.0},{"method":"Cash:34000","count":1,"total":34000.0},{"method":"KPay:30500","count":1,"total":30500.0},{"method":"KPay:29400","count":1,"total":29400.0},{"method":"Cash:28700","count":1,"total":28700.0},{"method":"KPay:28600","count":1,"total":28600.0},{"method":"Cash:28000","count":1,"total":28000.0},{"method":"Cash:27100","count":1,"total":27100.0},{"method":"Cash:26500","count":1,"total":26500.0},{"method":"KPay:25000","count":1,"total":25000.0},{"method":"Cash:24000","count":1,"total":24000.0},{"method":"KPay:23000","count":1,"total":23000.0},{"method":"KPay:20500","count":1,"total":20500.0},{"method":"KPay:20000","count":1,"total":20000.0},{"method":"KPay:18500","count":1,"total":18500.0},{"method":"KPay:18000","count":1,"total":18000.0},{"method":"KPay:17100","count":1,"total":17100.0},{"method":"KPay:16000","count":1,"total":16000.0},{"method":"KPay:15800","count":1,"total":15800.0},{"method":"KPay:14000","count":1,"total":14000.0},{"method":"Cash:12000","count":1,"total":12000.0},{"method":"Cash:8800","count":1,"total":8800.0},{"method":"KPay:5000","count":1,"total":5000.0},{"method":"Cash:2000","count":1,"total":2000.0}]},"alerts":[],"recommendations":[]}}sh:28700",
+        "count": 1,
+        "total": 28700.0
+      },
+      {
+        "method": "KPay:28600",
+        "count": 1,
+        "total": 28600.0
+      },
+      {
+        "method": "Cash:28000",
+        "count": 1,
+        "total": 28000.0
+      },
+      {
+        "method": "Cash:27100",
+        "count": 1,
+        "total": 27100.0
+      },
+      {
+        "method": "Cash:26500",
+        "count": 1,
+        "total": 26500.0
+      },
+      {
+        "method": "KPay:25000",
+        "count": 1,
+        "total": 25000.0
+      },
+      {
+        "method": "Cash:24000",
+        "count": 1,
+        "total": 24000.0
+      },
+      {
+        "method": "KPay:23000",
+        "count": 1,
+        "total": 23000.0
+      },
+      {
+        "method": "KPay:20500",
+        "count": 1,
+        "total": 20500.0
+      },
+      {
+        "method": "KPay:20000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "KPay:18500",
+        "count": 1,
+        "total": 18500.0
+      },
+      {
+        "method": "KPay:18000",
+        "count": 1,
+        "total": 18000.0
+      },
+      {
+        "method": "KPay:17100",
+        "count": 1,
+        "total": 17100.0
+      },
+      {
+        "method": "KPay:16000",
+        "count": 1,
+        "total": 16000.0
+      },
+      {
+        "method": "KPay:15800",
+        "count": 1,
+        "total": 15800.0
+      },
+      {
+        "method": "KPay:14000",
+        "count": 1,
+        "total": 14000.0
+      },
+      {
+        "method": "Cash:12000",
+        "count": 1,
+        "total": 12000.0
+      },
+      {
+        "method": "Cash:8800",
+        "count": 1,
+        "total": 8800.0
+      },
+      {
+        "method": "KPay:5000",
+        "count": 1,
+        "total": 5000.0
+      },
+      {
+        "method": "Cash:2000",
+        "count": 1,
+        "total": 2000.0
+      }
+    ]
+  },
+  "alerts": [],
+  "recommendations": []
+}

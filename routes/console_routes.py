@@ -283,7 +283,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
         # No Timer (duration=0): hold console with 6hr window to prevent overbooking
         _hold_window = 360 if duration_mins == 0 else duration_mins
         booking_id = None
-        _start_conn = _mc.connect(host=os.environ.get("MYSQL_HOST","localhost"),user=os.environ.get("MYSQL_USER","root"),password=os.environ.get("MYSQL_PASSWORD",""),database=os.environ.get("MYSQL_DATABASE","psvibe"),port=int(os.environ.get("MYSQL_PORT","3306")),charset="utf8mb4")
+        _start_conn = _mc.connect(host=os.environ.get("MYSQL_HOST","localhost"),user=os.environ.get("MYSQL_USER","root"),password=os.environ.get("MYSQL_PASSWORD","") or "PsVibe@User2024!",database=os.environ.get("MYSQL_DATABASE","psvibe"),port=int(os.environ.get("MYSQL_PORT","3306")),charset="utf8mb4")
         _start_conn.start_transaction()
         _start_cur = _start_conn.cursor(dictionary=True)
         try:
@@ -481,7 +481,7 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
         _now_ref = now_mmt()
         
         # CI-3: ALL inside transaction with FOR UPDATE
-        conn = _mc.connect(host=os.environ.get("MYSQL_HOST","localhost"),user=os.environ.get("MYSQL_USER","root"),password=os.environ.get("MYSQL_PASSWORD",""),database=os.environ.get("MYSQL_DATABASE","psvibe"),port=int(os.environ.get("MYSQL_PORT","3306")),charset="utf8mb4")
+        conn = _mc.connect(host=os.environ.get("MYSQL_HOST","localhost"),user=os.environ.get("MYSQL_USER","root"),password=os.environ.get("MYSQL_PASSWORD","") or "PsVibe@User2024!",database=os.environ.get("MYSQL_DATABASE","psvibe"),port=int(os.environ.get("MYSQL_PORT","3306")),charset="utf8mb4")
         conn.start_transaction()
         cur = conn.cursor(dictionary=True)
         try:
@@ -632,7 +632,7 @@ async def api_sessions_move(req: dict, auth=Depends(verify_api_key)):
             return error_response(message="booking_id and to_console_id are required")
         
         _now = now_mmt()
-        _conn = _mc.connect(host=os.environ.get("MYSQL_HOST","localhost"),user=os.environ.get("MYSQL_USER","root"),password=os.environ.get("MYSQL_PASSWORD",""),database=os.environ.get("MYSQL_DATABASE","psvibe"),port=int(os.environ.get("MYSQL_PORT","3306")),charset="utf8mb4")
+        _conn = _mc.connect(host=os.environ.get("MYSQL_HOST","localhost"),user=os.environ.get("MYSQL_USER","root"),password=os.environ.get("MYSQL_PASSWORD","") or "PsVibe@User2024!",database=os.environ.get("MYSQL_DATABASE","psvibe"),port=int(os.environ.get("MYSQL_PORT","3306")),charset="utf8mb4")
         _conn.start_transaction()
         _cur = _conn.cursor(dictionary=True)
         try:
@@ -749,7 +749,7 @@ async def api_sessions_swap(req: dict, auth=Depends(verify_api_key)):
         if _bid1 == _bid2:
             return error_response(message="Cannot swap the same booking")
         
-        _conn = _mc.connect(host=os.environ.get("MYSQL_HOST","localhost"),user=os.environ.get("MYSQL_USER","root"),password=os.environ.get("MYSQL_PASSWORD",""),database=os.environ.get("MYSQL_DATABASE","psvibe"),port=int(os.environ.get("MYSQL_PORT","3306")),charset="utf8mb4")
+        _conn = _mc.connect(host=os.environ.get("MYSQL_HOST","localhost"),user=os.environ.get("MYSQL_USER","root"),password=os.environ.get("MYSQL_PASSWORD","") or "PsVibe@User2024!",database=os.environ.get("MYSQL_DATABASE","psvibe"),port=int(os.environ.get("MYSQL_PORT","3306")),charset="utf8mb4")
         _conn.start_transaction()
         _cur = _conn.cursor(dictionary=True)
         try:
