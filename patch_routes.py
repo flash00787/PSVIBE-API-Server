@@ -345,169 +345,22 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
 @app.get("/api/finance/balance-sheet", tags=["Finance"])
 async def api_finance_balance_sheet(auth=Depends(verify_api_key)):
     """Balance Sheet: Assets = Liabilities + Equity."""
-    from app import _mysql_query_one as _mqo
     try:
-        from fifo_wallet import get_all_fifo
-        import pymysql
-        try:
-            _fc = pymysql.connect(host="127.0.0.1", user="psvibe_user", password="PsVibe@2026_Rotated!", database="psvibe_api")
-            _fr = get_all_fifo(_fc); _fc.close()
-        except Exception:
-            _fr = {"liability": 0}
-        member_liab = float(_fr.get("liability", 0))
-        accounts = [
-            {"key": "cash", "label": "Cash"},
-            {"key": "wave", "label": "WavePay"},
-            {"key": "kpay", "label": "KPay"},
-            {"key": "aya_pay", "label": "AYA Pay"},
-            {"key": "kbz_bank", "label": "KBZ Bank"},
-            {"key": "acm_acc", "label": "ACM's Acc"}
-        ]
-        db_acct = {"cash":"Cash","wave":"WavePay","kpay":"KPay","aya_pay":"AYA Pay","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
-        income_by_account = {a["key"]: 0.0 for a in accounts}
-        rows = _mysql_query("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != ''")
-        for row in rows:
-            note = (row.get("notes") or "")
-            if note.startswith("Topup") or note.startswith("New member"): continue
-            pm = (row.get("payment_method") or "").strip()
-            na = float(row.get("net") or 0)
-            if not pm: continue
-            sep = "|" if "|" in pm else ("/" if "/" in pm else "|")
-            for part in pm.split(sep):
-                part = part.strip()
-                if ":" in part:
-                    m, _, v = part.partition(":")
-                    m = m.strip().lower().replace(" ", "_")
-                    val = float(v.strip() or 0) if v.strip() else 0
-                else:
-                    m = part.lower().replace(" ", "_")
-                    val = na
-                if m == "wavepay": m = "wave"
-                if m in income_by_account: income_by_account[m] += val
-        trows = _mysql_query("SELECT payment_method, amount FROM topup_log WHERE amount > 0 AND payment_method IS NOT NULL")
-        for _tr in trows:
-            _pm = (_tr.get("payment_method") or "").strip()
-            _amt = float(_tr.get("amount") or 0)
-            if not _pm or _amt <= 0: continue
-            for _part in _pm.split("/"):
-                _part = _part.strip()
-                if ":" in _part:
-                    _method, _, _val = _part.partition(":")
-                    _method = _method.strip().lower().replace(" ", "_")
-                    _val = float(_val.strip() or 0) if _val.strip() else 0
-                else:
-                    _method = _part.lower().replace(" ", "_")
-                    _val = _amt
-                if _method == "wavepay": _method = "wave"
-                if _method in income_by_account: income_by_account[_method] += _val
-        bank_items = []; total_ca = 0.0
-        for a in accounts:
-            key = a["key"]; income = income_by_account.get(key, 0.0); db = db_acct[key]
-            opex = 0.0
-            if key == "kbz_bank":
-                opr = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM opex")
-                opex = float(opr[0]["t"] or 0) if opr else 0
-            else:
-                opr = _mysql_query("SELECT payment_method, amount FROM opex")
-                for r in opr:
-                    pm = (r.get("payment_method") or "").strip().lower().replace(" ", "_")
-                    amt = float(r.get("amount") or 0)
-                    if pm == key: opex += amt
-                    elif "/" in pm:
-                        parts = pm.split("/")
-                        for p in parts:
-                            if p.strip().lower().replace(" ", "_") == key:
-                                opex += amt / max(len(parts), 1)
-            t_in = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_in'", (db,))["t"] or 0)
-            t_out = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_out'", (db,))["t"] or 0)
-            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Advance settled', CHAR(37))))", (db,))["t"] or 0)
-            ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject'", (db,))["t"] or 0)
-            bal = income - opex + t_in + t_out + inj - ej
-            if key == "kbz_bank":
-                ded_assets = float(_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active'")["t"] or 0)
-                ded_adv = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL")["t"] or 0)
-                ded_prep = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid")["t"] or 0)
-                bal = bal - ded_assets - ded_adv - ded_prep
-            bank_items.append({"account": a["label"], "balance": round(bal, 0)})
-            total_ca += bal
-        arows = _mysql_query("SELECT name, amount, salvage_value, acc_depreciation FROM finance_assets WHERE status='active'")
-        fix_items = []; total_fix = 0.0; total_gross = 0.0
-        for a in arows:
-            cost = float(a["amount"] or 0); dep = float(a.get("acc_depreciation") or 0); nbv = max(0, cost - dep)
-            fix_items.append({"name": a["name"], "cost": round(cost, 0), "sv": round(float(a.get("salvage_value") or 0), 0), "acc_dep": round(dep, 0), "nbv": round(nbv, 0)})
-            total_gross += cost; total_fix += nbv
-        total_prepaid_q = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid WHERE status='active'")
-        total_prepaid = float(total_prepaid_q[0]["t"] or 0) if total_prepaid_q else 0
-        total_amort_q = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM prepaid_amortization")
-        total_amort = float(total_amort_q[0]["t"] or 0) if total_amort_q else 0
-        prep_t = max(0, total_prepaid - total_amort)
-        adv_t_q = _mysql_query("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL")
-        adv_t = float(adv_t_q[0]["t"] or 0) if adv_t_q else 0
-        other_ca = prep_t + adv_t
-        import stock_fifo, pymysql
-        try:
-            _sf2 = pymysql.connect(host="127.0.0.1", user="psvibe_user", password="PsVibe@2026_Rotated!", database="psvibe_api")
-            _inv = stock_fifo.calc_fifo(_sf2)
-            _sf2.close()
-            inventory_value = _inv["inventory_value"]
-        except Exception:
-            inventory_value = 0
-        _dep_q = _mysql_query("SELECT COALESCE(SUM(acc_depreciation),0) as t FROM finance_assets WHERE status='active'")
-        total_dep = float(_dep_q[0]["t"] or 0) if _dep_q else 0
-        total_assets = total_ca + total_fix + other_ca + inventory_value
-        _sh = _mysql_query("SELECT SUM(capital_contribution) as tc FROM shareholders")
-        icap = float(_sh[0]["tc"] or 0) if _sh else 0
-        ti_excl = float(_mqo("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE net>0 AND notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%'")["t"] or 0)
-        te = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM opex")["t"] or 0)
-        cost_of_sold = _inv.get("cogs", 0)
-        wallet_consumed = float(_fr.get("consumed", 0)) if _fr else 0
-        total_earned_revenue = ti_excl + wallet_consumed
-        retained = total_earned_revenue - te - cost_of_sold - total_dep
-        total_eq = icap + retained
-        total_liab = member_liab
-        total_liab_eq = round(total_liab + total_eq, 0)
-        total_assets_r = round(total_assets, 0)
-        _bs_diff = round(total_assets_r - total_liab_eq, 0)
-        if abs(_bs_diff) > 10:
-            retained += _bs_diff
-            retained = round(retained, 0)
-            total_eq = icap + retained
-            total_liab_eq = round(total_liab + total_eq, 0)
-        return ok({
-            "assets": {
-                "current": {"items": bank_items, "total": round(total_ca, 0)},
-                "inventory": {"value": round(inventory_value, 0)},
-                "other_current": {"prepaid": round(prep_t, 0), "advances": round(adv_t, 0), "total": round(other_ca, 0)},
-                "fixed": {"items": fix_items, "gross_cost": round(total_gross, 0), "acc_depreciation": round(total_dep, 0), "nbv": round(total_fix, 0)},
-                "total_assets": total_assets_r
-            },
-            "liabilities": {"member_liability": round(member_liab, 0), "total": round(member_liab, 0)},
-            "equity": {"initial_capital": round(icap, 0), "retained_earnings": round(retained, 0), "total": round(total_eq, 0)},
-            "total_liabilities_equity": total_liab_eq
-        })
+        from routes.finance_routes import get_balance_sheet as _gbs
+        _mock = {"username": "api_bs", "role": "admin", "display_name": "API BS"}
+        _result = await _gbs(year=None, month=None, user=_mock)
+        import logging
+        _log = logging.getLogger('patch_routes')
+        _log.info(f"BS: type={type(_result).__name__}")
+        if _result is None:
+            return {"success": False, "error": "BS function returned None — contact dev"}
+        return _result
     except Exception as e:
         import traceback
-        return ok({"error": str(e), "trace": traceback.format_exc()})
-    return ok(result)
-
-
-@app.get("/api/finance/accounts", tags=["Finance"])
-async def api_finance_accounts(auth=Depends(verify_api_key)):
-    """Return chart of accounts summary."""
-    return ok({
-        "accounts": [
-            {"code": "4000", "name": "Console Rental Revenue", "type": "Revenue"},
-            {"code": "4100", "name": "Food & Beverage Revenue", "type": "Revenue"},
-            {"code": "4200", "name": "Top-Up Revenue", "type": "Revenue"},
-            {"code": "5000", "name": "Salaries & Wages", "type": "Expense"},
-            {"code": "5100", "name": "Rent", "type": "Expense"},
-            {"code": "5200", "name": "Utilities", "type": "Expense"},
-            {"code": "5300", "name": "Supplies & Inventory", "type": "Expense"},
-            {"code": "5400", "name": "Equipment Depreciation", "type": "Expense"},
-        ],
-    })
-
-
+        _tb = traceback.format_exc()
+        import logging
+        logging.getLogger('patch_routes').exception(f"BS endpoint error: {e}")
+        return {"success": False, "error": str(e), "trace": _tb}
 
 @app.get("/api/finance/account-balances", tags=["Finance"])
 async def api_finance_account_balances(auth=Depends(verify_api_key)):

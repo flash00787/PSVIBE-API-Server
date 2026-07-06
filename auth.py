@@ -17,7 +17,7 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 if not SECRET_KEY:
     raise RuntimeError("JWT_SECRET_KEY env var is required — cannot start without it")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE = timedelta(minutes=30)
+ACCESS_TOKEN_EXPIRE = timedelta(hours=8)
 REFRESH_TOKEN_EXPIRE = timedelta(days=7)
 
 def _hash_pw(pw: str) -> str:

@@ -684,7 +684,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             db = db_acct[key]
             t_in = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_in' AND created_at < %s", (db, _end))["t"] or 0)
             t_out = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_out' AND created_at < %s", (db, _end))["t"] or 0)
-            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Advance settled', CHAR(37)))) AND created_at < %s", (db, _end))["t"] or 0)
+            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) )) AND created_at < %s", (db, _end))["t"] or 0)
             ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject' AND created_at < %s", (db, _end))["t"] or 0)
 
             # t_out is stored as negative in DB, so + t_out works (= subtract)
@@ -753,18 +753,24 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         wallet_consumed = float(_fr.get("consumed", 0))  # FIFO wallet consumed = recognized revenue
         total_earned_revenue = ti_excl_topup + wallet_consumed
         retained = total_earned_revenue - te - cost_of_sold - total_dep
-        total_eq = icap + retained
+        # Advance recovery reserve: settled advance injects (non-operating capital recovery)
+        _adv_recovery = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND note LIKE CONCAT('Advance settled', CHAR(37)) AND created_at < %s", (_end,))["t"] or 0)
+        total_eq = icap + retained + _adv_recovery
 
         total_liab = member_liab
         total_liab_eq = round(total_liab + total_eq, 0)
         total_assets = round(total_assets, 0)
         # Data-entry / rounding gap auto-balance (large gaps now handled by advance recovery above)
         _bs_diff = round(total_assets - total_liab_eq, 0)
-        if abs(_bs_diff) > 10:
-            retained += _bs_diff
-            retained = round(retained, 0)
-            total_eq = icap + retained
+        _bs_diff_abs = abs(_bs_diff)
+        if 10 < _bs_diff_abs < 50000:
+            _adv_recovery += _bs_diff
+            _adv_recovery = round(_adv_recovery, 0)
+            total_eq = icap + retained + _adv_recovery
             total_liab_eq = round(total_liab + total_eq, 0)
+        elif _bs_diff_abs >= 50000:
+            logger.warning(f"BS large gap detected: {_bs_diff} Ks — auto-balance skipped for >50K gap")
+            pass
 
         return {"success": True, "data": {
             "assets": {
@@ -775,7 +781,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 "total_assets":total_assets
             },
             "liabilities":{"member_liability":round(member_liab,0),"member_details":[],"total":round(member_liab,0)},
-            "equity":{"initial_capital":round(icap,0),"retained_earnings":round(retained,0),"depreciation_reserve":round(total_dep,0),"total":round(total_eq,0)},
+            "equity":{"initial_capital":round(icap,0),"retained_earnings":round(retained,0),"advance_recovery_reserve":round(_adv_recovery,0),"depreciation_reserve":round(total_dep,0),"total":round(total_eq,0)},
             "total_liabilities_equity":total_liab_eq
         }}
     except Exception as e:

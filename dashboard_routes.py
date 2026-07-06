@@ -1076,7 +1076,7 @@ async def dashboard_get_games(
             game_titles = [g["game_title"] for g in games]
             placeholders = ",".join(["%s"] * len(game_titles))
             cg_rows = _mysql_query(
-                f"SELECT DISTINCT game_title, console_id, console_name, status, install_type FROM console_games WHERE game_title IN ({placeholders}) ORDER BY game_title, console_id",
+                f"SELECT game_title, console_id, MAX(console_name) AS console_name, MAX(status) AS status, MAX(install_type) AS install_type FROM console_games WHERE game_title IN ({placeholders}) GROUP BY game_title, console_id ORDER BY game_title, console_id",
                 tuple(game_titles)
             )
             cg_map = {}
@@ -2895,13 +2895,18 @@ async def swap_confirmed_bookings(body: dict, user: dict = Depends(get_current_u
         if b2["status"] != "confirmed":
             raise HTTPException(400, f"Booking {booking_2_id} is not confirmed (status: {b2['status']})")
 
-        # Check no active session on target consoles
+        # Check active sessions on target consoles — allow <=15 min overlap
         for bid, target_console in [(booking_1_id, b2["console_id"]), (booking_2_id, b1["console_id"])]:
             active = _mysql_query_one(
-                "SELECT cs.id FROM console_sessions cs JOIN console_bookings cb ON cs.booking_id=cb.id WHERE cb.console_id=%s AND cs.status='active' LIMIT 1",
+                "SELECT cs.id, TIMESTAMPDIFF(MINUTE, NOW(), DATE_ADD(cs.start_time, INTERVAL cb.planned_duration_mins MINUTE)) AS remaining_mins FROM console_sessions cs JOIN console_bookings cb ON cs.booking_id=cb.id WHERE cb.console_id=%s AND cs.status='active' LIMIT 1",
                 (target_console,))
             if active:
-                raise HTTPException(409, f"Target console {target_console} (for booking {bid}) has an active session — cannot swap")
+                remaining = active.get("remaining_mins") or 0
+                if remaining > 15:
+                    raise HTTPException(409,
+                        f"Target console {target_console} (for booking {bid}) has an active session "
+                        f"with {remaining} min remaining — cannot swap (overlap > 15 min)")
+                # <=15 min overlap — allow swap
 
         # Swap using transaction
         _mysql_execute("START TRANSACTION")
