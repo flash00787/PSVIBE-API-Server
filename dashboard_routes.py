@@ -82,7 +82,7 @@ async def get_today_schedule(user: dict = Depends(get_current_user)):
             FROM console_bookings cb
             JOIN console_status c ON cb.console_id = c.console_id
             WHERE DATE(cb.booking_date) = %s
-            ORDER BY cb.planned_start AS start_time ASC
+            ORDER BY cb.planned_start ASC
         """, (today,))
 
         schedule = []
