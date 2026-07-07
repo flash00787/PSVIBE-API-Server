@@ -351,7 +351,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                     duration_mins = _bk_dur if _bk_dur > 0 else duration_mins
                 booking_id = bk['id']
                 _dur_end2 = 360 if duration_mins == 0 else duration_mins
-                _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE) WHERE booking_id=%s", (duration_mins, _now_ref, _now_ref, _dur_end2, booking_id))
+                _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE) WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, booking_id))
                 logger.info(f"Auto-checkin booking #{booking_id} for console {console_id}")
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
