@@ -31,7 +31,7 @@ import threading as _threading_notify
 from field_utils import normalize_list, normalize_response
 
 from fastapi import FastAPI, HTTPException, Query, Depends, Request, Body
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import (
@@ -217,6 +217,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Proxy: /agent/* routes to VPN Agent Server (port 9357) ─────────────
+# Cloudflare tunnel bypasses Caddy, so we proxy agent paths here
+import httpx as _httpx_proxy
+_agent_proxy_client = _httpx_proxy.AsyncClient(base_url="http://localhost:9357", timeout=30.0)
+
+@app.api_route("/agent/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+async def proxy_agent_requests(request: Request, path: str):
+    target_path = f"/agent/{path}"
+    body = await request.body()
+    headers = dict(request.headers)
+    # Remove host header to let proxy client set it
+    headers.pop("host", None)
+    headers.pop("content-length", None)
+    try:
+        resp = await _agent_proxy_client.request(
+            method=request.method,
+            url=target_path,
+            content=body,
+            headers=headers,
+        )
+        # Build proxy response with explicit Content-Length
+        _proxy_headers = dict(resp.headers)
+        _proxy_headers.pop("transfer-encoding", None)
+        _proxy_headers["Content-Length"] = str(len(resp.content))
+        _proxy_headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=_proxy_headers,
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "error": f"Agent proxy failed: {str(e)}"},
+        )
 
 # ── Content-Type Validation Middleware ────────────────────────────────
 # Require application/json for POST/PUT/PATCH endpoints in /api/
