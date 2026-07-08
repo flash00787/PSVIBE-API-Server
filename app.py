@@ -223,9 +223,12 @@ app.add_middleware(
 import httpx as _httpx_proxy
 _agent_proxy_client = _httpx_proxy.AsyncClient(base_url="http://localhost:9357", timeout=30.0)
 
+# Also handle /agent and /agent/ without path
+@app.api_route("/agent", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+@app.api_route("/agent/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
 @app.api_route("/agent/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
-async def proxy_agent_requests(request: Request, path: str):
-    target_path = f"/agent/{path}"
+async def proxy_agent_requests(request: Request, path: str = ""):
+    target_path = f"/agent/{path}" if path else "/agent/login"
     body = await request.body()
     headers = dict(request.headers)
     # Remove host header to let proxy client set it
