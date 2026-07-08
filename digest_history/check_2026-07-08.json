@@ -1,0 +1,90 @@
+{"success":true,"data":{"timestamp":"2026-07-08T17:30:25.224834Z","date":"2026-07-08","overall_status":"critical","total_issues":23,"checks":{"wallet_balance":{"status":"pass","issues":[],"count":0},"topup_chain":{"status":"pass","issues":[],"count":0},"sales_vs_bookings":{"status":"critical","issues":[{"type":"sale_without_booking","sale_id":1015,"voucher_no":"20260708-685","console_id":"-","member_id":"-","sale_date":"2026-07-08","detail":"Sale#1015 (voucher 20260708-685) on 2026-07-08 has no matching booking"},{"type":"sale_without_booking","sale_id":1018,"voucher_no":"20260708-876","console_id":"-","member_id":"-","sale_date":"2026-07-08","detail":"Sale#1018 (voucher 20260708-876) on 2026-07-08 has no matching booking"},{"type":"sale_without_booking","sale_id":1034,"voucher_no":"20260708-340","console_id":"-","member_id":"-","sale_date":"2026-07-08","detail":"Sale#1034 (voucher 20260708-340) on 2026-07-08 has no matching booking"}],"count":3},"inventory":{"status":"critical","issues":[{"type":"inventory_mismatch","item_name":"C.Vitt Orange","inventory_quantity":13,"stock_in_total":55,"stock_out_total":43,"expected_quantity":12,"drift":1,"detail":"C.Vitt Orange: inventory=13, FIFO in(55)-out(43)=12 (drift=1)"},{"type":"inventory_mismatch","item_name":"Jelly","inventory_quantity":9,"stock_in_total":24,"stock_out_total":21,"expected_quantity":3,"drift":6,"detail":"Jelly: inventory=9, FIFO in(24)-out(21)=3 (drift=6)"},{"type":"inventory_mismatch","item_name":"Korea ဘူးခေါက်ဆွဲ","inventory_quantity":16,"stock_in_total":66,"stock_out_total":40,"expected_quantity":26,"drift":-10,"detail":"Korea ဘူးခေါက်ဆွဲ: inventory=16, FIFO in(66)-out(40)=26 (drift=-10)"},{"type":"inventory_mismatch","item_name":"Lipo Chocolate cookie","inventory_quantity":23,"stock_in_total":20,"stock_out_total":8,"expected_quantity":12,"drift":11,"detail":"Lipo Chocolate cookie: inventory=23, FIFO in(20)-out(8)=12 (drift=11)"},{"type":"inventory_mismatch","item_name":"Lipo Cream Cookies","inventory_quantity":0,"stock_in_total":14,"stock_out_total":12,"expected_quantity":2,"drift":-2,"detail":"Lipo Cream Cookies: inventory=0, FIFO in(14)-out(12)=2 (drift=-2)"},{"type":"inventory_mismatch","item_name":"Ovaltine cookies","inventory_quantity":7,"stock_in_total":24,"stock_out_total":19,"expected_quantity":5,"drift":2,"detail":"Ovaltine cookies: inventory=7, FIFO in(24)-out(19)=5 (drift=2)"},{"type":"inventory_mismatch","item_name":"Ovaltine Milk","inventory_quantity":11,"stock_in_total":44,"stock_out_total":32,"expected_quantity":12,"drift":-1,"detail":"Ovaltine Milk: inventory=11, FIFO in(44)-out(32)=12 (drift=-1)"},{"type":"inventory_mismatch","item_name":"POKKA Orange Juice","inventory_quantity":0,"stock_in_total":6,"stock_out_total":5,"expected_quantity":1,"drift":-1,"detail":"POKKA Orange Juice: inventory=0, FIFO in(6)-out(5)=1 (drift=-1)"},{"type":"inventory_mismatch","item_name":"Water","inventory_quantity":25,"stock_in_total":198,"stock_out_total":168,"expected_quantity":30,"drift":-5,"detail":"Water: inventory=25, FIFO in(198)-out(168)=30 (drift=-5)"},{"type":"inventory_mismatch","item_name":"Yum Yum ဘူးခေါက်ဆွဲ","inventory_quantity":18,"stock_in_total":72,"stock_out_total":49,"expected_quantity":23,"drift":-5,"detail":"Yum Yum ဘူးခေါက်ဆွဲ: inventory=18, FIFO in(72)-out(49)=23 (drift=-5)"},{"type":"inventory_mismatch","item_name":"Yum Yum မျက်စိ","inventory_quantity":17,"stock_in_total":272,"stock_out_total":254,"expected_quantity":18,"drift":-1,"detail":"Yum Yum မျက်စိ: inventory=17, FIFO in(272)-out(254)=18 (drift=-1)"},{"type":"inventory_mismatch","item_name":"ကင်းမွန်ချောင်း","inventory_quantity":0,"stock_in_total":40,"stock_out_total":39,"expected_quantity":1,"drift":-1,"detail":"ကင်းမွန်ချောင်း: inventory=0, FIFO in(40)-out(39)=1 (drift=-1)"},{"type":"inventory_mismatch","item_name":"လျှာဂျွမ်းထိုး အာလူးကြော်","inventory_quantity":4,"stock_in_total":30,"stock_out_total":25,"expected_quantity":5,"drift":-1,"detail":"လျှာဂျွမ်းထိုး အာလူးကြော်: inventory=4, FIFO in(30)-out(25)=5 (drift=-1)"},{"type":"inventory_mismatch","item_name":"လျှာဂျွမ်းထိုး_ဟော့ဟော့","inventory_quantity":3,"stock_in_total":9,"stock_out_total":5,"expected_quantity":4,"drift":-1,"detail":"လျှာဂျွမ်းထိုး_ဟော့ဟော့: inventory=3, FIFO in(9)-out(5)=4 (drift=-1)"},{"type":"inventory_mismatch","item_name":"လျှာမီးတောက်","inventory_quantity":6,"stock_in_total":9,"stock_out_total":4,"expected_quantity":5,"drift":1,"detail":"လျှာမီးတောက်: inventory=6, FIFO in(9)-out(4)=5 (drift=1)"}],"count":15},"receipts_vs_sales":{"status":"warning","issues":[{"type":"receipt_sale_count_mismatch","date":"2026-07-08","receipt_count":0,"sale_count":22,"diff":-22,"detail":"2026-07-08: receipts=0, sales=22 (diff=-22)"}],"count":1},"negative_sales":{"status":"critical","issues":[{"type":"zero_or_negative_amount","source":"sales_daily","sale_id":1015,"voucher_no":"20260708-685","date":"2026-07-08","amount":0.0,"detail":"Sale#1015 voucher 20260708-685: amount=0.0"},{"type":"zero_or_negative_amount","source":"sales_daily","sale_id":1018,"voucher_no":"20260708-876","date":"2026-07-08","amount":0.0,"detail":"Sale#1018 voucher 20260708-876: amount=0.0"},{"type":"zero_or_negative_amount","source":"sales_daily","sale_id":1034,"voucher_no":"20260708-340","date":"2026-07-08","amount":0.0,"detail":"Sale#1034 voucher 20260708-340: amount=0.0"}],"count":3},"booking_status":{"status":"error","issues":[{"type":"exception","detail":"1052 (23000): Column 'id' in field list is ambiguous"}],"count":1}}}}ာ်",
+          "inventory_quantity": 4,
+          "stock_in_total": 30,
+          "stock_out_total": 25,
+          "expected_quantity": 5,
+          "drift": -1,
+          "detail": "လျှာဂျွမ်းထိုး အာလူးကြော်: inventory=4, FIFO in(30)-out(25)=5 (drift=-1)"
+        },
+        {
+          "type": "inventory_mismatch",
+          "item_name": "လျှာဂျွမ်းထိုး_ဟော့ဟော့",
+          "inventory_quantity": 3,
+          "stock_in_total": 9,
+          "stock_out_total": 5,
+          "expected_quantity": 4,
+          "drift": -1,
+          "detail": "လျှာဂျွမ်းထိုး_ဟော့ဟော့: inventory=3, FIFO in(9)-out(5)=4 (drift=-1)"
+        },
+        {
+          "type": "inventory_mismatch",
+          "item_name": "လျှာမီးတောက်",
+          "inventory_quantity": 6,
+          "stock_in_total": 9,
+          "stock_out_total": 4,
+          "expected_quantity": 5,
+          "drift": 1,
+          "detail": "လျှာမီးတောက်: inventory=6, FIFO in(9)-out(4)=5 (drift=1)"
+        }
+      ],
+      "count": 15
+    },
+    "receipts_vs_sales": {
+      "status": "warning",
+      "issues": [
+        {
+          "type": "receipt_sale_count_mismatch",
+          "date": "2026-07-08",
+          "receipt_count": 0,
+          "sale_count": 22,
+          "diff": -22,
+          "detail": "2026-07-08: receipts=0, sales=22 (diff=-22)"
+        }
+      ],
+      "count": 1
+    },
+    "negative_sales": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1015,
+          "voucher_no": "20260708-685",
+          "date": "2026-07-08",
+          "amount": 0.0,
+          "detail": "Sale#1015 voucher 20260708-685: amount=0.0"
+        },
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1018,
+          "voucher_no": "20260708-876",
+          "date": "2026-07-08",
+          "amount": 0.0,
+          "detail": "Sale#1018 voucher 20260708-876: amount=0.0"
+        },
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1034,
+          "voucher_no": "20260708-340",
+          "date": "2026-07-08",
+          "amount": 0.0,
+          "detail": "Sale#1034 voucher 20260708-340: amount=0.0"
+        }
+      ],
+      "count": 3
+    },
+    "booking_status": {
+      "status": "error",
+      "issues": [
+        {
+          "type": "exception",
+          "detail": "1052 (23000): Column 'id' in field list is ambiguous"
+        }
+      ],
+      "count": 1
+    }
+  }
+}

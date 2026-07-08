@@ -221,7 +221,7 @@ app.add_middleware(
 # ── Proxy: /agent/* routes to VPN Agent Server (port 9357) ─────────────
 # Cloudflare tunnel bypasses Caddy, so we proxy agent paths here
 import httpx as _httpx_proxy
-_agent_proxy_client = _httpx_proxy.AsyncClient(base_url="http://localhost:9357", timeout=30.0)
+_agent_proxy_client = _httpx_proxy.AsyncClient(base_url="http://localhost:9357", timeout=30.0, follow_redirects=False)
 
 # Also handle /agent and /agent/ without path
 @app.api_route("/agent", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
@@ -241,9 +241,11 @@ async def proxy_agent_requests(request: Request, path: str = ""):
             content=body,
             headers=headers,
         )
-        # Build proxy response with explicit Content-Length
-        _proxy_headers = dict(resp.headers)
-        _proxy_headers.pop("transfer-encoding", None)
+        # Build proxy response — pass ALL headers including Set-Cookie
+        _proxy_headers = {}
+        for k, v in resp.headers.items():
+            if k.lower() not in ("transfer-encoding", "content-encoding"):
+                _proxy_headers[k] = v
         _proxy_headers["Content-Length"] = str(len(resp.content))
         _proxy_headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         return Response(
