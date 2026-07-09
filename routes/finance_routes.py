@@ -400,9 +400,15 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             _k = "inject|" + _r["account"]
             if _k in cash_map:
                 cash_map[_k] -= float(_r["total"] or 0)
-        # NOTE: Advance settlement injects are NOT subtracted here because they represent
-        # actual cash returned to KBZ Bank (recovered advances). The balance sheet shows
-        # these as a separate 'advance_recovery_reserve' equity line for matching.
+        # WARNING: Advance settled injects are subtracted here because the CORRESPONDING
+        # EJECT (when advances were given: 104.8M across 7 advances) was NEVER recorded
+        # in cash_movements. Including inject without offsetting eject overstates KBZ by
+        # 102.5M. Root cause: advance payment eject entries missing from cash_movements.
+        _adv_settle_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND note LIKE CONCAT('Advance settled', CHAR(37)) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
+        for _r in _adv_settle_rows:
+            _k = "inject|" + _r["account"]
+            if _k in cash_map:
+                cash_map[_k] -= float(_r["total"] or 0)
         key_to_name = {"cash": "Cash", "wave": "Wave", "kpay": "KPay", "aya_pay": "AYA Pay", "kbz_bank": "KBZ Bank", "acm_acc": "ACM's Acc"}
         # Capital expenditure queries (all from KBZ Bank)
         _asset_purchases = _mqo("SELECT COALESCE(SUM(per_price * qty), 0) as total FROM finance_assets WHERE status = 'active'")
