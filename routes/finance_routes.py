@@ -400,15 +400,8 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             _k = "inject|" + _r["account"]
             if _k in cash_map:
                 cash_map[_k] -= float(_r["total"] or 0)
-        # WARNING: Advance settled injects are subtracted here because the CORRESPONDING
-        # EJECT (when advances were given: 104.8M across 7 advances) was NEVER recorded
-        # in cash_movements. Including inject without offsetting eject overstates KBZ by
-        # 102.5M. Root cause: advance payment eject entries missing from cash_movements.
-        _adv_settle_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND note LIKE CONCAT('Advance settled', CHAR(37)) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
-        for _r in _adv_settle_rows:
-            _k = "inject|" + _r["account"]
-            if _k in cash_map:
-                cash_map[_k] -= float(_r["total"] or 0)
+        # NOTE: Advance settled injects are NOT subtracted — matching eject entries were
+        # backfilled on 2026-07-09 (104.8M across 7 advances), so KBZ balance is accurate.
         key_to_name = {"cash": "Cash", "wave": "Wave", "kpay": "KPay", "aya_pay": "AYA Pay", "kbz_bank": "KBZ Bank", "acm_acc": "ACM's Acc"}
         # Capital expenditure queries (all from KBZ Bank)
         _asset_purchases = _mqo("SELECT COALESCE(SUM(per_price * qty), 0) as total FROM finance_assets WHERE status = 'active'")
@@ -438,10 +431,10 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             add_proceeds = 0
             if key == "kbz_bank":
                 ded_assets = float(_asset_purchases.get("total", 0) or 0)
-                ded_advances = float(_advances_total.get("total", 0) or 0)
+                # ded_advances = 0  — advance eject (104.8M) was backfilled into cash_movements on 2026-07-09
                 ded_prepaid = float(_prepaid_total.get("total", 0) or 0)
                 add_proceeds = float(_disposal_proceeds.get("total", 0) or 0)
-                balance = balance - ded_assets - ded_advances - ded_prepaid + add_proceeds
+                balance = balance - ded_assets - ded_prepaid + add_proceeds
             result.append({"key": key, "label": acc["label"], "icon": acc["icon"], "type": acc["type"], "income": round(income, 0), "opex": round(opex, 0), "transfers_in": round(trans_in, 0), "transfers_out": round(abs(trans_out), 0), "injections": round(inject, 0), "ejections": round(eject, 0), "stock_in_payments": round(si_pay, 0), "capital_asset_purchases": round(ded_assets, 0), "capital_advances": round(ded_advances, 0), "capital_prepaid": round(ded_prepaid, 0), "capital_disposal_proceeds": round(add_proceeds, 0), "balance": round(balance, 0)})
         total_balance = sum(a["balance"] for a in result) or 0
         total_income = sum(a["income"] for a in result) or 0
@@ -695,9 +688,9 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
 
             if key == "kbz_bank":
                 ded_assets = float(_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active'")["t"] or 0)
-                ded_adv = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL")["t"] or 0)
+                # ded_adv = 0 — advance eject (104.8M) backfilled into cash_movements on 2026-07-09
                 ded_prep = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid")["t"] or 0)
-                bal = bal - ded_assets - ded_adv - ded_prep
+                bal = bal - ded_assets - ded_prep
 
             bank_items.append({"account": a["label"], "balance": round(bal,0)})
             total_ca += bal
