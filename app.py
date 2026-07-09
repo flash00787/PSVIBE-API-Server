@@ -228,7 +228,10 @@ _agent_proxy_client = _httpx_proxy.AsyncClient(base_url="http://localhost:9357",
 @app.api_route("/agent/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
 @app.api_route("/agent/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
 async def proxy_agent_requests(request: Request, path: str = ""):
-    target_path = f"/agent/{path}" if path else "/agent/login"
+    # Preserve query string from original request
+    raw_scope = getattr(request, "scope", {})
+    query = str(request.url.query) if request.url.query else ""
+    target_path = f"/agent/{path}?{query}" if path and query else f"/agent/{path}" if path else "/agent/login"
     body = await request.body()
     headers = dict(request.headers)
     # Remove host header to let proxy client set it
