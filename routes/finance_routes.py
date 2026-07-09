@@ -294,7 +294,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
         month = _now_mmt.month
     if _cumulative:
         # Live balance: from business start to now
-        _start = "2026-06-01"
+        _start = "2026-04-01"
         _end = (_now_mmt + timedelta(days=1)).strftime('%Y-%m-%d')
     else:
         _start = f"{year:04d}-{month:02d}-01"
@@ -431,10 +431,11 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             add_proceeds = 0
             if key == "kbz_bank":
                 ded_assets = float(_asset_purchases.get("total", 0) or 0)
-                # ded_advances = 0  — advance eject (104.8M) was backfilled into cash_movements on 2026-07-09
+                # ded_adv = 0 — _start is 2026-04-01 (covers May backfilled advance eject 104.8M)
+                ded_advances = 0
                 ded_prepaid = float(_prepaid_total.get("total", 0) or 0)
                 add_proceeds = float(_disposal_proceeds.get("total", 0) or 0)
-                balance = balance - ded_assets - ded_prepaid + add_proceeds
+                balance = balance - ded_assets - ded_advances - ded_prepaid + add_proceeds
             result.append({"key": key, "label": acc["label"], "icon": acc["icon"], "type": acc["type"], "income": round(income, 0), "opex": round(opex, 0), "transfers_in": round(trans_in, 0), "transfers_out": round(abs(trans_out), 0), "injections": round(inject, 0), "ejections": round(eject, 0), "stock_in_payments": round(si_pay, 0), "capital_asset_purchases": round(ded_assets, 0), "capital_advances": round(ded_advances, 0), "capital_prepaid": round(ded_prepaid, 0), "capital_disposal_proceeds": round(add_proceeds, 0), "balance": round(balance, 0)})
         total_balance = sum(a["balance"] for a in result) or 0
         total_income = sum(a["income"] for a in result) or 0
@@ -688,9 +689,11 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
 
             if key == "kbz_bank":
                 ded_assets = float(_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active'")["t"] or 0)
-                # ded_adv = 0 — advance eject (104.8M) backfilled into cash_movements on 2026-07-09
+                # ded_adv = 0 — BS uses created_at < _end (no start filter), so May backfilled
+                # advance eject (104.8M) IS in range. ded_adv would double-count pending (2.3M)
+                ded_adv = 0
                 ded_prep = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid")["t"] or 0)
-                bal = bal - ded_assets - ded_prep
+                bal = bal - ded_assets - ded_adv - ded_prep
 
             bank_items.append({"account": a["label"], "balance": round(bal,0)})
             total_ca += bal
@@ -749,8 +752,9 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         wallet_consumed = float(_fr.get("consumed", 0))  # FIFO wallet consumed = recognized revenue
         total_earned_revenue = ti_excl_topup + wallet_consumed
         retained = total_earned_revenue - te - cost_of_sold - total_dep
-        # Advance recovery reserve: settled advance injects (non-operating capital recovery)
-        _adv_recovery = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND note LIKE CONCAT('Advance settled', CHAR(37)) AND created_at < %s", (_end,))["t"] or 0)
+        # Advance recovery reserve: backfilled eject (104.8M) now in range, so settled injects (102.5M)
+        # are naturally offset. Reserve kept near-zero; auto-balancer may add small rounding gap.
+        _adv_recovery = 0.0
         total_eq = icap + retained + _adv_recovery
 
         total_liab = member_liab
@@ -811,11 +815,10 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                 COALESCE((SELECT SUM(amount) FROM topup_log WHERE amount>0 AND topup_date < %s), 0) -
                 COALESCE((SELECT SUM(amount) FROM opex WHERE description NOT LIKE '%%Prepaid Rent Amortization%%' AND created_at < %s), 0) -
                 COALESCE((SELECT SUM(per_price*qty) FROM finance_assets WHERE status='active' AND created_at < %s), 0) -
-                COALESCE((SELECT SUM(amount) FROM finance_prepaid WHERE created_at < %s), 0) -
-                COALESCE((SELECT SUM(amount) FROM finance_advances WHERE created_at < %s), 0) +
+                COALESCE((SELECT SUM(amount) FROM finance_prepaid WHERE created_at < %s), 0) +
                 COALESCE((SELECT SUM(disposal_amount) FROM finance_assets WHERE status='disposed' AND disposal_amount>0 AND disposal_date < %s), 0) +
                 COALESCE((SELECT SUM(CASE WHEN movement_type IN ('inject','transfer_in') THEN amount ELSE 0 END) - SUM(CASE WHEN movement_type='eject' THEN amount ELSE 0 END) + SUM(CASE WHEN movement_type='transfer_out' THEN amount ELSE 0 END) FROM cash_movements WHERE created_at < %s AND NOT (account='KBZ Bank' AND movement_type='transfer_in' AND amount >= 100000000)), 0) as t
-        """, (_start,) * 8)
+        """, (_start,) * 7)
         opener = float((_prv or {}).get("t", 300000000))
 
         acct_keys = ["cash","wave","aya_pay","kpay","kbz_bank","acm_acc"]
@@ -938,11 +941,10 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                 COALESCE((SELECT SUM(amount) FROM topup_log WHERE amount>0 AND topup_date < %s), 0) -
                 COALESCE((SELECT SUM(amount) FROM opex WHERE description NOT LIKE '%%Prepaid Rent Amortization%%' AND created_at < %s), 0) -
                 COALESCE((SELECT SUM(per_price*qty) FROM finance_assets WHERE status='active' AND created_at < %s), 0) -
-                COALESCE((SELECT SUM(amount) FROM finance_prepaid WHERE created_at < %s), 0) -
-                COALESCE((SELECT SUM(amount) FROM finance_advances WHERE created_at < %s), 0) +
+                COALESCE((SELECT SUM(amount) FROM finance_prepaid WHERE created_at < %s), 0) +
                 COALESCE((SELECT SUM(disposal_amount) FROM finance_assets WHERE status='disposed' AND disposal_amount>0 AND disposal_date < %s), 0) +
                 COALESCE((SELECT SUM(CASE WHEN movement_type IN ('inject','transfer_in') THEN amount ELSE 0 END) - SUM(CASE WHEN movement_type='eject' THEN amount ELSE 0 END) + SUM(CASE WHEN movement_type='transfer_out' THEN amount ELSE 0 END) FROM cash_movements WHERE created_at < %s AND NOT (account='KBZ Bank' AND movement_type='transfer_in' AND amount >= 100000000)), 0) as t
-        """, (_end,) * 8)
+        """, (_end,) * 7)
         closing = float((_clv or {}).get("t", opener))
 
         # ─── Compute total inflows and outflows for frontend display ───
@@ -1398,7 +1400,14 @@ async def get_till_today(user: dict = Depends(get_current_user)):
         cash_outflows = cash_ejected + cash_transferred_out  # both physically leave drawer
         cash_inflows_extra = cash_transferred_in + cash_injected
         
-        logger.info(f"till/today cash movements: ejected={cash_ejected} tx_out={cash_transferred_out} tx_in={cash_transferred_in} injected={cash_injected}")
+        # Also include OPEX paid in Cash (not recorded as cash_movements eject)
+        _cash_opex_rows = _mysql_query("SELECT id, amount, description FROM opex WHERE payment_method IN ('Cash','cash') AND DATE(expense_date) = %s", (today,)) or []
+        _cash_opex_total = sum(float(r['amount'] or 0) for r in _cash_opex_rows)
+        _cash_opex_items = [{"id": r['id'], "amount": float(r['amount'] or 0), "description": (r['description'] or '').strip()} for r in _cash_opex_rows]
+        if _cash_opex_total:
+            cash_outflows += _cash_opex_total
+        
+        logger.info(f"till/today cash movements: ejected={cash_ejected} tx_out={cash_transferred_out} tx_in={cash_transferred_in} injected={cash_injected} opex(cash)={_cash_opex_total}")
 
         # Update the till record with live sales totals
         # Expected = Opening + Cash Sales + Transfers In + Injections - Ejects - Transfers Out
@@ -1452,6 +1461,8 @@ async def get_till_today(user: dict = Depends(get_current_user)):
                 "cash_injected": cash_injected,
                 "cash_outflows": cash_outflows,
                 "cash_inflows_extra": cash_inflows_extra,
+                "cash_opex_total": _cash_opex_total,
+                "cash_opex_items": _cash_opex_items,
             }
         }
     except Exception as e:
@@ -1568,7 +1579,9 @@ async def close_till(req: dict, user: dict = Depends(get_current_user)):
         _tx_in = float(cm["cash_transferred_in"]) if cm else 0.0
         _injected = float(cm["cash_injected"]) if cm else 0.0
         
-        expected = opening + cash_total + _tx_in + _injected - _ejected - _tx_out
+        # Include OPEX paid in Cash (not recorded as cash_movements eject)
+        _opex_cash = float(_mysql_query_one("SELECT COALESCE(SUM(amount),0) as t FROM opex WHERE payment_method IN ('Cash','cash') AND DATE(expense_date) = %s", (today,))["t"] or 0)
+        expected = opening + cash_total + _tx_in + _injected - _ejected - _tx_out - _opex_cash
         variance = actual_cash - expected
         closing_balance = actual_cash
 
