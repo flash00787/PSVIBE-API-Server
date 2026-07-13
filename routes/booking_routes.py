@@ -449,7 +449,7 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                     if _check_cid:
                         _app_cur.execute(
                             "SELECT id FROM console_bookings WHERE console_id=%s"
-                            " AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND deposit_status = 'paid'))"
+                            " AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != ''))))"
                             " AND id != %s"
                             " AND NOT (planned_end <= %s OR planned_start >= %s)"
                             " LIMIT 1 FOR UPDATE",
@@ -596,7 +596,7 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
             "COALESCE(cs.actual_end, cb.planned_end) AS end_time, "
             "cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, "
             "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, "
-            "cb.phone, cb.game_name "
+            "cb.phone, cb.game_name, cb.deposit_status, cb.deposit_amount "
             "FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE cb.id=%s",
             (booking_id,))
         if not row:
@@ -703,8 +703,9 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
             params.append(_clean_date)
         # Osmo: Only show pending bookings that have submitted deposit on timeline
         # Customer bot bookings without deposit (deposit_status='none') stay hidden until deposit is paid
+        # Member bookings skip deposit — show them on timeline immediately
         if status_lower == "pending":
-            where_clauses.append("cb.deposit_status = 'paid'")
+            where_clauses.append("(cb.deposit_status = 'paid' OR (cb.member_id IS NOT NULL AND cb.member_id != ''))")
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
         # Server-side filter: cancelled bookings — forfeited deposits show all day, regular only 2 hours
@@ -1364,7 +1365,7 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
                 if console_id:
                     # Specific console: check this one directly
                     cur.execute(
-                        "SELECT id FROM console_bookings WHERE console_id=%s AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND deposit_status = 'paid')) AND planned_start < %s AND planned_end > %s LIMIT 1 FOR UPDATE",
+                        "SELECT id FROM console_bookings WHERE console_id=%s AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '')))) AND planned_start < %s AND planned_end > %s LIMIT 1 FOR UPDATE",
                         (console_id, end_dt, start_dt)
                     )
                     if cur.fetchone():
@@ -1379,7 +1380,7 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
                     if _cids:
                         _placeholders = ",".join(["%s"] * len(_cids))
                         cur.execute(
-                            f"SELECT DISTINCT console_id FROM console_bookings WHERE console_id IN ({_placeholders}) AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND deposit_status = 'paid')) AND planned_start < %s AND planned_end > %s FOR UPDATE",
+                            f"SELECT DISTINCT console_id FROM console_bookings WHERE console_id IN ({_placeholders}) AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '')))) AND planned_start < %s AND planned_end > %s FOR UPDATE",
                             tuple(_cids) + (end_dt, start_dt)
                         )
                         _conflict_ids = {r["console_id"] for r in cur.fetchall()}
@@ -1854,7 +1855,7 @@ async def api_booking_conflicts(req: dict, auth=Depends(verify_api_key)):
         
         # Query conflicting bookings (exclude cancelled/done)
         where_clause = """
-            (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND deposit_status = 'paid'))
+            (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != ''))))
             AND NOT (COALESCE(cs.actual_end, cb.planned_end) <= %s OR COALESCE(cs.actual_start, cb.planned_start) >= %s)
         """
         params = [start_dt, end_dt]
