@@ -2247,9 +2247,7 @@ async def api_deposit_verify(booking_id: int, req: dict, request: Request, auth=
                 f"\U0001f3ab Booking <b>#{booking_id}</b>\n"
                 f"\U0001f4c5 {bk_date}  \u23f0 {bk_time}\n"
                 f"\U0001f3ae {row.get('console_id', '')}\n"
-                f"\U0001f4b0 Deposit: {deposit_amount:,} Ks ({method_label})\n\n"
-                f"\U0001f4f2 Booking \u1001\u102d\u101c \u101b\u1031\u101b\u102c\u1000\u103a\u1038\u1011\u102c\u1038\u1015\u1032\u1037\u1014\u103e\u1004\u1037\u103a "
-                f"\u101b\u103e\u1004\u1037\u103a \u1000\u102d\u102f\u1006\u1000\u103a\u101e\u1014\u1039\u1013\u102d\u101b\u102c\u1038\u1015\u102b\u104b"
+                f"\U0001f4b0 Deposit: {deposit_amount:,} Ks ({method_label})"
             )
             _threading_notify.Thread(
                 target=_send_telegram_customer,
