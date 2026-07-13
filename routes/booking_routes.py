@@ -648,6 +648,10 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
                 "status": row.get("status", ""),
                 "notes": row.get("notes", ""),
                 "telegramChatId": row.get("telegram_chat_id", ""),
+                "depositAmount": row.get("deposit_amount", 0),
+                "depositStatus": row.get("deposit_status", ""),
+                "deposit_amount": row.get("deposit_amount", 0),
+                "deposit_status": row.get("deposit_status", ""),
             }
         })
     except HTTPException:
