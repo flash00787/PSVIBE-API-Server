@@ -157,8 +157,13 @@ async def api_extend_booking_duration(req: dict, auth=Depends(verify_api_key)):
             return error_response(message="No active booking found")
         new_duration = (row["duration_mins"] or 0) + extra_mins
         _dur_end = 360 if new_duration == 0 else new_duration
-        _mysql_exec("UPDATE console_sessions SET actual_duration_mins=%s, actual_end=DATE_ADD(actual_start, INTERVAL %s MINUTE) WHERE booking_id=%s AND status='active'", (new_duration, _dur_end, row["id"]))
-        return ok({"booking_id": row["id"], "new_duration_mins": new_duration})
+        _booking_id = row["id"]
+        _mysql_exec("UPDATE console_sessions SET actual_duration_mins=%s, actual_end=DATE_ADD(actual_start, INTERVAL %s MINUTE) WHERE booking_id=%s AND status='active'", (new_duration, _dur_end, _booking_id))
+        # Also update console_bookings planned_end/duration for conflict checks
+        _mysql_exec("UPDATE console_bookings SET planned_duration_mins=%s, planned_end=DATE_ADD(planned_start, INTERVAL %s MINUTE) WHERE id=%s AND status='Active'", (new_duration, _dur_end, _booking_id))
+        # Update console_status to reflect extended session end time
+        _mysql_exec("UPDATE console_status SET last_updated=NOW() WHERE console_id=%s", (console_id,))
+        return ok({"booking_id": _booking_id, "new_duration_mins": new_duration})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
