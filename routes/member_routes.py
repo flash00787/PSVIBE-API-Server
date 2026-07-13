@@ -253,10 +253,23 @@ async def api_fetch_referral_code(member_id: str, auth=Depends(verify_api_key)):
 
 @router.post("/save_referral_code", response_model=GenericResponse, tags=["Members"], summary="Save referral code [MySQL]")
 async def api_save_referral_code(req: dict, auth=Depends(verify_api_key)):
-    """Save referral code to MySQL."""
+    """Save referral code to MySQL. Checks uniqueness before saving."""
     try:
         mid = req.get("member_id", "")
-        code = req.get("referral_code", "")
+        code = req.get("referral_code", "") or req.get("code", "") or req.get("referralCode", "")
+        
+        # If code is not empty, check uniqueness
+        if code:
+            dup = _mysql_query(
+                "SELECT member_id FROM member_wallets WHERE referral_code=%s AND member_id!=%s",
+                (code, mid),
+            )
+            if dup:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Code already assigned to {dup[0]['member_id']}",
+                )
+        
         _mysql_exec("UPDATE member_wallets SET referral_code=%s WHERE member_id=%s", (code, mid))
         return ok({"member_id": mid, "referral_code": code})
     except Exception as e:
