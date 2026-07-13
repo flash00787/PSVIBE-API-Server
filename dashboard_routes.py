@@ -152,7 +152,8 @@ async def dashboard_get_bookings(
         sql = f"""
             SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date,
                    cb.planned_start AS start_time, cb.planned_end AS end_time, cb.status, cb.staff_name,
-                   cb.notes, cb.planned_duration_mins AS duration_mins, cb.phone, cb.game_name, cb.created_at
+                   cb.notes, cb.planned_duration_mins AS duration_mins, cb.phone, cb.game_name, cb.created_at,
+                   cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type
             FROM console_bookings cb
             WHERE {' AND '.join(where)}
             ORDER BY cb.id DESC
@@ -183,6 +184,11 @@ async def dashboard_get_bookings(
                 "phone": r.get("phone"),
                 "game_name": r.get("game_name"),
                 "created_at": str(r["created_at"]) if r.get("created_at") else None,
+                "deposit_amount": r.get("deposit_amount"),
+                "deposit_status": r.get("deposit_status"),
+                "deposit_method": r.get("deposit_method"),
+                "deposit_ref": r.get("deposit_ref"),
+                "deposit_ref_type": r.get("deposit_ref_type"),
             })
         return {"success": True, "data": bookings, "total": total}
     except Exception as e:
@@ -329,6 +335,18 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
 
         params.append(booking_id)
         _mysql_execute(f"UPDATE console_bookings SET {', '.join(updates)} WHERE id = %s", tuple(params))
+
+        # 🐛 Deposit Forfeit Restore: When rebooking from cancelled → active status
+        # If deposit was forfeited on auto-cancel, restore it back to 'paid'
+        new_status = req.get("status", "")
+        old_status = existing.get("status", "")
+        old_deposit = existing.get("deposit_status", "")
+        if new_status in ("confirmed", "pending", "pending_check_in") and old_status == "cancelled" and old_deposit == "forfeited":
+            _mysql_exec(
+                "UPDATE console_bookings SET deposit_status='paid' WHERE id=%s AND deposit_status='forfeited'",
+                (booking_id,)
+            )
+            logger.info(f"Rebook BK#{booking_id}: deposit_status restored from forfeited → paid")
 
         # 🐛 Fix Jul 1: Sync console_status when console_id or status changes
         try:

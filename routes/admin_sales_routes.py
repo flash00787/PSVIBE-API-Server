@@ -305,9 +305,36 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
         notes = req.get("notes", "")
         promotion_name = req.get("promotion_name", "")
         coupon_code = req.get("coupon_code", "")
+        booking_id = req.get("booking_id", "")
 
         if not voucher_no:
             return error_response(message="voucher_no required")
+
+        # ── Deposit Redemption: Deduct verified deposit from net ────────────────
+        deposit_deducted = 0
+        if booking_id:
+            try:
+                dep_row = _mysql_query_one(
+                    "SELECT deposit_status, deposit_amount, deposit_method FROM console_bookings WHERE id=%s",
+                    (booking_id,)
+                )
+                if dep_row and dep_row.get("deposit_status") == "verified":
+                    deposit_deducted = int(dep_row["deposit_amount"] or 0)
+                    dep_method = dep_row.get("deposit_method", "kpay") or "kpay"
+                    if deposit_deducted > 0:
+                        # Deduct deposit from net_total (food NOT affected)
+                        net_total = max(0, net_total - deposit_deducted)
+                        # Mark deposit as redeemed
+                        _mysql_exec(
+                            "UPDATE console_bookings SET deposit_status='redeemed', deposit_redeemed_at=NOW() WHERE id=%s AND deposit_status='verified'",
+                            (booking_id,)
+                        )
+                        logger.info(
+                            "Deposit redeemed: BK#%s deposit=%s Ks deducted from net (food_amt=%s, game_amt=%s)",
+                            booking_id, deposit_deducted, food_total, game_amt
+                        )
+            except Exception as dep_e:
+                logger.warning("Deposit redemption check failed for BK#%s: %s", booking_id, dep_e)
 
         # Build enriched notes with extended fields
         extra_notes = []
@@ -315,6 +342,8 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
             extra_notes.append(f"Promotion: {promotion_name}")
         if coupon_code:
             extra_notes.append(f"Coupon: {coupon_code}")
+        if deposit_deducted:
+            extra_notes.append(f"DepositRedeemed: {deposit_deducted}")
         if mins:
             extra_notes.append(f"Mins: {mins}")
         if base_rate:
@@ -345,8 +374,8 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
             )
             logger.info("Wallet deducted: %s mins for member %s (total_used +%s)", _wallet_deduct, member_id, _wallet_deduct)
 
-        logger.info("Sales record saved: voucher=%s member=%s console=%s net=%s", voucher_no, member_id, console_id, net_total)
-        return ok({"voucher_no": voucher_no, "success": True})
+        logger.info("Sales record saved: voucher=%s member=%s console=%s net=%s deposit_deducted=%s", voucher_no, member_id, console_id, net_total, deposit_deducted)
+        return ok({"voucher_no": voucher_no, "success": True, "deposit_deducted": deposit_deducted})
     except Exception as e:
         logger.error(f"api_sales_record: {e}")
         return error_response(str(e))

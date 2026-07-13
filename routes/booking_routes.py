@@ -81,6 +81,42 @@ def _send_telegram_customer(chat_id: str, message: str):
         _log.warning("[NOTIFY] Failed to %s: %s", chat_id, e)
 
 
+def _notify_deposit_forfeited(bk_id: int, row: dict, deposit_amount: int):
+    """Notify admin group when a deposit is forfeited (no-show with paid deposit)."""
+    import json, urllib.request
+    token = os.environ.get("BOT_TOKEN", "")
+    chat_id = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
+    if not token:
+        return
+    date = str(row.get('booking_date', ''))[:10] if row.get('booking_date') else '\u2014'
+    start = str(row.get('start_time', ''))[:16] if row.get('start_time') else '\u2014'
+    console = str(row.get('console_id', 'PS5'))
+    game = str(row.get('game_name', '\u2014'))
+    member = str(row.get('member_id', '\u2014'))
+    phone = str(row.get('phone', '\u2014'))
+    msg = (
+        f"\u26a0\ufe0f <b>Deposit Forfeited — BK#{bk_id}</b>\n\n"
+        f"\U0001f464 {member}\n"
+        f"\U0001f4de {phone}\n"
+        f"\U0001f4c5 {date}  \u23f0 {start}\n"
+        f"\U0001f3ae {console}  \U0001f579 {game}\n"
+        f"\U0001f4b0 {deposit_amount:,} Ks — <b>Forfeited</b>\n\n"
+        f"<i>Customer did not check in. Deposit is forfeited as revenue.</i>"
+    )
+    try:
+        payload = json.dumps({"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            ),
+            timeout=5
+        )
+    except Exception as _e:
+        logger.warning(f"[_notify_deposit_forfeited] bk#{bk_id} notify failed: {_e}")
+
+
 def _notify_no_show_cancel(bk_id: int, row: dict):
     """Notify customer their booking was auto-cancelled (no-show)."""
     tg_chat_id = str(row.get('telegram_chat_id', ''))
@@ -413,7 +449,7 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                     if _check_cid:
                         _app_cur.execute(
                             "SELECT id FROM console_bookings WHERE console_id=%s"
-                            " AND status IN ('confirmed','pending','pending_check_in','checked_in','Active')"
+                            " AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND deposit_status = 'paid'))"
                             " AND id != %s"
                             " AND NOT (planned_end <= %s OR planned_start >= %s)"
                             " LIMIT 1 FOR UPDATE",
@@ -497,7 +533,7 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                             f"🎫 Booking <b>#{_bk_id}</b>\n"
                             f"📅 {_date}  ⏰ {_time}\n"
                             f"🎮 Console: {_console}  ⏱️ {_dur} min\n\n"
-                            f"📲 Booking ချိန်ရောက်ရင် Staff ကို Check-in ပြပေးပါ။ ပျော်ရွှင်ပါစေ! 🎮"
+                            f"📲 Booking ချိန်ရောက်ရင် Staff ကို Check-in ပြပေးပါ။ 🎮"
                         )
                     else:
                         _msg = (
@@ -631,10 +667,12 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
               "COALESCE(cs.actual_end, cb.planned_end) AS end_time, " \
               "cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, " \
               "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, " \
-              "cb.phone, cb.game_name, cb.created_at, cb.cancelled_at " \
+              "cb.phone, cb.game_name, cb.created_at, cb.cancelled_at, " \
+              "cb.deposit_status, cb.deposit_amount " \
               "FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id = cb.id"
         where_clauses = []
         params = []
+        status_lower = status.lower() if status else ""
         if status:
             # Session statuses live in console_sessions, booking statuses in console_bookings
             session_statuses = {'active', 'checked_in', 'done'}
@@ -663,12 +701,16 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
                 _clean_date = date
             where_clauses.append("cb.booking_date=%s")
             params.append(_clean_date)
+        # Osmo: Only show pending bookings that have submitted deposit on timeline
+        # Customer bot bookings without deposit (deposit_status='none') stay hidden until deposit is paid
+        if status_lower == "pending":
+            where_clauses.append("cb.deposit_status = 'paid'")
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
-        # Server-side filter: cancelled bookings — only show within last 2 hours
+        # Server-side filter: cancelled bookings — forfeited deposits show all day, regular only 2 hours
         if status == "cancelled":
             sql += " AND " if where_clauses else " WHERE "
-            sql += "cb.cancelled_at >= NOW() - INTERVAL 2 HOUR"
+            sql += "(cb.deposit_status = 'forfeited' OR cb.cancelled_at >= NOW() - INTERVAL 2 HOUR)"
         sql += " ORDER BY cb.booking_date DESC, COALESCE(cs.actual_start, cb.planned_start) DESC"
         rows = _mysql_query(sql, tuple(params)) if params else _mysql_query(sql)
         if not rows:
@@ -763,7 +805,9 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
                 "created_at": _created_str,
                 "end_time": str(r.get("end_time","") or ""),
                 "cancelled_at": str(r.get("cancelled_at","") or ""),
-                "cancelledAt": str(r.get("cancelled_at","") or "")
+                "cancelledAt": str(r.get("cancelled_at","") or ""),
+                "deposit_status": r.get("deposit_status","") or "",
+                "deposit_amount": int(r.get("deposit_amount",0) or 0)
             })
         return ok({"bookings": normalized})
     except Exception as e:
@@ -1320,7 +1364,7 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
                 if console_id:
                     # Specific console: check this one directly
                     cur.execute(
-                        "SELECT id FROM console_bookings WHERE console_id=%s AND status IN ('pending','confirmed','pending_check_in','checked_in','Active') AND planned_start < %s AND planned_end > %s LIMIT 1 FOR UPDATE",
+                        "SELECT id FROM console_bookings WHERE console_id=%s AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND deposit_status = 'paid')) AND planned_start < %s AND planned_end > %s LIMIT 1 FOR UPDATE",
                         (console_id, end_dt, start_dt)
                     )
                     if cur.fetchone():
@@ -1335,7 +1379,7 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
                     if _cids:
                         _placeholders = ",".join(["%s"] * len(_cids))
                         cur.execute(
-                            f"SELECT DISTINCT console_id FROM console_bookings WHERE console_id IN ({_placeholders}) AND status IN ('pending','confirmed','pending_check_in','checked_in','Active') AND planned_start < %s AND planned_end > %s FOR UPDATE",
+                            f"SELECT DISTINCT console_id FROM console_bookings WHERE console_id IN ({_placeholders}) AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND deposit_status = 'paid')) AND planned_start < %s AND planned_end > %s FOR UPDATE",
                             tuple(_cids) + (end_dt, start_dt)
                         )
                         _conflict_ids = {r["console_id"] for r in cur.fetchall()}
@@ -1498,7 +1542,10 @@ def _notify_booking_received(name, date, time_slot, console_type, duration, game
     msg = ("\U0001f195 *New Booking Request #" + str(bk_id) + "*\n\n"
            + "\U0001f464 " + name + "\n\U0001f4de " + phone + "\n\U0001f4c5 " + date + " \u23f0 " + time_slot
            + "\n\U0001f3ae" + console_label + "\n\u23f1 " + str(duration) + " min\n\U0001f579 " + (game if game else "\u2014")
-           + "\n\n_Customer မှ booking တင်ထားပါသည်။_\n"
+           + "\n━━━━━━━━━━━━━━━━━━"
+           + "\n💸 *Deposit:* 30% required — pending payment\n"
+           + "━━━━━━━━━━━━━━━━━━"
+           + "\n*Customer မှ booking တင်ထားပါသည်။*\n"
            + "_(Sale Bot → Customer Booking မှ Approve/Reject ပြုလုပ်ပါ)_")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = json.dumps({"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}).encode()
@@ -1807,7 +1854,7 @@ async def api_booking_conflicts(req: dict, auth=Depends(verify_api_key)):
         
         # Query conflicting bookings (exclude cancelled/done)
         where_clause = """
-            status IN ('pending','confirmed','pending_check_in','checked_in','Active')
+            (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND deposit_status = 'paid'))
             AND NOT (COALESCE(cs.actual_end, cb.planned_end) <= %s OR COALESCE(cs.actual_start, cb.planned_start) >= %s)
         """
         params = [start_dt, end_dt]
@@ -1874,8 +1921,16 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
         for row in (rows or []):
             bk_id = row['id']
             try:
+                # Check if deposit will be forfeited (has paid/verified deposit)
+                _pre = _mysql_query_one(
+                    "SELECT deposit_status, deposit_amount FROM console_bookings WHERE id=%s",
+                    (bk_id,)
+                )
+                _will_forfeit = _pre and _pre.get('deposit_status', '') in ('paid', 'verified')
+                
                 _mysql_exec(
                     "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
+                    "deposit_status=CASE WHEN deposit_status IN ('paid','verified') THEN 'forfeited' ELSE deposit_status END, "
                     "notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: no-show') WHERE id=%s",
                     (bk_id,)
                 )
@@ -1891,6 +1946,10 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
                         _notify_no_show_cancel(bk_id, row)
                     except Exception as e:
                         logger.warning(f"auto-cancel notify bk#{bk_id} failed: {e}")
+                
+                # Notify admin group if deposit is forfeited
+                if _will_forfeit:
+                    _notify_deposit_forfeited(bk_id, row, _pre.get('deposit_amount', 0))
                 
                 cancelled.append(bk_id)
                 logger.info(f"Auto-cancelled no-show booking #{bk_id}")
@@ -1953,4 +2012,441 @@ def now_mmt():
 
 
 # Module-level resume moved to lifespan handler
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  DEPOSIT FLOW — Schedule / Submit / Verify / Settle / List
+# ════════════════════════════════════════════════════════════════════════════
+
+@router.get("/deposit/schedule", response_model=GenericResponse, tags=["Deposits"], summary="Calculate deposit amount for a session [MySQL]")
+async def api_deposit_schedule(
+    console: str = Query("", description="Console ID (e.g. C-01, C-09)"),
+    duration_mins: int = Query(60, description="Session duration in minutes"),
+    date: str = Query("", description="Booking date (YYYY-MM-DD)"),
+    time: str = Query("", description="Booking start time (HH:MM)"),
+    auth=Depends(verify_api_key)
+):
+    """Calculate deposit amount = session_fee × 30%.
+    
+    Session fee = duration_mins × base_rate × console_multiplier.
+    """
+    try:
+        base_rate = _mysql_get_setting("base_rate", 10000)
+        if isinstance(base_rate, str):
+            base_rate = int(base_rate)
+        # Get console multiplier
+        multipliers_raw = _mysql_get_setting("console_multipliers", {})
+        if isinstance(multipliers_raw, str):
+            import json as _json
+            try:
+                multipliers_raw = _json.loads(multipliers_raw)
+            except Exception:
+                multipliers_raw = {}
+        multiplier = multipliers_raw.get(console, 1.0)
+        if not isinstance(multiplier, (int, float)):
+            multiplier = 1.0
+        # Calculate session fee and deposit
+        # base_rate is per-hour (e.g., 10000 = 10,000 Ks/hr)
+        session_fee = int((duration_mins / 60) * base_rate * multiplier)
+        deposit_amount = int(session_fee * 0.3)
+        # Round to nearest 500
+        deposit_amount = round(deposit_amount / 500) * 500
+        
+        return ok({
+            "deposit_amount": deposit_amount,
+            "session_fee": session_fee,
+            "duration_mins": duration_mins,
+            "console": console,
+            "base_rate": base_rate,
+            "multiplier": multiplier
+        })
+    except Exception as e:
+        logger.error(f"deposit/schedule error: {e}")
+        return error_response(message=str(e))
+
+
+@router.post("/bookings/{booking_id}/deposit/submit", response_model=GenericResponse, tags=["Deposits"], summary="Submit deposit payment info [MySQL]")
+async def api_deposit_submit(booking_id: int, req: dict, auth=Depends(verify_api_key)):
+    """Customer submits deposit: method, ref (text or file_id), ref_type.
+    Updates booking deposit_status to 'paid' and notifies staff."""
+    try:
+        deposit_method = req.get("deposit_method", "")
+        deposit_ref = req.get("deposit_ref", "")
+        deposit_ref_type = req.get("deposit_ref_type", "text")
+        deposit_amount = req.get("deposit_amount", 0)
+        
+        # Validate
+        if deposit_method not in ("kpay", "wavepay", "aya_pay"):
+            return error_response(message="Invalid deposit_method. Must be kpay, wavepay, or aya_pay")
+        if not deposit_ref:
+            return error_response(message="deposit_ref is required")
+        if deposit_ref_type not in ("text", "image", "both"):
+            return error_response(message="deposit_ref_type must be text, image, or both")
+        
+        # Check booking exists
+        row = _mysql_query_one(
+            "SELECT id, deposit_status, status, console_id, member_id, booking_date, "
+            "       planned_start AS start_time, created_at, deposit_amount "
+            "FROM console_bookings WHERE id=%s",
+            (booking_id,)
+        )
+        if not row:
+            return error_response(message=f"Booking #{booking_id} not found")
+        
+        if row["status"] not in ("pending", "confirmed", "pending_check_in"):
+            return error_response(message=f"Booking status is '{row['status']}', cannot submit deposit")
+        
+        if row["deposit_status"] not in ("none",):
+            return error_response(message=f"Deposit already {row['deposit_status']} (must be 'none' to submit)")
+        
+        # Update booking with deposit info
+        _mysql_exec(
+            "UPDATE console_bookings SET deposit_status='paid', deposit_method=%s, "
+            "deposit_ref=%s, deposit_ref_type=%s, deposit_amount=%s WHERE id=%s",
+            (deposit_method, deposit_ref, deposit_ref_type, deposit_amount, booking_id)
+        )
+        
+        # Staff group notification (Telegram)
+        import json as _sjson
+        import urllib.request as _ureq
+        token = os.environ.get("BOT_TOKEN", "8545665013:AAFgEuw4V_715Q9yzGOYloinIdbdYXYb8zU")
+        chat_id = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
+        if token and chat_id:
+            bk_date = str(row.get("booking_date", ""))[:10] if row.get("booking_date") else ""
+            bk_time = ""
+            s = row.get("start_time")
+            if s:
+                try:
+                    from datetime import datetime as _pdt
+                    st = _pdt.fromisoformat(str(s)) if isinstance(s, str) else s
+                    bk_time = st.strftime("%H:%M")
+                except Exception:
+                    bk_time = str(s)[:5] if s else ""
+            deposit_amt = int(deposit_amount or 0)
+            member = row.get("member_id", "") or "Customer"
+            method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(deposit_method, deposit_method)
+            msg = (
+                f"\U0001f4b3 <b>Deposit Submitted — BK#{booking_id}</b>\n\n"
+                f"\U0001f464 {member}\n"
+                f"\U0001f4c5 {bk_date}  \u23f0 {bk_time}\n"
+                f"\U0001f3ae {row.get('console_id', '')}\n"
+                f"\U0001f4b0 {deposit_amt:,} Ks\n"
+                f"\U0001f4b1 {method_label}\n"
+                f"\U0001f4dd Ref: {deposit_ref[:50] if deposit_ref else '—'}\n\n"
+                f"<i>Staff: Please verify in Deposit Pending list.</i>"
+            )
+            try:
+                payload = _sjson.dumps({"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}).encode()
+                _ureq.urlopen(
+                    _ureq.Request(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        data=payload,
+                        headers={"Content-Type": "application/json"}
+                    ),
+                    timeout=5
+                )
+            except Exception as _nte:
+                logger.warning(f"Deposit staff notify failed: {_nte}")
+        
+        return ok({"booking_id": booking_id, "deposit_status": "paid"})
+    except Exception as e:
+        logger.error(f"deposit/submit error: {e}")
+        return error_response(message=str(e))
+
+
+@router.patch("/bookings/{booking_id}/deposit/verify", response_model=GenericResponse, tags=["Deposits"], summary="Verify deposit & confirm booking [MySQL]")
+async def api_deposit_verify(booking_id: int, req: dict, request: Request, auth=Depends(verify_api_key)):
+    """Staff verifies deposit: marks as verified, updates booking to confirmed,
+    creates cash_movements inject, and notifies customer."""
+    try:
+        # Auto-extract staff name from JWT if not provided in request
+        verified_by = req.get("verified_by", "")
+        deposit_amount_override = req.get("deposit_amount", None)
+        
+        if not verified_by:
+            # Try to get from Authorization header (JWT Bearer token)
+            auth_header = (request.headers.get("Authorization", "") if request else "")
+            if auth_header.startswith("Bearer "):
+                from auth import decode_token
+                payload = decode_token(auth_header[7:])
+                if payload:
+                    verified_by = payload.get("name") or payload.get("sub") or ""
+        
+        if not verified_by:
+            return error_response(message="verified_by is required (staff name)")
+        
+        # Check booking exists with paid deposit
+        row = _mysql_query_one(
+            "SELECT id, deposit_status, deposit_method, deposit_amount, "
+            "       member_id, console_id, booking_date, planned_start AS start_time, "
+            "       telegram_chat_id, phone, staff_name "
+            "FROM console_bookings WHERE id=%s",
+            (booking_id,)
+        )
+        if not row:
+            return error_response(message=f"Booking #{booking_id} not found")
+        
+        if row["deposit_status"] != "paid":
+            return error_response(message=f"Deposit status is '{row['deposit_status']}', expected 'paid'")
+        
+        deposit_method = row.get("deposit_method", "kpay") or "kpay"
+        deposit_amount = int(row.get("deposit_amount") or 0)
+        
+        # Allow staff to correct deposit_amount (wrong amount cases)
+        if deposit_amount_override is not None:
+            try:
+                deposit_amount = int(deposit_amount_override)
+            except (ValueError, TypeError):
+                return error_response(message="Invalid deposit_amount override")
+        
+        # Update booking: verified status, confirmed booking
+        import datetime as _dep_dt
+        now_str = _dep_dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _mysql_exec(
+            "UPDATE console_bookings SET deposit_status='verified', "
+            "deposit_verified_by=%s, deposit_verified_at=%s, "
+            "deposit_amount=%s, status='confirmed' "
+            "WHERE id=%s",
+            (verified_by, now_str, deposit_amount, booking_id)
+        )
+        
+        # Create cash_movements inject entry
+        method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(deposit_method, deposit_method)
+        note = f"Deposit #{booking_id} via {method_label}"
+        _mysql_exec(
+            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, NOW())",
+            ("inject", method_label, deposit_amount, note, verified_by)
+        )
+        
+        # Customer notification (Telegram)
+        tg_chat_id = row.get("telegram_chat_id", "")
+        if tg_chat_id:
+            bk_date = str(row.get("booking_date", ""))[:10] if row.get("booking_date") else ""
+            bk_time = ""
+            s = row.get("start_time")
+            if s:
+                try:
+                    from datetime import datetime as _pdt2
+                    st = _pdt2.fromisoformat(str(s)) if isinstance(s, str) else s
+                    bk_time = st.strftime("%H:%M")
+                except Exception:
+                    bk_time = str(s)[:5] if s else ""
+            msg = (
+                f"\u2705 <b>Deposit Verified & Booking Confirmed!</b>\n\n"
+                f"\U0001f3ab Booking <b>#{booking_id}</b>\n"
+                f"\U0001f4c5 {bk_date}  \u23f0 {bk_time}\n"
+                f"\U0001f3ae {row.get('console_id', '')}\n"
+                f"\U0001f4b0 Deposit: {deposit_amount:,} Ks ({method_label})\n\n"
+                f"\U0001f4f2 Booking \u1001\u102d\u101c \u101b\u1031\u101b\u102c\u1000\u103a\u1038\u1011\u102c\u1038\u1015\u1032\u1037\u1014\u103e\u1004\u1037\u103a "
+                f"\u101b\u103e\u1004\u1037\u103a \u1000\u102d\u102f\u1006\u1000\u103a\u101e\u1014\u1039\u1013\u102d\u101b\u102c\u1038\u1015\u102b\u104b"
+            )
+            _threading_notify.Thread(
+                target=_send_telegram_customer,
+                args=(tg_chat_id, msg),
+                daemon=True
+            ).start()
+        
+        return ok({
+            "booking_id": booking_id,
+            "deposit_status": "verified",
+            "booking_status": "confirmed",
+            "deposit_amount": deposit_amount,
+            "cash_movement": f"inject {deposit_amount} Ks into {method_label}"
+        })
+    except Exception as e:
+        logger.error(f"deposit/verify error: {e}")
+        return error_response(message=str(e))
+
+
+@router.patch("/bookings/{booking_id}/deposit/settle", response_model=GenericResponse, tags=["Deposits"], summary="Settle final sale with deposit redemption [MySQL]")
+async def api_deposit_settle(booking_id: int, req: dict, auth=Depends(verify_api_key)):
+    """Settle the booking after session done: record full sale + remaining payments.
+    Deposit is redeemed (applied toward total_fee).
+    """
+    try:
+        total_fee = req.get("total_fee", 0)
+        remaining_payments = req.get("remaining_payments", [])
+        
+        # Validate
+        if not total_fee or total_fee <= 0:
+            return error_response(message="total_fee is required and must be > 0")
+        if not isinstance(remaining_payments, list) or not remaining_payments:
+            return error_response(message="remaining_payments list is required")
+        
+        valid_methods = {"kpay", "wavepay", "cash", "aya_pay"}
+        for pmt in remaining_payments:
+            if pmt.get("method", "").lower() not in valid_methods:
+                return error_response(message=f"Invalid payment method: {pmt.get('method', '')}")
+        
+        # Check booking
+        row = _mysql_query_one(
+            "SELECT id, deposit_status, deposit_method, deposit_amount, "
+            "       member_id, console_id, booking_date, "
+            "       planned_start AS start_time, staff_name, phone, "
+            "       telegram_chat_id "
+            "FROM console_bookings WHERE id=%s",
+            (booking_id,)
+        )
+        if not row:
+            return error_response(message=f"Booking #{booking_id} not found")
+        
+        if row["deposit_status"] != "verified":
+            return error_response(message=f"Deposit status must be 'verified' to settle, got '{row['deposit_status']}'")
+        
+        deposit_amount = int(row.get("deposit_amount") or 0)
+        deposit_method = row.get("deposit_method", "kpay") or "kpay"
+        
+        # Build payment_method string for sales_daily
+        method_label_map = {"kpay": "KPay", "wavepay": "WavePay", "cash": "Cash", "aya_pay": "AYA Pay"}
+        deposit_label = method_label_map.get(deposit_method, "KPay")
+        
+        # Format: "KWPay:7500(DepositRedeemed)|Cash:2500"
+        pm_parts = []
+        total_remaining = 0
+        for pmt in remaining_payments:
+            method = pmt.get("method", "").lower()
+            amt = int(pmt.get("amount", 0))
+            if amt > 0:
+                label = method_label_map.get(method, method.capitalize())
+                pm_parts.append(f"{label}:{amt}")
+                total_remaining += amt
+        
+        # Verify deposit + remaining = total_fee
+        if deposit_amount + total_remaining != total_fee:
+            return error_response(
+                f"Total mismatch: deposit({deposit_amount}) + remaining({total_remaining}) = {deposit_amount + total_remaining}, expected {total_fee}"
+            )
+        
+        # Payment method string with DepositRedeemed marker
+        pm_str = f"{deposit_label}:{deposit_amount}(DepositRedeemed)"
+        if pm_parts:
+            pm_str += "|" + "|".join(pm_parts)
+        
+        # Record sale in sales_daily
+        now_dt = datetime.now(timezone(timedelta(hours=6, minutes=30)))
+        today_str = now_dt.strftime("%Y-%m-%d")
+        staff_name = row.get("staff_name", "") or "system"
+        member_id = row.get("member_id", "") or ""
+        phone = row.get("phone", "") or ""
+        member_ref = member_id if member_id else (phone if phone else "Guest")
+        
+        sales_id = _mysql_exec(
+            "INSERT INTO sales_daily (branch_id, sale_date, console_id, member_id, "
+            "amount, gross, discount, net, staff_name, payment_method, notes, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+            (
+                1,  # branch_id
+                today_str,
+                row.get("console_id", ""),
+                member_ref,
+                float(total_fee),
+                float(total_fee),
+                0.0,
+                float(total_fee),
+                staff_name,
+                pm_str,
+                f"Deposit settle - Booking #{booking_id}"
+            )
+        )
+        
+        # Record remaining payments in cash_movements as injects
+        for pmt in remaining_payments:
+            method = pmt.get("method", "").lower()
+            amt = int(pmt.get("amount", 0))
+            if amt > 0:
+                label = method_label_map.get(method, method.capitalize())
+                _mysql_exec(
+                    "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, NOW())",
+                    (
+                        "inject",
+                        label,
+                        amt,
+                        f"Deposit remaining - Booking #{booking_id} via {label}",
+                        staff_name
+                    )
+                )
+        
+        # Update booking: deposit redeemed, booking done
+        _mysql_exec(
+            "UPDATE console_bookings SET deposit_status='redeemed', deposit_redeemed_at=NOW(), "
+            "status='done' WHERE id=%s",
+            (booking_id,)
+        )
+        
+        return ok({
+            "booking_id": booking_id,
+            "deposit_status": "redeemed",
+            "booking_status": "done",
+            "total_fee": total_fee,
+            "deposit_applied": deposit_amount,
+            "remaining_paid": total_remaining,
+            "sales_daily_id": sales_id
+        })
+    except Exception as e:
+        logger.error(f"deposit/settle error: {e}")
+        return error_response(message=str(e))
+
+
+@router.get("/deposits/pending", response_model=GenericResponse, tags=["Deposits"], summary="List bookings with pending deposits (paid, unverified) [MySQL]")
+async def api_pending_deposits(auth=Depends(verify_api_key)):
+    """List all bookings where deposit_status='paid' (awaiting staff verification).
+    Includes customer info."""
+    try:
+        rows = _mysql_query(
+            "SELECT id, console_id, member_id, booking_date, "
+            "       planned_start AS start_time, planned_duration_mins AS duration_mins, "
+            "       status, staff_name, phone, telegram_chat_id, game_name, notes, "
+            "       deposit_amount, deposit_status, deposit_method, deposit_ref, "
+            "       deposit_ref_type, created_at "
+            "FROM console_bookings "
+            "WHERE deposit_status='paid' "
+            "ORDER BY created_at DESC"
+        )
+        
+        result = []
+        for r in rows:
+            bk_date = str(r.get("booking_date", ""))[:10] if r.get("booking_date") else ""
+            start_time = r.get("start_time")
+            time_str = ""
+            if start_time:
+                try:
+                    from datetime import datetime as _pdt3
+                    st = _pdt3.fromisoformat(str(start_time)) if isinstance(start_time, str) else start_time
+                    time_str = st.strftime("%H:%M")
+                except Exception:
+                    time_str = str(start_time)[:5] if start_time else ""
+            member = r.get("member_id", "") or ""
+            phone = r.get("phone", "") or ""
+            customer_name = member if member else (phone if phone else "Guest")
+            
+            result.append({
+                "id": r["id"],
+                "customer_name": customer_name,
+                "phone": phone,
+                "member_id": member,
+                "console_id": r.get("console_id", ""),
+                "date": bk_date,
+                "time": time_str,
+                "duration_mins": r.get("duration_mins", 60),
+                "game_name": r.get("game_name", ""),
+                "staff_name": r.get("staff_name", ""),
+                "notes": r.get("notes", ""),
+                "telegram_chat_id": r.get("telegram_chat_id", ""),
+                "deposit_amount": int(r.get("deposit_amount") or 0),
+                "deposit_status": r["deposit_status"],
+                "deposit_method": r.get("deposit_method", ""),
+                "deposit_ref": r.get("deposit_ref", ""),
+                "deposit_ref_type": r.get("deposit_ref_type", "text"),
+                "created_at": str(r.get("created_at", "")) if r.get("created_at") else ""
+            })
+        
+        return ok({
+            "bookings": result,
+            "total": len(result)
+        })
+    except Exception as e:
+        logger.error(f"pending-deposits error: {e}")
+        return error_response(message=str(e))
 

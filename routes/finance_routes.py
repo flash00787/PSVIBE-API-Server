@@ -531,10 +531,19 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
             wallet_consumed = max(0.0, wallet_consumed_cum - prev_cum)
         except Exception:
             wallet_consumed = 0.0
-        total_revenue = game_rev + food_rev + wallet_consumed
+        # Deposit forfeited income (forfeited deposits in this month)
+        _dep_forfeit = _mqo(
+            "SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings "
+            "WHERE deposit_status='forfeited' "
+            "AND DATE_FORMAT(created_at, '%%Y-%%m') = %s",
+            (ym,)
+        )
+        deposit_forfeited = float(_dep_forfeit.get("t", 0) or 0) if _dep_forfeit else 0
+
+        total_revenue = game_rev + food_rev + wallet_consumed + deposit_forfeited
         # Game Profit = game_rev (no direct COGS for game)
         # Food Profit = food_rev - food_cogs
-        game_profit = game_rev + wallet_consumed
+        game_profit = game_rev + wallet_consumed + deposit_forfeited
         food_profit = food_rev - cogs
         total_gross_profit = game_profit + food_profit
         # Depreciation expense for this month
@@ -545,7 +554,7 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         net_profit = total_gross_profit - total_expense_all
         return {"success": True, "data": {
             "period": ym,
-            "revenue": {"game_revenue": round(game_rev,0), "food_revenue": round(food_rev,0), "topup_revenue": round(topup_rev,0), "wallet_consumed": round(wallet_consumed,0), "topup_deferred": round(topup_sales,0), "discounts": round(discounts,0), "total_revenue": round(total_revenue,0)},
+            "revenue": {"game_revenue": round(game_rev,0), "food_revenue": round(food_rev,0), "topup_revenue": round(topup_rev,0), "wallet_consumed": round(wallet_consumed,0), "topup_deferred": round(topup_sales,0), "discounts": round(discounts,0), "deposit_forfeited": round(deposit_forfeited,0), "total_revenue": round(total_revenue,0)},
             "cogs": round(cogs,0), "food_cogs": round(cogs,0),
             "gross_profit": round(total_gross_profit,0), "game_profit": round(game_profit,0), "food_profit": round(food_profit,0),
             "expenses": {"by_category": expenses_by_cat, "total": round(total_expense,0), "depreciation": round(depreciation_exp,0), "total_with_depreciation": round(total_expense_all,0)},
@@ -757,7 +766,23 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         _adv_recovery = 0.0
         total_eq = icap + retained + _adv_recovery
 
-        total_liab = member_liab
+        # Deposit liability: deposits that are paid or verified (customer still owes session)
+        _deposit_liab = _mqo(
+            "SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings "
+            "WHERE deposit_status IN ('paid','verified')"
+        )
+        deposit_liability = round(float(_deposit_liab.get("t", 0) or 0), 0)
+
+        # Deposit forfeited revenue: forfeited deposits in current month
+        _deposit_forfeit = _mqo(
+            "SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings "
+            "WHERE deposit_status='forfeited' "
+            "AND created_at >= %s AND created_at < %s",
+            (_start, _end)
+        )
+        deposit_forfeited = round(float(_deposit_forfeit.get("t", 0) or 0), 0)
+
+        total_liab = member_liab + deposit_liability
         total_liab_eq = round(total_liab + total_eq, 0)
         total_assets = round(total_assets, 0)
         # Data-entry / rounding gap auto-balance (large gaps now handled by advance recovery above)
@@ -780,8 +805,21 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 "fixed":{"items":fix_items,"gross_cost":round(total_gross,0),"acc_depreciation":round(total_dep,0),"monthly_dep_total":round(monthly_dep_total,0),"nbv":round(total_fix,0)},
                 "total_assets":total_assets
             },
-            "liabilities":{"member_liability":round(member_liab,0),"member_details":[],"total":round(member_liab,0)},
-            "equity":{"initial_capital":round(icap,0),"retained_earnings":round(retained,0),"advance_recovery_reserve":round(_adv_recovery,0),"depreciation_reserve":round(total_dep,0),"total":round(total_eq,0)},
+            "liabilities":{
+                "member_liability":round(member_liab,0),
+                "deposit_liability":deposit_liability,
+                "deposit_forfeited":deposit_forfeited,
+                "member_details":[],
+                "total":round(total_liab,0)
+            },
+            "equity":{
+                "initial_capital":round(icap,0),
+                "retained_earnings":round(retained,0),
+                "advance_recovery_reserve":round(_adv_recovery,0),
+                "depreciation_reserve":round(total_dep,0),
+                "deposit_forfeited_income":deposit_forfeited,
+                "total":round(total_eq,0)
+            },
             "total_liabilities_equity":total_liab_eq
         }}
     except Exception as e:

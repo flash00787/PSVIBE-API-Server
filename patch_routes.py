@@ -54,6 +54,11 @@ def _map_booking_row(row: dict) -> dict:
         "duration_mins": "durationMins",
         "phone": "phone",
         "game_name": "gameName",
+        "deposit_amount": "deposit_amount",
+        "deposit_status": "deposit_status",
+        "deposit_method": "deposit_method",
+        "deposit_ref": "deposit_ref",
+        "deposit_ref_type": "deposit_ref_type",
     }
     result = {}
     for db_key, bk_key in mapping.items():
@@ -137,7 +142,7 @@ async def api_bookings_list(
 ):
     """List all bookings from MySQL. Optional ?status=pending|confirmed|rejected filter."""
     try:
-        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id"
+        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name, cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id"
         params = []
         if status:
             sql += " WHERE cb.status = %s"
@@ -159,7 +164,7 @@ async def api_bookings_search(
 ):
     """Search bookings from MySQL by date, status, or chat_id."""
     try:
-        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE 1=1"
+        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name, cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE 1=1"
         params = []
         if date:
             sql += " AND cb.booking_date = %s"
@@ -184,7 +189,7 @@ async def api_bookings_search(
 async def api_bookings_get(booking_id: str, auth=Depends(verify_api_key)):
     """Get a booking from MySQL."""
     try:
-        rows = _mysql_query("SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE cb.id=%s", (booking_id,))
+        rows = _mysql_query("SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name, cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE cb.id=%s", (booking_id,))
         if not rows:
             raise HTTPException(status_code=404, detail="Booking not found")
         return ok({"booking": _map_booking_row(rows[0])})
@@ -279,7 +284,7 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
         food_rev = float(frows[0]["t"] or 0) if frows else 0
         import stock_fifo, pymysql
         try:
-            _sfc = pymysql.connect(host="127.0.0.1", user="psvibe_user", password="PsVibe@2026_Rotated!", database="psvibe_api")
+            _sfc = pymysql.connect(host=os.environ.get("MYSQL_HOST", "127.0.0.1"), user=os.environ.get("MYSQL_USER", "psvibe_user"), password=os.environ.get("MYSQL_PASSWORD", "PsVibe@User2024!"), database=os.environ.get("MYSQL_DATABASE", "psvibe_api"))
             _sfr = stock_fifo.calc_fifo(_sfc, ym)
             _sfc.close()
             cogs = _sfr["cogs"]
@@ -299,7 +304,7 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
         from fifo_wallet import get_all_fifo
         import pymysql
         try:
-            _fc = pymysql.connect(host="127.0.0.1", user="psvibe_user", password="PsVibe@2026_Rotated!", database="psvibe_api")
+            _fc = pymysql.connect(host=os.environ.get("MYSQL_HOST", "127.0.0.1"), user=os.environ.get("MYSQL_USER", "psvibe_user"), password=os.environ.get("MYSQL_PASSWORD", "PsVibe@User2024!"), database=os.environ.get("MYSQL_DATABASE", "psvibe_api"))
             _fr = get_all_fifo(_fc, ym); _fc.close()
         except Exception:
             _fr = {"consumed": 0}

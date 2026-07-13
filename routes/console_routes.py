@@ -303,7 +303,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 _start_cur.execute(
                     "SELECT id, status FROM console_bookings WHERE console_id=%s"
                     " AND id != %s"
-                    " AND status IN ('pending','confirmed','pending_check_in','checked_in','Active')"
+                    " AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND deposit_status = 'paid'))"
                     " AND planned_start < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
                     " AND planned_end > DATE_ADD(%s, INTERVAL 30 MINUTE)"
                     " LIMIT 1 FOR UPDATE",
@@ -312,7 +312,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
             else:
                 _start_cur.execute(
                     "SELECT id, status FROM console_bookings WHERE console_id=%s"
-                    " AND status IN ('pending','confirmed','pending_check_in','checked_in','Active')"
+                    " AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND deposit_status = 'paid'))"
                     " AND planned_start < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
                     " AND planned_end > DATE_ADD(%s, INTERVAL 30 MINUTE)"
                     " LIMIT 1 FOR UPDATE",
@@ -512,7 +512,7 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 cur.execute(
                     "SELECT id, status FROM console_bookings WHERE console_id=%s"
                     " AND id != %s"
-                    " AND status IN ('pending','confirmed','pending_check_in','checked_in')"
+                    " AND (status IN ('confirmed','pending_check_in','checked_in') OR (status = 'pending' AND deposit_status = 'paid'))"
                     " AND planned_start < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
                     " AND planned_end > DATE_ADD(%s, INTERVAL 30 MINUTE)"
                     " LIMIT 1 FOR UPDATE",
@@ -521,7 +521,7 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
             else:
                 cur.execute(
                     "SELECT id, status FROM console_bookings WHERE console_id=%s"
-                    " AND status IN ('pending','confirmed','pending_check_in','checked_in')"
+                    " AND (status IN ('confirmed','pending_check_in','checked_in') OR (status = 'pending' AND deposit_status = 'paid'))"
                     " AND planned_start < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
                     " AND planned_end > DATE_ADD(%s, INTERVAL 30 MINUTE)"
                     " LIMIT 1 FOR UPDATE",
