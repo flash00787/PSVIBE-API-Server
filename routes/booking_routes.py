@@ -2458,3 +2458,40 @@ async def api_pending_deposits(auth=Depends(verify_api_key)):
         logger.error(f"pending-deposits error: {e}")
         return error_response(message=str(e))
 
+
+@router.post("/bookings/{booking_id}/deposit/pre-redeem", response_model=GenericResponse, tags=["Deposits"], summary="Pre-redeem deposit before receipt (bot-side deduction) [MySQL]")
+async def api_deposit_pre_redeem(booking_id: int, auth=Depends(verify_api_key)):
+    """Pre-redeem a verified deposit BEFORE showing receipt.
+    Called by the sales bot during step_sale_confirm so the receipt shows correct net_total.
+    """
+    try:
+        row = _mysql_query_one(
+            "SELECT deposit_status, deposit_amount, deposit_method FROM console_bookings WHERE id=%s",
+            (booking_id,)
+        )
+        if not row:
+            return error_response(message=f"Booking #{booking_id} not found")
+        if row.get("deposit_status") != "verified":
+            return ok({"deposit_amount": 0, "deposit_status": row.get("deposit_status", "none"), "message": "No verified deposit to redeem"})
+
+        deposit_amount = int(row["deposit_amount"] or 0)
+        if deposit_amount <= 0:
+            return ok({"deposit_amount": 0, "deposit_status": "verified", "message": "Zero deposit amount"})
+
+        _mysql_exec(
+            "UPDATE console_bookings SET deposit_status='redeemed', deposit_redeemed_at=NOW() WHERE id=%s AND deposit_status='verified'",
+            (booking_id,)
+        )
+        logger.info(
+            "Deposit pre-redeemed: BK#%s deposit=%s Ks (bot-side, before receipt)",
+            booking_id, deposit_amount
+        )
+        return ok({
+            "deposit_amount": deposit_amount,
+            "deposit_method": row.get("deposit_method", "kpay"),
+            "deposit_status": "redeemed"
+        })
+    except Exception as e:
+        logger.error(f"deposit/pre-redeem error: {e}")
+        return error_response(message=str(e))
+
