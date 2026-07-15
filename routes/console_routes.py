@@ -351,7 +351,12 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                     duration_mins = _bk_dur if _bk_dur > 0 else duration_mins
                 booking_id = bk['id']
                 _dur_end2 = 360 if duration_mins == 0 else duration_mins
-                _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE) WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, booking_id))
+                # If staff_name provided, use it (overrides customer name from booking's staff_name)
+                if req.get("staff_name", "") or req.get("staff", ""):
+                    _start_staff = req.get("staff_name", "") or req.get("staff", "")
+                    _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), staff_name=%s WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, _start_staff, booking_id))
+                else:
+                    _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE) WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, booking_id))
                 logger.info(f"Auto-checkin booking #{booking_id} for console {console_id}")
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
@@ -426,6 +431,7 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
         console_id = (req.get("console_id") or "").strip()
         member_id = req.get("member_id") or req.get("memberId") or "Guest"
         member_name = req.get("member_name") or req.get("memberName") or member_id
+        req_staff_name = req.get("staff_name", "") or req.get("staff", "")
         game_name = req.get("game_name") or req.get("gameName") or ""
         duration_mins = req.get("duration_mins")
         if duration_mins is None:
@@ -547,10 +553,17 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                     (_now_ref, _now_ref, _dur_end3, duration_mins, game_name, console_id, telegram_chat_id, linked_booking_id)
                 )
                 # Update console_sessions to 'active'
-                cur.execute(
-                    "UPDATE console_sessions SET status='active', actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), actual_duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), console_id=%s WHERE booking_id=%s AND status='checked_in'",
-                    (_now_ref, _now_ref, _dur_end3, duration_mins, game_name, console_id, linked_booking_id)
-                )
+                # If staff_name provided, use it (overrides customer name from booking)
+                if req_staff_name:
+                    cur.execute(
+                        "UPDATE console_sessions SET status='active', actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), actual_duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), staff_name=%s, console_id=%s WHERE booking_id=%s AND status='checked_in'",
+                        (_now_ref, _now_ref, _dur_end3, duration_mins, game_name, req_staff_name, console_id, linked_booking_id)
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE console_sessions SET status='active', actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), actual_duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), console_id=%s WHERE booking_id=%s AND status='checked_in'",
+                        (_now_ref, _now_ref, _dur_end3, duration_mins, game_name, console_id, linked_booking_id)
+                    )
                 booking_id = linked_booking_id
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
@@ -565,9 +578,11 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                     (console_id, member_id, booking_date, _now_ref, _now_ref, _dur_end4, duration_mins, game_name)
                 )
                 booking_id = cur.lastrowid
+                # Use req_staff_name if provided (actual staff), else member_name defaults
+                _ses_staff = req_staff_name if req_staff_name else member_name
                 cur.execute(
-                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_end, actual_duration_mins, game_name, created_at) VALUES (%s, %s, %s, 'active', %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s, NOW())",
-                    (booking_id, console_id, member_id, _now_ref, _now_ref, _dur_end4, duration_mins, game_name)
+                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_end, actual_duration_mins, game_name, staff_name, created_at) VALUES (%s, %s, %s, 'active', %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s, %s, NOW())",
+                    (booking_id, console_id, member_id, _now_ref, _now_ref, _dur_end4, duration_mins, game_name, _ses_staff)
                 )
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)

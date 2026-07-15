@@ -249,6 +249,9 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
             _mysql_exec("UPDATE console_bookings SET console_id=%s WHERE id=%s", (override_console, booking_id))
         telegram_chat_id = booking.get("telegram_chat_id", "")
         
+        # Read the actual staff who is performing the check-in (optional, from bot/API caller)
+        _checkin_staff = req.get("staff_name", "") or req.get("staff", "")
+        
         # CI-3: Wrap status update in transaction (checked_in only marks arrival, NO timer start)
         _now_ref = now_mmt()
         _chk_conn = _mc.connect(
@@ -264,12 +267,21 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
         try:
             # Mark as checked_in (customer arrived, but session NOT started yet)
             # Insert a session row for checked_in (new schema: sessions track checked_in)
-            _chk_cur.execute(
-                "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, notes, created_at) "
-                "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, staff_name, notes, %s "
-                "FROM console_bookings WHERE id=%s",
-                (booking_id, datetime.now(timezone(timedelta(hours=6, minutes=30))), booking_id)
-            )
+            # Use the checkin staff's name if provided, otherwise fall back to booking's staff_name
+            if _checkin_staff:
+                _chk_cur.execute(
+                    "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, notes, created_at) "
+                    "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, %s, notes, %s "
+                    "FROM console_bookings WHERE id=%s",
+                    (booking_id, _checkin_staff, datetime.now(timezone(timedelta(hours=6, minutes=30))), booking_id)
+                )
+            else:
+                _chk_cur.execute(
+                    "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, notes, created_at) "
+                    "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, staff_name, notes, %s "
+                    "FROM console_bookings WHERE id=%s",
+                    (booking_id, datetime.now(timezone(timedelta(hours=6, minutes=30))), booking_id)
+                )
             # Don't start timer — session start is a separate action
             # Don't set console_status to Active — console remains Free/Reserved until session starts
             

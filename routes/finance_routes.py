@@ -328,7 +328,8 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                     method, _, val = part.partition(":")
                     method = method.strip().lower().replace(" ", "_")
                     try:
-                        val = float(val.strip() or 0) if val.strip() else 0
+                        _clean = val.strip().replace(" (dep)", "") or "0"
+                        val = float(_clean)
                     except ValueError:
                         val = net_amount / len(parts) if parts else 0
                 else:
@@ -398,6 +399,18 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
         _bad_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
         for _r in _bad_inject_rows:
             _k = "inject|" + _r["account"]
+            if _k in cash_map:
+                cash_map[_k] -= float(_r["total"] or 0)
+        # Subtract booking-related injects (Deposit # and BK#) since income already captures them
+        _bk_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Deposit #', CHAR(37)) OR note LIKE CONCAT('BK#', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
+        for _r in _bk_inject_rows:
+            _k = "inject|" + _r["account"]
+            if _k in cash_map:
+                cash_map[_k] -= float(_r["total"] or 0)
+        # Also subtract booking-related ejects (deposit reversals) to keep paired entries net zero
+        _bk_eject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'eject' AND (note IS NOT NULL AND (note LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) OR note LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
+        for _r in _bk_eject_rows:
+            _k = "eject|" + _r["account"]
             if _k in cash_map:
                 cash_map[_k] -= float(_r["total"] or 0)
         # NOTE: Advance settled injects are NOT subtracted — matching eject entries were
@@ -643,7 +656,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 if ":" in part:
                     method, _, val = part.partition(":")
                     method = method.strip().lower().replace(" ", "_")
-                    val = float(val.strip() or 0) if val.strip() else 0
+                    _clean = val.strip().replace(" (dep)", "") or "0"
+                    val = float(_clean)
                 else:
                     method = part.lower().replace(" ", "_")
                     val = net_amount
@@ -690,8 +704,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             db = db_acct[key]
             t_in = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_in' AND created_at < %s", (db, _end))["t"] or 0)
             t_out = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_out' AND created_at < %s", (db, _end))["t"] or 0)
-            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) )) AND created_at < %s", (db, _end))["t"] or 0)
-            ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject' AND created_at < %s", (db, _end))["t"] or 0)
+            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)) )) AND created_at < %s", (db, _end))["t"] or 0)
+            ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject' AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) )) AND created_at < %s", (db, _end))["t"] or 0)
 
             # t_out is stored as negative in DB, so + t_out works (= subtract)
             bal = income - opex + t_in + t_out + inj - ej
@@ -1400,8 +1414,10 @@ async def get_till_today(user: dict = Depends(get_current_user)):
             for part in parts:
                 if ":" in part:
                     m, val = part.rsplit(":", 1)
+                    # Strip (dep) suffix — deposit amounts are included in net total
+                    _clean_val = val.strip().replace(" (dep)", "") or "0"
                     try:
-                        val_num = float(val)
+                        val_num = float(_clean_val)
                         total_method_val += val_num
                         pm_totals[m.strip()] = pm_totals.get(m.strip(), 0) + val_num
                     except ValueError:
@@ -1421,12 +1437,13 @@ async def get_till_today(user: dict = Depends(get_current_user)):
         total_sales = sum(pm_totals.values())
         
         # ── Cash outflows: eject + transfer_out (both leave the physical drawer) ──
+        # Exclude Deposit # and BK# injects (backfill) since cash_sales_total already captures them
         cm = _mysql_query_one(
             """SELECT
                  COALESCE(SUM(CASE WHEN movement_type = 'eject' THEN amount ELSE 0 END), 0) AS cash_ejected,
                  COALESCE(SUM(CASE WHEN movement_type = 'transfer_out' THEN ABS(amount) ELSE 0 END), 0) AS cash_transferred_out,
                  COALESCE(SUM(CASE WHEN movement_type = 'transfer_in' THEN amount ELSE 0 END), 0) AS cash_transferred_in,
-                 COALESCE(SUM(CASE WHEN movement_type = 'inject' THEN amount ELSE 0 END), 0) AS cash_injected
+                 COALESCE(SUM(CASE WHEN movement_type = 'inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)))) THEN amount ELSE 0 END), 0) AS cash_injected
                FROM cash_movements
                WHERE account = 'Cash' AND DATE(created_at) = %s""",
             (today,)
