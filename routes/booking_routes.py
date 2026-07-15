@@ -394,6 +394,135 @@ async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
 
 
 # ═══════════════════════════════════════
+#  MUTATION — create_booking (NEW — Web Dashboard)
+# ═══════════════════════════════════════
+@router.post("/bookings", response_model=GenericResponse, tags=["Bookings"], summary="Create new booking (Web Dashboard) [MySQL]")
+async def api_create_booking_web(req: dict, auth=Depends(verify_api_key)):
+    """Create a new booking from the web dashboard.
+    Fields: customer_name, phone, member_id (optional), console_id, game_name,
+    booking_date, start_time, duration_mins, deposit_amount (optional),
+    deposit_method (optional: kpay/wavepay/aya_pay), notes (optional).
+    """
+    try:
+        customer_name = (req.get("customer_name") or "").strip()
+        phone = (req.get("phone") or "").strip()
+        member_id = (req.get("member_id") or "").strip() or None
+        console_id = (req.get("console_id") or "").strip()
+        game_name = (req.get("game_name") or "").strip()
+        booking_date = (req.get("booking_date") or "").strip()
+        start_time_str = (req.get("start_time") or "").strip()
+        duration_mins = int(req.get("duration_mins", 60))
+        notes = (req.get("notes") or "").strip()
+        add_deposit = req.get("add_deposit", False)
+        deposit_amount = int(req.get("deposit_amount", 0) or 0)
+        deposit_method = (req.get("deposit_method") or "").strip().lower()
+
+        # ── Validation ──
+        if not console_id:
+            return error_response(message="Console is required")
+        if not booking_date:
+            return error_response(message="Booking date is required")
+        if not start_time_str:
+            return error_response(message="Start time is required")
+        if duration_mins < 30 or duration_mins > 480:
+            return error_response(message="Duration must be between 30 and 480 minutes")
+        if not customer_name and not member_id:
+            return error_response(message="Customer name or member is required")
+
+        # ── Deposit validation ──
+        if add_deposit:
+            if deposit_amount <= 0:
+                return error_response(message="Deposit amount must be greater than 0")
+            if deposit_method not in ("kpay", "wavepay", "aya_pay"):
+                return error_response(message="Invalid deposit_method. Must be kpay, wavepay, or aya_pay")
+
+        # ── Parse date/time ──
+        from datetime import datetime as _dt, timedelta as _td
+        try:
+            start_dt = _dt.strptime(f"{booking_date} {start_time_str}:00", "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return error_response(message="Invalid date/time format. Use YYYY-MM-DD for date and HH:MM for time.")
+
+        end_dt = start_dt + _td(minutes=duration_mins)
+        start_mmt = now_mmt()
+
+        # ── Web dashboard bookings always auto-confirm ──
+        _bk_status = "confirmed"
+
+        # ── Generate booking ID for reference ──
+        bk_date_str = start_dt.strftime("%Y%m%d")
+        bk_cid_slug = console_id.replace(" ", "").replace("-", "")[:12]
+        bk_ref = f"BK-{bk_date_str}-{bk_cid_slug}-{start_dt.strftime('%H%M')}"
+
+        # ── Insert with MySQL transaction ──
+        _conn = _mc.connect(
+            host=os.environ.get('MYSQL_HOST', 'localhost'),
+            user=os.environ.get('MYSQL_USER', 'root'),
+            password=os.environ.get('MYSQL_PASSWORD', '') or 'PsVibe@User2024!',
+            database=os.environ.get('MYSQL_DATABASE', 'psvibe'),
+            port=int(os.environ.get('MYSQL_PORT', '3306')),
+            charset='utf8mb4'
+        )
+        _conn.start_transaction()
+        _cur = _conn.cursor(dictionary=True)
+        try:
+            # Staff name from auth context (the logged-in dashboard user)
+            _staff_name = customer_name if not member_id else member_id
+
+            # Build INSERT columns
+            _cols = ["console_id", "booking_date", "planned_start", "planned_end",
+                     "planned_duration_mins", "status", "staff_name", "notes", "phone", "game_name",
+                     "created_at"]
+            _vals = [console_id, booking_date, start_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                     end_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                     duration_mins, _bk_status, _staff_name, notes, phone, game_name,
+                     start_mmt.strftime('%Y-%m-%d %H:%M:%S')]
+
+            if member_id:
+                _cols.append("member_id")
+                _vals.append(member_id)
+
+            if add_deposit:
+                _cols.extend(["deposit_status", "deposit_method", "deposit_amount"])
+                _vals.extend(["paid", deposit_method, deposit_amount])
+
+            _placeholders = ", ".join("%s" for _ in _vals)
+            _sql = f"INSERT INTO console_bookings ({', '.join(_cols)}) VALUES ({_placeholders})"
+            _cur.execute(_sql, tuple(_vals))
+            bk_id = _cur.lastrowid
+
+            _conn.commit()
+        except Exception as _tx_err:
+            _conn.rollback()
+            _conn.close()
+            raise _tx_err
+        finally:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+
+        # ── Sync console status ──
+        try:
+            _sync_console_status(console_id)
+        except Exception:
+            pass
+
+        return ok({
+            "booking_id": bk_id,
+            "ref": bk_ref,
+            "console_id": console_id,
+            "status": _bk_status,
+            "start_time": start_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            "duration_mins": duration_mins,
+            "deposit_status": "paid" if add_deposit else "none",
+        })
+    except Exception as e:
+        logger.error(f"api_create_booking_web error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
 
 
 # ================================================================
@@ -1904,10 +2033,14 @@ async def api_booking_conflicts(req: dict, auth=Depends(verify_api_key)):
 @router.post("/bookings/auto-cancel-no-show", tags=["Bookings"],
           summary="Auto-cancel no-show bookings (cron-driven)")
 async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
-    """Auto-cancel no-show bookings past their start_time with no check-in.
+    """Auto-cancel no-show bookings past their start_time.
+    
+    Cancels confirmed/pending bookings past grace period.
+    Skips bookings with active/checked_in console_sessions.
+    Forfeits deposit for no-shows with paid/verified deposit.
     
     Called by cron every 5 minutes.
-    Grace period: 15 minutes after start_time — cancels ANY no-show regardless of end_time.
+    Grace period: 15 minutes after start_time.
     """
     try:
         _now = now_mmt()
@@ -1924,6 +2057,7 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
             LEFT JOIN console_sessions cs ON cs.booking_id=cb.id
             WHERE cb.status IN ('confirmed', 'pending', 'pending_check_in')
               AND cb.planned_start < DATE_SUB(%s, INTERVAL %s MINUTE)
+              AND cs.id IS NULL  -- skip bookings with active/checked_in sessions
             ORDER BY cb.id ASC
         """, (_now, _grace_minutes))
         
@@ -2461,7 +2595,8 @@ async def api_pending_deposits(auth=Depends(verify_api_key)):
 
 @router.post("/bookings/{booking_id}/deposit/pre-redeem", response_model=GenericResponse, tags=["Deposits"], summary="Pre-redeem deposit before receipt (bot-side deduction) [MySQL]")
 async def api_deposit_pre_redeem(booking_id: int, auth=Depends(verify_api_key)):
-    """Pre-redeem a verified deposit BEFORE showing receipt.
+    """Return deposit amount for receipt display WITHOUT changing deposit_status.
+    The /api/sales/record endpoint handles the actual deduction & status change.
     Called by the sales bot during step_sale_confirm so the receipt shows correct net_total.
     """
     try:
@@ -2471,25 +2606,21 @@ async def api_deposit_pre_redeem(booking_id: int, auth=Depends(verify_api_key)):
         )
         if not row:
             return error_response(message=f"Booking #{booking_id} not found")
-        if row.get("deposit_status") != "verified":
-            return ok({"deposit_amount": 0, "deposit_status": row.get("deposit_status", "none"), "message": "No verified deposit to redeem"})
-
+        
+        deposit_status = row.get("deposit_status", "none")
         deposit_amount = int(row["deposit_amount"] or 0)
-        if deposit_amount <= 0:
-            return ok({"deposit_amount": 0, "deposit_status": "verified", "message": "Zero deposit amount"})
+        if deposit_status != "verified" or deposit_amount <= 0:
+            return ok({"deposit_amount": 0, "deposit_status": deposit_status, "pre_redeemed": False, "message": "No verified deposit"})
 
-        _mysql_exec(
-            "UPDATE console_bookings SET deposit_status='redeemed', deposit_redeemed_at=NOW() WHERE id=%s AND deposit_status='verified'",
-            (booking_id,)
-        )
         logger.info(
-            "Deposit pre-redeemed: BK#%s deposit=%s Ks (bot-side, before receipt)",
+            "Pre-redeem check: BK#%s deposit=%s Ks (status stays verified for sales/record)",
             booking_id, deposit_amount
         )
         return ok({
             "deposit_amount": deposit_amount,
             "deposit_method": row.get("deposit_method", "kpay"),
-            "deposit_status": "redeemed"
+            "deposit_status": "verified",
+            "pre_redeemed": True
         })
     except Exception as e:
         logger.error(f"deposit/pre-redeem error: {e}")

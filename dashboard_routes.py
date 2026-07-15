@@ -337,16 +337,16 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
         _mysql_execute(f"UPDATE console_bookings SET {', '.join(updates)} WHERE id = %s", tuple(params))
 
         # 🐛 Deposit Forfeit Restore: When rebooking from cancelled → active status
-        # If deposit was forfeited on auto-cancel, restore it back to 'paid'
+        # If deposit was forfeited on auto-cancel, restore it back to 'verified'
         new_status = req.get("status", "")
         old_status = existing.get("status", "")
         old_deposit = existing.get("deposit_status", "")
         if new_status in ("confirmed", "pending", "pending_check_in") and old_status == "cancelled" and old_deposit == "forfeited":
             _mysql_exec(
-                "UPDATE console_bookings SET deposit_status='paid' WHERE id=%s AND deposit_status='forfeited'",
+                "UPDATE console_bookings SET deposit_status='verified' WHERE id=%s AND deposit_status='forfeited'",
                 (booking_id,)
             )
-            logger.info(f"Rebook BK#{booking_id}: deposit_status restored from forfeited → paid")
+            logger.info(f"Rebook BK#{booking_id}: deposit_status restored from forfeited → verified")
 
         # 🐛 Fix Jul 1: Sync console_status when console_id or status changes
         try:

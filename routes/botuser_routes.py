@@ -481,3 +481,79 @@ async def api_bot_users_timeline(tg_id: str, limit: int = 100, auth=Depends(veri
         return error_response(message=str(e))
 
 
+@router.get("/blocked-users", response_model=GenericResponse, tags=["Bot Users"], summary="Get all blocked bot users with booking details")
+async def api_blocked_users(auth=Depends(verify_api_key)):
+    """Get all blocked users with their booking history including phone numbers."""
+    try:
+        # Get blocked users
+        users = _mysql_query(
+            "SELECT tg_id, first_name, username, phone, booking_count, session_count, "
+            "total_spend_ks, first_seen, last_seen, tags, is_active "
+            "FROM customer_bot_users WHERE is_active = 0 "
+            "ORDER BY last_seen DESC"
+        ) or []
+        
+        if not users:
+            return ok({"users": []})
+        
+        tg_ids = [u["tg_id"] for u in users]
+        placeholders = ",".join(["%s"] * len(tg_ids))
+        
+        # Get bookings for all blocked users
+        bookings = _mysql_query(
+            f"SELECT id, telegram_chat_id, console_id, game_name, planned_start, "
+            f"planned_duration_mins, phone, status, deposit_amount, deposit_status, "
+            f"deposit_method, created_at "
+            f"FROM console_bookings WHERE telegram_chat_id IN ({placeholders}) "
+            f"ORDER BY created_at DESC",
+            tuple(tg_ids)
+        ) or []
+        
+        # Group bookings by tg_id
+        bookings_by_user = {}
+        for b in bookings:
+            tid = b["telegram_chat_id"]
+            if tid not in bookings_by_user:
+                bookings_by_user[tid] = []
+            bookings_by_user[tid].append({
+                "id": b["id"],
+                "console_id": b["console_id"],
+                "game_name": b["game_name"],
+                "planned_start": b["planned_start"].isoformat() if hasattr(b["planned_start"], "isoformat") else str(b["planned_start"]),
+                "planned_duration_mins": b["planned_duration_mins"],
+                "phone": b["phone"] or "",
+                "status": b["status"],
+                "deposit_amount": float(b["deposit_amount"]) if b["deposit_amount"] else 0,
+                "deposit_status": b["deposit_status"] or "",
+                "deposit_method": b.get("deposit_method") or "",
+                "created_at": b["created_at"].isoformat() if hasattr(b["created_at"], "isoformat") else str(b["created_at"]),
+            })
+        
+        # Build user list with phones and bookings
+        result_users = []
+        for u in users:
+            tg_id = u["tg_id"]
+            user_bookings = bookings_by_user.get(tg_id, [])
+            phones = list(set(b["phone"] for b in user_bookings if b["phone"]))
+            
+            result_users.append({
+                "tg_id": tg_id,
+                "first_name": u.get("first_name", ""),
+                "username": u.get("username", None),
+                "phone": u.get("phone"),
+                "booking_count": u.get("booking_count", 0),
+                "session_count": u.get("session_count", 0),
+                "total_spend": float(u.get("total_spend_ks", 0)),
+                "first_seen": u["first_seen"].isoformat() if hasattr(u["first_seen"], "isoformat") else str(u["first_seen"]),
+                "last_seen": u["last_seen"].isoformat() if hasattr(u["last_seen"], "isoformat") else str(u["last_seen"]),
+                "tags": u.get("tags", ""),
+                "is_active": u.get("is_active", 0),
+                "phones": phones,
+                "bookings": user_bookings,
+            })
+        
+        return ok({"users": result_users})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
