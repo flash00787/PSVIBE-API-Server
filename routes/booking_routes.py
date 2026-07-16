@@ -163,6 +163,39 @@ async def api_extend_booking_duration(req: dict, auth=Depends(verify_api_key)):
         _mysql_exec("UPDATE console_bookings SET planned_duration_mins=%s, planned_end=DATE_ADD(planned_start, INTERVAL %s MINUTE) WHERE id=%s AND status='Active'", (new_duration, _dur_end, _booking_id))
         # Update console_status to reflect extended session end time
         _mysql_exec("UPDATE console_status SET last_updated=NOW() WHERE console_id=%s", (console_id,))
+        # ── Sync updated duration to bot's session_reminders.json ──
+        try:
+            _br_file = "/root/psvibe-sales-bot/data/session_reminders.json"
+            if os.path.isfile(_br_file):
+                with open(_br_file, "r") as _brf:
+                    _br_store = _json_notify.load(_brf)
+                _br_updated = False
+                for _br_key, _br_val in list(_br_store.items()):
+                    if _br_val.get("cid") == console_id:
+                        # Recalculate new end time from DB
+                        _br_row = _mysql_query_one(
+                            "SELECT actual_start, actual_duration_mins FROM console_sessions WHERE booking_id=%s AND status='active'",
+                            (_booking_id,)
+                        )
+                        if _br_row and _br_row.get("actual_start") and _br_row.get("actual_duration_mins"):
+                            from datetime import timedelta as _td
+                            _br_new_end = _br_row["actual_start"] + _td(minutes=_br_row["actual_duration_mins"])
+                            if hasattr(_br_new_end, 'tzinfo') and _br_new_end.tzinfo is None:
+                                _br_new_end = _br_new_end.replace(tzinfo=timezone(timedelta(hours=6, minutes=30)))
+                            _br_val["end_t"] = _br_new_end.strftime("%H:%M")
+                            _br_val["end_dt_iso"] = _br_new_end.isoformat()
+                            _br_val["planned_mins"] = new_duration
+                            _br_val["total_plan_mins"] = new_duration
+                            _br_val["updated_at"] = datetime.now(timezone.utc).isoformat()
+                            _br_updated = True
+                            logger.info("extend-duration: synced %s → end_t=%s (dur=%d)", _br_key, _br_val["end_t"], new_duration)
+                if _br_updated:
+                    _br_tmp = _br_file + ".tmp"
+                    with open(_br_tmp, "w") as _brf:
+                        _json_notify.dump(_br_store, _brf, indent=2)
+                    os.replace(_br_tmp, _br_file)
+        except Exception as _br_err:
+            logger.warning("extend-duration: bot reminder sync failed: %s", _br_err)
         return ok({"booking_id": _booking_id, "new_duration_mins": new_duration})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
