@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 DB_CONFIG = {
     'host': '127.0.0.1',
     'user': 'psvibe_user',
-    'password': 'PsVibe@2026_Rotated!',
+    'password': 'PsVibe@User2024!',
     'database': 'psvibe_api'
 }
 

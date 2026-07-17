@@ -9,14 +9,14 @@
 # MySQL Credentials: from psvibe-mysql Docker container
 # Database: psvibe_api
 # User: psvibe_user
-# Password: PsVibe@2026_Rotated!
+# Password: PsVibe@User2024!
 # =============================================================================
 set -euo pipefail
 
 BACKUP_DIR="/backups"
 DB_NAME="psvibe_api"
 DB_USER="psvibe_user"
-DB_PASS="PsVibe@2026_Rotated!"
+DB_PASS="PsVibe@User2024!"
 CONTAINER="psvibe-mysql"
 DATE_STAMP="$(date +%F)"
 BACKUP_FILE="${BACKUP_DIR}/psvibe_${DATE_STAMP}.sql.gz"

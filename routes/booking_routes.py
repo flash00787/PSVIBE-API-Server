@@ -441,66 +441,194 @@ async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — create_booking (NEW — Web Dashboard)
 # ═══════════════════════════════════════
-@router.post("/bookings", response_model=GenericResponse, tags=["Bookings"], summary="Create new booking (Web Dashboard) [MySQL]")
-async def api_create_booking_web(req: dict, auth=Depends(verify_api_key)):
-    """Create a new booking from the web dashboard.
-    Fields: customer_name, phone, member_id (optional), console_id, game_name,
-    booking_date, start_time, duration_mins, deposit_amount (optional),
-    deposit_method (optional: kpay/wavepay/aya_pay), notes (optional).
+@router.post("/bookings", response_model=GenericResponse, tags=["Bookings"], summary="Create booking [MySQL] — Web Dashboard + Customer Bot merged")
+async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depends(rate_limit_10pm)) -> JSONResponse:
+    """Create a booking. Supports both Web Dashboard format and Customer Bot format.
+    Detect by checking if 'customerName' (bot) or 'customer_name' (web dashboard) is present.
     """
     try:
-        customer_name = (req.get("customer_name") or "").strip()
-        phone = (req.get("phone") or "").strip()
-        member_id = (req.get("member_id") or "").strip() or None
-        console_id = (req.get("console_id") or "").strip()
-        game_name = (req.get("game_name") or "").strip()
-        booking_date = (req.get("booking_date") or "").strip()
-        start_time_str = (req.get("start_time") or "").strip()
-        duration_mins = int(req.get("duration_mins", 60))
-        notes = (req.get("notes") or "").strip()
-        add_deposit = req.get("add_deposit", False)
-        deposit_amount = int(req.get("deposit_amount", 0) or 0)
-        deposit_method = (req.get("deposit_method") or "").strip().lower()
+        customer_name_bot = req.get("customerName", "").strip()
+        customer_name_web = req.get("customer_name", "").strip()
 
-        # ── Validation ──
-        if not console_id:
-            return error_response(message="Console is required")
-        if not booking_date:
-            return error_response(message="Booking date is required")
-        if not start_time_str:
-            return error_response(message="Start time is required")
-        if duration_mins < 30 or duration_mins > 480:
-            return error_response(message="Duration must be between 30 and 480 minutes")
-        if not customer_name and not member_id:
-            return error_response(message="Customer name or member is required")
+        # Detect format: web dashboard sends snake_case fields (customer_name, booking_date, start_time)
+        # Customer bot sends camelCase fields (customerName, timeSlot, date)
+        is_web_format = bool(customer_name_web) or bool(req.get("booking_date", "")) or bool(req.get("start_time", ""))
 
-        # ── Deposit validation ──
-        if add_deposit:
-            if deposit_amount <= 0:
-                return error_response(message="Deposit amount must be greater than 0")
-            if deposit_method not in ("kpay", "wavepay", "aya_pay"):
-                return error_response(message="Invalid deposit_method. Must be kpay, wavepay, or aya_pay")
+        # ── WEB DASHBOARD FORMAT (check first to avoid bot branch conflict) ──
+        if is_web_format:
+            customer_name = customer_name_web or customer_name_bot
+            phone = (req.get("phone") or "").strip()
+            member_id = (req.get("member_id") or "").strip() or None
+            console_id = (req.get("console_id") or "").strip()
+            game_name = (req.get("game_name") or "").strip()
+            booking_date = (req.get("booking_date") or "").strip()
+            start_time_str = (req.get("start_time") or "").strip()
+            duration_mins = int(req.get("duration_mins", 60))
+            notes = (req.get("notes") or "").strip()
+            add_deposit = req.get("add_deposit", False)
+            deposit_amount = int(req.get("deposit_amount", 0) or 0)
+            deposit_method = (req.get("deposit_method") or "").strip().lower()
 
-        # ── Parse date/time ──
-        from datetime import datetime as _dt, timedelta as _td
-        try:
-            start_dt = _dt.strptime(f"{booking_date} {start_time_str}:00", "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            return error_response(message="Invalid date/time format. Use YYYY-MM-DD for date and HH:MM for time.")
+            # ── Validation ──
+            if not console_id:
+                return error_response(message="Console is required")
+            if not booking_date:
+                return error_response(message="Booking date is required")
+            if not start_time_str:
+                return error_response(message="Start time is required")
+            if duration_mins < 30 or duration_mins > 480:
+                return error_response(message="Duration must be between 30 and 480 minutes")
+            if not customer_name and not member_id:
+                return error_response(message="Customer name or member is required")
 
-        end_dt = start_dt + _td(minutes=duration_mins)
-        start_mmt = now_mmt()
+            # ── Deposit validation ──
+            if add_deposit:
+                if deposit_amount <= 0:
+                    return error_response(message="Deposit amount must be greater than 0")
+                if deposit_method not in ("kpay", "wavepay", "aya_pay"):
+                    return error_response(message="Invalid deposit_method. Must be kpay, wavepay, or aya_pay")
 
-        # ── Web dashboard bookings always auto-confirm ──
-        _bk_status = "confirmed"
+            # ── Parse date/time ──
+            from datetime import datetime as _dt, timedelta as _td
+            try:
+                start_dt = _dt.strptime(f"{booking_date} {start_time_str}:00", "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                return error_response(message="Invalid date/time format. Use YYYY-MM-DD for date and HH:MM for time.")
 
-        # ── Generate booking ID for reference ──
-        bk_date_str = start_dt.strftime("%Y%m%d")
-        bk_cid_slug = console_id.replace(" ", "").replace("-", "")[:12]
-        bk_ref = f"BK-{bk_date_str}-{bk_cid_slug}-{start_dt.strftime('%H%M')}"
+            end_dt = start_dt + _td(minutes=duration_mins)
+            start_mmt = now_mmt()
 
-        # ── Insert with MySQL transaction ──
-        _conn = _mc.connect(
+            # ── Web dashboard bookings always auto-confirm ──
+            _bk_status = "confirmed"
+
+            # ── Generate booking ID for reference ──
+            bk_date_str = start_dt.strftime("%Y%m%d")
+            bk_cid_slug = console_id.replace(" ", "").replace("-", "")[:12]
+            bk_ref = f"BK-{bk_date_str}-{bk_cid_slug}-{start_dt.strftime('%H%M')}"
+
+            # ── Insert with MySQL transaction ──
+            _conn = _mc.connect(
+                host=os.environ.get('MYSQL_HOST', 'localhost'),
+                user=os.environ.get('MYSQL_USER', 'root'),
+                password=os.environ.get('MYSQL_PASSWORD', '') or 'PsVibe@User2024!',
+                database=os.environ.get('MYSQL_DATABASE', 'psvibe'),
+                port=int(os.environ.get('MYSQL_PORT', '3306')),
+                charset='utf8mb4'
+            )
+            _conn.start_transaction()
+            _cur = _conn.cursor(dictionary=True)
+            try:
+                # Staff name from auth context (the logged-in dashboard user)
+                _staff_name = customer_name if not member_id else member_id
+
+                # Build INSERT columns
+                _cols = ["console_id", "booking_date", "planned_start", "planned_end",
+                         "planned_duration_mins", "status", "staff_name", "notes", "phone", "game_name",
+                         "created_at"]
+                _vals = [console_id, booking_date, start_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                         end_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                         duration_mins, _bk_status, _staff_name, notes, phone, game_name,
+                         start_mmt.strftime('%Y-%m-%d %H:%M:%S')]
+
+                if member_id:
+                    _cols.append("member_id")
+                    _vals.append(member_id)
+
+                if add_deposit:
+                    _cols.extend(["deposit_status", "deposit_method", "deposit_amount"])
+                    _vals.extend(["paid", deposit_method, deposit_amount])
+
+                _placeholders = ", ".join("%s" for _ in _vals)
+                _sql = f"INSERT INTO console_bookings ({', '.join(_cols)}) VALUES ({_placeholders})"
+                _cur.execute(_sql, tuple(_vals))
+                bk_id = _cur.lastrowid
+
+                _conn.commit()
+            except Exception as _tx_err:
+                _conn.rollback()
+                _conn.close()
+                raise _tx_err
+            finally:
+                try:
+                    _conn.close()
+                except Exception:
+                    pass
+
+            # ── Sync console status ──
+            try:
+                _sync_console_status(console_id)
+            except Exception:
+                pass
+
+            return ok({
+                "booking_id": bk_id,
+                "ref": bk_ref,
+                "console_id": console_id,
+                "status": _bk_status,
+                "start_time": start_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                "duration_mins": duration_mins,
+                "deposit_status": "paid" if add_deposit else "none",
+            })
+
+        # ── CUSTOMER BOT FORMAT ──
+        elif customer_name_bot:
+            now = now_mmt()
+            # FIX 2.7: Server-side MAX_SESSION_MINS validation
+            MAX_SESSION_MINS = 1440  # 24 hours
+            duration_mins_raw = req.get("durationMins", req.get("duration_mins", 0))
+            try:
+                duration_mins_raw = int(duration_mins_raw) if duration_mins_raw else 0
+            except (ValueError, TypeError):
+                duration_mins_raw = 0
+            if not duration_mins_raw or duration_mins_raw <= 0 or duration_mins_raw > MAX_SESSION_MINS:
+                return JSONResponse(content={"success": False, "message": f"duration_mins must be 1-{MAX_SESSION_MINS}"}, status_code=400)
+            logging.warning("api_bookings_create [bot]: req keys=%s", list(req.keys()))
+
+            telegram_chat_id = req.get("telegramChatId", "")
+            phone = req.get("phone", "")
+            # Fallback: look up telegram_chat_id from phone if not provided in request
+            if not telegram_chat_id and phone:
+                _tg = _mysql_query_one(
+                    "SELECT telegram_chat_id FROM console_bookings WHERE phone=%s AND telegram_chat_id IS NOT NULL AND telegram_chat_id != '' ORDER BY id DESC LIMIT 1",
+                    (phone,)
+                )
+                if _tg:
+                    telegram_chat_id = _tg["telegram_chat_id"]
+            booking_date_str = req.get("date", "")
+            time_slot = req.get("timeSlot", "")
+            console_type = req.get("consoleType", "PS5")
+            console_id = req.get("console_id", "")
+            duration_mins = int(req.get("durationMins", 60))
+            game_name = req.get("gameName", "")
+            username = req.get("username", "")
+
+            # MI-4: Validate duration
+            if duration_mins < 1 or duration_mins > 1440:
+                return JSONResponse(content={"success": False, "message": "Duration must be 1-1440 minutes"}, status_code=400)
+
+            from datetime import datetime, timedelta
+            # Handle multiple date formats (bot sends M/D/YYYY, API expects YYYY-MM-DD)
+            _parsed_date = booking_date_str
+            for _fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+                try:
+                    _parsed_date = datetime.strptime(booking_date_str, _fmt).strftime("%Y-%m-%d")
+                    break
+                except ValueError:
+                    continue
+
+            # HI-4: Validate date/time — return error instead of silently defaulting to now
+            try:
+                _mmt_tz = timezone(timedelta(hours=MMT_HOURS, minutes=MMT_MINUTES))
+                start_dt = datetime.strptime(f"{_parsed_date} {time_slot}", "%Y-%m-%d %H:%M").replace(tzinfo=_mmt_tz)
+                if start_dt < now_mmt():
+                    return JSONResponse(content={"success": False, "message": "Cannot book for a past date/time"}, status_code=400)
+            except ValueError:
+                return JSONResponse(content={"success": False, "message": f"Invalid time format: {time_slot}"}, status_code=400)
+
+            end_dt = start_dt + timedelta(minutes=duration_mins)
+
+            # CI-1 & CI-3: Wrap conflict check + INSERT in a transaction with row-level locking
+            conn = _mc.connect(
             host=os.environ.get('MYSQL_HOST', 'localhost'),
             user=os.environ.get('MYSQL_USER', 'root'),
             password=os.environ.get('MYSQL_PASSWORD', '') or 'PsVibe@User2024!',
@@ -508,72 +636,168 @@ async def api_create_booking_web(req: dict, auth=Depends(verify_api_key)):
             port=int(os.environ.get('MYSQL_PORT', '3306')),
             charset='utf8mb4'
         )
-        _conn.start_transaction()
-        _cur = _conn.cursor(dictionary=True)
-        try:
-            # Staff name from auth context (the logged-in dashboard user)
-            _staff_name = customer_name if not member_id else member_id
-
-            # Build INSERT columns
-            _cols = ["console_id", "booking_date", "planned_start", "planned_end",
-                     "planned_duration_mins", "status", "staff_name", "notes", "phone", "game_name",
-                     "created_at"]
-            _vals = [console_id, booking_date, start_dt.strftime('%Y-%m-%d %H:%M:%S'),
-                     end_dt.strftime('%Y-%m-%d %H:%M:%S'),
-                     duration_mins, _bk_status, _staff_name, notes, phone, game_name,
-                     start_mmt.strftime('%Y-%m-%d %H:%M:%S')]
-
-            if member_id:
-                _cols.append("member_id")
-                _vals.append(member_id)
-
-            if add_deposit:
-                _cols.extend(["deposit_status", "deposit_method", "deposit_amount"])
-                _vals.extend(["paid", deposit_method, deposit_amount])
-
-            _placeholders = ", ".join("%s" for _ in _vals)
-            _sql = f"INSERT INTO console_bookings ({', '.join(_cols)}) VALUES ({_placeholders})"
-            _cur.execute(_sql, tuple(_vals))
-            bk_id = _cur.lastrowid
-
-            _conn.commit()
-        except Exception as _tx_err:
-            _conn.rollback()
-            _conn.close()
-            raise _tx_err
-        finally:
+            conn.start_transaction()
+            cur = conn.cursor(dictionary=True)
             try:
-                _conn.close()
-            except Exception:
-                pass
+                # ── Slot conflict check with FOR UPDATE locking ──
+                # CI-5: Conflict check — find ALL busy consoles (not just first)
+                _conflict_ids = set()
+                if console_id:
+                    # Specific console: check this one directly
+                    cur.execute(
+                        "SELECT id FROM console_bookings WHERE console_id=%s AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '')))) AND planned_start < %s AND planned_end > %s LIMIT 1 FOR UPDATE",
+                        (console_id, end_dt, start_dt)
+                    )
+                    if cur.fetchone():
+                        _conflict_ids.add(console_id)
+                else:
+                    # No console: find ALL matching consoles, identify which are busy
+                    _matching_consoles = cur.execute(
+                        "SELECT console_id FROM console_status WHERE console_type=%s", (console_type,)
+                    )
+                    _matching_consoles = cur.fetchall()
+                    _cids = [c["console_id"] for c in (_matching_consoles or [])]
+                    if _cids:
+                        _placeholders = ",".join(["%s"] * len(_cids))
+                        cur.execute(
+                            f"SELECT DISTINCT console_id FROM console_bookings WHERE console_id IN ({_placeholders}) AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '')))) AND planned_start < %s AND planned_end > %s FOR UPDATE",
+                            tuple(_cids) + (end_dt, start_dt)
+                        )
+                        _conflict_ids = {r["console_id"] for r in cur.fetchall()}
+                    else:
+                        _cids = []
 
-        # ── Sync console status ──
-        try:
-            _sync_console_status(console_id)
-        except Exception:
-            pass
+                # Specific console requested and busy → reject
+                if console_id and console_id in _conflict_ids:
+                    conn.rollback()
+                    conn.close()
+                    return JSONResponse(content={"success": False, "message": f"\u23f0 Console {console_id} \u101e\u100a\u103a {_parsed_date} {time_slot} \u1010\u103d\u1004\u103a \u1000\u103c\u102d\u102f\u1010\u1004\u103a\u1005\u102c\u101b\u1004\u103a\u1038\u101b\u103e\u102d\u1015\u103c\u102e\u1038\u1016\u103c\u1005\u103a\u1015\u102b\u101e\u100a\u103a"}, status_code=409)
 
-        return ok({
-            "booking_id": bk_id,
-            "ref": bk_ref,
-            "console_id": console_id,
-            "status": _bk_status,
-            "start_time": start_dt.strftime('%Y-%m-%d %H:%M:%S'),
-            "duration_mins": duration_mins,
-            "deposit_status": "paid" if add_deposit else "none",
-        })
+                # Auto-assign: pick first available console from matching type
+                if not console_id:
+                    _available = [cid for cid in _cids if cid not in _conflict_ids]
+                    if _available:
+                        console_id = _available[0]
+                    else:
+                        conn.rollback()
+                        conn.close()
+                        return JSONResponse(content={"success": False, "message": f"\u23f0 {_parsed_date} {time_slot} \u1010\u103d\u1004\u103a {console_type} \u1005\u1000\u103a\u1021\u102c\u1038\u101c\u102f\u1036\u1038 \u1019\u101b\u1010\u1031\u102c\u1037\u1015\u102b"}, status_code=409)
+
+                notes = f"Game: {game_name} | Phone: {phone} | User: {username}"
+
+                # Staff bookings auto-confirm; customer bookings need approval
+                _bk_status = "confirmed" if req.get("source") == "staff" else "pending"
+
+                # ── H8 FIX: Resolve member_id from payload, phone, telegram_chat_id ──
+                bk_member_id = req.get("memberId", req.get("member_id", ""))
+
+                # If member_id from payload, verify it exists in member_wallets
+                if bk_member_id:
+                    cur.execute("SELECT member_id FROM member_wallets WHERE member_id=%s", (bk_member_id,))
+                    if not cur.fetchone():
+                        bk_member_id = ""  # Invalid — clear it
+
+                # Fallback 1: resolve from phone (member_wallets)
+                if not bk_member_id and phone:
+                    cur.execute("SELECT member_id FROM member_wallets WHERE phone=%s AND member_id IS NOT NULL AND member_id != ''", (phone,))
+                    _pm_rows = cur.fetchall()
+                    if _pm_rows:
+                        bk_member_id = _pm_rows[0]["member_id"]
+
+                # Fallback 2: telegram_chat_id → member_wallets (direct match)
+                if not bk_member_id and telegram_chat_id:
+                    cur.execute("SELECT member_id FROM member_wallets WHERE member_id=%s", (telegram_chat_id,))
+                    _pm_rows = cur.fetchall()
+                    if _pm_rows:
+                        bk_member_id = _pm_rows[0]["member_id"]
+
+                # Fallback 3: telegram_chat_id → customer_bot_users → member_wallets
+                if not bk_member_id and telegram_chat_id:
+                    cur.execute("SELECT member_id FROM customer_bot_users WHERE tg_id=%s AND member_id IS NOT NULL AND member_id != ''", (telegram_chat_id,))
+                    _cbu_rows = cur.fetchall()
+                    if _cbu_rows:
+                        _cbu_member = _cbu_rows[0]["member_id"]
+                        # Verify this member_id actually exists in member_wallets
+                        cur.execute("SELECT member_id FROM member_wallets WHERE member_id=%s", (_cbu_member,))
+                        if cur.fetchone():
+                            bk_member_id = _cbu_member
+
+                # Fallback 4: auto-create member record if phone provided but no member found
+                if not bk_member_id and phone:
+                    _auto_member_id = f"MEM{phone.replace('+','').replace(' ','')[-8:]}"
+                    try:
+                        cur.execute(
+                            "INSERT INTO member_wallets (member_id, phone, member_name, balance_mins, tier, created_at) "
+                            "VALUES (%s, %s, %s, 0, 'standard', NOW()) "
+                            "ON DUPLICATE KEY UPDATE phone=VALUES(phone)",
+                            (_auto_member_id, phone, customer_name_bot or "Unknown")
+                        )
+                        bk_member_id = _auto_member_id
+                        logger.info("H8: Auto-created member %s for phone=%s during booking", _auto_member_id, phone)
+                    except Exception as _ac_err:
+                        logger.warning("H8: Auto-create member failed for phone=%s: %s", phone, _ac_err)
+
+                # H8: Convert empty string to None (NULL in DB) + log warning for monitoring
+                if not bk_member_id:
+                    logger.warning("H8: booking created without member_id for phone=%s telegram_chat_id=%s", phone, telegram_chat_id)
+                    bk_member_id = None  # Store NULL instead of ""
+
+                cur.execute(
+                    "INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, planned_end, status, staff_name, notes, telegram_chat_id, planned_duration_mins, phone, game_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (console_id, bk_member_id, _parsed_date, start_dt, end_dt, _bk_status, customer_name_bot, notes, telegram_chat_id, duration_mins, phone, game_name)
+                )
+                bk_id = cur.lastrowid
+
+                # console_status sync deferred to after commit — _sync_console_status()
+                # derives the correct status (Active > Reserved > Free) safely.
+
+                conn.commit()
+            except Exception as _tx_err:
+                conn.rollback()
+                conn.close()
+                raise _tx_err
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass  # non-critical: connection close
+
+            # Sync console_status after commit (derives correct status: Active > Reserved > Free)
+            if console_id:
+                try:
+                    _sync_console_status(console_id)
+                except Exception:
+                    pass
+
+            # Store admin_notify_msg_id if provided (Sale Bot pre-sends notification)
+            admin_notify_msg_id = req.get("admin_notify_msg_id", "")
+            if admin_notify_msg_id:
+                from mysql_db import execute as _mysql_execute
+                try:
+                    _mysql_execute(
+                        "UPDATE console_bookings SET admin_notify_msg_id=%s WHERE id=%s",
+                        (str(admin_notify_msg_id), bk_id)
+                    )
+                except Exception:
+                    pass
+            # Send admin notification ONLY if Sale Bot didn't already send one
+            if not admin_notify_msg_id:
+                import threading
+                threading.Thread(target=_notify_booking_received, args=(customer_name_bot, booking_date_str, time_slot, console_type, duration_mins, game_name, phone, bk_id, console_id), daemon=True).start()
+
+            return ok({"id": bk_id, "message": "Booking created"})
+
+        # ── UNKNOWN FORMAT FALLBACK ──
+        else:
+            return JSONResponse(content={"success": False, "message": "Invalid request format. Use customer_name (web) or customerName (bot)."}, status_code=400)
     except Exception as e:
-        logger.error(f"api_create_booking_web error: {e}", exc_info=True)
+        logger.error(f"api_bookings_create error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ═══════════════════════════════════════
 
 
-# ================================================================
 
-
-# ── PATCH /api/bookings/{booking_id}/status ──
 @router.patch("/bookings/{booking_id}/status", response_model=GenericResponse, tags=["Bookings"], summary="Update booking status (approve/reject) [MySQL]")
 async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(verify_api_key)):
     """Update a booking's status and optionally assign a console."""
@@ -888,7 +1112,7 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
         # Customer bot bookings without deposit (deposit_status='none') stay hidden until deposit is paid
         # Member bookings skip deposit — show them on timeline immediately
         if status_lower == "pending":
-            where_clauses.append("(cb.deposit_status = 'paid' OR (cb.member_id IS NOT NULL AND cb.member_id != ''))")
+            where_clauses.append("(cb.deposit_status IN ('paid', 'verified') OR (cb.member_id IS NOT NULL AND cb.member_id != ''))")
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
         # Server-side filter: cancelled bookings — forfeited deposits show all day, regular only 2 hours
@@ -1465,238 +1689,10 @@ async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
 # Replaces the legacy staff format that was in POST /api/bookings
 
 
-@router.post("/bookings", response_model=GenericResponse, tags=["Bookings"], summary="Create booking from customer bot payload [MySQL]")
-async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depends(rate_limit_10pm)) -> JSONResponse:
-    """Create a booking — customer bot format ONLY (staff use POST /api/sessions/start)."""
-    try:
-        now = now_mmt()
-        # FIX 2.7: Server-side MAX_SESSION_MINS validation
-        MAX_SESSION_MINS = 1440  # 24 hours
-        duration_mins_raw = req.get("durationMins", req.get("duration_mins", 0))
-        try:
-            duration_mins_raw = int(duration_mins_raw) if duration_mins_raw else 0
-        except (ValueError, TypeError):
-            duration_mins_raw = 0
-        if not duration_mins_raw or duration_mins_raw <= 0 or duration_mins_raw > MAX_SESSION_MINS:
-            return JSONResponse(content={"success": False, "message": f"duration_mins must be 1-{MAX_SESSION_MINS}"}, status_code=400)
-        logging.warning("api_bookings_create: req keys=%s", list(req.keys()))
-        
-        # Detect customer bot format (has customerName)
-        customer_name = req.get("customerName", "")
-        logging.warning("api_bookings_create: customer_name=%s date=%s time=%s console=%s", 
-                        customer_name, req.get("date","?"), req.get("timeSlot","?"), req.get("console_id","?"))
-        if customer_name:
-            # Customer bot format
-            telegram_chat_id = req.get("telegramChatId", "")
-            phone = req.get("phone", "")
-            # Fallback: look up telegram_chat_id from phone if not provided in request
-            if not telegram_chat_id and phone:
-                _tg = _mysql_query_one(
-                    "SELECT telegram_chat_id FROM console_bookings WHERE phone=%s AND telegram_chat_id IS NOT NULL AND telegram_chat_id != '' ORDER BY id DESC LIMIT 1",
-                    (phone,)
-                )
-                if _tg:
-                    telegram_chat_id = _tg["telegram_chat_id"]
-            booking_date_str = req.get("date", "")
-            time_slot = req.get("timeSlot", "")
-            console_type = req.get("consoleType", "PS5")
-            console_id = req.get("console_id", "")
-            duration_mins = int(req.get("durationMins", 60))
-            game_name = req.get("gameName", "")
-            username = req.get("username", "")
-
-            # MI-4: Validate duration
-            if duration_mins < 1 or duration_mins > 1440:
-                return JSONResponse(content={"success": False, "message": "Duration must be 1-1440 minutes"}, status_code=400)
-
-            from datetime import datetime, timedelta
-            # Handle multiple date formats (bot sends M/D/YYYY, API expects YYYY-MM-DD)
-            _parsed_date = booking_date_str
-            for _fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%Y/%m/%d"):
-                try:
-                    _parsed_date = datetime.strptime(booking_date_str, _fmt).strftime("%Y-%m-%d")
-                    break
-                except ValueError:
-                    continue
-
-            # HI-4: Validate date/time — return error instead of silently defaulting to now
-            try:
-                _mmt_tz = timezone(timedelta(hours=MMT_HOURS, minutes=MMT_MINUTES))
-                start_dt = datetime.strptime(f"{_parsed_date} {time_slot}", "%Y-%m-%d %H:%M").replace(tzinfo=_mmt_tz)
-                if start_dt < now_mmt():
-                    return JSONResponse(content={"success": False, "message": "Cannot book for a past date/time"}, status_code=400)
-            except ValueError:
-                return JSONResponse(content={"success": False, "message": f"Invalid time format: {time_slot}"}, status_code=400)
-
-            end_dt = start_dt + timedelta(minutes=duration_mins)
-
-            # CI-1 & CI-3: Wrap conflict check + INSERT in a transaction with row-level locking
-            conn = _mc.connect(
-            host=os.environ.get('MYSQL_HOST', 'localhost'),
-            user=os.environ.get('MYSQL_USER', 'root'),
-            password=os.environ.get('MYSQL_PASSWORD', '') or 'PsVibe@User2024!',
-            database=os.environ.get('MYSQL_DATABASE', 'psvibe'),
-            port=int(os.environ.get('MYSQL_PORT', '3306')),
-            charset='utf8mb4'
-        )
-            conn.start_transaction()
-            cur = conn.cursor(dictionary=True)
-            try:
-                # ── Slot conflict check with FOR UPDATE locking ──
-                # CI-5: Conflict check — find ALL busy consoles (not just first)
-                _conflict_ids = set()
-                if console_id:
-                    # Specific console: check this one directly
-                    cur.execute(
-                        "SELECT id FROM console_bookings WHERE console_id=%s AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '')))) AND planned_start < %s AND planned_end > %s LIMIT 1 FOR UPDATE",
-                        (console_id, end_dt, start_dt)
-                    )
-                    if cur.fetchone():
-                        _conflict_ids.add(console_id)
-                else:
-                    # No console: find ALL matching consoles, identify which are busy
-                    _matching_consoles = cur.execute(
-                        "SELECT console_id FROM console_status WHERE console_type=%s", (console_type,)
-                    )
-                    _matching_consoles = cur.fetchall()
-                    _cids = [c["console_id"] for c in (_matching_consoles or [])]
-                    if _cids:
-                        _placeholders = ",".join(["%s"] * len(_cids))
-                        cur.execute(
-                            f"SELECT DISTINCT console_id FROM console_bookings WHERE console_id IN ({_placeholders}) AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '')))) AND planned_start < %s AND planned_end > %s FOR UPDATE",
-                            tuple(_cids) + (end_dt, start_dt)
-                        )
-                        _conflict_ids = {r["console_id"] for r in cur.fetchall()}
-                    else:
-                        _cids = []
-                
-                # Specific console requested and busy → reject
-                if console_id and console_id in _conflict_ids:
-                    conn.rollback()
-                    conn.close()
-                    return JSONResponse(content={"success": False, "message": f"\u23f0 Console {console_id} \u101e\u100a\u103a {_parsed_date} {time_slot} \u1010\u103d\u1004\u103a \u1000\u103c\u102d\u102f\u1010\u1004\u103a\u1005\u102c\u101b\u1004\u103a\u1038\u101b\u103e\u102d\u1015\u103c\u102e\u1038\u1016\u103c\u1005\u103a\u1015\u102b\u101e\u100a\u103a"}, status_code=409)
-                
-                # Auto-assign: pick first available console from matching type
-                if not console_id:
-                    _available = [cid for cid in _cids if cid not in _conflict_ids]
-                    if _available:
-                        console_id = _available[0]
-                    else:
-                        conn.rollback()
-                        conn.close()
-                        return JSONResponse(content={"success": False, "message": f"\u23f0 {_parsed_date} {time_slot} \u1010\u103d\u1004\u103a {console_type} \u1005\u1000\u103a\u1021\u102c\u1038\u101c\u102f\u1036\u1038 \u1019\u101b\u1010\u1031\u102c\u1037\u1015\u102b"}, status_code=409)
-
-                notes = f"Game: {game_name} | Phone: {phone} | User: {username}"
-
-                # Staff bookings auto-confirm; customer bookings need approval
-                _bk_status = "confirmed" if req.get("source") == "staff" else "pending"
-
-                # ── H8 FIX: Resolve member_id from payload, phone, telegram_chat_id ──
-                bk_member_id = req.get("memberId", req.get("member_id", ""))
-
-                # If member_id from payload, verify it exists in member_wallets
-                if bk_member_id:
-                    cur.execute("SELECT member_id FROM member_wallets WHERE member_id=%s", (bk_member_id,))
-                    if not cur.fetchone():
-                        bk_member_id = ""  # Invalid — clear it
-
-                # Fallback 1: resolve from phone (member_wallets)
-                if not bk_member_id and phone:
-                    cur.execute("SELECT member_id FROM member_wallets WHERE phone=%s AND member_id IS NOT NULL AND member_id != ''", (phone,))
-                    _pm_rows = cur.fetchall()
-                    if _pm_rows:
-                        bk_member_id = _pm_rows[0]["member_id"]
-
-                # Fallback 2: telegram_chat_id → member_wallets (direct match)
-                if not bk_member_id and telegram_chat_id:
-                    cur.execute("SELECT member_id FROM member_wallets WHERE member_id=%s", (telegram_chat_id,))
-                    _pm_rows = cur.fetchall()
-                    if _pm_rows:
-                        bk_member_id = _pm_rows[0]["member_id"]
-
-                # Fallback 3: telegram_chat_id → customer_bot_users → member_wallets
-                if not bk_member_id and telegram_chat_id:
-                    cur.execute("SELECT member_id FROM customer_bot_users WHERE tg_id=%s AND member_id IS NOT NULL AND member_id != ''", (telegram_chat_id,))
-                    _cbu_rows = cur.fetchall()
-                    if _cbu_rows:
-                        _cbu_member = _cbu_rows[0]["member_id"]
-                        # Verify this member_id actually exists in member_wallets
-                        cur.execute("SELECT member_id FROM member_wallets WHERE member_id=%s", (_cbu_member,))
-                        if cur.fetchone():
-                            bk_member_id = _cbu_member
-
-                # Fallback 4: auto-create member record if phone provided but no member found
-                if not bk_member_id and phone:
-                    _auto_member_id = f"MEM{phone.replace('+','').replace(' ','')[-8:]}"
-                    try:
-                        cur.execute(
-                            "INSERT INTO member_wallets (member_id, phone, member_name, balance_mins, tier, created_at) "
-                            "VALUES (%s, %s, %s, 0, 'standard', NOW()) "
-                            "ON DUPLICATE KEY UPDATE phone=VALUES(phone)",
-                            (_auto_member_id, phone, customer_name or "Unknown")
-                        )
-                        bk_member_id = _auto_member_id
-                        logger.info("H8: Auto-created member %s for phone=%s during booking", _auto_member_id, phone)
-                    except Exception as _ac_err:
-                        logger.warning("H8: Auto-create member failed for phone=%s: %s", phone, _ac_err)
-
-                # H8: Convert empty string to None (NULL in DB) + log warning for monitoring
-                if not bk_member_id:
-                    logger.warning("H8: booking created without member_id for phone=%s telegram_chat_id=%s", phone, telegram_chat_id)
-                    bk_member_id = None  # Store NULL instead of ""
-
-                cur.execute(
-                    "INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, planned_end, status, staff_name, notes, telegram_chat_id, planned_duration_mins, phone, game_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (console_id, bk_member_id, _parsed_date, start_dt, end_dt, _bk_status, customer_name, notes, telegram_chat_id, duration_mins, phone, game_name)
-                )
-                bk_id = cur.lastrowid
-
-                # console_status sync deferred to after commit — _sync_console_status()
-                # derives the correct status (Active > Reserved > Free) safely.
-
-                conn.commit()
-            except Exception as _tx_err:
-                conn.rollback()
-                conn.close()
-                raise _tx_err
-            finally:
-                try:
-                    conn.close()
-                except Exception:
-                    pass  # non-critical: connection close
-
-            # Sync console_status after commit (derives correct status: Active > Reserved > Free)
-            if console_id:
-                try:
-                    _sync_console_status(console_id)
-                except Exception:
-                    pass
-
-            # Store admin_notify_msg_id if provided (Sale Bot pre-sends notification)
-            admin_notify_msg_id = req.get("admin_notify_msg_id", "")
-            if admin_notify_msg_id:
-                from mysql_db import execute as _mysql_execute
-                try:
-                    _mysql_execute(
-                        "UPDATE console_bookings SET admin_notify_msg_id=%s WHERE id=%s",
-                        (str(admin_notify_msg_id), bk_id)
-                    )
-                except Exception:
-                    pass
-            # Send admin notification ONLY if Sale Bot didn't already send one
-            if not admin_notify_msg_id:
-                import threading
-                threading.Thread(target=_notify_booking_received, args=(customer_name, booking_date_str, time_slot, console_type, duration_mins, game_name, phone, bk_id, console_id), daemon=True).start()
-
-            return ok({"id": bk_id, "message": "Booking created"})
-        else:
-            # No customerName — staff should use POST /api/sessions/start
-            return JSONResponse(content={"success": False, "error": "Staff bookings must use POST /api/sessions/start"}, status_code=400)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/bookings/by-phone-date", tags=["Bookings"])
+
+
 async def api_bookings_by_phone_date(phone: str, date: str, auth=Depends(verify_api_key)):
     """Get bookings by phone + date for admin notification dedup."""
     try:
