@@ -150,7 +150,7 @@ async def dashboard_get_sales_daily(
                 "staff_name": r.get("staff_name"),
                 "payment_method": r.get("payment_method"),
                 "notes": notes,
-                "sale_time": str(r["sale_time"])[:16] if r.get("sale_time") else None,  # MMT HH:MM
+                "sale_time": r["created_at"].strftime("%H:%M") if r.get("created_at") else None,  # MMT HH:MM (from created_at)
                 "created_at": str(r["created_at"]) if r.get("created_at") else None,
             })
         return {
