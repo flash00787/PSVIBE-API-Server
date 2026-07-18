@@ -325,6 +325,12 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
             )
 
             _chk_conn.commit()
+
+            # Restore deposit if previously forfeited (auto-cancel then reactivate)
+            _mysql_exec(
+                "UPDATE console_bookings SET deposit_status='verified' WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+                (booking_id,)
+            )
         except Exception:
             _chk_conn.rollback()
             raise
@@ -823,7 +829,7 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
             if status == "cancelled":
                 _allowed_from = "('pending','confirmed','pending_check_in','checked_in')"
             elif status == "Active":
-                _allowed_from = "('pending','checked_in')"
+                _allowed_from = "('pending','checked_in','cancelled')"
             else:
                 _allowed_from = "('pending')"
             # For cancelled status, also stamp cancelled_at
@@ -913,9 +919,14 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                 elif status in ("rejected", "cancelled"):
                     _app_cur.execute("UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s", (_console_id,))
             _app_conn.commit()
-            
 
-            
+            # Restore deposit if previously forfeited (auto-cancel then reactivate)
+            if status == "Active":
+                _mysql_exec(
+                    "UPDATE console_bookings SET deposit_status='verified' WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+                    (booking_id,)
+                )
+
             # 📢 Customer notification on confirm/cancel (fire-and-forget)
             if status in ("confirmed", "cancelled"):
                 logger.info("[NOTIFY] Triggering notification for BK#%s status=%s", booking_id, status)

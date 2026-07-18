@@ -315,6 +315,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             _fifo_result = {"liability": 0, "consumed": 0}
         rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date >= %s AND sale_date < %s", (_start, _end))
         income_by_account = {acc["key"]: 0.0 for acc in accounts}
+        dep_total_per_account = {acc["key"]: 0.0 for acc in accounts}  # 🆕 track (dep) amounts
         for row in rows:
             note = (row.get("notes") or "")
             if note.startswith("Topup") or note.startswith("New member"): continue
@@ -328,8 +329,11 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                     method, _, val = part.partition(":")
                     method = method.strip().lower().replace(" ", "_")
                     try:
+                        _is_dep = "(dep)" in val.lower()  # 🆕 detect deposit portion
                         _clean = val.strip().replace(" (dep)", "") or "0"
                         val = float(_clean)
+                        if _is_dep and method in dep_total_per_account:
+                            dep_total_per_account[method] += val  # 🆕 accumulate dep amounts
                     except ValueError:
                         val = net_amount / len(parts) if parts else 0
                 else:
@@ -432,6 +436,14 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             inject = cash_map.get(f"inject|{db_name}", 0)
             eject = cash_map.get(f"eject|{db_name}", 0)
             si_pay = si_payments.get(db_name, 0)
+            # 🆕 Defensive (dep) subtraction: income parsing strips "(dep)" but
+            # deposit-related injects may still overlap. Subtract tracked (dep) totals
+            # from inject to prevent double-counting.
+            _dep_ded = dep_total_per_account.get(key, 0)
+            if _dep_ded > 0 and inject > 0:
+                _effective_ded = min(inject, _dep_ded)
+                inject -= _effective_ded
+                dep_total_per_account[key] -= _effective_ded
             # Formula: income - opex + transfers - stock_in_payments + inject - eject
             # Note: stock_in purchases also create cash_movements eject entries,
             # so stock_in_payments may partially overlap with eject for non-split entries.
@@ -644,6 +656,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # --- Income from sales_daily (exact same logic as finance/balances) ---
         rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date < %s", (_end,))
         income_by_account = {a["key"]: 0.0 for a in accounts}
+        bs_dep_total_per_account = {a["key"]: 0.0 for a in accounts}  # 🆕 track (dep) amounts
         for row in rows:
             note = (row.get("notes") or "")
             if note.startswith("Topup") or note.startswith("New member"): continue
@@ -657,7 +670,10 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                     method, _, val = part.partition(":")
                     method = method.strip().lower().replace(" ", "_")
                     _clean = val.strip().replace(" (dep)", "") or "0"
+                    _is_dep = "(dep)" in val.lower()  # 🆕 detect deposit portion
                     val = float(_clean)
+                    if _is_dep and method in bs_dep_total_per_account:
+                        bs_dep_total_per_account[method] += val  # 🆕 accumulate dep amounts
                 else:
                     method = part.lower().replace(" ", "_")
                     val = net_amount
@@ -706,6 +722,13 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             t_out = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_out' AND created_at < %s", (db, _end))["t"] or 0)
             inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)) )) AND created_at < %s", (db, _end))["t"] or 0)
             ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject' AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) )) AND created_at < %s", (db, _end))["t"] or 0)
+
+            # 🆕 Defensive (dep) subtraction from inject (same logic as finance/balances)
+            _bs_dep_ded = bs_dep_total_per_account.get(key, 0)
+            if _bs_dep_ded > 0 and inj > 0:
+                _eff = min(inj, _bs_dep_ded)
+                inj -= _eff
+                bs_dep_total_per_account[key] -= _eff
 
             # t_out is stored as negative in DB, so + t_out works (= subtract)
             bal = income - opex + t_in + t_out + inj - ej

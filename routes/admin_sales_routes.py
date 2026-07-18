@@ -419,7 +419,11 @@ async def api_stock_out_log(req: dict, auth=Depends(verify_api_key)):
 
 @router.post("/stock-in/log", response_model=GenericResponse, tags=["Stock"], summary="Log stock-in record [MySQL]")
 async def api_stock_in_log(req: dict, auth=Depends(verify_api_key)):
-    """Insert a stock-in record into stock_in table (replaces direct GSheets append)."""
+    """Insert a stock-in record into stock_in table (replaces direct GSheets append).
+
+    If payment_method is provided, also creates a corresponding cash_movements eject
+    entry to keep the balance sheet accurate.
+    """
     try:
         item_name = req.get("item_name", "")
         qty = int(req.get("qty", 0))
@@ -428,17 +432,21 @@ async def api_stock_in_log(req: dict, auth=Depends(verify_api_key)):
         supplier = req.get("supplier", "")
         notes = req.get("notes", "")
         created_at = req.get("created_at", "")
+        payment_method = req.get("payment_method", "")
+        paid_by = req.get("paid_by", "")
 
         if not item_name or qty <= 0:
             return error_response(message="item_name and qty > 0 required")
 
         batch_id = f"IN-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{item_name[:20].replace(' ', '_')}"
 
+        total_amount = qty * unit_cost
+
         # Note: total_cost is STORED GENERATED column (= quantity * unit_cost), do not insert
         _mysql_exec(
-            "INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, staff_name) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (batch_id, item_name, qty, unit_cost, supplier or "Manual", notes or "", staff)
+            "INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (batch_id, item_name, qty, unit_cost, supplier or "Manual", notes or "", payment_method, paid_by, staff)
         )
 
         # Update inventory quantity
@@ -449,7 +457,17 @@ async def api_stock_in_log(req: dict, auth=Depends(verify_api_key)):
             (item_name, "", qty, unit_cost, 0, qty, unit_cost)
         )
 
-        logger.info("Stock-in logged: batch=%s item=%s qty=%s", batch_id, item_name, qty)
+        # 🆕 Create cash_movements eject entry if payment_method is provided
+        if payment_method and payment_method.strip():
+            eject_note = f"Stock In: {item_name} x{qty}"
+            _mysql_exec(
+                "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                ("eject", payment_method.strip(), total_amount, eject_note, staff)
+            )
+            logger.info("Stock-in eject created: account=%s amount=%s note=%s", payment_method, total_amount, eject_note)
+
+        logger.info("Stock-in logged: batch=%s item=%s qty=%s payment=%s", batch_id, item_name, qty, payment_method or "N/A")
         return ok({"batch_id": batch_id, "item_name": item_name, "qty": qty, "success": True})
     except Exception as e:
         logger.error(f"api_stock_in_log: {e}")

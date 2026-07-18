@@ -387,9 +387,14 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 (member_id, game_name, _now_ref, console_id)
             )
             _start_conn.commit()
-            
 
-            
+            # Restore deposit if previously forfeited (auto-cancel then reactivate)
+            if bk:
+                _mysql_exec(
+                    "UPDATE console_bookings SET deposit_status='verified' WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+                    (booking_id,)
+                )
+
             # Safety: sync console_status to ensure no drift
             try:
                 _sync_console_status(console_id)
@@ -597,6 +602,14 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
             )
             
             conn.commit()
+
+            # Restore deposit if previously forfeited (auto-cancel then reactivate)
+            if linked_booking:
+                _mysql_exec(
+                    "UPDATE console_bookings SET deposit_status='verified' WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+                    (linked_booking_id,)
+                )
+
             # Safety: sync console_status to ensure no drift
             try:
                 _sync_console_status(console_id)
