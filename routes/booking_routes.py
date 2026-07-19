@@ -1081,8 +1081,8 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
     """List bookings with optional status, member_id, and date filters."""
     try:
         sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, " \
-              "COALESCE(cs.actual_start, cb.planned_start) AS start_time, " \
-              "COALESCE(cs.actual_end, cb.planned_end) AS end_time, " \
+              "DATE_FORMAT(COALESCE(cs.actual_start, cb.planned_start), '%%H:%%i') AS start_time, " \
+              "DATE_FORMAT(COALESCE(cs.actual_end, cb.planned_end), '%%H:%%i') AS end_time, " \
               "cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, " \
               "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, " \
               "cb.phone, cb.game_name, cb.created_at, cb.cancelled_at, " \
@@ -1127,6 +1127,7 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
         # Server-side filter: cancelled bookings — forfeited deposits show all day, regular only 2 hours
+        # Server-side filter: cancelled bookings — forfeited deposits show all day, regular only 2 hours
         if status == "cancelled":
             sql += " AND " if where_clauses else " WHERE "
             sql += "(cb.deposit_status = 'forfeited' OR cb.cancelled_at >= NOW() - INTERVAL 2 HOUR)"
@@ -1161,7 +1162,11 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
             start_time_full = ""
             if start:
                 try:
-                    start_dt = _dt.fromisoformat(start) if isinstance(start, str) else start
+                    # Handle both 'HH:MM' and 'YYYY-MM-DD HH:MM:SS' formats
+                    if isinstance(start, str) and len(start) <= 5 and ':' in start and '-' not in start:
+                        start_dt = _dt.strptime(start, "%H:%M")
+                    else:
+                        start_dt = _dt.fromisoformat(start) if isinstance(start, str) else start
                     time_slot = start_dt.strftime("%H:%M")
                     start_time_full = start_dt.strftime("%H:%M")
                     dur = int(r.get("duration_mins", 0))  # 0=No Timer
