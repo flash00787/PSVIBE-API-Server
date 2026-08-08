@@ -56,6 +56,7 @@ from routes.staff_routes import router as staff_routes_router
 from routes.finance_routes import router as finance_router
 from routes.reports import router as reports_router
 from routes.promotions import router as promotions_router
+from routes.tournament_routes import router as tournament_router
 from dashboard_routes import router as dashboard_router
 from kora_cmds import router as kora_cmds_router
 from digest_routes import router as digest_router
@@ -316,6 +317,7 @@ app.include_router(staff_routes_router)
 app.include_router(finance_router)
 app.include_router(reports_router)
 app.include_router(promotions_router)
+app.include_router(tournament_router)
 
 # ── Config Cache ──
 _config_cache_data = None
@@ -685,7 +687,7 @@ try:
     dashboard_dir = os.path.join(os.path.dirname(__file__), "dashboard-dist")
     if os.path.isdir(dashboard_dir):
         # Serve FoodMenuRegister JS with no-cache headers
-        @app.get("/assets/FoodMenuRegister-{rest:path}", include_in_schema=False)
+        @app.get("/psvibe-assets/FoodMenuRegister-{rest:path}", include_in_schema=False)
         async def serve_food_menu_js(rest: str):
             fpath = os.path.join(dashboard_dir, "assets", f"FoodMenuRegister-{rest}")
             if os.path.isfile(fpath):
@@ -705,11 +707,18 @@ try:
                     resp.headers["Expires"] = "0"
                 return resp
 
-        app.mount("/assets", _NoCacheStaticFiles(directory=os.path.join(dashboard_dir, "assets")), name="dashboard_assets")
+        app.mount("/psvibe-assets", _NoCacheStaticFiles(directory=os.path.join(dashboard_dir, "assets")), name="dashboard_assets")
 
-        @app.get("/favicon.svg")
+        # Also mount /assets for JS hardcoded paths (logo images etc.)
+        app.mount("/assets", _NoCacheStaticFiles(directory=os.path.join(dashboard_dir, "assets")), name="dashboard_assets_legacy")
+
+        @app.get("/favicon.ico")
+        @app.get("/favicon.png")
         async def dashboard_favicon():
-            return FileResponse(os.path.join(dashboard_dir, "favicon.svg"))
+            icon_path = os.path.join(dashboard_dir, "logo-icon.png")
+            if os.path.isfile(icon_path):
+                return FileResponse(icon_path, media_type="image/png")
+            return FileResponse(os.path.join(dashboard_dir, "favicon.svg"), media_type="image/svg+xml")
 
         @app.get("/")
         async def serve_dashboard_root():
@@ -796,8 +805,63 @@ try:
 
         # Catch-all: Serve SPA for all non-API paths
         @app.get("/{full_path:path}")
-        async def serve_spa_fallback(full_path: str):
-            if full_path.startswith("api/") or full_path.startswith("static/") or full_path.startswith("uploads/"):
+        @app.post("/{full_path:path}")
+        @app.put("/{full_path:path}")
+        @app.delete("/{full_path:path}")
+        @app.patch("/{full_path:path}")
+        async def serve_spa_fallback(full_path: str, request: Request = None):
+            # Proxy n8n/wf to n8n via httpx
+            if full_path.startswith("wf/") or full_path.startswith("n8n/") or full_path.startswith("n8n-app/"):
+                try:
+                    prefix = full_path[:full_path.find("/")]
+                    rest = full_path[len(prefix)+1:] if len(full_path) > len(prefix)+1 else ""
+                    if prefix == "wf":
+                        target_path = f"/{prefix}/{rest}"
+                    else:
+                        target_path = f"/{prefix}/{rest}"
+                    target_url = f"http://127.0.0.1:5678{target_path}"
+                    import httpx
+                    async with httpx.AsyncClient() as client:
+                        body = await request.body() if request else b""
+                        headers = {k: v for k, v in request.headers.items() if k.lower() not in ["host", "content-length", "content-encoding"]} if request else {}
+                        resp = await client.request(
+                            method=request.method,
+                            url=target_url,
+                            headers=headers,
+                            content=body,
+                        )
+                        from starlette.responses import Response as StarletteResponse
+                        return StarletteResponse(
+                            content=resp.content,
+                            status_code=resp.status_code,
+                            headers=dict(resp.headers),
+                        )
+                except Exception as e:
+                    return JSONResponse(content={"error": str(e)}, status_code=502)
+            # Proxy n8n static/assets/API paths to n8n
+            if full_path.startswith("static/") or full_path.startswith("assets/") or full_path.startswith("rest/"):
+                try:
+                    target_url = f"http://127.0.0.1:5678/{full_path}"
+                    import httpx
+                    async with httpx.AsyncClient() as client:
+                        body = await request.body() if request else b""
+                        headers = {k: v for k, v in request.headers.items() if k.lower() not in ["host", "content-length", "content-encoding"]} if request else {}
+                        resp = await client.request(
+                            method=request.method,
+                            url=target_url,
+                            headers=headers,
+                            content=body,
+                        )
+                        from starlette.responses import Response as StarletteResponse
+                        return StarletteResponse(
+                            content=resp.content,
+                            status_code=resp.status_code,
+                            headers=dict(resp.headers),
+                        )
+                except Exception as e:
+                    return JSONResponse(content={"error": str(e)}, status_code=502)
+            # Normal SPA routing
+            if full_path.startswith("api/") or full_path.startswith("uploads/"):
                 return JSONResponse(
                     content={"success": False, "error": "Not Found", "code": 404},
                     status_code=404

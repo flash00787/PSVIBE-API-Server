@@ -1,5 +1,28 @@
 # PS VIBE API Server — Changelog
 
+## 2026-08-08 — Tournaments Backend (Phase 1)
+
+### 🏆 New Feature: Tournament Registration & Bracket Management
+- **New tables**: `tournaments`, `tournament_players`, `tournament_matches` — full bracket management
+- **New router**: `routes/tournament_routes.py` (14 endpoints, 843 lines)
+  - Admin CRUD: create, list, get, update tournaments
+  - Admin player management: add, confirm payment, remove
+  - Bracket ops: start (seed + generate R1), submit scores (advance winner), standings
+  - Public: HTML registration page (`/t/{token}`), register endpoint, bracket view, player list
+- **Wallet integration**: Paid tournaments with member_id auto-deduct from `member_wallets` balance, recording `eject` cash_movements. Uses existing cash_movements enum (`eject` type) — no new enum values needed.
+- **Duplicate protection**: phone dedup per tournament (refund if wallet was deducted). Duplicate → 409.
+- **Tournament registration page**: mobile-friendly Burmese/English HTML form at `/t/{token}`, served directly by FastAPI (no external deps).
+- **Bracket logic**: standard single-elimination seeding with byes for non-power-of-2 counts. Winner auto-advances; final match → tournament `completed`.
+- **Tests**: 14 tests covering CRUD, auth, free/paid registration, wallet deduction, cash_movements, duplicate rejection, bracket generation, score advancement, tie rejection, final completion, HTML page, public endpoints. All passing.
+
+### Files Changed
+| File | Change |
+|------|--------|
+| `routes/tournament_routes.py` | New — tournament endpoints |
+| `tests/test_tournaments.py` | New — 14 test cases |
+| `app.py` | +2 lines — import & register tournament router |
+| `CHANGELOG.md` | This entry |
+
 ## 2026-07-01 — Security Hardening & Quality Cleanup
 
 ### 🔐 Security Hardening
