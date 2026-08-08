@@ -488,6 +488,144 @@ class TestBracket:
         assert t["status"] == "completed"
 
 
+class TestSSUpload:
+    """Test payment screenshot upload endpoint."""
+
+    def test_ss_upload_stores_file_updates_db(self, client, auth_headers):
+        """Upload a payment SS → file saved, DB updated, ss_url returned."""
+        import io
+        from mysql_db import query_one
+
+        # Create tournament
+        resp = client.post("/api/tournaments", json={
+            "name": "SS Upload Cup",
+            "game": "EA FC 26",
+            "entry_fee_ks": 5000,
+            "max_players": 8,
+            "status": "open",
+        }, headers=auth_headers)
+        tid = resp.json()["data"]["id"]
+
+        # Register a player
+        resp = client.post(f"/api/tournaments/{tid}/register", json={
+            "name": "SS Player",
+            "phone": "09123456710",
+            "payment_method": "kpay",
+            "ss_file": "old_telegram_file_id",
+        })
+        assert resp.json()["success"] is True
+        pid = resp.json()["data"]["player_id"]
+        assert pid is not None
+
+        # Upload SS
+        fake_image = io.BytesIO(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00")
+        resp = client.post(
+            f"/api/tournaments/{tid}/players/{pid}/ss",
+            files={"file": ("test.jpg", fake_image, "image/jpeg")},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert "ss_url" in data["data"]
+        assert data["data"]["ss_url"].startswith("/uploads/tournaments/")
+        assert data["data"]["ss_file"].startswith("uploads/tournaments/")
+
+        # Verify DB updated
+        p = query_one("SELECT ss_file FROM tournament_players WHERE id=%s", (pid,))
+        assert p["ss_file"].startswith("uploads/tournaments/")
+        assert f"t{tid}_p{pid}" in p["ss_file"]
+
+        # Verify file exists
+        import os
+        filepath = os.path.join(os.path.dirname(os.path.dirname(__file__)), p["ss_file"])
+        assert os.path.isfile(filepath)
+
+        # Verify the uploaded image is served
+        resp = client.get(data["data"]["ss_url"])
+        assert resp.status_code == 200
+        assert "image" in resp.headers.get("content-type", "")
+
+    def test_ss_upload_rejects_non_image(self, client, auth_headers):
+        """Uploading non-image file should be rejected."""
+        import io
+
+        resp = client.post("/api/tournaments", json={
+            "name": "Reject NonImage Cup",
+            "game": "FIFA",
+            "entry_fee_ks": 5000,
+            "max_players": 8,
+            "status": "open",
+        }, headers=auth_headers)
+        tid = resp.json()["data"]["id"]
+
+        # Register
+        resp = client.post(f"/api/tournaments/{tid}/register", json={
+            "name": "Fake SS Player",
+            "phone": "09123456711",
+            "payment_method": "kpay",
+            "ss_file": "dummy",
+        })
+        pid = resp.json()["data"]["player_id"]
+
+        # Try uploading a text file as SS
+        fake_text = io.BytesIO(b"this is not an image")
+        resp = client.post(
+            f"/api/tournaments/{tid}/players/{pid}/ss",
+            files={"file": ("fake.txt", fake_text, "text/plain")},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["success"] is False
+        assert "image" in resp.json()["error"].lower()
+
+    def test_players_response_includes_ss_url(self, client, auth_headers):
+        """GET /players returns ss_url when ss_file is a local path."""
+        import io
+
+        resp = client.post("/api/tournaments", json={
+            "name": "SS URL Test Cup",
+            "game": "Tekken",
+            "entry_fee_ks": 3000,
+            "max_players": 8,
+            "status": "open",
+        }, headers=auth_headers)
+        tid = resp.json()["data"]["id"]
+
+        # Register + upload SS
+        resp = client.post(f"/api/tournaments/{tid}/register", json={
+            "name": "URL Player",
+            "phone": "09123456712",
+            "payment_method": "wavepay",
+            "ss_file": "legacy_id",
+        })
+        pid = resp.json()["data"]["player_id"]
+
+        fake_image = io.BytesIO(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00")
+        client.post(f"/api/tournaments/{tid}/players/{pid}/ss",
+                    files={"file": ("test.jpg", fake_image, "image/jpeg")})
+
+        # Get players
+        resp = client.get(f"/api/tournaments/{tid}/players")
+        assert resp.status_code == 200
+        players = resp.json()["data"]["players"]
+        url_player = [p for p in players if p["name"] == "URL Player"][0]
+        assert url_player["ss_url"] is not None
+        assert url_player["ss_url"].startswith("/uploads/tournaments/")
+        # ss_file raw should still be present
+        assert "ss_file" in url_player
+
+    def test_ss_upload_nonexistent_player_404(self, client, auth_headers):
+        """Uploading SS to a non-existent player returns 404."""
+        import io
+        fake_image = io.BytesIO(b"\xff\xd8\xff\xe0\x00\x10JFIF")
+        resp = client.post(
+            "/api/tournaments/99999/players/99999/ss",
+            files={"file": ("test.jpg", fake_image, "image/jpeg")},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["success"] is False
+        assert resp.json()["code"] == 404
+
+
 class TestPublicEndpoints:
     """Test public (no-auth) endpoints."""
 

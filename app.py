@@ -803,6 +803,30 @@ try:
                 headers=resp_headers
             )
 
+        # ═══ Uploads Static File Serving ═══
+        # Serve uploaded files (tournament payment screenshots, etc.)
+        # Must be registered BEFORE the SPA catch-all
+        _uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
+
+        @app.get("/uploads/{path:path}")
+        async def serve_uploads(path: str):
+            file_path = os.path.join(_uploads_dir, path)
+            # Security: prevent directory traversal
+            real_path = os.path.realpath(file_path)
+            if not real_path.startswith(os.path.realpath(_uploads_dir)):
+                return Response(status_code=404)
+            if not os.path.isfile(real_path):
+                return Response(status_code=404)
+            # Determine content type
+            ext = os.path.splitext(path)[1].lower()
+            content_type_map = {
+                ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+                ".mp4": "video/mp4", ".pdf": "application/pdf",
+            }
+            media_type = content_type_map.get(ext, "application/octet-stream")
+            return FileResponse(real_path, media_type=media_type)
+
         # Catch-all: Serve SPA for all non-API paths
         @app.get("/{full_path:path}")
         @app.post("/{full_path:path}")

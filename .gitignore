@@ -13,3 +13,5 @@ node_modules/
 dist/
 dashboard-dist/
 server.log.*
+uploads/tournaments/*.jpg
+uploads/tournaments/*.png

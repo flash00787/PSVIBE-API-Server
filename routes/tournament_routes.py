@@ -23,17 +23,22 @@ Endpoints:
 import logging
 import secrets
 import math
+import os
+import time
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
 from helpers import ok, error_response
 from deps import verify_api_key
 
 logger = logging.getLogger(__name__)
+
+# Uploads directory for tournament payment screenshots
+_UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", "tournaments")
 
 router = APIRouter(tags=["Tournaments"])
 
@@ -546,89 +551,281 @@ async def registration_page(token: str, request: Request):
         spots_left = max(0, int(t["max_players"]) - reg_count)
         fee = int(t["entry_fee_ks"] or 0)
 
+        # Format prize and dates for display
+        prize_str = t.get("prize") or ""
+        start_str = str(t.get("start_at", ""))[:16] if t.get("start_at") else ""
+        reg_close_str = str(t.get("reg_close_at", ""))[:16] if t.get("reg_close_at") else ""
+        description = t.get("description") or ""
+        
+        # Escape for JS/HTML safety
+        import html as _html
+        tn_name = _html.escape(t["name"])
+        tn_game = _html.escape(t["game"])
+        tn_desc = _html.escape(description)
+        tn_prize = _html.escape(prize_str)
+        tn_format = "Single Elimination" if t.get("format") == "single" else "Double Elimination"
+        tn_id = int(t["id"])
+
         html = f"""<!DOCTYPE html>
 <html lang="my">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{t['name']} — PS VIBE Tournament</title>
+<title>{tn_name} — PS VIBE Tournament</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {{
+    theme: {{
+      extend: {{
+        colors: {{
+          vibe: {{ 50: '#f5f3ff', 100: '#ede9fe', 200: '#ddd6fe', 300: '#c4b5fd', 400: '#a78bfa', 500: '#8b5cf6', 600: '#7c3aed', 700: '#6d28d9', 800: '#5b21b6', 900: '#4c1d95', 950: '#2e1065' }},
+          surface: {{ 900: '#0f0f1a', 800: '#1a1a2e', 700: '#16213e', 600: '#111827' }}
+        }},
+        fontFamily: {{ sans: ['Inter', 'Noto Sans Myanmar', 'system-ui', 'sans-serif'] }}
+      }}
+    }}
+  }}
+</script>
 <style>
-* {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ font-family: -apple-system, 'Noto Sans Myanmar', sans-serif; background: #0f0f1a; color: #e0e0f0; min-height: 100vh; padding: 16px; }}
-.card {{ max-width: 480px; margin: 0 auto; background: #1a1a2e; border-radius: 16px; padding: 24px; box-shadow: 0 4px 24px rgba(0,0,0,0.4); }}
-h1 {{ font-size: 1.5rem; color: #7c3aed; margin-bottom: 4px; }}
-.game {{ font-size: 0.9rem; color: #a78bfa; margin-bottom: 16px; }}
-.info {{ background: #16213e; border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; }}
-.info-row {{ display: flex; justify-content: space-between; padding: 6px 0; font-size: 0.9rem; }}
-.info-row span:first-child {{ color: #9ca3af; }}
-.info-row span:last-child {{ font-weight: 600; }}
-.spots {{ color: #f59e0b; }}
-.fulfilled {{ color: #ef4444; }}
-input, button {{ width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #374151; background: #111827; color: #e0e0f0; font-size: 1rem; margin-bottom: 12px; font-family: inherit; }}
-input:focus {{ outline: none; border-color: #7c3aed; }}
-button {{ background: #7c3aed; border: none; color: #fff; font-weight: 700; font-size: 1.1rem; cursor: pointer; }}
-button:disabled {{ background: #4b5563; cursor: not-allowed; }}
-.msg {{ text-align: center; padding: 8px; font-size: 0.85rem; border-radius: 6px; margin-bottom: 12px; display: none; }}
-.msg.success {{ background: #065f46; color: #6ee7b7; display: block; }}
-.msg.error {{ background: #7f1d1d; color: #fca5a5; display: block; }}
-.desc {{ font-size: 0.85rem; color: #9ca3af; line-height: 1.5; margin-bottom: 16px; }}
-.footer {{ text-align: center; font-size: 0.75rem; color: #6b7280; margin-top: 16px; }}
+  body {{ background: #0f0f1a; }}
+  .text-glow {{ text-shadow: 0 0 20px rgba(124,58,237,0.4); }}
+  input[type=file]::file-selector-button {{
+    background: linear-gradient(135deg, #7c3aed, #5b21b6);
+    border: none; color: white; padding: 8px 16px; border-radius: 6px;
+    cursor: pointer; font-weight: 600; margin-right: 12px;
+  }}
+  .pay-btn {{ transition: all 0.2s ease; }}
+  .pay-btn:hover {{ transform: translateY(-1px); box-shadow: 0 4px 12px rgba(124,58,237,0.3); }}
+  .pay-btn.active {{ background: linear-gradient(135deg, #7c3aed, #5b21b6) !important; color: white !important; border-color: #7c3aed !important; box-shadow: 0 0 16px rgba(124,58,237,0.4); }}
+  .spinner {{ display: inline-block; width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: white; animation: spin 0.6s linear infinite; }}
+  @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
 </style>
 </head>
-<body>
-<div class="card">
-<h1>🏆 {t['name']}</h1>
-<div class="game">🎮 {t['game']}</div>
-{ f'<div class="desc">{t["description"]}</div>' if t.get('description') else '' }
-<div class="info">
-<div class="info-row"><span>Entry Fee</span><span>{fee if fee > 0 else 'အခမဲ့ (Free)'} Ks</span></div>
-<div class="info-row"><span>Spots</span><span class="{'fulfilled' if spots_left == 0 else 'spots'}">{spots_left} left / {t['max_players']} max</span></div>
-<div class="info-row"><span>Format</span><span>{'Single Elimination' if t['format'] == 'single' else 'Double Elimination'}</span></div>
-{ f'<div class="info-row"><span>Prize</span><span>🏅 {t["prize"]}</span></div>' if t.get('prize') else '' }
+<body class="min-h-screen flex items-center justify-center p-4">
+<div class="w-full max-w-lg">
+
+  <!-- Header -->
+  <div class="text-center mb-6">
+    <div class="inline-flex items-center gap-2 mb-2">
+      <span class="text-3xl">🎮</span>
+      <h1 class="text-2xl font-bold text-white text-glow">{tn_name}</h1>
+    </div>
+    <p class="text-vibe-400 text-sm font-medium">{tn_game} &middot; {tn_format}</p>
+    <p class="text-gray-500 text-xs mt-1">Play The Game. Share The VIBE!</p>
+  </div>
+
+  <!-- Tournament Info Card -->
+  <div class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 mb-5 shadow-xl shadow-vibe-950/30">
+    <div class="grid grid-cols-2 gap-y-3 gap-x-4 text-sm">
+      <div class="text-gray-400">💰 Entry Fee</div>
+      <div class="text-right font-semibold text-white">{f'{fee:,} Ks' if fee > 0 else '<span class="text-green-400">အခမဲ့ (Free)</span>'}</div>
+      
+      <div class="text-gray-400">👥 Spots</div>
+      <div class="text-right font-semibold {'text-red-400' if spots_left == 0 else 'text-amber-400'}">{spots_left} left / {t['max_players']}</div>
+      
+      <div class="text-gray-400">📐 Format</div>
+      <div class="text-right text-white">{tn_format}</div>
+      
+      {f'<div class="text-gray-400">🏅 Prize</div><div class="text-right text-amber-300 font-semibold">{tn_prize}</div>' if prize_str else ''}
+      {f'<div class="text-gray-400">📅 Date</div><div class="text-right text-white">{start_str}</div>' if start_str else ''}
+    </div>
+    {f'<p class="mt-4 pt-3 border-t border-gray-700/50 text-gray-400 text-xs leading-relaxed">{tn_desc}</p>' if description else ''}
+  </div>
+
+  <!-- Message area -->
+  <div id="msg" class="hidden rounded-lg p-3 mb-4 text-sm font-medium"></div>
+
+  <!-- Registration Form -->
+  <form id="regForm" onsubmit="return handleSubmit(event)" class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 shadow-xl shadow-vibe-950/30">
+    
+    <!-- Name -->
+    <div class="mb-4">
+      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">အမည် <span class="text-red-400">*</span></label>
+      <input type="text" id="name" placeholder="သင့်နာမည် ရိုက်ထည့်ပါ" required
+        class="w-full px-3.5 py-2.5 rounded-lg bg-surface-600 border border-gray-700 text-white text-sm
+               placeholder-gray-500 focus:outline-none focus:border-vibe-500 focus:ring-1 focus:ring-vibe-500/30 transition-colors">
+    </div>
+
+    <!-- Phone -->
+    <div class="mb-4">
+      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">ဖုန်းနံပါတ် <span class="text-red-400">*</span></label>
+      <input type="tel" id="phone" placeholder="09xxxxxxxxx" required
+        class="w-full px-3.5 py-2.5 rounded-lg bg-surface-600 border border-gray-700 text-white text-sm
+               placeholder-gray-500 focus:outline-none focus:border-vibe-500 focus:ring-1 focus:ring-vibe-500/30 transition-colors">
+    </div>
+
+    {f'''<!-- Payment Method -->
+    <div class="mb-4" id="paySection">
+      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">💳 ငွေပေးချေနည်း ({fee:,} Ks)</label>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('kpay')" data-pay="kpay">
+          <span class="text-vibe-400 font-semibold">KPay</span>
+          <span class="block text-gray-500 text-xs mt-0.5">09xxxxxxxxx</span>
+        </button>
+        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('wavepay')" data-pay="wavepay">
+          <span class="text-blue-400 font-semibold">WavePay</span>
+          <span class="block text-gray-500 text-xs mt-0.5">09xxxxxxxxx</span>
+        </button>
+        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('kbz_bank')" data-pay="kbz_bank">
+          <span class="text-cyan-400 font-semibold">KBZ Bank</span>
+          <span class="block text-gray-500 text-xs mt-0.5">Account Transfer</span>
+        </button>
+        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('cash')" data-pay="cash">
+          <span class="text-green-400 font-semibold">💵 Cash</span>
+          <span class="block text-gray-500 text-xs mt-0.5">ဆိုင်တွင် ပေးချေမည်</span>
+        </button>
+      </div>
+      <p class="text-gray-500 text-xs mt-1">ငွေလွှဲပြီးပါက Screenshot ပူးတွဲပေးပါ 🙏</p>
+    </div>
+
+    <!-- SS Upload -->
+    <div class="mb-4 hidden" id="ssSection">
+      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">📎 ငွေလွှဲ Screenshot <span class="text-red-400">*</span></label>
+      <input type="file" id="ssFile" accept="image/*"
+        class="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0
+               file:text-sm file:font-semibold file:bg-vibe-600 file:text-white file:cursor-pointer
+               hover:file:bg-vibe-700 file:transition-colors cursor-pointer">
+      <p class="text-gray-500 text-xs mt-1">JPEG, PNG, WebP — max 10MB</p>
+    </div>''' if fee > 0 else ''}
+
+    <!-- Submit -->
+    <button type="submit" id="submitBtn"
+      class="w-full py-3 rounded-lg font-bold text-white text-base mt-2
+             bg-gradient-to-r from-vibe-600 to-vibe-800 hover:from-vibe-500 hover:to-vibe-700
+             disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-400 disabled:cursor-not-allowed
+             transition-all duration-200 shadow-lg shadow-vibe-950/40">
+      {f'Register &mdash; {fee:,} Ks' if fee > 0 else 'Register Now — Free 🎉'}
+    </button>
+  </form>
+
+  <!-- Success Screen -->
+  <div id="successScreen" class="hidden bg-surface-800 rounded-xl border border-green-900/50 p-6 text-center shadow-xl shadow-green-950/20">
+    <div class="text-5xl mb-3">✅</div>
+    <h2 class="text-xl font-bold text-green-400 mb-2">အောင်မြင်ပါပြီ!</h2>
+    <p class="text-gray-300 text-sm leading-relaxed">
+      <span class="font-semibold text-white">{tn_name}</span> အတွက် <br>
+      Register ပြုလုပ်ခြင်း အောင်မြင်ပါသည်။
+    </p>
+    <p class="text-gray-400 text-xs mt-3 leading-relaxed">
+      ⏳ Staff မှ ငွေပေးချေမှု အတည်ပြုပြီးပါက<br>
+      အပြီးသတ် အတည်ဖြစ်ပါမည်။
+    </p>
+    <p class="text-gray-500 text-xs mt-3">📲 Updates — @psvibeofficial</p>
+  </div>
+
+  <!-- Footer -->
+  <p class="text-center text-gray-600 text-xs mt-6">PS VIBE Gaming Lounge &copy; 2026</p>
 </div>
-<div id="msg" class="msg"></div>
-<form id="regForm" onsubmit="return registerPlayer(event)">
-<input type="text" id="name" placeholder="အမည် (Name)" required>
-<input type="tel" id="phone" placeholder="ဖုန်းနံပါတ် (Phone)" required>
-{f'<p style="font-size:0.8rem;color:#9ca3af;margin-bottom:12px">💰 Entry fee {fee} Ks — Pay at counter or use member wallet</p>' if fee > 0 else ''}
-<button type="submit" id="submitBtn">Register Now</button>
-</form>
-<div class="footer">PS VIBE Gaming Lounge © 2026</div>
-</div>
+
 <script>
-async function registerPlayer(e) {{
-e.preventDefault();
-const btn = document.getElementById('submitBtn');
-const msg = document.getElementById('msg');
-btn.disabled = true;
-btn.textContent = 'Registering...';
-msg.className = 'msg';
-try {{
-const resp = await fetch('/api/tournaments/{t["id"]}/register', {{
-method: 'POST',
-headers: {{'Content-Type': 'application/json'}},
-body: JSON.stringify({{
-name: document.getElementById('name').value.trim(),
-phone: document.getElementById('phone').value.trim()
-}})
-}});
-const data = await resp.json();
-if (data.success) {{
-msg.className = 'msg success';
-msg.textContent = '✅ Registered successfully!';
-document.getElementById('regForm').reset();
-}} else {{
-msg.className = 'msg error';
-msg.textContent = '❌ ' + (data.error || 'Registration failed');
+const FEE = {fee};
+const TID = {tn_id};
+let selectedPay = null;
+
+function selectPay(method) {{
+  selectedPay = method;
+  document.querySelectorAll('.pay-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector('[data-pay="' + method + '"]').classList.add('active');
+  const ssSection = document.getElementById('ssSection');
+  if (method === 'cash') {{
+    ssSection.classList.add('hidden');
+  }} else {{
+    ssSection.classList.remove('hidden');
+  }}
 }}
-}} catch (err) {{
-msg.className = 'msg error';
-msg.textContent = '❌ Network error. Please try again.';
-}} finally {{
-btn.disabled = false;
-btn.textContent = 'Register Now';
+
+function showMsg(type, text) {{
+  const m = document.getElementById('msg');
+  m.className = 'rounded-lg p-3 mb-4 text-sm font-medium ' + 
+    (type === 'success' ? 'bg-emerald-900/40 border border-emerald-700 text-emerald-300' :
+     type === 'error' ? 'bg-red-900/40 border border-red-700 text-red-300' :
+     'bg-amber-900/40 border border-amber-700 text-amber-300');
+  m.textContent = text;
 }}
-return false;
+
+async function handleSubmit(e) {{
+  e.preventDefault();
+  const btn = document.getElementById('submitBtn');
+  const name = document.getElementById('name').value.trim();
+  const phone = document.getElementById('phone').value.trim();
+  document.getElementById('msg').className = 'hidden';
+
+  // Validation
+  if (!name || !phone) {{
+    showMsg('error', '❌ အမည် နှင့် ဖုန်းနံပါတ် ဖြည့်ပေးပါ');
+    return;
+  }}
+  if (phone.length < 8 || !/^0[0-9]/.test(phone)) {{
+    showMsg('error', '❌ ဖုန်းနံပါတ် မှန်မမှန် ပြန်စစ်ပေးပါ (09xxx...)');
+    return;
+  }}
+  if (FEE > 0 && !selectedPay) {{
+    showMsg('error', '❌ ငွေပေးချေနည်း ရွေးပေးပါ');
+    return;
+  }}
+  if (FEE > 0 && selectedPay !== 'cash') {{
+    const ssInp = document.getElementById('ssFile');
+    if (!ssInp || !ssInp.files || !ssInp.files[0]) {{
+      showMsg('error', '❌ ငွေလွှဲ Screenshot ပူးတွဲပေးပါ');
+      return;
+    }}
+  }}
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+
+  try {{
+    // Step 1: Register
+    const regBody = {{ name, phone, payment_method: selectedPay || null }};
+    // For digital payment, pass a temporary ss_file placeholder
+    // The actual SS will be uploaded in step 2
+    const resp = await fetch('/api/tournaments/' + TID + '/register', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify(regBody)
+    }});
+    const data = await resp.json();
+    if (!data.success) {{
+      showMsg('error', '❌ ' + (data.error || 'Registration failed'));
+      btn.disabled = false;
+      btn.innerHTML = '{f'Register &mdash; {fee:,} Ks' if fee > 0 else 'Register Now — Free 🎉'}'.replace('&mdash;', '—').replace('&mdash;', '—');
+      return;
+    }}
+    const playerId = data.data.player_id;
+
+    // Step 2: Upload SS if digital payment
+    if (FEE > 0 && selectedPay !== 'cash' && playerId) {{
+      const ssInp = document.getElementById('ssFile');
+      if (ssInp && ssInp.files && ssInp.files[0]) {{
+        const formData = new FormData();
+        formData.append('file', ssInp.files[0]);
+        const ssResp = await fetch('/api/tournaments/' + TID + '/players/' + playerId + '/ss', {{
+          method: 'POST',
+          body: formData
+        }});
+        const ssData = await ssResp.json();
+        if (!ssData.success) {{
+          // Registration succeeded but SS upload failed — user is still registered
+          showMsg('info', '⚠️ Registration အောင်မြင်သော်လည်း Screenshot upload မအောင်မြင်ပါ။ Staff ကို ဆက်သွယ်ပါ။ — @psvibeofficial');
+          document.getElementById('regForm').classList.add('hidden');
+          return;
+        }}
+      }}
+    }}
+
+    // Success!
+    document.getElementById('regForm').classList.add('hidden');
+    document.getElementById('msg').className = 'hidden';
+    document.getElementById('successScreen').classList.remove('hidden');
+    window.scrollTo({{ top: 0, behavior: 'smooth' }});
+
+  }} catch (err) {{
+    showMsg('error', '❌ Network error — ခဏနေ ပြန်ကြိုးစားပါ');
+  }} finally {{
+    btn.disabled = false;
+    btn.innerHTML = '{f'Register &mdash; {fee:,} Ks' if fee > 0 else 'Register Now — Free 🎉'}'.replace('&mdash;', '—').replace('&mdash;', '—');
+  }}
+  return false;
 }}
 </script>
 </body>
@@ -732,8 +929,9 @@ async def register_player(tid: int, body: dict):
             payment_method = "free"
 
         # Insert player — handle duplicate phone gracefully
+        pid = None
         try:
-            _mysql_exec(
+            pid = _mysql_exec(
                 """INSERT INTO tournament_players
                    (tournament_id, member_id, name, phone, paid, payment_method, ss_file, paid_at, status)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
@@ -772,8 +970,8 @@ async def register_player(tid: int, body: dict):
                 return error_response(message="Phone already registered for this tournament", code=409)
             raise
 
-        logger.info("Player %s registered for tournament %s (paid=%s)", name, tid, paid)
-        return ok({"registered": True, "player_name": name, "paid": bool(paid)})
+        logger.info("Player %s registered for tournament %s (paid=%s, id=%s)", name, tid, paid, pid)
+        return ok({"registered": True, "player_name": name, "paid": bool(paid), "player_id": pid})
     except Exception as e:
         logger.error("register_player error: %s", e)
         return error_response(message=str(e))
@@ -784,8 +982,12 @@ async def register_player(tid: int, body: dict):
 # ═══════════════════════════════════════
 
 @router.get("/api/tournaments/{tid}/bracket")
-async def view_bracket(tid: int):
-    """Public bracket view: tournament info + all matches grouped by round."""
+async def view_bracket(tid: int, request: Request = None, view: str = Query(None)):
+    """Public bracket view: tournament info + all matches grouped by round.
+    
+    Pass ?view=html for a styled HTML bracket page (shareable).
+    Default returns JSON.
+    """
     try:
         t = _mysql_query_one("SELECT * FROM tournaments WHERE id=%s", (tid,))
         if not t:
@@ -830,6 +1032,10 @@ async def view_bracket(tid: int):
             "SELECT COUNT(*) as cnt FROM tournament_players WHERE tournament_id=%s", (tid,)
         )["cnt"] or 0
 
+        # If HTML view requested, return styled bracket page
+        if view == "html":
+            return _render_bracket_html(t, rounds, player_count)
+
         return ok({
             "tournament": t_info,
             "player_count": player_count,
@@ -856,12 +1062,83 @@ async def list_players_public(tid: int):
             raw = p.get("phone", "")
             if len(raw) >= 5:
                 p["phone"] = raw[:3] + "*" * (len(raw) - 5) + raw[-2:]
+            p["ss_url"] = _player_ss_url(p)
             result.append(p)
 
         count = len(result)
         return ok({"count": count, "players": result})
     except Exception as e:
         logger.error("list_players_public error: %s", e)
+        return error_response(message=str(e))
+
+
+# ═══════════════════════════════════════
+#  SS Upload (Payment Screenshot for Web Registration)
+# ═══════════════════════════════════════
+
+@router.post("/api/tournaments/{tid}/players/{pid}/ss")
+async def upload_player_ss(tid: int, pid: int, file: UploadFile = File(...)):
+    """Upload a payment screenshot for a tournament player.
+    
+    Multipart form upload. Validates image type, saves to uploads/tournaments/,
+    updates tournament_players.ss_file, returns ss_url.
+    
+    Also works as an update: if player already has a legacy file_id, it gets overwritten.
+    """
+    try:
+        try:
+            _ensure_tournament(tid)
+        except HTTPException as he:
+            return error_response(message=he.detail, code=he.status_code)
+        
+        player = _mysql_query_one(
+            "SELECT * FROM tournament_players WHERE id=%s AND tournament_id=%s",
+            (pid, tid),
+        )
+        if not player:
+            return error_response(message="Player not found", code=404)
+        
+        # Validate content type
+        ct = file.content_type or ""
+        if not ct.startswith("image/"):
+            return error_response(message="Only image files are accepted (JPEG, PNG, etc.)", code=400)
+        
+        # Determine file extension
+        ext_map = {
+            "image/jpeg": ".jpg", "image/jpg": ".jpg",
+            "image/png": ".png", "image/gif": ".gif",
+            "image/webp": ".webp", "image/bmp": ".bmp",
+        }
+        ext = ext_map.get(ct, ".jpg")
+        
+        # Save file
+        os.makedirs(_UPLOADS_DIR, exist_ok=True)
+        filename = f"t{tid}_p{pid}_{int(time.time())}{ext}"
+        filepath = os.path.join(_UPLOADS_DIR, filename)
+        
+        contents = await file.read()
+        with open(filepath, "wb") as f:
+            f.write(contents)
+        
+        # Relative path for DB
+        rel_path = f"uploads/tournaments/{filename}"
+        
+        # Update player record
+        _mysql_exec(
+            "UPDATE tournament_players SET ss_file=%s WHERE id=%s",
+            (rel_path, pid),
+        )
+        
+        logger.info("SS uploaded for player %s in tournament %s: %s (%s bytes)", pid, tid, filename, len(contents))
+        
+        return ok({
+            "player_id": pid,
+            "ss_file": rel_path,
+            "ss_url": f"/{rel_path}",
+            "bytes": len(contents),
+        })
+    except Exception as e:
+        logger.error("upload_player_ss error: %s", e)
         return error_response(message=str(e))
 
 
@@ -875,3 +1152,80 @@ def _ensure_tournament(tid: int) -> dict:
     if not t:
         raise HTTPException(status_code=404, detail="Tournament not found")
     return t
+
+
+def _player_ss_url(player: dict) -> str | None:
+    """Build ss_url from ss_file if it's a local upload path."""
+    sf = player.get("ss_file") or ""
+    if sf.startswith("uploads/"):
+        return "/" + sf
+    return None
+
+
+def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLResponse:
+    """Render a styled HTML bracket page (Tailwind CDN)."""
+    import html as _html
+    tn_name = _html.escape(t.get("name", "Tournament"))
+    tn_game = _html.escape(t.get("game", ""))
+    
+    # Build round columns
+    round_cols = []
+    for rnum in sorted(rounds.keys()):
+        matches = rounds[rnum]
+        match_cards = []
+        for m in matches:
+            p1_n = m["player1"]["name"] or "BYE"
+            p2_n = m["player2"]["name"] or "BYE"
+            s1 = m.get("score1")
+            s2 = m.get("score2")
+            winner = m.get("winner")
+            status = m.get("status", "pending")
+            
+            p1_cls = "font-bold text-vibe-400" if winner and winner == p1_n else ""
+            p2_cls = "font-bold text-vibe-400" if winner and winner == p2_n else ""
+            p1_strike = "line-through text-gray-500" if winner and winner != p1_n and p1_n != "BYE" else ""
+            p2_strike = "line-through text-gray-500" if winner and winner != p2_n and p2_n != "BYE" else ""
+            
+            # Scores
+            s1_str = f'<span class="ml-auto text-xs font-mono px-1.5 py-0.5 rounded bg-surface-900 text-gray-300">{s1}</span>' if s1 is not None else ""
+            s2_str = f'<span class="ml-auto text-xs font-mono px-1.5 py-0.5 rounded bg-surface-900 text-gray-300">{s2}</span>' if s2 is not None else ""
+            
+            match_cards.append(f'''
+            <div class="bg-surface-600 rounded-lg p-2.5 border {'border-vibe-600/40' if status == 'complete' else 'border-gray-700'} {'opacity-60' if status == 'complete' else ''} mb-2">
+              <div class="flex items-center gap-1.5 text-xs {'text-green-400' if winner and winner == p1_n else 'text-gray-300'}">
+                <span class="{p1_cls} {p1_strike}">{_html.escape(p1_n)}</span>{s1_str}
+              </div>
+              <div class="flex items-center gap-1.5 text-xs {'text-red-400' if (winner and winner != p2_n and p2_n != 'BYE') else 'text-gray-300'} mt-0.5">
+                <span class="{p2_cls} {p2_strike}">{_html.escape(p2_n)}</span>{s2_str}
+              </div>
+            </div>''')
+        
+        round_cols.append(f'''
+        <div class="flex-shrink-0 w-40">
+          <div class="text-center text-xs font-semibold text-vibe-400 mb-2 py-1 bg-surface-700 rounded">{'🏆 Final' if rnum == len(rounds) else f'Semi' if rnum == len(rounds)-1 else f'Round {rnum}'}</div>
+          {"".join(match_cards)}
+        </div>''')
+    
+    html = f"""<!DOCTYPE html>
+<html lang="my">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{tn_name} — Bracket</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={{theme:{{extend:{{colors:{{vibe:{{500:'#8b5cf6',600:'#7c3aed'}},surface:{{900:'#0f0f1a',800:'#1a1a2e',700:'#16213e',600:'#111827'}}}}}}}}}}</script>
+</head>
+<body class="bg-surface-900 min-h-screen text-white font-sans p-4">
+<div class="max-w-4xl mx-auto">
+  <div class="text-center mb-6">
+    <h1 class="text-2xl font-bold">🏆 {tn_name}</h1>
+    <p class="text-vibe-400 text-sm">{tn_game} &middot; {player_count} players</p>
+  </div>
+  <div class="flex gap-4 overflow-x-auto pb-4">
+    {"".join(round_cols)}
+  </div>
+  <p class="text-center text-gray-600 text-xs mt-8">PS VIBE Gaming Lounge</p>
+</div>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
