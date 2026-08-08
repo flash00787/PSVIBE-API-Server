@@ -628,7 +628,7 @@ async def registration_page(token: str, request: Request):
 
   <!-- Header -->
   <div class="text-center mb-6">
-    <img src="/uploads/psvibe-logo.png" alt="PS VIBE - PS5 Gaming Lounge" class="w-64 mx-auto mb-4 drop-shadow-[0_0_18px_rgba(47,79,232,0.35)]">
+    <img src="/uploads/psvibe-logo-v2.png" alt="PS VIBE - PS5 Gaming Lounge" class="w-64 mx-auto mb-3 drop-shadow-[0_0_18px_rgba(47,79,232,0.35)]">
     <h1 class="text-2xl font-bold text-white text-glow">{tn_name}</h1>
     <p class="text-vibe-400 text-sm font-medium">{tn_game} &middot; {tn_format}</p>
     <p class="text-gray-500 text-xs mt-1">Play The Game. Share The VIBE!</p>
