@@ -600,7 +600,7 @@ async def registration_page(token: str, request: Request):
     theme: {{
       extend: {{
         colors: {{
-          vibe: {{ 50: '#f5f3ff', 100: '#ede9fe', 200: '#ddd6fe', 300: '#c4b5fd', 400: '#a78bfa', 500: '#8b5cf6', 600: '#7c3aed', 700: '#6d28d9', 800: '#5b21b6', 900: '#4c1d95', 950: '#2e1065' }},
+          vibe: {{ 50: '#eef1ff', 100: '#dde3ff', 200: '#c2cdfe', 300: '#9dacfc', 400: '#7585f8', 500: '#4d5ff0', 600: '#2F4FE8', 700: '#243dc4', 800: '#1f34a0', 900: '#1c2d80', 950: '#131e52' }},
           surface: {{ 900: '#0f0f1a', 800: '#1a1a2e', 700: '#16213e', 600: '#111827' }}
         }},
         fontFamily: {{ sans: ['Inter', 'Noto Sans Myanmar', 'system-ui', 'sans-serif'] }}
@@ -610,15 +610,15 @@ async def registration_page(token: str, request: Request):
 </script>
 <style>
   body {{ background: #0f0f1a; }}
-  .text-glow {{ text-shadow: 0 0 20px rgba(124,58,237,0.4); }}
+  .text-glow {{ text-shadow: 0 0 20px rgba(47,79,232,0.4); }}
   input[type=file]::file-selector-button {{
-    background: linear-gradient(135deg, #7c3aed, #5b21b6);
+    background: linear-gradient(135deg, #2F4FE8, #1f34a0);
     border: none; color: white; padding: 8px 16px; border-radius: 6px;
     cursor: pointer; font-weight: 600; margin-right: 12px;
   }}
   .pay-btn {{ transition: all 0.2s ease; }}
-  .pay-btn:hover {{ transform: translateY(-1px); box-shadow: 0 4px 12px rgba(124,58,237,0.3); }}
-  .pay-btn.active {{ background: linear-gradient(135deg, #7c3aed, #5b21b6) !important; color: white !important; border-color: #7c3aed !important; box-shadow: 0 0 16px rgba(124,58,237,0.4); }}
+  .pay-btn:hover {{ transform: translateY(-1px); box-shadow: 0 4px 12px rgba(47,79,232,0.3); }}
+  .pay-btn.active {{ background: linear-gradient(135deg, #2F4FE8, #1f34a0) !important; color: white !important; border-color: #2F4FE8 !important; box-shadow: 0 0 16px rgba(47,79,232,0.4); }}
   .spinner {{ display: inline-block; width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: white; animation: spin 0.6s linear infinite; }}
   @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
 </style>
@@ -628,10 +628,8 @@ async def registration_page(token: str, request: Request):
 
   <!-- Header -->
   <div class="text-center mb-6">
-    <div class="inline-flex items-center gap-2 mb-2">
-      <span class="text-3xl">🎮</span>
-      <h1 class="text-2xl font-bold text-white text-glow">{tn_name}</h1>
-    </div>
+    <img src="/uploads/psvibe-logo.png" alt="PS VIBE - PS5 Gaming Lounge" class="w-44 mx-auto mb-4 drop-shadow-[0_0_18px_rgba(47,79,232,0.35)]">
+    <h1 class="text-2xl font-bold text-white text-glow">{tn_name}</h1>
     <p class="text-vibe-400 text-sm font-medium">{tn_game} &middot; {tn_format}</p>
     <p class="text-gray-500 text-xs mt-1">Play The Game. Share The VIBE!</p>
     <span class="inline-block mt-2.5 px-3 py-1 rounded-full bg-vibe-950/60 border border-vibe-800/50 text-vibe-300 text-[11px] font-medium">🏠 PS VIBE - PS5 Gaming Lounge · Yangon</span>
@@ -680,29 +678,25 @@ async def registration_page(token: str, request: Request):
     {f'''<!-- Payment Method -->
     <div class="mb-4" id="paySection">
       <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">💳 ငွေပေးချေနည်း ({fee:,} Ks)</label>
-      <div class="grid grid-cols-2 gap-2 mb-2">
+      <div class="grid grid-cols-1 gap-2 mb-2">
         <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('kpay')" data-pay="kpay">
           <span class="text-vibe-400 font-semibold">KPay</span>
-          <span class="block text-gray-500 text-xs mt-0.5">09254824024</span>
+          <span class="block text-gray-500 text-xs mt-0.5">09254824024 · U Tin Sein</span>
+        </button>
+        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('aya_pay')" data-pay="aya_pay">
+          <span class="text-emerald-400 font-semibold">AYA Pay</span>
+          <span class="block text-gray-500 text-xs mt-0.5">09254824024 · U Tin Sein</span>
         </button>
         <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('wavepay')" data-pay="wavepay">
           <span class="text-blue-400 font-semibold">WavePay</span>
-          <span class="block text-gray-500 text-xs mt-0.5">09254824024</span>
-        </button>
-        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('kbz_bank')" data-pay="kbz_bank">
-          <span class="text-cyan-400 font-semibold">KBZ Bank</span>
-          <span class="block text-gray-500 text-xs mt-0.5">Account Transfer</span>
-        </button>
-        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('cash')" data-pay="cash">
-          <span class="text-green-400 font-semibold">💵 Cash</span>
-          <span class="block text-gray-500 text-xs mt-0.5">ဆိုင်တွင် ပေးချေမည်</span>
+          <span class="block text-gray-500 text-xs mt-0.5">09254824024 · U Tin Sein</span>
         </button>
       </div>
       <p class="text-gray-500 text-xs mt-1">ငွေလွှဲပြီးပါက Screenshot ပူးတွဲပေးပါ 🙏</p>
     </div>
 
     <!-- SS Upload -->
-    <div class="mb-4 hidden" id="ssSection">
+    <div class="mb-4" id="ssSection">
       <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">📎 ငွေလွှဲ Screenshot <span class="text-red-400">*</span></label>
       <input type="file" id="ssFile" accept="image/*"
         class="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0
@@ -755,12 +749,6 @@ function selectPay(method) {{
   selectedPay = method;
   document.querySelectorAll('.pay-btn').forEach(b => b.classList.remove('active'));
   document.querySelector('[data-pay="' + method + '"]').classList.add('active');
-  const ssSection = document.getElementById('ssSection');
-  if (method === 'cash') {{
-    ssSection.classList.add('hidden');
-  }} else {{
-    ssSection.classList.remove('hidden');
-  }}
 }}
 
 function showMsg(type, text) {{
@@ -792,7 +780,7 @@ async function handleSubmit(e) {{
     showMsg('error', '❌ ငွေပေးချေနည်း ရွေးပေးပါ');
     return;
   }}
-  if (FEE > 0 && selectedPay !== 'cash') {{
+  if (FEE > 0) {{
     const ssInp = document.getElementById('ssFile');
     if (!ssInp || !ssInp.files || !ssInp.files[0]) {{
       showMsg('error', '❌ ငွေလွှဲ Screenshot ပူးတွဲပေးပါ');
@@ -822,8 +810,8 @@ async function handleSubmit(e) {{
     }}
     const playerId = data.data.player_id;
 
-    // Step 2: Upload SS if digital payment
-    if (FEE > 0 && selectedPay !== 'cash' && playerId) {{
+    // Step 2: Upload SS
+    if (FEE > 0 && playerId) {{
       const ssInp = document.getElementById('ssFile');
       if (ssInp && ssInp.files && ssInp.files[0]) {{
         const formData = new FormData();
