@@ -1266,67 +1266,101 @@ def _player_ss_url(player: dict) -> str | None:
 
 
 def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLResponse:
-    """Render a styled HTML bracket page (Tailwind CDN)."""
+    """Render a styled HTML bracket page (Tailwind CDN) with FULL bracket structure.
+
+    Once started, ALL rounds (1..total_rounds) render as columns; rounds without
+    matches yet (created lazily on score entry) show dashed TBD placeholder slots.
+    Not-started tournaments show an empty-state message.
+    """
     import html as _html
     tn_name = _html.escape(t.get("name", "Tournament"))
     tn_game = _html.escape(t.get("game", ""))
     reg_token = t.get("reg_token") or ""
-    reg_link = f"https://ps-vibe.com/t/{_html.escape(reg_token)}" if reg_token else None
-    
+    reg_link = f"https://ps-vibe.com/t/{_html.escape(reg_token)}" if reg_token else "#"
+
     # Total rounds = log2(next power of 2 >= player_count): 64→6, 32→5, 5→3, 4→2
     total_rounds = max(1, (player_count - 1).bit_length())
 
-    # Build round columns
-    round_cols = []
-    for rnum in sorted(rounds.keys()):
-        matches = rounds[rnum]
-        match_cards = []
-        for m in matches:
-            p1_n = m["player1"]["name"] or "BYE"
-            p2_n = m["player2"]["name"] or "BYE"
-            s1 = m.get("score1")
-            s2 = m.get("score2")
-            winner = m.get("winner")
-            status = m.get("status", "pending")
-            
-            p1_cls = "font-bold text-vibe-400" if winner and winner == p1_n else ""
-            p2_cls = "font-bold text-vibe-400" if winner and winner == p2_n else ""
-            p1_strike = "line-through text-gray-500" if winner and winner != p1_n and p1_n != "BYE" else ""
-            p2_strike = "line-through text-gray-500" if winner and winner != p2_n and p2_n != "BYE" else ""
-            
-            # Scores
-            s1_str = f'<span class="ml-auto text-xs font-mono px-1.5 py-0.5 rounded bg-surface-900 text-gray-300">{s1}</span>' if s1 is not None else ""
-            s2_str = f'<span class="ml-auto text-xs font-mono px-1.5 py-0.5 rounded bg-surface-900 text-gray-300">{s2}</span>' if s2 is not None else ""
-            
-            match_cards.append(f'''
-            <div class="bg-surface-600 rounded-lg p-2.5 border {'border-vibe-600/40' if status == 'complete' else 'border-gray-700'} {'opacity-60' if status == 'complete' else ''} mb-2">
-              <div class="flex items-center gap-1.5 text-xs {'text-green-400' if winner and winner == p1_n else 'text-gray-300'}">
-                <span class="{p1_cls} {p1_strike}">{_html.escape(p1_n)}</span>{s1_str}
+    def round_label(rnum: int) -> str:
+        if rnum == total_rounds:
+            return "🏆 Final"
+        if rnum == total_rounds - 1:
+            return "Semi-Final"
+        if total_rounds >= 4 and rnum == total_rounds - 2:
+            return "Quarter-Final"
+        return f"Round {rnum}"
+
+    if rounds:
+        # ── Full bracket structure: real matches + TBD placeholders for future rounds ──
+        round_cols = []
+        for rnum in range(1, total_rounds + 1):
+            matches = rounds.get(rnum) or []
+            if matches:
+                match_cards = []
+                for m in matches:
+                    p1_n = m["player1"]["name"] or "BYE"
+                    p2_n = m["player2"]["name"] or "BYE"
+                    s1 = m.get("score1")
+                    s2 = m.get("score2")
+                    winner = m.get("winner")
+                    status = m.get("status", "pending")
+                    p1_seed = (m["player1"] or {}).get("seed")
+                    p2_seed = (m["player2"] or {}).get("seed")
+
+                    p1_is_w = bool(winner and winner == p1_n)
+                    p2_is_w = bool(winner and winner == p2_n)
+                    if p1_is_w:
+                        p1_cls = "text-vibe-300 font-bold"
+                    elif winner and p1_n != "BYE":
+                        p1_cls = "line-through text-gray-500"
+                    else:
+                        p1_cls = "text-gray-300"
+                    if p2_is_w:
+                        p2_cls = "text-vibe-300 font-bold"
+                    elif winner and p2_n != "BYE":
+                        p2_cls = "line-through text-gray-500"
+                    else:
+                        p2_cls = "text-gray-300"
+
+                    s1_str = f'<span class="ml-auto shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded bg-surface-900 text-gray-300">{s1}</span>' if s1 is not None else ""
+                    s2_str = f'<span class="ml-auto shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded bg-surface-900 text-gray-300">{s2}</span>' if s2 is not None else ""
+                    seed1 = f'<span class="shrink-0 text-[10px] text-gray-500 w-5 text-right">{p1_seed}</span>' if p1_seed else '<span class="shrink-0 w-5"></span>'
+                    seed2 = f'<span class="shrink-0 text-[10px] text-gray-500 w-5 text-right">{p2_seed}</span>' if p2_seed else '<span class="shrink-0 w-5"></span>'
+                    trophy1 = '<span class="text-[10px] ml-0.5">🏆</span>' if p1_is_w else ""
+                    trophy2 = '<span class="text-[10px] ml-0.5">🏆</span>' if p2_is_w else ""
+                    done = "border-vibe-600/40 bg-vibe-950/20" if status == "complete" else "border-gray-700/70"
+
+                    match_cards.append(f'''
+            <div class="bg-surface-700/70 rounded-lg border {done} p-2.5 mb-2 transition-colors">
+              <div class="flex items-center gap-1.5 text-xs min-w-0">
+                {seed1}
+                <span class="flex-1 truncate {p1_cls}">{_html.escape(p1_n)}{trophy1}</span>{s1_str}
               </div>
-              <div class="flex items-center gap-1.5 text-xs {'text-red-400' if (winner and winner != p2_n and p2_n != 'BYE') else 'text-gray-300'} mt-0.5">
-                <span class="{p2_cls} {p2_strike}">{_html.escape(p2_n)}</span>{s2_str}
+              <div class="flex items-center gap-1.5 text-xs min-w-0 mt-1 pt-1 border-t border-gray-700/40">
+                {seed2}
+                <span class="flex-1 truncate {p2_cls}">{_html.escape(p2_n)}{trophy2}</span>{s2_str}
               </div>
             </div>''')
-        
-        round_cols.append(f'''
-        <div class="flex-shrink-0 w-40">
-          <div class="text-center text-xs font-semibold text-vibe-400 mb-2 py-1 bg-surface-700 rounded">{'🏆 Final' if rnum == total_rounds else f'Semi' if rnum == total_rounds - 1 else f'Round {rnum}'}</div>
-          {"".join(match_cards)}
-        </div>''')
-    
-    if round_cols:
-        bracket_body = f'''<div class="flex gap-4 overflow-x-auto pb-4">
-    {"".join(round_cols)}
-  </div>'''
-    else:
-        bracket_body = '''<div class="text-center py-14">
-    <div class="text-5xl mb-3">⏳</div>
-    <p class="text-gray-300 font-semibold text-lg">Bracket မစရသေးပါ</p>
-    <p class="text-gray-500 text-xs mt-2">Tournament စတင်ပြီးမှ bracket ပေါ်ပါမယ် — မကြာမီ ပြန်ကြည့်ပါဦး 🙏</p>
-  </div>'''
+                slot_count = 2 ** (total_rounds - rnum)
+                # Fill remaining slots of a partially-played round with TBD placeholders
+                body = "".join(match_cards) + "".join(f'''
+            <div class="bg-surface-800/40 rounded-lg border border-dashed border-gray-700/50 p-2.5 mb-2">
+              <div class="py-1.5 text-center text-[10px] text-gray-600">TBD</div>
+            </div>''' for _ in range(max(0, slot_count - len(match_cards))))
+            else:
+                slot_count = 2 ** (total_rounds - rnum)
+                body = "".join(f'''
+            <div class="bg-surface-800/40 rounded-lg border border-dashed border-gray-700/50 p-2.5 mb-2">
+              <div class="py-1.5 text-center text-[10px] text-gray-600">TBD</div>
+            </div>''' for _ in range(slot_count))
 
-    if round_cols:
-        bracket_body = f'''<div class="flex gap-4 overflow-x-auto pb-4">
+            round_cols.append(f'''
+        <div class="flex-shrink-0 w-44">
+          <div class="text-center text-[11px] font-bold text-vibe-300 mb-2 py-1.5 bg-vibe-950/60 border border-vibe-800/40 rounded-lg">{round_label(rnum)}</div>
+          {body}
+        </div>''')
+
+        bracket_body = f'''<div class="flex gap-3 overflow-x-auto pb-4 pt-1">
     {"".join(round_cols)}
   </div>'''
     else:
@@ -1341,22 +1375,30 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="{tn_name} — PS VIBE tournament bracket">
 <title>{tn_name} — Bracket</title>
 <script src="https://cdn.tailwindcss.com"></script>
-<script>tailwind.config={{theme:{{extend:{{colors:{{vibe:{{500:'#4a55ba',600:'#1D2BA9'}},surface:{{900:'#0f0f1a',800:'#1a1a2e',700:'#16213e',600:'#111827'}}}}}}}}}}</script>
+<script>tailwind.config={{theme:{{extend:{{colors:{{vibe:{{300:'#9dacfc',400:'#7585f8',500:'#4a55ba',600:'#1D2BA9',700:'#172287',800:'#111a65',950:'#0a0f33'}},surface:{{900:'#0f0f1a',800:'#1a1a2e',700:'#16213e',600:'#111827'}}}}}}}}}}</script>
+<style>
+  body {{ background: #0f0f1a; }}
+  ::-webkit-scrollbar {{ height: 8px; }}
+  ::-webkit-scrollbar-thumb {{ background: #1D2BA9; border-radius: 8px; }}
+  ::-webkit-scrollbar-track {{ background: #1a1a2e; border-radius: 8px; }}
+</style>
 </head>
-<body class="bg-surface-900 min-h-screen text-white font-sans p-4">
-<div class="max-w-4xl mx-auto">
-  <div class="mb-4">
-    <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-gray-300 transition-colors">← Tournament Page</a>
+<body class="min-h-screen text-white font-sans p-4">
+<div class="max-w-5xl mx-auto">
+  <div class="flex items-center justify-between mb-5">
+    <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-surface-700 hover:bg-vibe-800 text-gray-300 transition-colors">← Back</a>
+    <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-vibe-600 hover:bg-vibe-500 text-white transition-colors">🏆 Tournament Page</a>
   </div>
   <div class="text-center mb-6">
+    <img src="/uploads/psvibe-logo-v2.png" alt="PS VIBE" class="w-36 mx-auto mb-3">
     <h1 class="text-2xl font-bold">🏆 {tn_name}</h1>
-    <p class="text-vibe-400 text-sm">{tn_game} &middot; {player_count} players</p>
+    <p class="text-vibe-400 text-sm">{tn_game} &middot; {player_count} players &middot; Single Elimination</p>
   </div>
   {bracket_body}
   <div class="text-center mt-8 space-y-1">
-    <a href="{reg_link}" class="inline-block text-vibe-400 text-xs hover:underline">🏆 Tournament Page သို့ ပြန်သွားရန်</a>
     <p class="text-gray-600 text-xs">PS VIBE Gaming Lounge &middot; Yangon</p>
   </div>
 </div>
