@@ -730,6 +730,17 @@ async def registration_page(token: str, request: Request):
     <p class="text-gray-500 text-xs mt-3">📲 Updates — @psvibeofficial</p>
   </div>
 
+  <!-- Registered Players + Bracket -->
+  <div class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 mb-5 shadow-xl shadow-vibe-950/30">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-white font-bold text-sm">👥 Registered Players <span id="playersCount" class="text-vibe-400 font-semibold">(0)</span></h2>
+      <button type="button" onclick="openBracket()" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-vibe-600 hover:bg-vibe-500 text-white transition-colors">🏆 Bracket ကြည့်မယ်</button>
+    </div>
+    <div id="playersList" class="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+      <p class="text-gray-500 text-xs py-2">Loading...</p>
+    </div>
+  </div>
+
   <!-- Footer -->
   <div class="text-center mt-8 space-y-1.5">
     <p class="text-gray-500 text-xs font-medium">PS VIBE - PS5 Gaming Lounge · Yangon</p>
@@ -845,6 +856,42 @@ async function handleSubmit(e) {{
   }}
   return false;
 }}
+
+// ── Public: Registered Players + Bracket ──
+function escapeHtml(s) {{
+  return String(s || '').replace(/[&<>"']/g, function(c) {{
+    return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c];
+  }});
+}}
+function openBracket() {{
+  window.open('/api/tournaments/' + TID + '/bracket?view=html', '_blank');
+}}
+async function loadPlayers() {{
+  try {{
+    const r = await fetch('/api/tournaments/' + TID + '/players');
+    const d = await r.json();
+    if (!d.success) {{ throw new Error('fail'); }}
+    const ps = d.data.players || [];
+    document.getElementById('playersCount').textContent = '(' + ps.length + ')';
+    const el = document.getElementById('playersList');
+    if (!ps.length) {{
+      el.innerHTML = '<p class="text-gray-500 text-xs py-2">လူဦးရေ မရှိသေးပါ — ပထမဆုံး Register လုပ်သူ ဖြစ်လိုက်ပါ! 🎉</p>';
+      return;
+    }}
+    el.innerHTML = ps.map(function(p) {{
+      const badge = p.paid
+        ? '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-900/50 border border-emerald-700 text-emerald-300">✅ Confirmed</span>'
+        : '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-900/40 border border-amber-700 text-amber-300">⏳ Pending</span>';
+      const seed = p.seed ? '<span class="text-gray-500 text-[11px] w-7 inline-block">#' + p.seed + '</span>' : '';
+      return '<div class="flex items-center justify-between bg-surface-600 rounded-lg px-3 py-2">' +
+        '<div class="flex items-center gap-2 text-sm text-gray-200 min-w-0">' + seed +
+        '<span class="truncate">' + escapeHtml(p.name) + '</span></div>' + badge + '</div>';
+    }}).join('');
+  }} catch (e) {{
+    document.getElementById('playersList').innerHTML = '<p class="text-gray-500 text-xs py-2">Players list ဖွင့်မရပါ — ခဏနေ ပြန်ကြိုးစားပါ</p>';
+  }}
+}}
+loadPlayers();
 </script>
 </body>
 </html>"""
@@ -1231,7 +1278,7 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{tn_name} — Bracket</title>
 <script src="https://cdn.tailwindcss.com"></script>
-<script>tailwind.config={{theme:{{extend:{{colors:{{vibe:{{500:'#8b5cf6',600:'#7c3aed'}},surface:{{900:'#0f0f1a',800:'#1a1a2e',700:'#16213e',600:'#111827'}}}}}}}}}}</script>
+<script>tailwind.config={{theme:{{extend:{{colors:{{vibe:{{500:'#4a55ba',600:'#1D2BA9'}},surface:{{900:'#0f0f1a',800:'#1a1a2e',700:'#16213e',600:'#111827'}}}}}}}}}}</script>
 </head>
 <body class="bg-surface-900 min-h-screen text-white font-sans p-4">
 <div class="max-w-4xl mx-auto">
