@@ -1232,6 +1232,8 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     import html as _html
     tn_name = _html.escape(t.get("name", "Tournament"))
     tn_game = _html.escape(t.get("game", ""))
+    reg_token = t.get("reg_token") or ""
+    reg_link = f"https://ps-vibe.com/t/{_html.escape(reg_token)}" if reg_token else None
     
     # Total rounds = log2(next power of 2 >= player_count): 64→6, 32→5, 5→3, 4→2
     total_rounds = max(1, (player_count - 1).bit_length())
@@ -1307,12 +1309,18 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
 </head>
 <body class="bg-surface-900 min-h-screen text-white font-sans p-4">
 <div class="max-w-4xl mx-auto">
+  <div class="mb-4">
+    <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-gray-300 transition-colors">← Tournament Page</a>
+  </div>
   <div class="text-center mb-6">
     <h1 class="text-2xl font-bold">🏆 {tn_name}</h1>
     <p class="text-vibe-400 text-sm">{tn_game} &middot; {player_count} players</p>
   </div>
   {bracket_body}
-  <p class="text-center text-gray-600 text-xs mt-8">PS VIBE Gaming Lounge</p>
+  <div class="text-center mt-8 space-y-1">
+    <a href="{reg_link}" class="inline-block text-vibe-400 text-xs hover:underline">🏆 Tournament Page သို့ ပြန်သွားရန်</a>
+    <p class="text-gray-600 text-xs">PS VIBE Gaming Lounge &middot; Yangon</p>
+  </div>
 </div>
 </body>
 </html>"""
