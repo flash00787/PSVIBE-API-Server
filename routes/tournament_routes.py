@@ -566,6 +566,116 @@ async def registration_page(token: str, request: Request):
         tn_format = "Single Elimination" if t.get("format") == "single" else "Double Elimination"
         tn_id = int(t["id"])
 
+        # Registration availability: full / closed → show notice instead of form
+        t_status = (t.get("status") or "").lower()
+        is_full = spots_left <= 0
+        reg_expired = False
+        _rc = t.get("reg_close_at")
+        if _rc:
+            try:
+                from datetime import datetime
+                if isinstance(_rc, datetime):
+                    reg_expired = datetime.utcnow() > _rc
+            except Exception:
+                reg_expired = False
+        if is_full:
+            closed_reason = "full"
+        elif t_status != "open" or reg_expired:
+            closed_reason = "closed"
+        else:
+            closed_reason = None
+
+        if closed_reason == "full":
+            form_html = f'''  <!-- Full Notice -->
+  <div class="bg-surface-800 rounded-xl border border-amber-900/50 p-6 text-center shadow-xl shadow-amber-950/20">
+    <div class="text-5xl mb-3">😔</div>
+    <h2 class="text-xl font-bold text-amber-400 mb-2">နေရာအပြည့် ဖြစ်နေပါပြီ</h2>
+    <p class="text-gray-400 text-sm leading-relaxed">ဒီပြိုင်ပွဲအတွက် Spots ({t["max_players"]}) အားလုံး ပြည့်သွားပါပြီ။<br>နောက်ပြိုင်ပွဲတွေအတွက် <a href="https://t.me/psvibeofficial" class="text-vibe-400 hover:underline">@psvibeofficial</a> ကို ဆက်သွယ်ပါဦး 🙏</p>
+  </div>'''
+        elif closed_reason == "closed":
+            form_html = f'''  <!-- Closed Notice -->
+  <div class="bg-surface-800 rounded-xl border border-gray-700 p-6 text-center shadow-xl">
+    <div class="text-5xl mb-3">🔒</div>
+    <h2 class="text-xl font-bold text-gray-300 mb-2">Registration ပိတ်ထားပါသည်</h2>
+    <p class="text-gray-500 text-sm leading-relaxed">ဒီပြိုင်ပွဲအတွက် မှတ်ပုံတင်ခြင်း ပိတ်ထားပါသည်။<br>အချက်အလက်များအတွက် <a href="https://t.me/psvibeofficial" class="text-vibe-400 hover:underline">@psvibeofficial</a> ကို ဆက်သွယ်ပါဦး 🙏</p>
+  </div>'''
+        else:
+            form_html = f'''  <!-- Registration Form -->
+  <form id="regForm" onsubmit="return handleSubmit(event)" class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 shadow-xl shadow-vibe-950/30">
+    
+    <!-- Name -->
+    <div class="mb-4">
+      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">အမည် <span class="text-red-400">*</span></label>
+      <input type="text" id="name" placeholder="သင့်နာမည် ရိုက်ထည့်ပါ" required
+        class="w-full px-3.5 py-2.5 rounded-lg bg-surface-600 border border-gray-700 text-white text-sm
+               placeholder-gray-500 focus:outline-none focus:border-vibe-500 focus:ring-1 focus:ring-vibe-500/30 transition-colors">
+    </div>
+
+    <!-- Phone -->
+    <div class="mb-4">
+      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">ဖုန်းနံပါတ် <span class="text-red-400">*</span></label>
+      <input type="tel" id="phone" placeholder="09xxxxxxxxx" required
+        class="w-full px-3.5 py-2.5 rounded-lg bg-surface-600 border border-gray-700 text-white text-sm
+               placeholder-gray-500 focus:outline-none focus:border-vibe-500 focus:ring-1 focus:ring-vibe-500/30 transition-colors">
+    </div>
+
+    {f'''<!-- Payment Method -->
+    <div class="mb-4" id="paySection">
+      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">💳 ငွေပေးချေနည်း ({fee:,} Ks)</label>
+      <div class="grid grid-cols-1 gap-2 mb-2">
+        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('kpay')" data-pay="kpay">
+          <span class="text-vibe-400 font-semibold">KPay</span>
+          <span class="block text-gray-500 text-xs mt-0.5">09254824024 · U Tin Sein</span>
+        </button>
+        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('aya_pay')" data-pay="aya_pay">
+          <span class="text-emerald-400 font-semibold">AYA Pay</span>
+          <span class="block text-gray-500 text-xs mt-0.5">09254824024 · U Tin Sein</span>
+        </button>
+        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('wavepay')" data-pay="wavepay">
+          <span class="text-blue-400 font-semibold">WavePay</span>
+          <span class="block text-gray-500 text-xs mt-0.5">09254824024 · U Tin Sein</span>
+        </button>
+      </div>
+      <p class="text-gray-500 text-xs mt-1">ငွေလွှဲပြီးပါက Screenshot ပူးတွဲပေးပါ 🙏</p>
+    </div>
+
+    <!-- SS Upload -->
+    <div class="mb-4" id="ssSection">
+      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">📎 ငွေလွှဲ Screenshot <span class="text-red-400">*</span></label>
+      <input type="file" id="ssFile" accept="image/*"
+        class="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0
+               file:text-sm file:font-semibold file:bg-vibe-600 file:text-white file:cursor-pointer
+               hover:file:bg-vibe-700 file:transition-colors cursor-pointer">
+      <p class="text-gray-500 text-xs mt-1">JPEG, PNG, WebP — max 10MB</p>
+    </div>''' if fee > 0 else ''}
+
+    <!-- Submit -->
+    <button type="submit" id="submitBtn"
+      class="w-full py-3 rounded-lg font-bold text-white text-base mt-2
+             bg-gradient-to-r from-vibe-600 to-vibe-800 hover:from-vibe-500 hover:to-vibe-700
+             disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-400 disabled:cursor-not-allowed
+             transition-all duration-200 shadow-lg shadow-vibe-950/40">
+      {f'Register &mdash; {fee:,} Ks' if fee > 0 else 'Register Now — Free 🎉'}
+    </button>
+  </form>
+
+  <!-- Success Screen -->
+  <div id="successScreen" class="hidden bg-surface-800 rounded-xl border border-green-900/50 p-6 text-center shadow-xl shadow-green-950/20">
+    <div class="text-5xl mb-3">✅</div>
+    <h2 class="text-xl font-bold text-green-400 mb-2">အောင်မြင်ပါပြီ!</h2>
+    <p class="text-gray-300 text-sm leading-relaxed">
+      <span class="font-semibold text-white">{tn_name}</span> အတွက် <br>
+      Register ပြုလုပ်ခြင်း အောင်မြင်ပါသည်။
+    </p>
+    <p class="text-gray-400 text-xs mt-3 leading-relaxed">
+      ⏳ Staff မှ ငွေပေးချေမှု အတည်ပြုပြီးပါက<br>
+      အပြီးသတ် အတည်ဖြစ်ပါမည်။
+    </p>
+    <p class="text-gray-500 text-xs mt-3">📲 Updates — @psvibeofficial</p>
+  </div>
+
+'''
+
         html = f"""<!DOCTYPE html>
 <html lang="my">
 <head>
@@ -656,79 +766,7 @@ async def registration_page(token: str, request: Request):
   <!-- Message area -->
   <div id="msg" class="hidden rounded-lg p-3 mb-4 text-sm font-medium"></div>
 
-  <!-- Registration Form -->
-  <form id="regForm" onsubmit="return handleSubmit(event)" class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 shadow-xl shadow-vibe-950/30">
-    
-    <!-- Name -->
-    <div class="mb-4">
-      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">အမည် <span class="text-red-400">*</span></label>
-      <input type="text" id="name" placeholder="သင့်နာမည် ရိုက်ထည့်ပါ" required
-        class="w-full px-3.5 py-2.5 rounded-lg bg-surface-600 border border-gray-700 text-white text-sm
-               placeholder-gray-500 focus:outline-none focus:border-vibe-500 focus:ring-1 focus:ring-vibe-500/30 transition-colors">
-    </div>
-
-    <!-- Phone -->
-    <div class="mb-4">
-      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">ဖုန်းနံပါတ် <span class="text-red-400">*</span></label>
-      <input type="tel" id="phone" placeholder="09xxxxxxxxx" required
-        class="w-full px-3.5 py-2.5 rounded-lg bg-surface-600 border border-gray-700 text-white text-sm
-               placeholder-gray-500 focus:outline-none focus:border-vibe-500 focus:ring-1 focus:ring-vibe-500/30 transition-colors">
-    </div>
-
-    {f'''<!-- Payment Method -->
-    <div class="mb-4" id="paySection">
-      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">💳 ငွေပေးချေနည်း ({fee:,} Ks)</label>
-      <div class="grid grid-cols-1 gap-2 mb-2">
-        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('kpay')" data-pay="kpay">
-          <span class="text-vibe-400 font-semibold">KPay</span>
-          <span class="block text-gray-500 text-xs mt-0.5">09254824024 · U Tin Sein</span>
-        </button>
-        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('aya_pay')" data-pay="aya_pay">
-          <span class="text-emerald-400 font-semibold">AYA Pay</span>
-          <span class="block text-gray-500 text-xs mt-0.5">09254824024 · U Tin Sein</span>
-        </button>
-        <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('wavepay')" data-pay="wavepay">
-          <span class="text-blue-400 font-semibold">WavePay</span>
-          <span class="block text-gray-500 text-xs mt-0.5">09254824024 · U Tin Sein</span>
-        </button>
-      </div>
-      <p class="text-gray-500 text-xs mt-1">ငွေလွှဲပြီးပါက Screenshot ပူးတွဲပေးပါ 🙏</p>
-    </div>
-
-    <!-- SS Upload -->
-    <div class="mb-4" id="ssSection">
-      <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">📎 ငွေလွှဲ Screenshot <span class="text-red-400">*</span></label>
-      <input type="file" id="ssFile" accept="image/*"
-        class="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0
-               file:text-sm file:font-semibold file:bg-vibe-600 file:text-white file:cursor-pointer
-               hover:file:bg-vibe-700 file:transition-colors cursor-pointer">
-      <p class="text-gray-500 text-xs mt-1">JPEG, PNG, WebP — max 10MB</p>
-    </div>''' if fee > 0 else ''}
-
-    <!-- Submit -->
-    <button type="submit" id="submitBtn"
-      class="w-full py-3 rounded-lg font-bold text-white text-base mt-2
-             bg-gradient-to-r from-vibe-600 to-vibe-800 hover:from-vibe-500 hover:to-vibe-700
-             disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-400 disabled:cursor-not-allowed
-             transition-all duration-200 shadow-lg shadow-vibe-950/40">
-      {f'Register &mdash; {fee:,} Ks' if fee > 0 else 'Register Now — Free 🎉'}
-    </button>
-  </form>
-
-  <!-- Success Screen -->
-  <div id="successScreen" class="hidden bg-surface-800 rounded-xl border border-green-900/50 p-6 text-center shadow-xl shadow-green-950/20">
-    <div class="text-5xl mb-3">✅</div>
-    <h2 class="text-xl font-bold text-green-400 mb-2">အောင်မြင်ပါပြီ!</h2>
-    <p class="text-gray-300 text-sm leading-relaxed">
-      <span class="font-semibold text-white">{tn_name}</span> အတွက် <br>
-      Register ပြုလုပ်ခြင်း အောင်မြင်ပါသည်။
-    </p>
-    <p class="text-gray-400 text-xs mt-3 leading-relaxed">
-      ⏳ Staff မှ ငွေပေးချေမှု အတည်ပြုပြီးပါက<br>
-      အပြီးသတ် အတည်ဖြစ်ပါမည်။
-    </p>
-    <p class="text-gray-500 text-xs mt-3">📲 Updates — @psvibeofficial</p>
-  </div>
+  {form_html}
 
   <!-- Registered Players + Bracket -->
   <div class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 mb-5 shadow-xl shadow-vibe-950/30">
