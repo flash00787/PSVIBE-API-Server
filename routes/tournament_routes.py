@@ -1233,6 +1233,9 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     tn_name = _html.escape(t.get("name", "Tournament"))
     tn_game = _html.escape(t.get("game", ""))
     
+    # Total rounds = log2(next power of 2 >= player_count): 64→6, 32→5, 5→3, 4→2
+    total_rounds = max(1, (player_count - 1).bit_length())
+
     # Build round columns
     round_cols = []
     for rnum in sorted(rounds.keys()):
@@ -1267,10 +1270,32 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
         
         round_cols.append(f'''
         <div class="flex-shrink-0 w-40">
-          <div class="text-center text-xs font-semibold text-vibe-400 mb-2 py-1 bg-surface-700 rounded">{'🏆 Final' if rnum == len(rounds) else f'Semi' if rnum == len(rounds)-1 else f'Round {rnum}'}</div>
+          <div class="text-center text-xs font-semibold text-vibe-400 mb-2 py-1 bg-surface-700 rounded">{'🏆 Final' if rnum == total_rounds else f'Semi' if rnum == total_rounds - 1 else f'Round {rnum}'}</div>
           {"".join(match_cards)}
         </div>''')
     
+    if round_cols:
+        bracket_body = f'''<div class="flex gap-4 overflow-x-auto pb-4">
+    {"".join(round_cols)}
+  </div>'''
+    else:
+        bracket_body = '''<div class="text-center py-14">
+    <div class="text-5xl mb-3">⏳</div>
+    <p class="text-gray-300 font-semibold text-lg">Bracket မစရသေးပါ</p>
+    <p class="text-gray-500 text-xs mt-2">Tournament စတင်ပြီးမှ bracket ပေါ်ပါမယ် — မကြာမီ ပြန်ကြည့်ပါဦး 🙏</p>
+  </div>'''
+
+    if round_cols:
+        bracket_body = f'''<div class="flex gap-4 overflow-x-auto pb-4">
+    {"".join(round_cols)}
+  </div>'''
+    else:
+        bracket_body = '''<div class="text-center py-14">
+    <div class="text-5xl mb-3">⏳</div>
+    <p class="text-gray-300 font-semibold text-lg">Bracket မစရသေးပါ</p>
+    <p class="text-gray-500 text-xs mt-2">Tournament စတင်ပြီးမှ bracket ပေါ်ပါမယ် — မကြာမီ ပြန်ကြည့်ပါဦး 🙏</p>
+  </div>'''
+
     html = f"""<!DOCTYPE html>
 <html lang="my">
 <head>
@@ -1286,9 +1311,7 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     <h1 class="text-2xl font-bold">🏆 {tn_name}</h1>
     <p class="text-vibe-400 text-sm">{tn_game} &middot; {player_count} players</p>
   </div>
-  <div class="flex gap-4 overflow-x-auto pb-4">
-    {"".join(round_cols)}
-  </div>
+  {bracket_body}
   <p class="text-center text-gray-600 text-xs mt-8">PS VIBE Gaming Lounge</p>
 </div>
 </body>
