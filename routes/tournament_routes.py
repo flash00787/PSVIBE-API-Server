@@ -587,7 +587,7 @@ async def registration_page(token: str, request: Request):
     "@type": "SportsOrganization",
     "name": "PS VIBE - PS5 Gaming Lounge",
     "url": "https://ps-vibe.com",
-    "sameAs": ["https://www.facebook.com/ps5gamecenter", "https://www.tiktok.com/@ps.vibe.game.cent"],
+    "sameAs": ["https://www.facebook.com/ps5gamecenter", "https://www.tiktok.com/@ps.vibe.gameing.lounge"],
     "address": {{"@type": "PostalAddress", "addressLocality": "Yangon", "addressCountry": "MM"}}
   }},
   "location": {{"@type": "Place", "name": "PS VIBE - PS5 Gaming Lounge", "address": {{"@type": "PostalAddress", "addressLocality": "Yangon", "addressCountry": "MM"}}}}
@@ -734,7 +734,7 @@ async def registration_page(token: str, request: Request):
   <div class="text-center mt-6 space-y-1.5">
     <p class="text-gray-500 text-xs font-medium">PS VIBE - PS5 Gaming Lounge · Yangon</p>
     <p class="text-gray-600 text-xs">🕘 9:00 AM - 9:00 PM (နေ့စဉ်) · 📞 09254824024</p>
-    <p class="text-gray-600 text-xs">Facebook: <a href="https://www.facebook.com/ps5gamecenter" class="text-vibe-400 hover:underline">PS5 Game Center</a> · TikTok: <a href="https://www.tiktok.com/@ps.vibe.game.cent" class="text-vibe-400 hover:underline">@ps.vibe.game.cent</a></p>
+    <p class="text-gray-600 text-xs">Facebook: <a href="https://www.facebook.com/ps5gamecenter" class="text-vibe-400 hover:underline">PS5 Game Center</a> · TikTok: <a href="https://www.tiktok.com/@ps.vibe.gameing.lounge" class="text-vibe-400 hover:underline">@ps.vibe.gameing.lounge</a></p>
     <p class="text-gray-600 text-xs">📲 အကူအညီလိုလျှင် — <a href="https://t.me/psvibeofficial" class="text-vibe-400 hover:underline">@psvibeofficial</a></p>
     <p class="text-gray-700 text-xs pt-1">&copy; 2026 PS VIBE Gaming Lounge. All rights reserved.</p>
   </div>
