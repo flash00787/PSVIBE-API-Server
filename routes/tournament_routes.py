@@ -571,6 +571,28 @@ async def registration_page(token: str, request: Request):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="PS VIBE - PS5 Gaming Lounge တွင် ကျင်းပမည့် {tn_name} ({tn_game}) ပြိုင်ပွဲအတွက် တရားဝင် မှတ်ပုံတင်စာမျက်နှာ။ Yangon အခြေစိုက် PS VIBE Gaming Lounge — Play The Game. Share The VIBE!">
+<meta name="robots" content="index, follow">
+<meta property="og:title" content="{tn_name} — PS VIBE Tournament">
+<meta property="og:description" content="PS VIBE - PS5 Gaming Lounge တရားဝင် ပြိုင်ပွဲ မှတ်ပုံတင်ခြင်း — {tn_game}">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#0f0f1a">
+<script type="application/ld+json">
+{{
+  "@context": "https://schema.org",
+  "@type": "SportsEvent",
+  "name": "{tn_name}",
+  "description": "{tn_desc}",
+  "organizer": {{
+    "@type": "SportsOrganization",
+    "name": "PS VIBE - PS5 Gaming Lounge",
+    "url": "https://ps-vibe.com",
+    "sameAs": ["https://www.facebook.com/ps5gamecenter", "https://www.tiktok.com/@ps.vibe.game.cent"],
+    "address": {{"@type": "PostalAddress", "addressLocality": "Yangon", "addressCountry": "MM"}}
+  }},
+  "location": {{"@type": "Place", "name": "PS VIBE - PS5 Gaming Lounge", "address": {{"@type": "PostalAddress", "addressLocality": "Yangon", "addressCountry": "MM"}}}}
+}}
+</script>
 <title>{tn_name} — PS VIBE Tournament</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
@@ -612,6 +634,7 @@ async def registration_page(token: str, request: Request):
     </div>
     <p class="text-vibe-400 text-sm font-medium">{tn_game} &middot; {tn_format}</p>
     <p class="text-gray-500 text-xs mt-1">Play The Game. Share The VIBE!</p>
+    <span class="inline-block mt-2.5 px-3 py-1 rounded-full bg-vibe-950/60 border border-vibe-800/50 text-vibe-300 text-[11px] font-medium">🏠 PS VIBE - PS5 Gaming Lounge · Yangon</span>
   </div>
 
   <!-- Tournament Info Card -->
@@ -660,11 +683,11 @@ async def registration_page(token: str, request: Request):
       <div class="grid grid-cols-2 gap-2 mb-2">
         <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('kpay')" data-pay="kpay">
           <span class="text-vibe-400 font-semibold">KPay</span>
-          <span class="block text-gray-500 text-xs mt-0.5">09xxxxxxxxx</span>
+          <span class="block text-gray-500 text-xs mt-0.5">09254824024</span>
         </button>
         <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('wavepay')" data-pay="wavepay">
           <span class="text-blue-400 font-semibold">WavePay</span>
-          <span class="block text-gray-500 text-xs mt-0.5">09xxxxxxxxx</span>
+          <span class="block text-gray-500 text-xs mt-0.5">09254824024</span>
         </button>
         <button type="button" class="pay-btn text-left px-3 py-2.5 rounded-lg border border-gray-700 bg-surface-600 text-gray-300 text-sm hover:border-vibe-500 hover:bg-surface-700" onclick="selectPay('kbz_bank')" data-pay="kbz_bank">
           <span class="text-cyan-400 font-semibold">KBZ Bank</span>
@@ -714,7 +737,13 @@ async def registration_page(token: str, request: Request):
   </div>
 
   <!-- Footer -->
-  <p class="text-center text-gray-600 text-xs mt-6">PS VIBE Gaming Lounge &copy; 2026</p>
+  <div class="text-center mt-6 space-y-1.5">
+    <p class="text-gray-500 text-xs font-medium">PS VIBE - PS5 Gaming Lounge · Yangon</p>
+    <p class="text-gray-600 text-xs">🕘 9:00 AM - 9:00 PM (နေ့စဉ်) · 📞 09254824024</p>
+    <p class="text-gray-600 text-xs">Facebook: <a href="https://www.facebook.com/ps5gamecenter" class="text-vibe-400 hover:underline">PS5 Game Center</a> · TikTok: <a href="https://www.tiktok.com/@ps.vibe.game.cent" class="text-vibe-400 hover:underline">@ps.vibe.game.cent</a></p>
+    <p class="text-gray-600 text-xs">📲 အကူအညီလိုလျှင် — <a href="https://t.me/psvibeofficial" class="text-vibe-400 hover:underline">@psvibeofficial</a></p>
+    <p class="text-gray-700 text-xs pt-1">&copy; 2026 PS VIBE Gaming Lounge. All rights reserved.</p>
+  </div>
 </div>
 
 <script>
