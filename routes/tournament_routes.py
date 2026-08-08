@@ -600,7 +600,7 @@ async def registration_page(token: str, request: Request):
     theme: {{
       extend: {{
         colors: {{
-          vibe: {{ 50: '#eef1ff', 100: '#dde3ff', 200: '#c2cdfe', 300: '#9dacfc', 400: '#7585f8', 500: '#4d5ff0', 600: '#2F4FE8', 700: '#243dc4', 800: '#1f34a0', 900: '#1c2d80', 950: '#131e52' }},
+          vibe: {{ 50: '#f4f4fb', 100: '#e8eaf6', 200: '#d2d5ee', 300: '#a5aadd', 400: '#7780cb', 500: '#4a55ba', 600: '#1D2BA9', 700: '#172287', 800: '#111a65', 900: '#0c1144', 950: '#060922' }},
           surface: {{ 900: '#0f0f1a', 800: '#1a1a2e', 700: '#16213e', 600: '#111827' }}
         }},
         fontFamily: {{ sans: ['Inter', 'Noto Sans Myanmar', 'system-ui', 'sans-serif'] }}
@@ -610,15 +610,15 @@ async def registration_page(token: str, request: Request):
 </script>
 <style>
   body {{ background: #0f0f1a; }}
-  .text-glow {{ text-shadow: 0 0 20px rgba(47,79,232,0.4); }}
+  .text-glow {{ text-shadow: 0 0 20px rgba(29,43,169,0.4); }}
   input[type=file]::file-selector-button {{
-    background: linear-gradient(135deg, #2F4FE8, #1f34a0);
+    background: linear-gradient(135deg, #1D2BA9, #111a65);
     border: none; color: white; padding: 8px 16px; border-radius: 6px;
     cursor: pointer; font-weight: 600; margin-right: 12px;
   }}
   .pay-btn {{ transition: all 0.2s ease; }}
-  .pay-btn:hover {{ transform: translateY(-1px); box-shadow: 0 4px 12px rgba(47,79,232,0.3); }}
-  .pay-btn.active {{ background: linear-gradient(135deg, #2F4FE8, #1f34a0) !important; color: white !important; border-color: #2F4FE8 !important; box-shadow: 0 0 16px rgba(47,79,232,0.4); }}
+  .pay-btn:hover {{ transform: translateY(-1px); box-shadow: 0 4px 12px rgba(29,43,169,0.3); }}
+  .pay-btn.active {{ background: linear-gradient(135deg, #1D2BA9, #111a65) !important; color: white !important; border-color: #1D2BA9 !important; box-shadow: 0 0 16px rgba(29,43,169,0.4); }}
   .spinner {{ display: inline-block; width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: white; animation: spin 0.6s linear infinite; }}
   @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
 </style>
@@ -628,7 +628,7 @@ async def registration_page(token: str, request: Request):
 
   <!-- Header -->
   <div class="text-center mb-6">
-    <img src="/uploads/psvibe-logo-v2.png" alt="PS VIBE - PS5 Gaming Lounge" class="w-64 mx-auto mb-6 drop-shadow-[0_0_18px_rgba(47,79,232,0.35)]">
+    <img src="/uploads/psvibe-logo-v2.png" alt="PS VIBE - PS5 Gaming Lounge" class="w-64 mx-auto mb-6 drop-shadow-[0_0_18px_rgba(29,43,169,0.35)]">
     <h1 class="text-2xl font-bold text-white text-glow">{tn_name}</h1>
     <p class="text-vibe-400 text-sm font-medium">{tn_game} &middot; {tn_format}</p>
     <p class="text-gray-500 text-xs mt-1">Play The Game. Share The VIBE!</p>
