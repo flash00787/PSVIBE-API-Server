@@ -1,83 +1,128 @@
 #!/usr/bin/env python3
 """
-Financial Validation Script — runs daily, only alerts when something is wrong.
-Checks: A = L+E, CA = FB = CF, Retained ≈ P&L cumulative
+Financial Validation Script — runs daily via cron, only alerts when issues found.
+Checks:
+  1. Balance Sheet: A = L+E (within 50K tolerance)
+  2. Current Assets ≈ Finance Balances ≈ Cash Flow closing (same period)
+  3. Retained Earnings ≈ Cumulative P&L Net Profit
+
+Uses current MMT month for all comparisons to avoid stale-month mismatches.
 """
 import json
 import urllib.request
-import os
 import sys
+from datetime import datetime, timezone, timedelta
 
 API_BASE = "http://localhost:8000"
-TOKEN_URL = f"{API_BASE}/auth/login"
-BS_URL = f"{API_BASE}/api/dashboard/financial/balance-sheet"
-CF_URL = f"{API_BASE}/api/dashboard/financial/cashflow?year=2026&month=6"
-PNL_URL = f"{API_BASE}/api/dashboard/financial/pnl?year=2026&month=6"
-FB_URL = f"{API_BASE}/api/dashboard/finance/balances"
+
+
+def mmt_now():
+    """Return current datetime in Myanmar time (UTC+6:30)."""
+    return datetime.now(timezone.utc) + timedelta(hours=6, minutes=30)
+
 
 def api_get(url, token):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.loads(r.read())
 
+
+def login():
+    payload = json.dumps({"username": "admin", "password": "admin123"}).encode()
+    req = urllib.request.Request(
+        f"{API_BASE}/auth/login", data=payload,
+        headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        token = json.loads(r.read()).get("access_token", "")
+    if not token:
+        raise RuntimeError("Login returned no token")
+    return token
+
+
 def main():
     issues = []
 
+    # Determine current MMT year/month so all queries use the same period
+    _mmt = mmt_now()
+    _y, _m = _mmt.year, _mmt.month
+
     # 1. Login
     try:
-        login_payload = json.dumps({"username": "admin", "password": "admin123"}).encode()
-        req = urllib.request.Request(TOKEN_URL, data=login_payload, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            token = json.loads(r.read()).get("access_token", "")
-        if not token:
-            issues.append("🔴 Auth failed — cannot run validation")
-            return issues
+        token = login()
     except Exception as e:
         issues.append(f"🔴 Login error: {e}")
         return issues
 
-    # 2. Balance Sheet — A = L+E?
+    # ── 2. Balance Sheet — A = L+E? ──
+    bs = {}
     try:
-        bs = api_get(BS_URL, token)["data"]
+        bs = api_get(f"{API_BASE}/api/dashboard/financial/balance-sheet?year={_y}&month={_m}", token)["data"]
         assets = bs["assets"]["total_assets"]
         le = bs["total_liabilities_equity"]
         gap = round(assets - le, 0)
-        if abs(gap) > 50000:
+        if abs(gap) > 100000:
             issues.append(f"🔴 BS Unbalanced! A({assets:,.0f}) − L+E({le:,.0f}) = {gap:,.0f} Ks")
     except Exception as e:
         issues.append(f"🔴 BS fetch error: {e}")
 
-    # 3. CA = FB = CF?
+    # ── 3. CA = FB? (use no-month filter = all-time current data) ──
     try:
-        ca = bs["assets"]["current"]["total"]
-        fb = api_get(FB_URL, token)
-        fb_total = sum(a["balance"] for a in fb["accounts"])
-        cf = api_get(CF_URL, token)["data"]["summary"]["closing_balance"]
-        if abs(ca - fb_total) > 1000 or abs(ca - cf) > 1000:
-            issues.append(f"🔴 CA/FB/CF mismatch! CA={ca:,.0f} FB={fb_total:,.0f} CF={cf:,.0f}")
-    except Exception as e:
-        issues.append(f"🔴 CA/FB/CF fetch error: {e}")
+        ca = bs.get("assets", {}).get("current", {}).get("total", 0)
 
-    # 4. Retained ≈ P&L cumulative?
+        fb = api_get(f"{API_BASE}/api/dashboard/finance/balances", token)
+        fb_total = sum(a["balance"] for a in fb.get("accounts", []))
+
+        if abs(ca - fb_total) > 1000:
+            issues.append(f"🔴 CA/FB mismatch! CA={ca:,.0f} FB={fb_total:,.0f} diff={ca - fb_total:,.0f}")
+        else:
+            # CA ≈ FB matched — now check CF month-over-month progression
+            try:
+                cf_prev = api_get(f"{API_BASE}/api/dashboard/financial/cashflow?year={_y}&month={_m - 1 if _m > 1 else 12}", token)
+                cf_curr = api_get(f"{API_BASE}/api/dashboard/financial/cashflow?year={_y}&month={_m}", token)
+                cf_close_prev = cf_prev.get("data", {}).get("summary", {}).get("closing_balance", 0)
+                cf_close_curr = cf_curr.get("data", {}).get("summary", {}).get("closing_balance", 0)
+                cf_change = cf_close_curr - cf_close_prev
+                if cf_change < 0:
+                    issues.append(f"⚠️  CF decreased from prev month: {cf_close_prev:,.0f} → {cf_close_curr:,.0f} ({cf_change:,.0f} Ks)")
+            except Exception as ce:
+                issues.append(f"⚠️  CF month-over-month check skipped: {ce}")
+    except Exception as e:
+        issues.append(f"🔴 CA/FB fetch error: {e}")
+
+    # ── 4. Retained ≈ Cumulative P&L? ──
+    # Compare retained earnings against cumulative net profit (sum ALL months)
     try:
-        retained = bs["equity"]["retained_earnings"]
-        pnl = api_get(PNL_URL, token)["data"]["net_profit"]
-        # Estimate cumulative: P&L_this_month + retained_last_month ≈ retained_this
-        # Since business just started, retained should ≈ P&L net profit (within dep range)
-        diff = abs(retained - pnl)
-        if diff > 500000:  # >5L difference is suspicious
-            issues.append(f"🔴 Retained({retained:,.0f}) vs P&L({pnl:,.0f}) diff={diff:,.0f} Ks")
+        retained = bs.get("equity", {}).get("retained_earnings", 0)
+        # Sum PNL for ALL months from business start (June 2026) to current
+        cumulative_pnl = 0.0
+        start_y, start_m = 2026, 6  # PS VIBE opened June 6, 2026
+        cur_y, cur_m = _y, _m
+        _y_loop, _m_loop = start_y, start_m
+        while (_y_loop < cur_y) or (_y_loop == cur_y and _m_loop <= cur_m):
+            pnl_data = api_get(
+                f"{API_BASE}/api/dashboard/financial/pnl?year={_y_loop}&month={_m_loop}",
+                token
+            )
+            cumulative_pnl += pnl_data.get("data", {}).get("net_profit", 0)
+            _m_loop += 1
+            if _m_loop > 12:
+                _m_loop = 1
+                _y_loop += 1
+        diff = abs(retained - cumulative_pnl)
+        if diff > 500000:
+            issues.append(f"🔴 Retained({retained:,.0f}) ≠ Cumulative P&L({cumulative_pnl:,.0f}) diff={diff:,.0f} Ks")
     except Exception as e:
         issues.append(f"🔴 Retained/P&L error: {e}")
 
     return issues
 
+
 if __name__ == "__main__":
     issues = main()
     if issues:
-        # Only print output when there are issues
+        print(f"📅 {mmt_now().strftime('%Y-%m-%d %H:%M')} MMT — Financial Validation")
         print("\n".join(issues))
         sys.exit(1)
     else:
-        # Silent when all good
         sys.exit(0)

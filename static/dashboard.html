@@ -154,8 +154,9 @@ tr:hover { background:var(--hover); }
   overflow:hidden; text-overflow:ellipsis; }
 
 /* Timeline */
-.timeline-grid { display:grid; grid-template-columns:80px repeat(10,1fr); gap:1px;
+.timeline-grid { display:grid; gap:1px;
   background:var(--border); border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+.timeline-grid .full-row { grid-column:1/-1; position:relative; min-height:34px; height:34px; }
 .timeline-header { background:var(--card); padding:0.4rem 0.3rem; font-size:0.68rem;
   color:var(--dim); text-align:center; font-weight:600; }
 .timeline-header.console-label { text-align:right; padding-right:0.5rem; }
@@ -774,101 +775,156 @@ async function rejectBooking(id) {
 }
 
 // ═══════════ TAB: TIMELINE ═══════════
-async function loadTimelineTab(container) {
+// ── Timeline date state ──
+let _tlDate = null;
+
+async function loadTimelineTab(container, targetDate) {
   container.innerHTML = '<div class="loading">Loading timeline...</div>';
   try {
-    // Use MMT date (not UTC) to match Myanmar lounge hours
+    // MMT offset
     const now = new Date();
     const mmt = new Date(now.getTime() + (6.5 * 60 * 60 * 1000));
-    const today = mmt.toISOString().split('T')[0];
-    const res = await apiGet('/api/dashboard/bookings?date=' + today + '&limit=200');
+    const todayStr = mmt.toISOString().split('T')[0];
+
+    // Resolve target date
+    if (!targetDate) targetDate = _tlDate || todayStr;
+    _tlDate = targetDate;
+
+    // Fetch bookings for the selected date
+    const res = await apiGet('/api/dashboard/bookings?date=' + targetDate + '&limit=200');
     if (!res.success) {
       container.innerHTML = '<div class="error">' + (res.error || 'Failed') + '</div>';
       return;
     }
     const bookings = res.data || [];
-    if (!bookings.length) {
-      container.innerHTML = '<div class="empty">No bookings for today (' + today + ' MMT)</div>';
-      return;
-    }
 
-    // Build console list from bookings
+    // ── Date navigation bar ──
+    // 🐛 BUG FIX: new Date(str+'T00:00:00+06:30') then setDate/getDate/toISOString
+    // operates in UTC timezone, NOT MMT. Fix: parse YYYY-MM-DD as local date parts,
+    // do day math in local time (server=UTC=correct for whole-day offsets),
+    // and format back without toISOString conversion.
+    const _fmtDate = (d) => { const _fy=d.getFullYear(); const _fm=String(d.getMonth()+1).padStart(2,'0'); const _fd=String(d.getDate()).padStart(2,'0'); return _fy+'-'+_fm+'-'+_fd; };
+    const [_py,_pm,_pd] = targetDate.split('-').map(Number);
+    const _baseDate = new Date(_py, _pm-1, _pd);
+    const _prevD = new Date(_baseDate); _prevD.setDate(_prevD.getDate() - 1);
+    const _nextD = new Date(_baseDate); _nextD.setDate(_nextD.getDate() + 1);
+    const prevStr = _fmtDate(_prevD);
+    const nextStr = _fmtDate(_nextD);
+    const isToday = targetDate === todayStr;
+
+    let html = '<div class="panel">';
+    html += '<div class="panel-header" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+    html += '⏱️ Timeline';
+    html += ` <button class="btn btn-sm" onclick="loadTimelineTab(document.getElementById('main-content'),'${prevStr}')">◀</button>`;
+    if (!isToday) {
+      html += ` <button class="btn btn-sm btn-primary" onclick="loadTimelineTab(document.getElementById('main-content'),'${todayStr}')">📅 Today</button>`;
+    } else {
+      html += ` <span class="btn btn-sm" style="opacity:0.5;cursor:default">📅 Today</span>`;
+    }
+    html += ` <button class="btn btn-sm" onclick="loadTimelineTab(document.getElementById('main-content'),'${nextStr}')">▶</button>`;
+    html += ` <input type="date" class="form-input" style="width:auto;padding:2px 6px;font-size:0.72rem" value="${targetDate}" onchange="loadTimelineTab(document.getElementById('main-content'),this.value)">`;
+    html += ` <span style="font-size:0.72rem;color:var(--dim)">${targetDate}</span>`;
+    html += '</div>';
+
+    html += '<div class="panel-body" style="overflow-x:auto">';
+
+    // Build console list
     const consoles = [...new Set(bookings.map(b => b.console_id).filter(Boolean))].sort();
-    if (!consoles.length) {
-      container.innerHTML = '<div class="empty">No console data</div>';
+    if (!bookings.length || !consoles.length) {
+      html += '<div class="empty">No bookings for ' + targetDate + '</div>';
+      html += '</div></div>';
+      container.innerHTML = html;
       return;
     }
 
-    // Show hours 9 AM to 11 PM (MMT lounge hours)
+    // Hours 9 AM to 11 PM (MMT lounge hours)
     const hours = [];
     for (let h = 9; h <= 23; h++) hours.push(h);
-
-    // Helper: parse time from datetime string (handles both "HH:MM" and "YYYY-MM-DD HH:MM:SS")
-    const parseHour = (t) => {
-      if (!t) return 0;
-      const timePart = t.includes(' ') ? t.split(' ')[1] : t;
-      return parseInt(timePart.split(':')[0]) || 0;
-    };
-    const parseMin = (t) => {
-      if (!t) return 0;
-      const timePart = t.includes(' ') ? t.split(' ')[1] : t;
-      return parseInt(timePart.split(':')[1]) || 0;
-    };
-
-    let html = '<div class="panel"><div class="panel-header">⏱️ Today\'s Timeline (' + today + ' MMT)</div><div class="panel-body" style="overflow-x:auto">';
-    html += '<div class="timeline-grid">';
-    // Header
-    html += '<div class="timeline-header console-label">Console</div>';
     const totalHours = hours.length;
+
+    // Legend colors
+    const colors = { confirmed: 'confirmed', pending: 'pending', active: 'active', checked_in: 'active', done: 'done' };
+
+    // Build grid with dynamic columns
+    html += '<div class="timeline-grid" style="grid-template-columns:80px repeat(' + totalHours + ',1fr)">';
+
+    // ── Header row ──
+    html += '<div class="timeline-header console-label">Console</div>';
+    const currentMmtHour = isToday ? mmt.getHours() : -1;
     hours.forEach(h => {
       const ampm = h >= 12 ? 'PM' : 'AM';
       const h12 = h % 12 || 12;
-      html += `<div class="timeline-header">${h12}${ampm}</div>`;
+      const isCurrent = h === currentMmtHour;
+      html += `<div class="timeline-header" style="${isCurrent ? 'background:var(--cyan);color:#fff' : ''}">${h12}${ampm}</div>`;
     });
 
-    // Rows
-    const colors = { confirmed: 'confirmed', pending: 'pending', active: 'active', checked_in: 'active' };
-    const defaultColor = 'done';
+    // ── Helper: parse time string to decimal ──
+    const parseTimeDecimal = (t) => {
+      if (!t) return null;
+      const timePart = t.includes(' ') ? t.split(' ')[1] : t;
+      const parts = timePart.split(':').map(Number);
+      if (parts.length < 2 || isNaN(parts[0]) || isNaN(parts[1])) return null;
+      return parts[0] + parts[1] / 60;
+    };
 
+    // ── Console rows ──
     consoles.forEach(cid => {
-      html += `<div class="timeline-row">`;
-      html += `<div class="timeline-header console-label" style="background:var(--card);text-align:right;padding-right:0.5rem">${cid}</div>`;
-      
-      // Collect bookings for this console, compute slot positions
       const consoleBookings = bookings.filter(b => b.console_id === cid);
+
+      // Prepare slots with actual session times when available
       const slots = [];
       consoleBookings.forEach(b => {
-        const sh = parseHour(b.start_time);
-        const sm = parseMin(b.start_time);
-        const eh = parseHour(b.end_time);
-        const em = parseMin(b.end_time);
-        const startDecimal = sh + sm / 60;
-        const endDecimal = eh + em / 60;
-        if (endDecimal > startDecimal) {
-          slots.push({
-            ...b,
-            startDecimal,
-            endDecimal,
-            cls: colors[(b.status || '').toLowerCase()] || defaultColor
-          });
-        }
+        const sd = parseTimeDecimal(b.has_session && b.actual_start ? b.actual_start : b.start_time);
+        const ed = parseTimeDecimal(b.has_session && b.actual_end ? b.actual_end : b.end_time);
+        if (sd === null || ed === null || ed <= sd) return;
+        // Only show if overlaps display range
+        if (ed < hours[0] || sd > hours[hours.length - 1] + 1) return;
+        const cls = colors[(b.status || '').toLowerCase()] || 'done';
+        const statusBadge = b.has_session ? '🟢' : '📋';
+        const label = (b.member_id || b.staff_name || '#' + b.id) + (b.game_name ? ' ' + b.game_name : '') + ' ' + statusBadge;
+        const title = `${label} | ${sd.toFixed(2)}-${ed.toFixed(2)} | ${b.status || ''}`;
+        slots.push({ id: b.id, label, title, sd, ed, cls });
       });
 
-      hours.forEach(h => {
-        html += `<div class="timeline-cell">`;
-        slots.filter(s => h >= Math.floor(s.startDecimal) && h < Math.ceil(s.endDecimal)).forEach(s => {
-          const spanH = s.endDecimal - s.startDecimal;
-          const leftPct = ((s.startDecimal - hours[0]) / totalHours) * 100;
-          const widthPct = (spanH / totalHours) * 100;
-          const label = (s.member_id || s.staff_name || '#' + s.id) + (s.game_name ? ' ' + s.game_name : '');
-          html += `<div class="timeline-booking ${s.cls}" style="left:${leftPct}%;width:${widthPct}%" title="${label} | ${s.start_time} - ${s.end_time}">${label}</div>`;
-        });
+      if (!slots.length) {
+        // Empty console row
+        html += '<div class="timeline-row">';
+        html += `<div class="timeline-header console-label">${cid}</div>`;
+        for (let i = 0; i < totalHours; i++) html += '<div class="timeline-cell"></div>';
         html += '</div>';
+        return;
+      }
+
+      // Render each slot as a bar spanning from start hour to end hour
+      const rangeStart = hours[0];
+      const rangeEnd = hours[hours.length - 1] + 1; // exclusive: 24
+
+      html += '<div class="timeline-row">';
+      html += `<div class="timeline-header console-label">${cid}</div>`;
+
+      // One big cell covering all hour columns with position:relative for absolute bars
+      html += `<div class="full-row">`;
+
+      slots.forEach(s => {
+        const leftPct = ((s.sd - rangeStart) / (rangeEnd - rangeStart)) * 100;
+        const widthPct = ((s.ed - s.sd) / (rangeEnd - rangeStart)) * 100;
+        html += `<div class="timeline-booking ${s.cls}" style="left:${Math.max(0, leftPct)}%;width:${Math.max(0.5, widthPct)}%" title="${s.title}">${s.label}</div>`;
       });
-      html += '</div>';
+
+      html += '</div>'; // full-row
+      html += '</div>'; // timeline-row
     });
 
-    html += '</div></div></div>';
+    html += '</div>'; // timeline-grid
+    html += '<div style="margin-top:8px;font-size:0.7rem;color:var(--dim);display:flex;gap:12px">';
+    html += '<span>🟢 = Active Session</span><span>📋 = Booking</span>';
+    html += '<span class="confirmed" style="color:var(--green)">█ Confirmed</span>';
+    html += '<span class="pending" style="color:var(--amber)">█ Pending</span>';
+    html += '<span class="active" style="color:var(--cyan)">█ Active</span>';
+    html += '<span style="color:rgba(139,148,158,0.6)">█ Done</span>';
+    html += '</div>';
+    html += '</div></div>'; // panel-body, panel
+
     container.innerHTML = html;
   } catch(e) {
     container.innerHTML = '<div class="error">Error: ' + e.message + '</div>';

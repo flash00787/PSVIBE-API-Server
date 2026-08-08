@@ -1,0 +1,64 @@
+{"success":true,"data":{"timestamp":"2026-07-21T17:31:35.495989Z","date":"2026-07-21","summary":{"total_sales":{"count":18,"gross":398650.0,"net":377500.0},"total_topups":{"count":0,"amount":0.0,"mins_added":0},"active_sessions":0,"completed_sessions":17,"food_sales":{"count":21,"total":57200.0},"new_members":0,"top_consoles":[{"console_id":"C-02","hours":5.0},{"console_id":"C-08","hours":4.9},{"console_id":"C-10","hours":3.0},{"console_id":"C-09","hours":2.0},{"console_id":"C-01","hours":2.0}],"top_games":[{"game":"FC 26","sessions":9},{"game":"Any","sessions":2},{"game":"Resident Evil 9","sessions":2},{"game":"Tekken 8","sessions":2},{"game":"Astro Bot","sessions":1}],"revenue_by_payment":[{"method":"Cash:48500","count":1,"total":48500.0},{"method":"KPay:46500","count":1,"total":46500.0},{"method":"Cash:10000","count":4,"total":40000.0},{"method":"KPay:30000","count":1,"total":37000.0},{"method":"Cash:36000","count":1,"total":36000.0},{"method":"KPay:31800","count":1,"total":31800.0},{"method":"Cash:30000","count":1,"total":30000.0},{"method":"KPay:25000","count":1,"total":25000.0},{"method":"KPay:20500","count":1,"total":20500.0},{"method":"AYA Pay:16700","count":1,"total":16700.0},{"method":"Cash:15000","count":1,"total":15000.0},{"method":"KPay:14500","count":1,"total":14500.0},{"method":"KPay:10000","count":1,"total":10000.0},{"method":":6000 (dep)|KPay:6000","count":1,"total":6000.0},{"method":"Cash:0","count":1,"total":0.0}]},"alerts":[],"recommendations":[]}}0",
+        "count": 1,
+        "total": 37000.0
+      },
+      {
+        "method": "Cash:36000",
+        "count": 1,
+        "total": 36000.0
+      },
+      {
+        "method": "KPay:31800",
+        "count": 1,
+        "total": 31800.0
+      },
+      {
+        "method": "Cash:30000",
+        "count": 1,
+        "total": 30000.0
+      },
+      {
+        "method": "KPay:25000",
+        "count": 1,
+        "total": 25000.0
+      },
+      {
+        "method": "KPay:20500",
+        "count": 1,
+        "total": 20500.0
+      },
+      {
+        "method": "AYA Pay:16700",
+        "count": 1,
+        "total": 16700.0
+      },
+      {
+        "method": "Cash:15000",
+        "count": 1,
+        "total": 15000.0
+      },
+      {
+        "method": "KPay:14500",
+        "count": 1,
+        "total": 14500.0
+      },
+      {
+        "method": "KPay:10000",
+        "count": 1,
+        "total": 10000.0
+      },
+      {
+        "method": ":6000 (dep)|KPay:6000",
+        "count": 1,
+        "total": 6000.0
+      },
+      {
+        "method": "Cash:0",
+        "count": 1,
+        "total": 0.0
+      }
+    ]
+  },
+  "alerts": [],
+  "recommendations": []
+}

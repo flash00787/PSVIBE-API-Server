@@ -284,6 +284,92 @@ async def api_promotions_active(auth=Depends(verify_api_key)):
 
 # ═══════════════════════════════════════
 
+
+def _reverse_outstanding_forfeits(booking_id):
+    """Safety net: reverse any outstanding forfeit injects for a booking before redeem.
+
+    Restore paths already insert reversal ejects when deposit_status=='forfeited' at
+    restore time, but if the booking was restored via a manual DB edit (bypassing
+    code), the forfeit injects remain in cash_movements with no matching eject.
+    This function catches that case at redeem time - idempotent: if already
+    reversed, does nothing.
+
+    Returns: (reversed_count, total_reversed_amount)
+    """
+    try:
+        bk_str = str(booking_id)
+        forfeit_pattern = f"Forfeit BK#{bk_str}%"
+
+        # Get sum of forfeit injects
+        inj_rows = _mysql_query(
+            "SELECT COALESCE(SUM(amount),0) AS total FROM cash_movements "
+            "WHERE movement_type='inject' AND note LIKE %s",
+            (forfeit_pattern,)
+        )
+        inj_total = int(inj_rows[0]["total"] or 0) if inj_rows else 0
+        if inj_total <= 0:
+            return (0, 0)
+
+        # Get sum of existing reversal ejects (both patterns)
+        refund_pattern = f"Refund forfeit BK#{bk_str}%"
+        reverse_pattern = f"%deposit reverse%BK#{bk_str}%"
+        ej_rows = _mysql_query(
+            "SELECT COALESCE(SUM(amount),0) AS total FROM cash_movements "
+            "WHERE movement_type='eject' AND (note LIKE %s OR note LIKE %s)",
+            (refund_pattern, reverse_pattern)
+        )
+        ej_total = int(ej_rows[0]["total"] or 0) if ej_rows else 0
+
+        diff = inj_total - ej_total
+        if diff <= 0:
+            return (0, 0)
+
+        # Get individual forfeit inject rows (may be multiple per-booking - e.g. partial)
+        inj_details = _mysql_query(
+            "SELECT id, account, amount FROM cash_movements "
+            "WHERE movement_type='inject' AND note LIKE %s ORDER BY id",
+            (forfeit_pattern,)
+        )
+
+        reversed_count = 0
+        reversed_total = 0
+        remaining_to_reverse = diff
+
+        for row in inj_details:
+            if remaining_to_reverse <= 0:
+                break
+            amt = int(row["amount"] or 0)
+            if amt <= 0:
+                continue
+            account = row["account"] or "KPay"
+            # Reverse at most the remaining diff (proportional handling for multi-inject)
+            reverse_amt = min(amt, remaining_to_reverse)
+
+            _mysql_exec(
+                "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, NOW())",
+                (
+                    "eject",
+                    account,
+                    reverse_amt,
+                    f"Refund forfeit BK#{bk_str} (deposit reverse - redeemed, session played) via {account}",
+                    "system",
+                ),
+            )
+            reversed_count += 1
+            reversed_total += reverse_amt
+            remaining_to_reverse -= reverse_amt
+
+        logger.info(
+            "_reverse_outstanding_forfeits BK#%s: reversed %s injects, total %s Ks (diff was %s Ks)",
+            booking_id, reversed_count, reversed_total, diff
+        )
+        return (reversed_count, reversed_total)
+    except Exception as e:
+        logger.warning("_reverse_outstanding_forfeits BK#%s error (non-fatal): %s", booking_id, e)
+        return (0, 0)
+
+
 @router.post("/sales/record", response_model=GenericResponse, tags=["Sales"], summary="Save sales record [MySQL]")
 async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
     """Save a sales record to MySQL sales_daily table (replaces direct GSheets write)."""
@@ -322,16 +408,28 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
                     deposit_deducted = int(dep_row["deposit_amount"] or 0)
                     dep_method = dep_row.get("deposit_method", "kpay") or "kpay"
                     if deposit_deducted > 0:
-                        # Deduct deposit from net_total (food NOT affected)
-                        net_total = max(0, net_total - deposit_deducted)
+                        # Deposit is part of the sale revenue — do NOT deduct from net
+                        # (fix 2026-07-31: net must reflect total collected incl. deposit)
+                        # Safety net: reverse any outstanding forfeit injects before redeeming
+                        _reverse_outstanding_forfeits(booking_id)
                         # Mark deposit as redeemed
                         _mysql_exec(
                             "UPDATE console_bookings SET deposit_status='redeemed', deposit_redeemed_at=NOW() WHERE id=%s AND deposit_status='verified'",
                             (booking_id,)
                         )
                         logger.info(
-                            "Deposit redeemed: BK#%s deposit=%s Ks deducted from net (food_amt=%s, game_amt=%s)",
+                            "Deposit redeemed: BK#%s deposit=%s Ks part of sale revenue (food_amt=%s, game_amt=%s)",
                             booking_id, deposit_deducted, food_total, game_amt
+                        )
+                        # Normalize payment string: ":X (dep)" (empty method) -> "{Label}:X (dep)"
+                        # so Balance Sheet / PNL parsers attribute the deposit to an account
+                        # (fix 2026-07-31: empty method dropped the deposit from income)
+                        import re as _re
+                        _dep_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(dep_method, "KPay")
+                        payment_method = _re.sub(
+                            r":\s*([\d.]+)\s*\(dep\)",
+                            f"{_dep_label}:\\1 (dep)",
+                            payment_method, count=1
                         )
             except Exception as dep_e:
                 logger.warning("Deposit redemption check failed for BK#%s: %s", booking_id, dep_e)
@@ -360,9 +458,9 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
         gross = game_amt + food_total
 
         _mysql_exec(
-            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, payment_method, notes) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (voucher_no, sale_date, console_id, member_id, game_amt, gross, discount, net_total, staff, payment_method, combined_notes)
+            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, customer_name, payment_method, notes) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (voucher_no, sale_date, console_id, member_id, game_amt, gross, discount, net_total, staff, staff, payment_method, combined_notes)
         )
 
         # Deduct wallet balance for member sales

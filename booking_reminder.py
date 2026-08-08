@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 REMINDER_FILE = "/root/psvibe_api_server/data/booking_reminders.json"
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CUSTOMER_BOT_TOKEN = os.environ.get("CUSTOMER_BOT_TOKEN", "")
-STAFF_NOTIFY_CHAT = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
+STAFF_NOTIFY_CHAT = os.environ.get("DEPOSIT_NOTIFY_CHAT", os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747"))
 STAFF_NOTIFY_THREAD = int(os.environ.get("STAFF_NOTIFY_THREAD", "0") or 0)
 MMT = timezone(timedelta(hours=6, minutes=30))
 

@@ -316,9 +316,9 @@ async def api_topup_log(req: dict, auth=Depends(verify_api_key)) -> JSONResponse
         if float(amount) > 0:
             try:
                 _mysql_exec(
-                    "INSERT INTO sales_daily (sale_date, member_id, amount, gross, net, payment_method, notes, staff_name) "
-                    "VALUES (CURDATE(), %s, %s, %s, %s, %s, %s, %s)",
-                    (member_id, amount, amount, amount, pm, f"Topup {mins_added} mins", staff))
+                    "INSERT INTO sales_daily (sale_date, member_id, amount, gross, net, payment_method, notes, staff_name, customer_name) "
+                    "VALUES (CURDATE(), %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (member_id, amount, amount, amount, pm, f"Topup {mins_added} mins", staff, staff))
             except Exception as _e:
                 logger.warning("Topup sales_daily failed: %s", _e)
 
@@ -367,9 +367,9 @@ async def api_member_register(req: dict, auth=Depends(verify_api_key)):
         if float(amount) > 0:
             try:
                 _mysql_exec(
-                    "INSERT INTO sales_daily (sale_date, member_id, amount, gross, net, payment_method, notes, staff_name) "
-                    "VALUES (CURDATE(), %s, %s, %s, %s, %s, %s, %s)",
-                    (member_id, amount, amount, amount, f"KPay:{kpay}/Cash:{cash}", f"New member {member_id} + {mins_added} mins", staff))
+                    "INSERT INTO sales_daily (sale_date, member_id, amount, gross, net, payment_method, notes, staff_name, customer_name) "
+                    "VALUES (CURDATE(), %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (member_id, amount, amount, amount, f"KPay:{kpay}/Cash:{cash}", f"New member {member_id} + {mins_added} mins", staff, staff))
             except Exception as _e:
                 logger.warning("Reg sales_daily failed: %s", _e)
 

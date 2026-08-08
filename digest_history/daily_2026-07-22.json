@@ -1,0 +1,61 @@
+{"success":true,"data":{"timestamp":"2026-07-22T17:31:55.656372Z","date":"2026-07-22","summary":{"total_sales":{"count":16,"gross":262350.0,"net":235100.0},"total_topups":{"count":0,"amount":0.0,"mins_added":0},"active_sessions":0,"completed_sessions":14,"food_sales":{"count":13,"total":38200.0},"new_members":0,"top_consoles":[{"console_id":"C-10","hours":5.5},{"console_id":"C-08","hours":4.5},{"console_id":"C-07","hours":3.5},{"console_id":"C-05","hours":2.0},{"console_id":"C-09","hours":1.5}],"top_games":[{"game":"Mortal Kombat 1","sessions":3},{"game":"FC 26","sessions":3},{"game":"It Takes Two","sessions":2},{"game":"UFC 5","sessions":2},{"game":"Demon Slayer The HINOKAMI CHRONICLES","sessions":1}],"revenue_by_payment":[{"method":"Cash:38000","count":1,"total":38000.0},{"method":"Cash:30600","count":1,"total":30600.0},{"method":"Cash:24000","count":1,"total":24000.0},{"method":"KPay:1000|Cash:19000","count":1,"total":20000.0},{"method":"KPay:10000","count":2,"total":20000.0},{"method":"Cash:10000","count":2,"total":20000.0},{"method":"Cash:20000","count":1,"total":20000.0},{"method":"KPay:15000","count":1,"total":15000.0},{"method":"KPay:14500","count":1,"total":14500.0},{"method":":10800 (dep)|KPay:13200","count":1,"total":13200.0},{"method":"Cash:11800","count":1,"total":11800.0},{"method":"Cash:4500","count":1,"total":4500.0},{"method":"Cash:3500","count":1,"total":3500.0},{"method":"Cash:0","count":1,"total":0.0}]},"alerts":[],"recommendations":[]}}     },
+      {
+        "method": "KPay:1000|Cash:19000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "KPay:10000",
+        "count": 2,
+        "total": 20000.0
+      },
+      {
+        "method": "Cash:10000",
+        "count": 2,
+        "total": 20000.0
+      },
+      {
+        "method": "Cash:20000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "KPay:15000",
+        "count": 1,
+        "total": 15000.0
+      },
+      {
+        "method": "KPay:14500",
+        "count": 1,
+        "total": 14500.0
+      },
+      {
+        "method": ":10800 (dep)|KPay:13200",
+        "count": 1,
+        "total": 13200.0
+      },
+      {
+        "method": "Cash:11800",
+        "count": 1,
+        "total": 11800.0
+      },
+      {
+        "method": "Cash:4500",
+        "count": 1,
+        "total": 4500.0
+      },
+      {
+        "method": "Cash:3500",
+        "count": 1,
+        "total": 3500.0
+      },
+      {
+        "method": "Cash:0",
+        "count": 1,
+        "total": 0.0
+      }
+    ]
+  },
+  "alerts": [],
+  "recommendations": []
+}

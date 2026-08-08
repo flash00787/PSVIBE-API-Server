@@ -59,4 +59,7 @@ def resolve_key(record: dict, *keys: str):
         val = record.get(k)
         if val:
             return val
-    return keys[-1] if keys else None
+    if keys:
+        val = record.get(keys[-1])
+        return val if val is not None else keys[-1]
+    return None

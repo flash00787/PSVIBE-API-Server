@@ -52,6 +52,28 @@ def _player_count_for_round(round_num: int, total_rounds: int) -> int:
     return 2 ** (total_rounds - round_num)
 
 
+def _parse_payment_method(raw: str) -> str:
+    """Normalize payment method string to canonical key."""
+    if not raw:
+        return None
+    r = raw.strip().lower()
+    # Map common variations
+    mapping = {
+        "kpay": "kpay",
+        "kbz pay": "kpay",
+        "kbzpay": "kpay",
+        "kbz": "kbz_bank",
+        "kbz bank": "kbz_bank",
+        "kbzbank": "kbz_bank",
+        "wavepay": "wavepay",
+        "wave pay": "wavepay",
+        "aya pay": "aya_pay",
+        "ayapay": "aya_pay",
+        "aya": "aya_pay",
+    }
+    return mapping.get(r, r[:20])  # fallback: use trimmed raw value
+
+
 # ═══════════════════════════════════════
 #  Admin — CRUD
 # ═══════════════════════════════════════
@@ -625,9 +647,11 @@ return false;
 async def register_player(tid: int, body: dict):
     """Public registration for a tournament.
 
-    - If entry_fee_ks > 0 AND member_id given: checks wallet balance, deducts,
+    - If entry_fee_ks > 0 AND member_id given (website flow): checks wallet balance, deducts,
       inserts cash_movements 'eject' row, marks paid=1.
-    - If entry_fee_ks > 0 and NO member_id: paid=0 (pay at counter).
+    - If entry_fee_ks > 0 AND payment_method + ss_file given (digital payment from bot):
+      paid=0, stores payment_method + ss_file, status='registered' (pending staff confirm).
+    - If entry_fee_ks > 0 and NO member_id/payment_method: paid=0 (pay at counter — legacy).
     - If entry_fee_ks == 0: paid=1.
     - Duplicate phone → 409.
     """
@@ -650,11 +674,13 @@ async def register_player(tid: int, body: dict):
 
         fee = int(t["entry_fee_ks"] or 0)
         member_id = body.get("member_id")
+        ss_file = body.get("ss_file")
+        pm_raw = body.get("payment_method")
+        payment_method = _parse_payment_method(pm_raw) if pm_raw else None
         paid = 0
-        payment_method = None
 
         if fee > 0 and member_id:
-            # Verify member exists and has sufficient balance
+            # Website / dashboard wallet deduction flow
             wallet = _mysql_query_one(
                 "SELECT balance_mins, member_name FROM member_wallets WHERE member_id=%s",
                 (str(member_id),),
@@ -674,7 +700,6 @@ async def register_player(tid: int, body: dict):
             )
 
             # Record cash_movements as 'eject' (wallet deduction = money going out)
-            # Uses existing enum: 'eject' is the only compatible type for deductions
             _mysql_exec(
                 """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at)
                    VALUES (%s, %s, %s, %s, %s, NOW())""",
@@ -694,6 +719,14 @@ async def register_player(tid: int, body: dict):
                 member_id, fee, tid, balance, new_bal,
             )
 
+        elif fee > 0 and payment_method and ss_file:
+            # Digital payment from bot (KPay/WavePay/KBZ) — pending confirmation
+            paid = 0
+            logger.info(
+                "Tournament reg: digital payment via %s (ss_file=%s) for tournament %s",
+                payment_method, ss_file[:40] if ss_file else "none", tid,
+            )
+
         elif fee == 0:
             paid = 1
             payment_method = "free"
@@ -702,8 +735,8 @@ async def register_player(tid: int, body: dict):
         try:
             _mysql_exec(
                 """INSERT INTO tournament_players
-                   (tournament_id, member_id, name, phone, paid, payment_method, paid_at, status)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                   (tournament_id, member_id, name, phone, paid, payment_method, ss_file, paid_at, status)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     tid,
                     member_id,
@@ -711,6 +744,7 @@ async def register_player(tid: int, body: dict):
                     phone,
                     paid,
                     payment_method,
+                    ss_file,
                     datetime.now() if paid else None,
                     "confirmed" if paid else "registered",
                 ),
@@ -812,7 +846,7 @@ async def list_players_public(tid: int):
     try:
         _ensure_tournament(tid)
         players = _mysql_query(
-            "SELECT id, name, phone, seed, status, paid FROM tournament_players WHERE tournament_id=%s ORDER BY seed ASC, id ASC",
+            "SELECT id, name, phone, seed, status, paid, payment_method, ss_file FROM tournament_players WHERE tournament_id=%s ORDER BY seed ASC, id ASC",
             (tid,),
         )
         result = []

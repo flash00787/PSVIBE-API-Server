@@ -82,10 +82,10 @@ def _send_telegram_customer(chat_id: str, message: str):
 
 
 def _notify_deposit_forfeited(bk_id: int, row: dict, deposit_amount: int):
-    """Notify admin group when a deposit is forfeited (no-show with paid deposit)."""
+    """Notify deposit group when a deposit is forfeited (no-show with paid deposit)."""
     import json, urllib.request
     token = os.environ.get("BOT_TOKEN", "")
-    chat_id = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
+    chat_id = os.environ.get("DEPOSIT_NOTIFY_CHAT", os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747"))
     if not token:
         return
     date = str(row.get('booking_date', ''))[:10] if row.get('booking_date') else '\u2014'
@@ -115,6 +115,42 @@ def _notify_deposit_forfeited(bk_id: int, row: dict, deposit_amount: int):
         )
     except Exception as _e:
         logger.warning(f"[_notify_deposit_forfeited] bk#{bk_id} notify failed: {_e}")
+
+
+def _notify_deposit_refunded(bk_id: int, row: dict, deposit_amount: int, method: str = ""):
+    """Notify deposit group when a deposit is refunded."""
+    import json, urllib.request
+    token = os.environ.get("BOT_TOKEN", "")
+    chat_id = os.environ.get("DEPOSIT_NOTIFY_CHAT", os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747"))
+    if not token:
+        return
+    date = str(row.get('booking_date', ''))[:10] if row.get('booking_date') else '\u2014'
+    start = str(row.get('start_time', ''))[:16] if row.get('start_time') else '\u2014'
+    console = str(row.get('console_id', 'PS5'))
+    member = str(row.get('member_id', '\u2014'))
+    phone = str(row.get('phone', '\u2014'))
+    method_label = f" ({method})" if method else ""
+    msg = (
+        f"\U0001f504 <b>Deposit Refunded — BK#{bk_id}</b>\n\n"
+        f"\U0001f464 {member}\n"
+        f"\U0001f4de {phone}\n"
+        f"\U0001f4c5 {date}  \u23f0 {start}\n"
+        f"\U0001f3ae {console}\n"
+        f"\U0001f4b0 {deposit_amount:,} Ks{method_label} — <b>Refunded</b>\n\n"
+        f"<i>Deposit has been refunded to customer.</i>"
+    )
+    try:
+        payload = json.dumps({"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            ),
+            timeout=5
+        )
+    except Exception as _e:
+        logger.warning(f"[_notify_deposit_refunded] bk#{bk_id} notify failed: {_e}")
 
 
 def _notify_no_show_cancel(bk_id: int, row: dict):
@@ -303,15 +339,15 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
             # Use the checkin staff's name if provided, otherwise fall back to booking's staff_name
             if _checkin_staff:
                 _chk_cur.execute(
-                    "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, notes, created_at) "
-                    "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, %s, notes, %s "
+                    "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, customer_name, notes, created_at) "
+                    "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, %s, customer_name, notes, %s "
                     "FROM console_bookings WHERE id=%s",
                     (booking_id, _checkin_staff, datetime.now(timezone(timedelta(hours=6, minutes=30))), booking_id)
                 )
             else:
                 _chk_cur.execute(
-                    "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, notes, created_at) "
-                    "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, staff_name, notes, %s "
+                    "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, customer_name, notes, created_at) "
+                    "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, staff_name, customer_name, notes, %s "
                     "FROM console_bookings WHERE id=%s",
                     (booking_id, datetime.now(timezone(timedelta(hours=6, minutes=30))), booking_id)
                 )
@@ -327,10 +363,28 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
             _chk_conn.commit()
 
             # Restore deposit if previously forfeited (auto-cancel then reactivate)
-            _mysql_exec(
-                "UPDATE console_bookings SET deposit_status='verified' WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+            _dep_check = _mysql_query_one(
+                "SELECT deposit_status, deposit_amount, deposit_method FROM console_bookings WHERE id=%s",
                 (booking_id,)
             )
+            if _dep_check and _dep_check.get('deposit_status') == 'forfeited' and int(_dep_check.get('deposit_amount', 0) or 0) > 0:
+                _mysql_exec(
+                    "UPDATE console_bookings SET deposit_status='verified' WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+                    (booking_id,)
+                )
+                # Reverse forfeit cash_movement — insert eject (🐛 2026-07-31: checkin restore was missing this,
+                # leaving phantom forfeit injects for redeemed deposits)
+                _dep_amt = int(_dep_check.get('deposit_amount', 0) or 0)
+                _dep_meth = (_dep_check.get('deposit_method', '') or 'kpay').lower()
+                _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                if _dep_amt > 0:
+                    _mysql_exec(
+                        "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                        "VALUES (%s, %s, %s, %s, %s, NOW())",
+                        ("eject", _meth_label, _dep_amt,
+                         f"Refund forfeit BK#{booking_id} (deposit reverse - reactivated via checkin) via {_meth_label}", "system")
+                    )
+                    logger.info(f"Checkin BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
         except Exception:
             _chk_conn.rollback()
             raise
@@ -403,8 +457,8 @@ async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
         notes = req.get("notes", "")
         bk_id = f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ','').replace('-','')}-{now.strftime('%H%M')}"
         _mysql_exec(
-            "INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, status, staff_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (console_id, member_id, now.date(), now, "Active", staff, notes))
+            "INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, status, staff_name, customer_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (console_id, member_id, now.date(), now, "Active", staff, staff, notes))
         # Extract game name from notes (format: "GameName" or "GameName [BK#123]")
         _game_name = notes
         if " [BK#" in _game_name:
@@ -529,11 +583,11 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
 
                 # Build INSERT columns
                 _cols = ["console_id", "booking_date", "planned_start", "planned_end",
-                         "planned_duration_mins", "status", "staff_name", "notes", "phone", "game_name",
+                         "planned_duration_mins", "status", "staff_name", "customer_name", "notes", "phone", "game_name",
                          "created_at"]
                 _vals = [console_id, booking_date, start_dt.strftime('%Y-%m-%d %H:%M:%S'),
                          end_dt.strftime('%Y-%m-%d %H:%M:%S'),
-                         duration_mins, _bk_status, _staff_name, notes, phone, game_name,
+                         duration_mins, _bk_status, _staff_name, _staff_name, notes, phone, game_name,
                          start_mmt.strftime('%Y-%m-%d %H:%M:%S')]
 
                 if member_id:
@@ -749,8 +803,8 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
                     bk_member_id = None  # Store NULL instead of ""
 
                 cur.execute(
-                    "INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, planned_end, status, staff_name, notes, telegram_chat_id, planned_duration_mins, phone, game_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (console_id, bk_member_id, _parsed_date, start_dt, end_dt, _bk_status, customer_name_bot, notes, telegram_chat_id, duration_mins, phone, game_name)
+                    "INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, planned_end, status, staff_name, customer_name, notes, telegram_chat_id, planned_duration_mins, phone, game_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (console_id, bk_member_id, _parsed_date, start_dt, end_dt, _bk_status, customer_name_bot, customer_name_bot, notes, telegram_chat_id, duration_mins, phone, game_name)
                 )
                 bk_id = cur.lastrowid
 
@@ -834,9 +888,18 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                 _allowed_from = "('pending')"
             # For cancelled status, also stamp cancelled_at
             if status == "cancelled":
+                # Fetch deposit state before cancelling (Boss policy 2026-07-31)
+                _dep_bk = _mysql_query_one(
+                    "SELECT deposit_status, deposit_amount, deposit_method FROM console_bookings WHERE id=%s",
+                    (booking_id,)
+                ) or {}
+                _dep_status = _dep_bk.get('deposit_status') or ''
                 _app_cur.execute(
-                    f"UPDATE console_bookings SET status=%s, cancelled_at=NOW(), staff_name=COALESCE(NULLIF(%s, ''), staff_name), notes=COALESCE(NULLIF(%s, ''), notes) WHERE id=%s AND status IN {_allowed_from}",
-                    (status, req.get("staffName", ""), req.get("staffNote", ""), booking_id))
+                    f"UPDATE console_bookings SET status=%s, cancelled_at=NOW(), "
+                    f"deposit_status=CASE WHEN %s='verified' THEN 'forfeited' WHEN %s='paid' THEN 'none' ELSE deposit_status END, "
+                    f"staff_name=COALESCE(NULLIF(%s, ''), staff_name), notes=COALESCE(NULLIF(%s, ''), notes) "
+                    f"WHERE id=%s AND status IN {_allowed_from}",
+                    (status, _dep_status, _dep_status, req.get("staffName", ""), req.get("staffNote", ""), booking_id))
             else:
                 _app_cur.execute(
                     f"UPDATE console_bookings SET status=%s, staff_name=COALESCE(NULLIF(%s, ''), staff_name), notes=COALESCE(NULLIF(%s, ''), notes) WHERE id=%s AND status IN {_allowed_from}",
@@ -907,10 +970,10 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                         }, status_code=409)
                     # Checkin bind / session start — mark console as Active
                     _bk_info = _mysql_query_one(
-                        "SELECT staff_name, member_id, game_name FROM console_bookings WHERE id=%s",
+                        "SELECT staff_name, customer_name, member_id, game_name FROM console_bookings WHERE id=%s",
                         (booking_id,)
                     ) or {}
-                    _member_name = _bk_info.get("staff_name", "") or _bk_info.get("member_id", "") or ""
+                    _member_name = _bk_info.get("customer_name", "") or _bk_info.get("staff_name", "") or _bk_info.get("member_id", "") or ""
                     _now_mmt_str = now_mmt().strftime('%Y-%m-%d %H:%M:%S')
                     _app_cur.execute(
                         "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=%s WHERE console_id=%s",
@@ -920,12 +983,46 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                     _app_cur.execute("UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s", (_console_id,))
             _app_conn.commit()
 
-            # Restore deposit if previously forfeited (auto-cancel then reactivate)
-            if status == "Active":
-                _mysql_exec(
-                    "UPDATE console_bookings SET deposit_status='verified' WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+            # Verified deposit cancelled -> forfeit as revenue (Boss policy 2026-07-31)
+            if status == "cancelled" and _dep_status == "verified":
+                _dep_amt = int(_dep_bk.get('deposit_amount') or 0)
+                _dep_meth = (_dep_bk.get('deposit_method') or 'kpay').lower()
+                _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                if _dep_amt > 0:
+                    try:
+                        _mysql_exec(
+                            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                            "VALUES (%s, %s, %s, %s, %s, NOW())",
+                            ("inject", _meth_label, _dep_amt,
+                             f"Forfeit BK#{booking_id} via {_meth_label}", "system")
+                        )
+                        logger.info(f"api_update_booking_status forfeit: BK#{booking_id} {_dep_amt}Ks {_meth_label}")
+                    except Exception as fe:
+                        logger.warning(f"api_update_booking_status forfeit cash_movements BK#{booking_id}: {fe}")
+
+            # Restore deposit if previously forfeited (auto-cancel then reactivate) — 🐛 2026-07-28
+            if status not in ("cancelled", "rejected"):
+                _dep_row = _mysql_query_one(
+                    "SELECT deposit_status, deposit_amount, deposit_method FROM console_bookings WHERE id=%s",
                     (booking_id,)
                 )
+                if _dep_row and _dep_row.get('deposit_status') == 'forfeited' and int(_dep_row.get('deposit_amount', 0) or 0) > 0:
+                    _mysql_exec(
+                        "UPDATE console_bookings SET deposit_status='verified', cancelled_at=NULL WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+                        (booking_id,)
+                    )
+                    # Reverse forfeit cash_movement — insert eject entry (🐛 2026-07-28)
+                    _dep_amt = int(_dep_row.get('deposit_amount', 0) or 0)
+                    _dep_meth = (_dep_row.get('deposit_method', '') or 'kpay').lower()
+                    _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                    if _dep_amt > 0:
+                        _mysql_exec(
+                            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                            "VALUES (%s, %s, %s, %s, %s, NOW())",
+                            ("eject", _meth_label, _dep_amt,
+                             f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system")
+                        )
+                        logger.info(f"BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject), cancelled_at cleared")
 
             # 📢 Customer notification on confirm/cancel (fire-and-forget)
             if status in ("confirmed", "cancelled"):
@@ -1008,7 +1105,7 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
             "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, "
             "COALESCE(cs.actual_start, cb.planned_start) AS start_time, "
             "COALESCE(cs.actual_end, cb.planned_end) AS end_time, "
-            "cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, "
+            "cb.status, cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, "
             "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, "
             "cb.phone, cb.game_name, cb.deposit_status, cb.deposit_amount "
             "FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE cb.id=%s",
@@ -1035,16 +1132,12 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
                     _ctype = _crows[0]["console_type"]
             except Exception:
                 pass
-        _staff_name = row.get("staff_name", "") or ""
+        _customer_name = row.get("customer_name", "") or row.get("staff_name", "") or ""
         _phone = row.get("phone", "") or ""
         _member_id = row.get("member_id", "") or ""
-        # customerName priority: member_id → staff_name → phone → 'Guest'
-        _customer_name = ""
-        if _member_id and _member_id.strip() and _member_id.strip() != "Guest":
-            _customer_name = _member_id.strip()
-        elif _staff_name.strip():
-            _customer_name = _staff_name.strip()
-        elif _phone.strip():
+        # customerName priority: customer_name → member_id → staff_name → phone → 'Guest'
+        if not _customer_name.strip():
+            _customer_name = _member_id.strip() if _member_id and _member_id.strip() and _member_id.strip() != "Guest" else (_phone.strip() or "Guest")
             _customer_name = _phone.strip()
         else:
             _customer_name = _member_id.strip() if _member_id.strip() else "Guest"
@@ -1083,7 +1176,7 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
         sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, " \
               "DATE_FORMAT(COALESCE(cs.actual_start, cb.planned_start), '%%H:%%i') AS start_time, " \
               "DATE_FORMAT(COALESCE(cs.actual_end, cb.planned_end), '%%H:%%i') AS end_time, " \
-              "cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, " \
+              "cb.status, cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, " \
               "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, " \
               "cb.phone, cb.game_name, cb.created_at, cb.cancelled_at, " \
               "cb.deposit_status, cb.deposit_amount " \
@@ -1183,18 +1276,11 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
                 except Exception:
                     bd_str = str(bd)[:10]
             _phone = r.get("phone", "") or ""
+            _customer_name = r.get("customer_name", "") or r.get("staff_name","") or ""
             _member_id = r.get("member_id", "") or ""
-            _staff_name = r.get("staff_name","") or ""
-            # customerName priority: member_id → staff_name → phone → 'Guest'
-            _customer_name = ""
-            if _member_id and _member_id.strip() and _member_id.strip() != "Guest":
-                _customer_name = _member_id.strip()
-            elif _staff_name.strip():
-                _customer_name = _staff_name.strip()
-            elif _phone.strip():
-                _customer_name = _phone.strip()
-            else:
-                _customer_name = _member_id.strip() if _member_id.strip() else "Guest"
+            # customerName priority: customer_name → member_id → phone → 'Guest'
+            if not _customer_name.strip():
+                _customer_name = _member_id.strip() if _member_id and _member_id.strip() and _member_id.strip() != "Guest" else (_phone.strip() or "Guest")
             _created = r.get("created_at")
             _created_str = ""
             if _created:
@@ -1245,7 +1331,7 @@ async def api_search_bookings(telegram_chat_id: str = Query("", description="Tel
         sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, " \
               "COALESCE(cs.actual_start, cb.planned_start) AS start_time, " \
               "COALESCE(cs.actual_end, cb.planned_end) AS end_time, " \
-              "cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, " \
+              "cb.status, cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, " \
               "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, " \
               "cb.phone, cb.game_name " \
               "FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id = cb.id WHERE 1=1"
@@ -1548,7 +1634,7 @@ async def _auto_notify_waitlist(booking_date, start_time, console_id, cancelled_
             "UPDATE console_bookings SET status='Notified', notes=CONCAT(IFNULL(notes,''), ' | Auto-notified: slot freed') WHERE id=%s",
             (entry["id"],))
         chat_id = entry.get("telegram_chat_id") or entry.get("member_id", "")
-        customer_name = entry.get("staff_name") or entry.get("member_id", "Customer")
+        customer_name = entry.get("customer_name") or entry.get("staff_name") or entry.get("member_id", "Customer")
         if chat_id:
             _CUSTOMER_BOT_TOKEN = os.environ.get("CUSTOMER_BOT_TOKEN", "") or os.environ.get("BOT_TOKEN", "")
             if _CUSTOMER_BOT_TOKEN:
@@ -1594,7 +1680,8 @@ async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
             "planned_start AS start_time, planned_end AS end_time, "
             "planned_duration_mins AS duration_mins, "
             "status, staff_name, notes, telegram_chat_id, phone, "
-            "game_name, admin_notify_msg_id, created_at, cancelled_at "
+            "game_name, admin_notify_msg_id, created_at, cancelled_at, "
+            "deposit_status, deposit_amount, deposit_method "
             "FROM console_bookings WHERE id=%s",
             (booking_id,)
         )
@@ -1602,6 +1689,11 @@ async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
             return error_response(message="Booking not found")
         console_id = booking.get("console_id", "")
         telegram_chat_id = booking.get("telegram_chat_id", "")
+        
+        # Capture pre-cancel deposit state for forfeit handling
+        _pre_deposit_status = booking.get("deposit_status", "") or ""
+        _pre_deposit_amount = int(booking.get("deposit_amount", 0) or 0)
+        _pre_deposit_method = (booking.get("deposit_method", "") or "kpay").lower()
         
         # CI-2 & CI-3: Only cancel non-Active/non-Done bookings, with transaction
         _cancel_conn = _mc.connect(
@@ -1615,8 +1707,12 @@ async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
         _cancel_conn.start_transaction()
         _cancel_cur = _cancel_conn.cursor()
         try:
+            # Auto-forfeit deposit ONLY if verified when cancelling (Boss policy 2026-07-31);
+            # unverified ('paid') -> void to 'none' (NOT revenue, no cash movement)
             _cancel_cur.execute(
-                "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW() WHERE id=%s AND status NOT IN ('Active','Done')",
+                "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
+                "deposit_status=CASE WHEN deposit_status='verified' THEN 'forfeited' WHEN deposit_status='paid' THEN 'none' ELSE deposit_status END "
+                "WHERE id=%s AND status NOT IN ('Active','Done')",
                 (booking_id,)
             )
             affected = _cancel_cur.rowcount
@@ -1690,6 +1786,28 @@ async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
                 except Exception as _e:
                     logger.warning("Cancel notification failed: %s", _e)
 
+        # 🆕 Forfeit deposit handling: record as income in cash_movements
+        # Boss policy 2026-07-31: ONLY verified deposits forfeit as revenue;
+        # unverified ('paid') voids to 'none' (NOT revenue, no cash movement)
+        if _pre_deposit_status == 'verified' and _pre_deposit_amount > 0:
+            _method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_pre_deposit_method, "KPay")
+            try:
+                _mysql_exec(
+                    "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, NOW())",
+                    ("inject", _method_label, _pre_deposit_amount,
+                     f"Forfeit BK#{booking_id} via {_method_label}",
+                     booking.get("staff_name", "") or "system")
+                )
+                logger.info(f"Forfeit deposit recorded: BK#{booking_id} {_pre_deposit_amount}Ks {_method_label}")
+            except Exception as _fe:
+                logger.warning(f"Forfeit cash_movements BK#{booking_id} failed: {_fe}")
+            # Notify admin group
+            try:
+                _notify_deposit_forfeited(booking_id, booking, _pre_deposit_amount)
+            except Exception as _fe2:
+                logger.warning(f"Forfeit notify BK#{booking_id} failed: {_fe2}")
+
         return ok({
             "message": "Booking cancelled",
             "booking_id": booking_id,
@@ -1726,10 +1844,12 @@ async def api_bookings_by_phone_date(phone: str, date: str, auth=Depends(verify_
 
 
 def _notify_booking_received(name, date, time_slot, console_type, duration, game, phone, bk_id, console_id=""):
-    """Notify admin via Telegram about new customer booking. Use Sale Bot to approve."""
+    """Notify via Telegram about new customer booking. Use Sale Bot to approve.
+    Sends to DEPOSIT_NOTIFY_CHAT only (bookings & deposit group).
+    """
     import json, urllib.request, os
     token = os.environ.get("CUSTOMER_BOT_TOKEN", os.environ.get("BOT_TOKEN", ""))
-    chat_id = os.environ.get("STAFF_NOTIFY_CHAT", os.environ.get("ADMIN_GROUP_ID", "-1003686032747"))
+    chat_id = os.environ.get("DEPOSIT_NOTIFY_CHAT", os.environ.get("STAFF_NOTIFY_CHAT", ""))
     if not token or not chat_id:
         return
     console_label = f" {console_type}"
@@ -1798,11 +1918,30 @@ def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, st
 
 @router.post("/receipt", response_model=GenericResponse, tags=["Receipts"], summary="Save receipt from bot push")
 async def api_receipt_save(req: dict, auth=Depends(verify_api_key)):
-    """Save receipt JSON payload from bot (best-effort fire-and-forget)."""
+    """Save receipt JSON payload from bot (stores full data in DB receipt_data column)."""
     try:
-        logger.info("Receipt saved: %s", req.get("voucher_id", req.get("type", "?")))
-        return ok({"status": "ok"})
+        voucher_id = req.get("voucher_id", "")
+        receipt_no = req.get("receipt_no") or req.get("voucher_id", "")
+        member_id = req.get("member_id", req.get("member", ""))
+        amount = req.get("gross_total", req.get("amount", 0))
+        payment_method = req.get("payment_method", "")
+        items = req.get("food_items", req.get("items", ""))
+        receipt_date = req.get("date", req.get("receipt_date", ""))
+        staff_name = req.get("staff_name", "")
+        receipt_data = _sjson.dumps(req, ensure_ascii=False)
+
+        logger.info("Saving receipt to DB: voucher_id=%s", voucher_id)
+
+        mysql_execute(
+            "INSERT INTO receipts (receipt_no, voucher_id, member_id, amount, payment_method, items, receipt_data, receipt_date, staff_name) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE receipt_data=VALUES(receipt_data), amount=VALUES(amount), payment_method=VALUES(payment_method), items=VALUES(items), receipt_date=VALUES(receipt_date)",
+            (receipt_no, voucher_id, member_id, amount, payment_method, items, receipt_data, receipt_date, staff_name)
+        )
+        logger.info("Receipt saved to DB: voucher_id=%s", voucher_id)
+        return ok({"status": "ok", "voucher_id": voucher_id})
     except Exception as e:
+        logger.error("Receipt save error: %s", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1815,7 +1954,7 @@ async def api_receipt_save(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @router.post("/save_receipt_json", response_model=GenericResponse, tags=["Receipts"], summary="Persist receipt data to MySQL")
 async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
-    """Persist receipt data to MySQL."""
+    """Persist receipt data to MySQL (stores full JSON in receipt_data column)."""
     try:
         inner = req.get("data")
         req_src = inner if (inner and isinstance(inner, dict)) else req
@@ -1827,12 +1966,16 @@ async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
         receipt_date = req_src.get("receipt_date", "")
         staff_name = req_src.get("staff_name", "")
 
+        # Store full receipt JSON in receipt_data column
+        import json as _json_dump
+        receipt_data = _json_dump.dumps(req_src, ensure_ascii=False)
+
         logger.info("Saving receipt to MySQL: receipt_no=%s", receipt_no)
 
         mysql_execute(
-            "INSERT INTO receipts (receipt_no, member_id, amount, payment_method, items, receipt_date, staff_name) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (receipt_no, member_id, amount, payment_method, items, receipt_date, staff_name)
+            "INSERT INTO receipts (receipt_no, member_id, amount, payment_method, items, receipt_data, receipt_date, staff_name) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (receipt_no, member_id, amount, payment_method, items, receipt_data, receipt_date, staff_name)
         )
 
         logger.info("Receipt saved: receipt_no=%s", receipt_no)
@@ -1848,45 +1991,54 @@ async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 @router.get("/receipt/{voucher_id}", tags=["Receipts"])
 async def api_get_receipt_html(voucher_id: str):
-    """Render receipt HTML for a given voucher_id."""
-    import json
+    """Render receipt HTML for a given voucher_id.
+    Reads from DB receipt_data column first, falls back to filesystem for legacy.
+    """
+    import json as _json
     import os as _os
     
     try:
-        # Secure: prevent path traversal — only keep basename, validate format
-        safe_id = _os.path.basename(voucher_id)
-        safe_id = safe_id.replace("/", "_").replace("\\", "_").replace("..", "_")
-        if not safe_id or not safe_id.replace("_", "").replace("-", "").replace(".", "").isalnum():
-            return HTMLResponse(
-                content=f"<html><body style=\"font-family:sans-serif;padding:40px;text-align:center\"><h2>400 - Invalid Voucher ID</h2><p>Voucher: {voucher_id}</p></body></html>",
-                status_code=400
-            )
-        receipt_dir = "/root/psvibe-sales-bot/bot/receipts"
-        receipt_path = _os.path.join(receipt_dir, f"{safe_id}.json")
-        # Ensure resolved path stays within receipt_dir
-        real_path = _os.path.realpath(receipt_path)
-        if not real_path.startswith(_os.path.realpath(receipt_dir)):
-            return HTMLResponse(
-                content=f"<html><body style=\"font-family:sans-serif;padding:40px;text-align:center\"><h2>403 - Forbidden</h2><p>Voucher: {voucher_id}</p></body></html>",
-                status_code=403
-            )
-        template_path = "/root/psvibe_api_server/receipt_template.html"
+        # ── Try DB first (lookup by voucher_id, fallback to receipt_no) ──
+        rows = _mysql_query("SELECT receipt_data FROM receipts WHERE voucher_id = %s LIMIT 1", (voucher_id,))
+        if not rows or not rows[0].get("receipt_data"):
+            rows = _mysql_query("SELECT receipt_data FROM receipts WHERE receipt_no = %s LIMIT 1", (voucher_id,))
+        receipt_data = None
+        if rows and rows[0].get("receipt_data"):
+            try:
+                receipt_data = _json.loads(rows[0]["receipt_data"])
+                logger.info("Receipt from DB: voucher=%s", voucher_id)
+            except Exception:
+                receipt_data = None
         
-        if not _os.path.exists(receipt_path):
-            logger.warning("Receipt not found: voucher=%s path=%s", voucher_id, receipt_path)
+        # ── Fallback to filesystem (legacy) ──
+        if not receipt_data:
+            safe_id = _os.path.basename(voucher_id)
+            safe_id = safe_id.replace("/", "_").replace("\\", "_").replace("..", "_")
+            receipt_dir = "/opt/psvibe/sales-bot/bot/receipts"
+            receipt_path = _os.path.join(receipt_dir, f"{safe_id}.json")
+            real_path = _os.path.realpath(receipt_path)
+            if not real_path.startswith(_os.path.realpath(receipt_dir)):
+                return HTMLResponse(
+                    content=f"<html><body style=\"font-family:sans-serif;padding:40px;text-align:center\"><h2>403 - Forbidden</h2><p>Voucher: {voucher_id}</p></body></html>",
+                    status_code=403
+                )
+            if _os.path.exists(receipt_path):
+                with open(receipt_path, "r") as f:
+                    receipt_data = _json.load(f)
+                logger.info("Receipt from filesystem: voucher=%s", voucher_id)
+        
+        if not receipt_data:
+            logger.warning("Receipt not found: voucher=%s", voucher_id)
             return HTMLResponse(
                 content=f"<html><body style=\"font-family:sans-serif;padding:40px;text-align:center\"><h2>404 - Receipt Not Found</h2><p>Voucher: {voucher_id}</p></body></html>",
                 status_code=404
             )
         
-        with open(receipt_path, "r") as f:
-            receipt_data = json.load(f)
-        
+        # ── Render with template ──
+        template_path = "/opt/psvibe/api/receipt_template.html"
         with open(template_path, "r") as f:
             template = f.read()
-        
-        # Inject receipt data before </head>
-        json_str = json.dumps(receipt_data, ensure_ascii=False)
+        json_str = _json.dumps(receipt_data, ensure_ascii=False)
         script_tag = f"<script>window.__RECEIPT_DATA__ = {json_str};</script>"
         injected = template.replace("</head>", script_tag + "\n</head>")
         
@@ -2085,6 +2237,147 @@ async def api_booking_conflicts(req: dict, auth=Depends(verify_api_key)):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+#  POST /api/bookings/{booking_id}/refund — Refund deposit
+# ════════════════════════════════════════════════════════════════════════════
+@router.post("/bookings/{booking_id}/refund", response_model=GenericResponse, tags=["Bookings"],
+          summary="Refund deposit for a cancelled booking")
+async def api_booking_refund(booking_id: int, auth=Depends(verify_api_key), request: Request = None):
+    """Refund deposit for a cancelled booking.
+
+    Rules:
+    - Booking must be cancelled with forfeited deposit
+    - Refund must be requested at least 1 hour before original booking start
+    - Creates cash_movements eject entry
+    - Notifies customer via Telegram
+    """
+    try:
+        # Get booking
+        booking = _mysql_query_one(
+            "SELECT id, console_id, branch_id, member_id, booking_date, "
+            "planned_start AS start_time, planned_end AS end_time, "
+            "planned_duration_mins AS duration_mins, "
+            "status, staff_name, notes, telegram_chat_id, phone, "
+            "game_name, deposit_status, deposit_amount, deposit_method, "
+            "created_at, cancelled_at "
+            "FROM console_bookings WHERE id=%s",
+            (booking_id,)
+        )
+        if not booking:
+            return error_response(message="Booking not found")
+
+        # Check if deposit can be refunded
+        dep_status = booking.get("deposit_status", "") or ""
+        dep_amount = int(booking.get("deposit_amount", 0) or 0)
+        
+        if dep_amount <= 0:
+            return error_response(message="No deposit to refund")
+        
+        if dep_status not in ("forfeited", "paid", "verified"):
+            return error_response(message=f"Deposit status is '{dep_status}', cannot refund")
+        
+        # Check 1-hour rule: must be >= 1hr before original start time
+        from datetime import datetime as _refund_dt, timedelta as _refund_td
+        start_time = booking.get("start_time")
+        now_mmt_dt = now_mmt()
+        
+        if start_time:
+            try:
+                if isinstance(start_time, str):
+                    start_dt = _refund_dt.fromisoformat(start_time)
+                else:
+                    start_dt = start_time
+                # Check if at least 1 hour remains before start
+                _1hr_before = start_dt - _refund_td(hours=1)
+                if now_mmt_dt >= _1hr_before:
+                    return error_response(
+                        message=f"Too late to refund — booking at {start_dt.strftime('%H:%M')}, "
+                                f"refunds allowed at least 1hr before (before {_1hr_before.strftime('%H:%M')})"
+                    )
+            except Exception as _parse_err:
+                logger.warning(f"refund bk#{booking_id} start_time parse: {_parse_err}")
+                pass  # If can't parse time, still allow refund
+
+        # Auto-extract staff name from JWT
+        refunded_by = ""
+        auth_header = (request.headers.get("Authorization", "") if request else "")
+        if auth_header.startswith("Bearer "):
+            from auth import decode_token
+            payload = decode_token(auth_header[7:])
+            if payload:
+                refunded_by = payload.get("name") or payload.get("sub") or ""
+
+        # Determine payment method for cash_movements
+        deposit_method = booking.get("deposit_method", "kpay") or "kpay"
+        method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(deposit_method, deposit_method)
+
+        # Update booking: deposit_status = 'refunded', add note
+        import datetime as _refund_dt2
+        now_str = _refund_dt2.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        note_suffix = f" | Refunded {dep_amount}Ks by {refunded_by or 'admin'} at {now_str}"
+        
+        _mysql_exec(
+            "UPDATE console_bookings SET deposit_status='refunded', "
+            "notes=CONCAT(COALESCE(notes,''), %s) WHERE id=%s",
+            (note_suffix, booking_id)
+        )
+
+        # Record cash_movements eject
+        note = f"[Refund] BK#{booking_id} via {method_label}"
+        _mysql_exec(
+            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, NOW())",
+            ("eject", method_label, dep_amount, note, refunded_by or "admin")
+        )
+
+        # Notify customer via Telegram
+        tg_chat_id = booking.get("telegram_chat_id", "")
+        if tg_chat_id:
+            bk_date = str(booking.get("booking_date", ""))[:10] if booking.get("booking_date") else ""
+            bk_time = ""
+            s = booking.get("start_time")
+            if s:
+                try:
+                    st = _refund_dt.fromisoformat(str(s)) if isinstance(s, str) else s
+                    bk_time = st.strftime("%H:%M")
+                except Exception:
+                    bk_time = str(s)[:5] if s else ""
+            msg = (
+                f"\U0001f504 <b>Deposit Refunded — Booking #{booking_id}</b>\n\n"
+                f"\U0001f4b0 သင့် Deposit {dep_amount:,} Ks ကို "
+                f"ပြန်အမ်းပေးလိုက်ပါပြီ။\n\n"
+                f"\U0001f3ab Booking #{booking_id}\n"
+                f"\U0001f4c5 {bk_date}  \u23f0 {bk_time}\n"
+                f"\U0001f3ae {booking.get('console_id', '')}\n\n"
+                f"\U0001f4b0 Refund: {dep_amount:,} Ks ({method_label})\n\n"
+                f"\U0001f4ac ဆက်သွယ်ရန် @psvibeofficial"
+            )
+            import threading as _refund_thread
+            _refund_thread.Thread(
+                target=_send_telegram_customer,
+                args=(tg_chat_id, msg),
+                daemon=True
+            ).start()
+
+        # Notify admin group
+        try:
+            _notify_deposit_refunded(booking_id, booking, dep_amount, method_label)
+        except Exception as _notify_e:
+            logger.warning(f"refund bk#{booking_id} admin notify: {_notify_e}")
+
+        logger.info(f"Deposit refunded: BK#{booking_id} {dep_amount}Ks {method_label} by {refunded_by or 'admin'}")
+
+        return ok({
+            "booking_id": booking_id,
+            "deposit_status": "refunded",
+            "deposit_amount": dep_amount,
+            "cash_movement": f"eject {dep_amount} Ks from {method_label}"
+        })
+    except Exception as e:
+        logger.error(f"refund bk#{booking_id} error: {e}")
+        return error_response(message=str(e))
+
+
+# ════════════════════════════════════════════════════════════════════════════
 #  POST /api/bookings/auto-cancel-no-show — cron-driven no-show cleanup
 # ════════════════════════════════════════════════════════════════════════════
 @router.post("/bookings/auto-cancel-no-show", tags=["Bookings"],
@@ -2101,6 +2394,7 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
     """
     try:
         _now = now_mmt()
+        _now_utc = datetime.now(timezone.utc)
         _grace_minutes = 15
         
         # Find bookings past start_time + grace with no check-in
@@ -2122,16 +2416,17 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
         for row in (rows or []):
             bk_id = row['id']
             try:
-                # Check if deposit will be forfeited (has paid/verified deposit)
+                # Check if deposit will be forfeited (Boss policy 2026-07-31: only verified forfeits;
+                # unverified 'paid' -> void to 'none', not revenue)
                 _pre = _mysql_query_one(
-                    "SELECT deposit_status, deposit_amount FROM console_bookings WHERE id=%s",
+                    "SELECT deposit_status, deposit_amount, deposit_method FROM console_bookings WHERE id=%s",
                     (bk_id,)
                 )
-                _will_forfeit = _pre and _pre.get('deposit_status', '') in ('paid', 'verified')
+                _will_forfeit = _pre and _pre.get('deposit_status', '') == 'verified'
                 
                 _mysql_exec(
                     "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
-                    "deposit_status=CASE WHEN deposit_status IN ('paid','verified') THEN 'forfeited' ELSE deposit_status END, "
+                    "deposit_status=CASE WHEN deposit_status='verified' THEN 'forfeited' WHEN deposit_status='paid' THEN 'none' ELSE deposit_status END, "
                     "notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: no-show') WHERE id=%s",
                     (bk_id,)
                 )
@@ -2151,13 +2446,75 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
                 # Notify admin group if deposit is forfeited
                 if _will_forfeit:
                     _notify_deposit_forfeited(bk_id, row, _pre.get('deposit_amount', 0))
+                    # 🆕 Record forfeited deposit as shop income in cash_movements
+                    try:
+                        _dep_amt = int(_pre.get('deposit_amount', 0) or 0)
+                        _dep_meth = (_pre.get('deposit_method', '') or 'kpay').lower()
+                        _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                        if _dep_amt > 0:
+                            _mysql_exec(
+                                "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                                "VALUES (%s, %s, %s, %s, %s, NOW())",
+                                ("inject", _meth_label, _dep_amt,
+                                 f"Forfeit BK#{bk_id} via {_meth_label}", "system")
+                            )
+                            logger.info(f"Auto-cancel forfeit: BK#{bk_id} {_dep_amt}Ks {_meth_label}")
+                    except Exception as _fe:
+                        logger.warning(f"Auto-cancel forfeit cash_movements BK#{bk_id}: {_fe}")
                 
                 cancelled.append(bk_id)
                 logger.info(f"Auto-cancelled no-show booking #{bk_id}")
             except Exception as e:
                 logger.error(f"auto-cancel bk#{bk_id} failed: {e}")
         
-        return ok({"cancelled": len(cancelled), "ids": cancelled})
+        # ═══════════════════════════════════════════════════════════════
+        #  Pending Deposit Timeout — 15 min (Boss request 2026-07-24)
+        #  Cancel pending bookings without deposit that are >15 min old
+        # ═══════════════════════════════════════════════════════════════
+        _pending_expired = _mysql_query("""
+            SELECT id, console_id, member_id, phone, telegram_chat_id, game_name,
+                   booking_date, planned_start AS start_time
+            FROM console_bookings
+            WHERE status='pending'
+              AND (deposit_status IS NULL OR deposit_status='none' OR deposit_amount IS NULL OR deposit_amount=0)
+              AND (member_id IS NULL OR member_id = '')
+              AND created_at < DATE_SUB(%s, INTERVAL 15 MINUTE)
+            ORDER BY id ASC
+        """, (_now_utc,))
+        
+        timeout_ids = []
+        for row in (_pending_expired or []):
+            bk_id = row['id']
+            try:
+                _mysql_exec(
+                    "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
+                    "notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: deposit timeout (15min)') "
+                    "WHERE id=%s AND status='pending'",
+                    (bk_id,)
+                )
+                cid = row.get('console_id', '')
+                if cid:
+                    _sync_console_status(cid)
+                
+                # Notify customer
+                tg_chat_id = row.get('telegram_chat_id', '')
+                if tg_chat_id:
+                    try:
+                        _notify_no_show_cancel(bk_id, row)
+                    except Exception as e:
+                        logger.warning(f"pending timeout notify bk#{bk_id} failed: {e}")
+                
+                timeout_ids.append(bk_id)
+                logger.info(f"Pending deposit timeout: BK#{bk_id}")
+            except Exception as e:
+                logger.error(f"pending timeout bk#{bk_id} failed: {e}")
+        
+        return ok({
+            "cancelled": len(cancelled),
+            "pending_timeout": len(timeout_ids),
+            "ids": cancelled,
+            "pending_timeout_ids": timeout_ids,
+        })
     except Exception as e:
         logger.error(f"auto-cancel-no-show: {e}")
         return error_response(message=str(e))
@@ -2311,7 +2668,7 @@ async def api_deposit_submit(booking_id: int, req: dict, auth=Depends(verify_api
         import json as _sjson
         import urllib.request as _ureq
         token = os.environ.get("BOT_TOKEN", "8545665013:AAFgEuw4V_715Q9yzGOYloinIdbdYXYb8zU")
-        chat_id = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
+        chat_id = os.environ.get("DEPOSIT_NOTIFY_CHAT", os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747"))
         if token and chat_id:
             bk_date = str(row.get("booking_date", ""))[:10] if row.get("booking_date") else ""
             bk_time = ""
@@ -2346,6 +2703,29 @@ async def api_deposit_submit(booking_id: int, req: dict, auth=Depends(verify_api
                     ),
                     timeout=5
                 )
+                # Forward deposit screenshot image if available
+                # NOTE: file_id is from CUSTOMER_BOT_TOKEN (customer bot), must use same token to send
+                if deposit_ref_type in ("image", "both") and deposit_ref and len(deposit_ref) > 1:
+                    _photo_token = os.environ.get("CUSTOMER_BOT_TOKEN", os.environ.get("BOT_TOKEN", ""))
+                    if _photo_token and _photo_token != token:
+                        try:
+                            _forward_url = f"https://api.telegram.org/bot{_photo_token}/sendPhoto"
+                            _photo_payload = _sjson.dumps({
+                                "chat_id": chat_id,
+                                "photo": deposit_ref,
+                                "caption": f"\U0001f4b3 Deposit SS — BK#{booking_id} ({method_label} {deposit_amt:,}Ks)",
+                                "parse_mode": "HTML"
+                            }).encode()
+                            _ureq.urlopen(
+                                _ureq.Request(
+                                    _forward_url,
+                                    data=_photo_payload,
+                                    headers={"Content-Type": "application/json"}
+                                ),
+                                timeout=10
+                            )
+                        except Exception as _photo_e:
+                            logger.warning(f"Deposit photo forward bk#{booking_id}: {_photo_e}")
             except Exception as _nte:
                 logger.warning(f"Deposit staff notify failed: {_nte}")
         
@@ -2458,6 +2838,91 @@ async def api_deposit_verify(booking_id: int, req: dict, request: Request, auth=
         return error_response(message=str(e))
 
 
+def _reverse_outstanding_forfeits(booking_id):
+    """Safety net: reverse any outstanding forfeit injects for a booking before redeem.
+    
+    Restore paths already insert reversal ejects when deposit_status=='forfeited' at
+    restore time, but if the booking was restored via a manual DB edit (bypassing
+    code), the forfeit injects remain in cash_movements with no matching eject.
+    This function catches that case at redeem time - idempotent: if already
+    reversed, does nothing.
+    
+    Returns: (reversed_count, total_reversed_amount)
+    """
+    try:
+        bk_str = str(booking_id)
+        forfeit_pattern = f"Forfeit BK#{bk_str}%"
+
+        # Get sum of forfeit injects
+        inj_rows = _mysql_query(
+            "SELECT COALESCE(SUM(amount),0) AS total FROM cash_movements "
+            "WHERE movement_type='inject' AND note LIKE %s",
+            (forfeit_pattern,)
+        )
+        inj_total = int(inj_rows[0]["total"] or 0) if inj_rows else 0
+        if inj_total <= 0:
+            return (0, 0)
+
+        # Get sum of existing reversal ejects (both patterns)
+        refund_pattern = f"Refund forfeit BK#{bk_str}%"
+        reverse_pattern = f"%deposit reverse%BK#{bk_str}%"
+        ej_rows = _mysql_query(
+            "SELECT COALESCE(SUM(amount),0) AS total FROM cash_movements "
+            "WHERE movement_type='eject' AND (note LIKE %s OR note LIKE %s)",
+            (refund_pattern, reverse_pattern)
+        )
+        ej_total = int(ej_rows[0]["total"] or 0) if ej_rows else 0
+
+        diff = inj_total - ej_total
+        if diff <= 0:
+            return (0, 0)
+
+        # Get individual forfeit inject rows (may be multiple per-booking - e.g. partial)
+        inj_details = _mysql_query(
+            "SELECT id, account, amount FROM cash_movements "
+            "WHERE movement_type='inject' AND note LIKE %s ORDER BY id",
+            (forfeit_pattern,)
+        )
+
+        reversed_count = 0
+        reversed_total = 0
+        remaining_to_reverse = diff
+
+        for row in inj_details:
+            if remaining_to_reverse <= 0:
+                break
+            amt = int(row["amount"] or 0)
+            if amt <= 0:
+                continue
+            account = row["account"] or "KPay"
+            # Reverse at most the remaining diff (proportional handling for multi-inject)
+            reverse_amt = min(amt, remaining_to_reverse)
+
+            _mysql_exec(
+                "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, NOW())",
+                (
+                    "eject",
+                    account,
+                    reverse_amt,
+                    f"Refund forfeit BK#{bk_str} (deposit reverse - redeemed, session played) via {account}",
+                    "system",
+                ),
+            )
+            reversed_count += 1
+            reversed_total += reverse_amt
+            remaining_to_reverse -= reverse_amt
+
+        logger.info(
+            "_reverse_outstanding_forfeits BK#%s: reversed %s injects, total %s Ks (diff was %s Ks)",
+            booking_id, reversed_count, reversed_total, diff
+        )
+        return (reversed_count, reversed_total)
+    except Exception as e:
+        logger.warning("_reverse_outstanding_forfeits BK#%s error (non-fatal): %s", booking_id, e)
+        return (0, 0)
+
+
 @router.patch("/bookings/{booking_id}/deposit/settle", response_model=GenericResponse, tags=["Deposits"], summary="Settle final sale with deposit redemption [MySQL]")
 async def api_deposit_settle(booking_id: int, req: dict, auth=Depends(verify_api_key)):
     """Settle the booking after session done: record full sale + remaining payments.
@@ -2532,8 +2997,8 @@ async def api_deposit_settle(booking_id: int, req: dict, auth=Depends(verify_api
         
         sales_id = _mysql_exec(
             "INSERT INTO sales_daily (branch_id, sale_date, console_id, member_id, "
-            "amount, gross, discount, net, staff_name, payment_method, notes, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+            "amount, gross, discount, net, staff_name, customer_name, payment_method, notes, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
             (
                 1,  # branch_id
                 today_str,
@@ -2543,6 +3008,7 @@ async def api_deposit_settle(booking_id: int, req: dict, auth=Depends(verify_api
                 float(total_fee),
                 0.0,
                 float(total_fee),
+                staff_name,
                 staff_name,
                 pm_str,
                 f"Deposit settle - Booking #{booking_id}"
@@ -2567,6 +3033,9 @@ async def api_deposit_settle(booking_id: int, req: dict, auth=Depends(verify_api
                     )
                 )
         
+        # Safety net: reverse any outstanding forfeit injects before redeeming
+        _reverse_outstanding_forfeits(booking_id)
+
         # Update booking: deposit redeemed, booking done
         _mysql_exec(
             "UPDATE console_bookings SET deposit_status='redeemed', deposit_redeemed_at=NOW(), "

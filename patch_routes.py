@@ -35,8 +35,8 @@ def _mysql_get_settings_dict(prefix=None):
 def _map_booking_row(row: dict) -> dict:
     """Map MySQL snake_case columns to camelCase for admin_bookings compatibility.
     
-    IMPORTANT: For pending bookings from customer bot, customerName is in staff_name column
-    because the customer bot INSERT maps customer_name → staff_name in MySQL.
+    IMPORTANT: For pending bookings from customer bot, customerName is in customer_name column.
+    Fall back to staff_name if customer_name is NULL (legacy data).
     For staff bookings, member_id holds the actual member ID.
     """
     if not row:
@@ -75,13 +75,14 @@ def _map_booking_row(row: dict) -> dict:
     if row.get("console_id"):
         result["consoleId"] = row["console_id"]
     
-    # customerName: handle both customer bot (pending) and staff formats
-    if row.get("status") == "pending":
-        # Customer bot stores the customer name in staff_name
-        result["customerName"] = row.get("staff_name", "") or row.get("member_id", "Unknown")
+    # customerName: prefer customer_name, then staff_name (legacy), then member_id
+    _cust = row.get("customer_name", "") or row.get("staff_name", "") or ""
+    if _cust:
+        result["customerName"] = _cust
+    elif row.get("member_id", ""):
+        result["customerName"] = row["member_id"]
     else:
-        # Staff-created bookings: member_id is the actual member ID (e.g., PSV_A_001)
-        result["customerName"] = row.get("member_id", "") or row.get("staff_name", "Unknown")
+        result["customerName"] = "Unknown"
     
     # consoleType: if console_id is empty (customer bot), provide a sensible fallback
     if not str(result.get("consoleType", "")).strip():
@@ -142,7 +143,7 @@ async def api_bookings_list(
 ):
     """List all bookings from MySQL. Optional ?status=pending|confirmed|rejected filter."""
     try:
-        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name, cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id"
+        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name, cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id"
         params = []
         if status:
             sql += " WHERE cb.status = %s"
@@ -164,7 +165,7 @@ async def api_bookings_search(
 ):
     """Search bookings from MySQL by date, status, or chat_id."""
     try:
-        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name, cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE 1=1"
+        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name, cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE 1=1"
         params = []
         if date:
             sql += " AND cb.booking_date = %s"
@@ -189,7 +190,7 @@ async def api_bookings_search(
 async def api_bookings_get(booking_id: str, auth=Depends(verify_api_key)):
     """Get a booking from MySQL."""
     try:
-        rows = _mysql_query("SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name, cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE cb.id=%s", (booking_id,))
+        rows = _mysql_query("SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status, cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.phone, cb.game_name, cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE cb.id=%s", (booking_id,))
         if not rows:
             raise HTTPException(status_code=404, detail="Booking not found")
         return ok({"booking": _map_booking_row(rows[0])})

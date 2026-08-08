@@ -429,21 +429,24 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
         for acc in accounts:
             key = acc["key"]
             db_name = key_to_name.get(key, key.capitalize())
+            # DB uses BOTH 'Wave' (transfers, legacy) and 'WavePay' (deposit injects) — merge
+            _db_list = [db_name] + (["WavePay"] if db_name == "Wave" else [])
             income = income_by_account.get(key, 0)
             opex = opex_by_acct.get(key, 0)
-            trans_in = cash_map.get(f"transfer_in|{db_name}", 0)
-            trans_out = cash_map.get(f"transfer_out|{db_name}", 0)
-            inject = cash_map.get(f"inject|{db_name}", 0)
-            eject = cash_map.get(f"eject|{db_name}", 0)
+            trans_in = sum(cash_map.get(f"transfer_in|{n}", 0) for n in _db_list)
+            trans_out = sum(cash_map.get(f"transfer_out|{n}", 0) for n in _db_list)
+            inject = sum(cash_map.get(f"inject|{n}", 0) for n in _db_list)
+            eject = sum(cash_map.get(f"eject|{n}", 0) for n in _db_list)
             si_pay = si_payments.get(db_name, 0)
-            # 🆕 Defensive (dep) subtraction: income parsing strips "(dep)" but
-            # deposit-related injects may still overlap. Subtract tracked (dep) totals
-            # from inject to prevent double-counting.
-            _dep_ded = dep_total_per_account.get(key, 0)
-            if _dep_ded > 0 and inject > 0:
-                _effective_ded = min(inject, _dep_ded)
-                inject -= _effective_ded
-                dep_total_per_account[key] -= _effective_ded
+            # 🆕 Targeted defensive: only cancel forfeit injects of REDEEMED bookings
+            # (their deposit became sale income; a forfeit inject would otherwise double-count).
+            _forfeit_redeemed = float(_mqo("""SELECT COALESCE(SUM(cm.amount),0) as t
+                FROM cash_movements cm JOIN console_bookings cb
+                  ON cb.id = CAST(REPLACE(cm.note, 'Forfeit BK#', '') AS UNSIGNED)
+                WHERE cm.movement_type='inject' AND cm.account IN ({_ph})
+                  AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status='redeemed'""".format(_ph=", ".join(["%s"] * len(_db_list))), (*_db_list,))["t"] or 0)
+            if _forfeit_redeemed > 0 and inject > 0:
+                inject -= min(inject, _forfeit_redeemed)
             # Formula: income - opex + transfers - stock_in_payments + inject - eject
             # Note: stock_in purchases also create cash_movements eject entries,
             # so stock_in_payments may partially overlap with eject for non-split entries.
@@ -462,6 +465,32 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                 add_proceeds = float(_disposal_proceeds.get("total", 0) or 0)
                 balance = balance - ded_assets - ded_advances - ded_prepaid + add_proceeds
             result.append({"key": key, "label": acc["label"], "icon": acc["icon"], "type": acc["type"], "income": round(income, 0), "opex": round(opex, 0), "transfers_in": round(trans_in, 0), "transfers_out": round(abs(trans_out), 0), "injections": round(inject, 0), "ejections": round(eject, 0), "stock_in_payments": round(si_pay, 0), "capital_asset_purchases": round(ded_assets, 0), "capital_advances": round(ded_advances, 0), "capital_prepaid": round(ded_prepaid, 0), "capital_disposal_proceeds": round(add_proceeds, 0), "balance": round(balance, 0)})
+
+        # 🆕 Add back active deposits (paid/verified, not yet redeemed/forfeited)
+        # Anti-double-count subtracts ALL "Deposit #" injects, but active deposits
+        # have no corresponding sales_daily income yet, so they need to be added back
+        _active_deps = _mq("""
+            SELECT deposit_method, COALESCE(SUM(deposit_amount), 0) as total
+            FROM console_bookings
+            WHERE deposit_status IN ('paid', 'verified')
+              AND deposit_amount > 0
+              AND status NOT IN ('cancelled', 'done')
+              AND created_at >= %s AND created_at < %s
+            GROUP BY deposit_method
+        """, (_start, _end))
+        _dep_method_to_key = {"kpay": "kpay", "wavepay": "wave", "aya_pay": "aya_pay", "cash": "cash"}
+        for _ad in (_active_deps or []):
+            _method = (_ad.get('deposit_method', '') or 'kpay').lower()
+            _amt = float(_ad.get('total', 0) or 0)
+            _key = _dep_method_to_key.get(_method)
+            if _key and _amt > 0:
+                for _ra in result:
+                    if _ra["key"] == _key:
+                        _ra["balance"] += _amt
+                        _ra["injections"] = round(_ra["injections"] + _amt, 0)
+                        logger.debug(f"Active deposit added: {_method} {_amt:,.0f} Ks → {_key}")
+                        break
+
         total_balance = sum(a["balance"] for a in result) or 0
         total_income = sum(a["income"] for a in result) or 0
         total_expense = sum(a["opex"] for a in result) or 0
@@ -480,7 +509,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
         _topup = _mqo("SELECT COALESCE(ROUND(SUM(amount)),0) as t FROM topup_log WHERE topup_date >= %s AND topup_date < %s", (_start, _end))
         # Member liability = FIFO: oldest topups consumed first
         _liability = _fifo_result["liability"]
-        _discount = _mqo("SELECT COALESCE(ROUND(SUM(gross - net)),0) as t FROM sales_daily WHERE sale_date >= %s AND sale_date < %s", (_start, _end))
+        _discount = _mqo("SELECT COALESCE(ROUND(SUM(discount)),0) as t FROM sales_daily WHERE sale_date >= %s AND sale_date < %s", (_start, _end))
         game_revenue = float(_game or 0)
         food_revenue = float(_food.get("t", 0) or 0)
         topup_revenue = float(_topup.get("t", 0) or 0)
@@ -511,13 +540,13 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
     ym = f"{year:04d}-{month:02d}"
     try:
         # --- GAME REVENUE: all sales_daily net (excl Topup/New member notes) ---
-        rev_rows = _mq("SELECT net, gross, notes FROM sales_daily WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s AND gross > 0", (ym,))
+        rev_rows = _mq("SELECT net, gross, discount, notes FROM sales_daily WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s AND gross > 0", (ym,))
         total_sales = 0.0; discounts = 0.0; topup_sales = 0.0
         for r in rev_rows:
             g = float(r.get("gross") or 0)
             n = float(r.get("net") or 0)
             notes = (r.get("notes") or "")
-            discounts += (g - n)
+            discounts += float(r.get("discount") or 0)
             if notes.startswith("Topup") or notes.startswith("New member"):
                 topup_sales += n
             else:
@@ -525,12 +554,20 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         # --- FOOD REVENUE: stock_out (actual items sold × unit_price = selling price) ---
         frows = _mq("SELECT COALESCE(SUM(total), 0) as t FROM stock_out WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s", (ym,))
         food_rev = float(frows[0]["t"] or 0) if frows else 0
-        # --- FOOD COGS from stock FIFO ---
+        # --- FOOD COGS from stock FIFO (cumulative-monthly: cum_cur − cum_prev) ---
         import stock_fifo, pymysql
+        # Cumulative COGS up to current month end
         _sfc = pymysql.connect(host='127.0.0.1', user='root', password='PsVibe@MySQL2024!', database='psvibe_api')
-        _sfr = stock_fifo.calc_fifo(_sfc, ym)
+        _sfr = stock_fifo.calc_fifo(_sfc, ym, cumulative=True)
         _sfc.close()
-        cogs = _sfr["cogs"]
+        cogs_cum = _sfr["cogs"]
+        # Subtract cumulative COGS up to previous month end (= this month only)
+        _prev_ym = f"{year:04d}-{month-1:02d}" if month > 1 else f"{year-1:04d}-12"
+        _sfc2 = pymysql.connect(host='127.0.0.1', user='root', password='PsVibe@MySQL2024!', database='psvibe_api')
+        _sfr2 = stock_fifo.calc_fifo(_sfc2, _prev_ym, cumulative=True)
+        _sfc2.close()
+        prev_cogs = _sfr2["cogs"]
+        cogs = max(0.0, cogs_cum - prev_cogs)
         # --- GAME REVENUE = total_sales - food_rev (food_REV is already in sales_daily total) ---
         game_rev = total_sales - food_rev
         # Ensure no negative game revenue
@@ -560,7 +597,7 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         _dep_forfeit = _mqo(
             "SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings "
             "WHERE deposit_status='forfeited' "
-            "AND DATE_FORMAT(created_at, '%%Y-%%m') = %s",
+            "AND DATE_FORMAT(COALESCE(cancelled_at, created_at), '%%Y-%%m') = %s",
             (ym,)
         )
         deposit_forfeited = float(_dep_forfeit.get("t", 0) or 0) if _dep_forfeit else 0
@@ -718,31 +755,49 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
 
             # Cash movements — use DB account name (label), not key
             db = db_acct[key]
-            t_in = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_in' AND created_at < %s", (db, _end))["t"] or 0)
-            t_out = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='transfer_out' AND created_at < %s", (db, _end))["t"] or 0)
-            inj = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)) )) AND created_at < %s", (db, _end))["t"] or 0)
-            ej = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account=%s AND movement_type='eject' AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) )) AND created_at < %s", (db, _end))["t"] or 0)
+            # DB uses BOTH 'Wave' (transfers, legacy) and 'WavePay' (deposit injects) — merge
+            db_list = [db] + (["WavePay"] if db == "Wave" else [])
+            _ph = ", ".join(["%s"] * len(db_list))
+            t_in = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='transfer_in' AND created_at < %s", (*db_list, _end))["t"] or 0)
+            t_out = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='transfer_out' AND created_at < %s", (*db_list, _end))["t"] or 0)
+            inj = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
+            ej = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='eject' AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
 
-            # 🆕 Defensive (dep) subtraction from inject (same logic as finance/balances)
-            _bs_dep_ded = bs_dep_total_per_account.get(key, 0)
-            if _bs_dep_ded > 0 and inj > 0:
-                _eff = min(inj, _bs_dep_ded)
-                inj -= _eff
-                bs_dep_total_per_account[key] -= _eff
+            # 🆕 Targeted defensive: only cancel forfeit injects of REDEEMED bookings
+            # (their deposit became sale income; a forfeit inject would otherwise double-count).
+            _forfeit_redeemed = float(_mqo(f"""SELECT COALESCE(SUM(cm.amount),0) as t
+                FROM cash_movements cm JOIN console_bookings cb
+                  ON cb.id = CAST(REPLACE(cm.note, 'Forfeit BK#', '') AS UNSIGNED)
+                WHERE cm.movement_type='inject' AND cm.account IN ({_ph})
+                  AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status='redeemed'""", (*db_list,))["t"] or 0)
+            if _forfeit_redeemed > 0 and inj > 0:
+                inj -= min(inj, _forfeit_redeemed)
 
             # t_out is stored as negative in DB, so + t_out works (= subtract)
             bal = income - opex + t_in + t_out + inj - ej
 
             if key == "kbz_bank":
-                ded_assets = float(_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active'")["t"] or 0)
+                ded_assets = float(_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active' AND created_at < %s", (_end,))["t"] or 0)
                 # ded_adv = 0 — BS uses created_at < _end (no start filter), so May backfilled
                 # advance eject (104.8M) IS in range. ded_adv would double-count pending (2.3M)
                 ded_adv = 0
-                ded_prep = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid")["t"] or 0)
+                ded_prep = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid WHERE created_at < %s", (_end,))["t"] or 0)
                 bal = bal - ded_assets - ded_adv - ded_prep
 
             bank_items.append({"account": a["label"], "balance": round(bal,0)})
             total_ca += bal
+
+        # 🆕 Active deposit add-back (same as finance/balances) — scoped to month end
+        _act_dep = _mq(
+            """SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings 
+               WHERE deposit_status IN ('paid','verified') 
+               AND status NOT IN ('cancelled','done')
+               AND created_at < %s""", (_end,)
+        )
+        _adb = _act_dep[0]["t"] if _act_dep else 0
+        if float(_adb) > 0:
+            bank_items.append({"account": "Active Deposits", "balance": round(float(_adb),0)})
+            total_ca += float(_adb)
 
         # Fixed Assets (Net Book Value)
         arows = _mq("SELECT name, amount, salvage_value, acc_depreciation FROM finance_assets WHERE status='active'")
@@ -759,11 +814,12 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         adv_t = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL")["t"] or 0)
         other_ca = prep_t + adv_t
 
-        # Depreciation (accumulated)
+        # Depreciation (accumulated) — kept for fixed assets display
         _dep = _mq("SELECT COALESCE(SUM(acc_depreciation),0) as t FROM finance_assets WHERE status='active'")
         total_dep = float(_dep[0]["t"] or 0) if _dep else 0
         _md_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0")
         monthly_dep_total = float(_md_rows[0]["t"] or 0) if _md_rows else 0
+
 
         # Inventory Value via FIFO
         import stock_fifo, pymysql
@@ -796,7 +852,11 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         te = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM opex")["t"] or 0)
         cost_of_sold = _inv['cogs']  # FIFO-based COGS
         wallet_consumed = float(_fr.get("consumed", 0))  # FIFO wallet consumed = recognized revenue
-        total_earned_revenue = ti_excl_topup + wallet_consumed
+        # ALL-TIME deposit forfeited (not just current month)
+        _df_all = _mqo("SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings WHERE deposit_status='forfeited'")
+        deposit_forfeited_alltime = round(float(_df_all.get("t", 0) or 0), 0)
+        # Retained = cumulative P&L: include forfeited in total revenue
+        total_earned_revenue = ti_excl_topup + wallet_consumed + deposit_forfeited_alltime
         retained = total_earned_revenue - te - cost_of_sold - total_dep
         # Advance recovery reserve: backfilled eject (104.8M) now in range, so settled injects (102.5M)
         # are naturally offset. Reserve kept near-zero; auto-balancer may add small rounding gap.
@@ -865,13 +925,13 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
 # ── Financial Statement: Cash Flow (Redesigned) ──
 @router.get("/dashboard/financial/cashflow")
 async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(get_current_user)):
-    """Cash Flow Statement — 3-section format (Operating / Investing / Capital).
-    
-    - Operating: Game income + topups - OPEX - stock purchases (all accounts)
-    - Investing: Asset purchases + Advances (TOTAL given) + Prepaid - Advance recoveries - Disposal proceeds
-    - Capital: KBZ Bank transfer_in — no separate Financing section (300M already = opening)
-    
-    Matches original June 9 design: closing ≈ 28.8M with proper advance tracking.
+    """Cash Flow Statement — aligned with the Balance Sheet accounting model.
+
+    Opening/Closing are computed with the SAME per-account queries as
+    /dashboard/financial/balance-sheet (cumulative to month start / month end),
+    so Cash Flow closing ALWAYS equals Balance Sheet current assets.
+    Sections (Operating / Transfers / Investing) are built from the same model
+    and always sum exactly to net_change.
     """
     from mysql_db import query as _mq, query_one as _mqo
     ym = f"{year:04d}-{month:02d}"
@@ -882,166 +942,187 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
         else:
             _end = f"{year:04d}-{month+1:02d}-01"
 
-        # Opening balance = cumulative cash position at month start
-        # Capital + all net cash flow before this month
-        _prv = _mqo("""
-            SELECT 300000000 +
-                COALESCE((SELECT SUM(net) FROM sales_daily WHERE notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%' AND created_at < %s), 0) +
-                COALESCE((SELECT SUM(amount) FROM topup_log WHERE amount>0 AND topup_date < %s), 0) -
-                COALESCE((SELECT SUM(amount) FROM opex WHERE description NOT LIKE '%%Prepaid Rent Amortization%%' AND created_at < %s), 0) -
-                COALESCE((SELECT SUM(per_price*qty) FROM finance_assets WHERE status='active' AND created_at < %s), 0) -
-                COALESCE((SELECT SUM(amount) FROM finance_prepaid WHERE created_at < %s), 0) +
-                COALESCE((SELECT SUM(disposal_amount) FROM finance_assets WHERE status='disposed' AND disposal_amount>0 AND disposal_date < %s), 0) +
-                COALESCE((SELECT SUM(CASE WHEN movement_type IN ('inject','transfer_in') THEN amount ELSE 0 END) - SUM(CASE WHEN movement_type='eject' THEN amount ELSE 0 END) + SUM(CASE WHEN movement_type='transfer_out' THEN amount ELSE 0 END) FROM cash_movements WHERE created_at < %s AND NOT (account='KBZ Bank' AND movement_type='transfer_in' AND amount >= 100000000)), 0) as t
-        """, (_start,) * 7)
-        opener = float((_prv or {}).get("t", 300000000))
+        acct_keys = ["cash", "wave", "aya_pay", "kpay", "kbz_bank", "acm_acc"]
+        db_names = {"cash": "Cash", "wave": "Wave", "aya_pay": "AYA Pay", "kpay": "KPay", "kbz_bank": "KBZ Bank", "acm_acc": "ACM's Acc"}
 
-        acct_keys = ["cash","wave","aya_pay","kpay","kbz_bank","acm_acc"]
-        key2name = {"cash":"Cash","wave":"Wave","aya_pay":"AYA Pay","kpay":"KPay","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
+        def _position(cutoff):
+            """Per-account cash position at `cutoff` — mirrors balance-sheet logic.
+            Returns (per-account dict with components, total, active_deposits)."""
+            # Income: sales_daily by payment method (sale_date < cutoff) + topups
+            income = {k: 0.0 for k in acct_keys}
+            rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date < %s", (cutoff,))
+            for row in rows:
+                note = (row.get("notes") or "")
+                if note.startswith("Topup") or note.startswith("New member"):
+                    continue
+                pm = (row.get("payment_method") or "").strip()
+                net_amount = float(row.get("net") or 0)
+                if not pm:
+                    continue
+                parts = pm.split("|")
+                for part in parts:
+                    part = part.strip()
+                    if ":" in part:
+                        method, _, val = part.partition(":")
+                        method = method.strip().lower().replace(" ", "_")
+                        try:
+                            _clean = val.strip().replace(" (dep)", "") or "0"
+                            val = float(_clean)
+                        except ValueError:
+                            val = net_amount / max(len(parts), 1)
+                    else:
+                        method = part.lower().replace(" ", "_")
+                        val = net_amount / max(len(parts), 1)
+                    if method == "wavepay":
+                        method = "wave"
+                    if method in income:
+                        income[method] += val
+            tr = _mq("SELECT payment_method, amount FROM topup_log WHERE amount>0 AND payment_method IS NOT NULL AND topup_date < %s", (cutoff,))
+            for _r in tr:
+                pm = (_r.get("payment_method") or "").strip()
+                if not pm:
+                    continue
+                for p in pm.split("/"):
+                    p = p.strip()
+                    if ":" not in p:
+                        continue
+                    m, _, v = p.partition(":")
+                    m = m.strip().lower().replace(" ", "_")
+                    try:
+                        val = float(v.strip() or 0) if v.strip() else 0
+                    except ValueError:
+                        continue
+                    if m == "wavepay":
+                        m = "wave"
+                    if m in income:
+                        income[m] += val
 
-        # ─── Income: sales_daily by payment method (MONTH-FILTERED) ───
-        inc = {k: 0.0 for k in acct_keys}
-        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND created_at >= %s AND created_at < %s", (_start, _end))
-        for row in rows:
-            note = (row.get("notes") or "")
-            if note.startswith("Topup") or note.startswith("New member"): continue
-            pm = (row.get("payment_method") or "").strip()
-            na = float(row.get("net") or 0)
-            if not pm: continue
-            parts = pm.split("|")
-            for p in parts:
-                p = p.strip()
-                m = p.lower().replace(" ", "_")
-                if ":" in m:
-                    m, _, v = m.partition(":")
-                    try: val = float(v.strip() or 0)
-                    except Exception: val = na / max(len(parts), 1)
-                else:
-                    val = na / max(len(parts), 1)
-                if m == "wavepay": m = "wave"
-                if m in inc: inc[m] += val
+            # OPEX by payment method, excl Prepaid Rent Amortization (expense_date < cutoff)
+            opex = {k: 0.0 for k in acct_keys}
+            ox = _mq("SELECT payment_method, COALESCE(SUM(amount),0) as t FROM opex WHERE description NOT LIKE %s AND expense_date < %s GROUP BY payment_method", ("%Prepaid Rent Amortization%", cutoff))
+            for _r in ox:
+                m = (_r.get("payment_method") or "").strip().lower().replace(" ", "_")
+                if m == "acm's_acc":
+                    m = "acm_acc"
+                if m in opex:
+                    opex[m] += float(_r["t"] or 0)
 
-        # Topup income (MONTH-FILTERED)
-        tr = _mq("SELECT payment_method, amount FROM topup_log WHERE amount>0 AND payment_method IS NOT NULL AND topup_date >= %s AND topup_date < %s", (_start, _end))
-        for _r in tr:
-            pm = (_r.get("payment_method") or "").strip()
-            if not pm: continue
-            for p in pm.split("/"):
-                p = p.strip()
-                if ":" not in p: continue
-                m, _, v = p.partition(":")
-                m = m.strip().lower().replace(" ", "_")
-                try: val = float(v.strip() or 0)
-                except Exception: continue
-                if m == "wavepay": m = "wave"
-                if m in inc: inc[m] += val
+            per = {}
+            total = 0.0
+            for key in acct_keys:
+                db = db_names[key]
+                # DB uses BOTH 'Wave' (transfers, legacy) and 'WavePay' (deposit injects) — merge
+                db_list = [db] + (["WavePay"] if db == "Wave" else [])
+                ph = ", ".join(["%s"] * len(db_list))
+                t_in = float((_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='transfer_in' AND created_at < %s", (*db_list, cutoff)) or {}).get("t", 0) or 0)
+                t_out = float((_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='transfer_out' AND created_at < %s", (*db_list, cutoff)) or {}).get("t", 0) or 0)
+                inj = float((_mqo(f"""SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='inject'
+                        AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37))
+                          AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)))) AND created_at < %s""", (*db_list, cutoff)) or {}).get("t", 0) or 0)
+                ej = float((_mqo(f"""SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='eject'
+                        AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)))) AND created_at < %s""", (*db_list, cutoff)) or {}).get("t", 0) or 0)
+                # Targeted defensive: forfeit injects of REDEEMED bookings (deposit became income)
+                _fr = float((_mqo(f"""SELECT COALESCE(SUM(cm.amount),0) as t FROM cash_movements cm
+                        JOIN console_bookings cb ON cb.id = CAST(REPLACE(cm.note, 'Forfeit BK#', '') AS UNSIGNED)
+                        WHERE cm.movement_type='inject' AND cm.account IN ({ph})
+                          AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status='redeemed'""", (*db_list,)) or {}).get("t", 0) or 0)
+                if _fr > 0 and inj > 0:
+                    inj -= min(inj, _fr)
+                bal = income[key] - opex[key] + t_in + t_out + inj - ej  # t_out stored negative
+                if key == "kbz_bank":
+                    ded_assets = float((_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active' AND created_at < %s", (cutoff,)) or {}).get("t", 0) or 0)
+                    ded_prep = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid WHERE created_at < %s", (cutoff,)) or {}).get("t", 0) or 0)
+                    bal = bal - ded_assets - ded_prep
+                per[key] = {"balance": bal, "income": income[key], "opex": opex[key], "t_in": t_in, "t_out": t_out, "inj": inj, "ej": ej}
+                total += bal
+            # Active deposits add-back (same as balance-sheet current assets)
+            _ad = _mq("SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings WHERE deposit_status IN ('paid','verified') AND status NOT IN ('cancelled','done') AND created_at < %s", (cutoff,))
+            adb = float(_ad[0]["t"] or 0) if _ad else 0
+            return per, total, adb
 
-        total_income = sum(inc.values())
+        per_s, tot_s, ad_s = _position(_start)
+        per_e, tot_e, ad_e = _position(_end)
+        opener = tot_s + ad_s
+        closing = tot_e + ad_e
+        net_change = closing - opener
 
-        # ─── OPEX by payment method, excl Prepaid Rent Amortization (MONTH-FILTERED) ───
-        opex = {k: 0.0 for k in acct_keys}
-        ox = _mq("SELECT payment_method, COALESCE(SUM(amount),0) as t FROM opex WHERE description NOT LIKE %s AND created_at >= %s AND created_at < %s GROUP BY payment_method", ("%Prepaid Rent Amortization%", _start, _end))
-        for _r in ox:
-            m = (_r.get("payment_method") or "").strip().lower().replace(" ", "_")
-            if m == "acm's_acc": m = "acm_acc"
-            if m in opex: opex[m] += float(_r["t"] or 0)
-        total_opex = sum(opex.values())
+        # ─── Month components (deltas of the same model → sections always tie) ───
+        income_m = sum(per_e[k]["income"] for k in acct_keys) - sum(per_s[k]["income"] for k in acct_keys)
+        opex_m = sum(per_e[k]["opex"] for k in acct_keys) - sum(per_s[k]["opex"] for k in acct_keys)
+        t_in_m = sum(per_e[k]["t_in"] for k in acct_keys) - sum(per_s[k]["t_in"] for k in acct_keys)
+        t_out_m = sum(per_e[k]["t_out"] for k in acct_keys) - sum(per_s[k]["t_out"] for k in acct_keys)
+        inj_m = sum(per_e[k]["inj"] for k in acct_keys) - sum(per_s[k]["inj"] for k in acct_keys)
+        ej_m = sum(per_e[k]["ej"] for k in acct_keys) - sum(per_s[k]["ej"] for k in acct_keys)
+        transfers_m = t_in_m + t_out_m  # t_out stored negative
+        ad_delta = ad_e - ad_s
 
-        # ─── Cash movements (MONTH-FILTERED) ───
-        cm = {}
-        for _r in _mq("SELECT movement_type, account, COALESCE(SUM(amount),0) as t FROM cash_movements WHERE created_at >= %s AND created_at < %s GROUP BY movement_type, account", (_start, _end)):
-            cm[f"{_r['movement_type']}|{_r['account']}"] = float(_r["t"] or 0)
+        # Advance-settled injects are classified under Investing (recoveries), not Operating
+        _adv_settled_m = float((_mqo("""SELECT COALESCE(SUM(amount),0) as t FROM cash_movements
+            WHERE movement_type='inject' AND note LIKE CONCAT('Advance settled', CHAR(37))
+              AND created_at >= %s AND created_at < %s""", (_start, _end)) or {}).get("t", 0) or 0)
 
-        # Remove Topup/New member injects (duplicates of income already tracked)
-        _bi = _mq("SELECT account, COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
-        for _r in _bi:
-            k = "inject|" + _r["account"]
-            if k in cm: cm[k] -= float(_r["t"] or 0)
+        # Investing: financial-table items during the month
+        _ap = float((_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active' AND created_at >= %s AND created_at < %s", (_start, _end)) or {}).get("t", 0) or 0)
+        _adv_total = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE created_at >= %s AND created_at < %s", (_start, _end)) or {}).get("t", 0) or 0)
+        _pp = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid WHERE created_at >= %s AND created_at < %s", (_start, _end)) or {}).get("t", 0) or 0)
+        _dp = float((_mqo("SELECT COALESCE(SUM(disposal_amount),0) as t FROM finance_assets WHERE status='disposed' AND disposal_amount > 0 AND disposal_date >= %s AND disposal_date < %s", (_start, _end)) or {}).get("t", 0) or 0)
 
-        # ─── Stock purchases = all eject from all accounts (cash outflow for inventory) ───
-        total_stock_eject = sum(abs(cm.get(f"eject|{key2name[k]}",0)) for k in acct_keys)
-
-        # ─── Investing: Assets + Advances + Prepaid - Recoveries (MONTH-FILTERED) ───
-        _ap = float((_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active' AND created_at >= %s AND created_at < %s", (_start, _end)) or {}).get("t",0))
-        _pp = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid WHERE created_at >= %s AND created_at < %s", (_start, _end)) or {}).get("t",0))
-        _dp = float((_mqo("SELECT COALESCE(SUM(disposal_amount),0) as t FROM finance_assets WHERE status='disposed' AND disposal_amount > 0 AND disposal_date >= %s AND disposal_date < %s", (_start, _end)) or {}).get("t",0))
-
-        # Advances: this month only
-        _adv_total = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE created_at >= %s AND created_at < %s", (_start, _end)) or {}).get("t",0))
-
-        # Advance recoveries: inject entries with "Advance settled" note (MONTH-FILTERED)
-        _adv_recovery = float((_mqo(
-            "SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE movement_type='inject' AND note LIKE CONCAT('Advance settled', CHAR(37)) AND created_at >= %s AND created_at < %s",
-            (_start, _end)
-        ) or {}).get("t",0))
-
-        # KBZ Bank transfer_in (the capital injection)
-        _kbz_tin = float((_mqo(
-            "SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account='KBZ Bank' AND movement_type='transfer_in' AND created_at >= %s AND created_at < %s",
-            (_start, _end)
-        ) or {}).get("t",0))
-
-        # ─── Per-account closing balance ───
-        total_bal = 0.0
-        for k in acct_keys:
-            db = key2name[k]
-            # Include ALL injects (not advance settlements filtered — we handle advances separately in Investing)
-            bal = inc[k] - opex[k] + cm.get(f"transfer_in|{db}",0) - abs(cm.get(f"transfer_out|{db}",0)) + cm.get(f"inject|{db}",0) - cm.get(f"eject|{db}",0)
-            if k == "kbz_bank":
-                bal = bal - _ap - _adv_total - _pp + _dp
-            total_bal += bal
-
-        # ─── Build sections ───
-
-        # Section 1: Operating Activities
+        # ─── Sections ───
         op_items = []
-        if total_income: op_items.append({"label": "Game & Top-up Income", "emoji": "🎮", "amount": round(total_income, 0), "type": "inflow"})
-        if total_opex: op_items.append({"label": "Operating Expenses (All Accounts)", "emoji": "📉", "amount": round(total_opex, 0), "type": "outflow"})
-        if total_stock_eject > 1: op_items.append({"label": "Stock Purchases (Inventory)", "emoji": "📦", "amount": round(total_stock_eject, 0), "type": "outflow"})
-        op_net = total_income - total_opex - total_stock_eject
+        if income_m:
+            op_items.append({"label": "Game & Top-up Income", "emoji": "🎮", "amount": round(income_m, 0), "type": "inflow"})
+        if opex_m:
+            op_items.append({"label": "Operating Expenses (All Accounts)", "emoji": "📉", "amount": round(opex_m, 0), "type": "outflow"})
+        if ej_m:
+            op_items.append({"label": "Cash Outflows — Stock, Withdrawals & Other (Ejects)", "emoji": "📦", "amount": round(abs(ej_m), 0), "type": "outflow"})
+        _inj_op = inj_m - _adv_settled_m
+        if _inj_op:
+            op_items.append({"label": "Other Cash Inflows (Forfeits, BK# etc.)", "emoji": "💳", "amount": round(_inj_op, 0), "type": "inflow" if _inj_op > 0 else "outflow"})
+        if ad_delta:
+            op_items.append({"label": "Customer Deposits Received (Net)", "emoji": "🤝", "amount": round(abs(ad_delta), 0), "type": "inflow" if ad_delta > 0 else "outflow"})
+        op_net = income_m - opex_m + _inj_op - ej_m + ad_delta
 
-        # Section 2: Investing Activities
+        tr_items = []
+        if transfers_m:
+            tr_items.append({"label": "Transfers Between Accounts (Net)", "emoji": "🔁", "amount": round(transfers_m, 0), "type": "inflow" if transfers_m > 0 else "outflow"})
+        tr_net = transfers_m
+
         inv_items = []
-        if _ap: inv_items.append({"label": "Equipment & Setup (PS5, TVs, Furniture)", "emoji": "🎮", "amount": round(_ap, 0), "type": "outflow"})
-        if _adv_total: inv_items.append({"label": "Advances Given (Total)", "emoji": "📋", "amount": round(_adv_total, 0), "type": "outflow"})
-        if _pp: inv_items.append({"label": "Prepaid Expenses (Rent/Lease)", "emoji": "📅", "amount": round(_pp, 0), "type": "outflow"})
-        if _adv_recovery: inv_items.append({"label": "Advance Recoveries (Returned)", "emoji": "♻️", "amount": round(_adv_recovery, 0), "type": "inflow"})
-        if _dp: inv_items.append({"label": "Asset Disposal Proceeds", "emoji": "💰", "amount": round(_dp, 0), "type": "inflow"})
-        inv_net = _adv_recovery + _dp - _ap - _adv_total - _pp
+        if _ap:
+            inv_items.append({"label": "Equipment & Setup (PS5, TVs, Furniture)", "emoji": "🎮", "amount": round(_ap, 0), "type": "outflow"})
+        if _adv_total:
+            inv_items.append({"label": "Advances Given (Total)", "emoji": "📋", "amount": round(_adv_total, 0), "type": "outflow"})
+        if _pp:
+            inv_items.append({"label": "Prepaid Expenses (Rent/Lease)", "emoji": "📅", "amount": round(_pp, 0), "type": "outflow"})
+        if _adv_settled_m:
+            inv_items.append({"label": "Advance Recoveries (Returned)", "emoji": "♻️", "amount": round(_adv_settled_m, 0), "type": "inflow"})
+        if _dp:
+            inv_items.append({"label": "Asset Disposal Proceeds", "emoji": "💰", "amount": round(_dp, 0), "type": "inflow"})
+        inv_net = _adv_settled_m + _dp - _ap - _adv_total - _pp
 
-        # ─── Closing = cumulative cash at month end (same formula as opener, up to _end) ───
-        _clv = _mqo("""
-            SELECT 300000000 +
-                COALESCE((SELECT SUM(net) FROM sales_daily WHERE notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%' AND created_at < %s), 0) +
-                COALESCE((SELECT SUM(amount) FROM topup_log WHERE amount>0 AND topup_date < %s), 0) -
-                COALESCE((SELECT SUM(amount) FROM opex WHERE description NOT LIKE '%%Prepaid Rent Amortization%%' AND created_at < %s), 0) -
-                COALESCE((SELECT SUM(per_price*qty) FROM finance_assets WHERE status='active' AND created_at < %s), 0) -
-                COALESCE((SELECT SUM(amount) FROM finance_prepaid WHERE created_at < %s), 0) +
-                COALESCE((SELECT SUM(disposal_amount) FROM finance_assets WHERE status='disposed' AND disposal_amount>0 AND disposal_date < %s), 0) +
-                COALESCE((SELECT SUM(CASE WHEN movement_type IN ('inject','transfer_in') THEN amount ELSE 0 END) - SUM(CASE WHEN movement_type='eject' THEN amount ELSE 0 END) + SUM(CASE WHEN movement_type='transfer_out' THEN amount ELSE 0 END) FROM cash_movements WHERE created_at < %s AND NOT (account='KBZ Bank' AND movement_type='transfer_in' AND amount >= 100000000)), 0) as t
-        """, (_end,) * 7)
-        closing = float((_clv or {}).get("t", opener))
+        # Guarantee the sections tie to net_change; show any residual transparently
+        residual = net_change - op_net - tr_net - inv_net
+        if abs(residual) > 0.5:
+            op_items.append({"label": "Timing / Classification Adjustments", "emoji": "🧮", "amount": round(residual, 0), "type": "inflow" if residual > 0 else "outflow"})
+            op_net += residual
 
-        # ─── Compute total inflows and outflows for frontend display ───
-        operating_inflows = total_income
-        operating_outflows = total_opex + total_stock_eject
-        investing_inflows = _adv_recovery + _dp
-        investing_outflows = _ap + _adv_total + _pp
-        total_inflows = operating_inflows + investing_inflows
-        total_outflows = operating_outflows + investing_outflows
+        total_inflows = sum(i["amount"] for i in op_items + tr_items + inv_items if i["type"] == "inflow")
+        total_outflows = sum(i["amount"] for i in op_items + tr_items + inv_items if i["type"] == "outflow")
 
         return {"success": True, "data": {
             "period": ym,
             "opening_balance": round(opener, 0),
             "sections": {
                 "operating": {"title": "Operating Activities", "items": op_items, "subtotal": round(op_net, 0)},
+                "transfers": {"title": "Transfers Between Accounts", "items": tr_items, "subtotal": round(tr_net, 0)},
                 "investing": {"title": "Investing Activities", "items": inv_items, "subtotal": round(inv_net, 0)}
             },
             "summary": {
                 "opening_balance": round(opener, 0),
                 "operating_net": round(op_net, 0),
+                "transfers_net": round(tr_net, 0),
                 "investing_net": round(inv_net, 0),
-                "net_change": round(closing - opener, 0),
+                "net_change": round(net_change, 0),
                 "closing_balance": round(closing, 0)
             },
             "total_inflows": round(total_inflows, 0),
@@ -1200,16 +1281,32 @@ async def calculate_profit_distribution(
     # Game revenue = total_sales - food_rev (food is embedded in sales_daily)
     game_rev = max(0.0, total_sales - food_rev)
     
-    # Wallet consumed: FIFO liability consumed during period
+    # Wallet consumed: monthly = cumulative − prev_month cumulative (ALIGNED with PNL)
     try:
         _fc = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
         _fr = __import__("fifo_wallet").get_all_fifo(_fc, ym)
         _fc.close()
-        wallet_consumed = float(_fr.get("consumed", 0))
+        wal_cum = float(_fr.get("consumed", 0))
+        # Subtract previous month cumulative
+        _prev_ym = f"{year:04d}-{month-1:02d}" if month > 1 else f"{year-1:04d}-12"
+        _fc2 = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+        _fr2 = __import__("fifo_wallet").get_all_fifo(_fc2, _prev_ym)
+        _fc2.close()
+        prev_wal = float(_fr2.get("consumed", 0))
+        wallet_consumed = max(0.0, wal_cum - prev_wal)
     except Exception:
         wallet_consumed = 0.0
     
-    total_revenue = game_rev + food_rev + wallet_consumed
+    # Deposit forfeited income (ALIGNED with PNL)
+    _dep_forfeit = _mq(
+        "SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings "
+        "WHERE deposit_status='forfeited' "
+        "AND DATE_FORMAT(created_at, '%%Y-%%m') = %s",
+        (ym,)
+    )
+    deposit_forfeited = float(_dep_forfeit[0]["t"] or 0) if _dep_forfeit else 0
+    
+    total_revenue = game_rev + food_rev + wallet_consumed + deposit_forfeited
     
     # ── 2. Operating expenses (ALIGNED with PNL) ──
     opex_rows = _mq(
@@ -1220,12 +1317,19 @@ async def calculate_profit_distribution(
     )
     total_expense = sum(float(r["total"]) for r in opex_rows) if opex_rows else 0.0
     
-    # ── 3. COGS — food stock FIFO (ALIGNED with PNL) ──
+    # ── 3. COGS — food stock FIFO (cumulative-monthly, ALIGNED with PNL) ──
     try:
         _sfc = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
-        _sfr = stock_fifo.calc_fifo(_sfc, ym)
+        _sfr = stock_fifo.calc_fifo(_sfc, ym, cumulative=True)
         _sfc.close()
-        cogs = _sfr["cogs"]
+        cogs_cum = _sfr["cogs"]
+        # Subtract previous month cumulative
+        _prev_ym = f"{year:04d}-{month-1:02d}" if month > 1 else f"{year-1:04d}-12"
+        _sfc2 = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+        _sfr2 = stock_fifo.calc_fifo(_sfc2, _prev_ym, cumulative=True)
+        _sfc2.close()
+        prev_cogs = _sfr2["cogs"]
+        cogs = max(0.0, cogs_cum - prev_cogs)
     except Exception:
         cogs = 0.0
     
@@ -1275,6 +1379,7 @@ async def calculate_profit_distribution(
             "game_revenue": round(game_rev, 0),
             "food_revenue": round(food_rev, 0),
             "wallet_consumed": round(wallet_consumed, 0),
+            "deposit_forfeited": round(deposit_forfeited, 0),
             "total_revenue": round(total_revenue, 0),
             "cogs": round(cogs, 0),
             "gross_profit": round(gross_profit, 0),
@@ -1335,6 +1440,56 @@ async def get_profit_distribution_history(user: dict = Depends(get_current_user)
             entry["details"] = []
         result.append(entry)
     return {"success": True, "data": result}
+
+
+@router.post('/dashboard/profit-distribution/payout-mgmt-fee')
+async def payout_mgmt_fee(req: dict, user: dict = Depends(get_current_user)):
+    """Pay out the management fee (OM bonus) as a cash_movements dividend entry.
+    
+    The management fee (10%% of net profit) goes to the Founder (Aung Chan Myint)
+    as OM bonus. This endpoint creates a cash_movements entry and marks it as paid.
+    """
+    from mysql_db import execute as _me, query as _mq
+    from datetime import date
+    
+    dist_id = int(req.get("distribution_id", 0))
+    account = req.get("account", "KBZ Bank")
+    
+    if not dist_id:
+        return {"success": False, "error": "distribution_id required"}
+    
+    # Get the distribution record
+    rows = _mq("SELECT id, period_label, management_fee, mgmt_fee_paid FROM profit_distributions WHERE id = %s", (dist_id,))
+    if not rows:
+        return {"success": False, "error": "Distribution not found"}
+    
+    dist = rows[0]
+    if dist["mgmt_fee_paid"]:
+        return {"success": False, "error": "Management fee already paid out"}
+    
+    mgmt_fee = float(dist["management_fee"] or 0)
+    if mgmt_fee <= 0:
+        return {"success": False, "error": "No management fee to pay out"}
+    
+    period = dist["period_label"]
+    note = f"OM Bonus (Mgmt Fee) - {period}"
+    
+    # Create cash_movements entry using dividend type
+    _me(
+        "INSERT INTO cash_movements (movement_type, account, amount, note) VALUES (%s, %s, %s, %s)",
+        ("dividend", account, mgmt_fee, note)
+    )
+    
+    # Mark mgmt fee as paid
+    _me("UPDATE profit_distributions SET mgmt_fee_paid = 1 WHERE id = %s", (dist_id,))
+    
+    return {"success": True, "data": {
+        "distribution_id": dist_id,
+        "period": period,
+        "amount": mgmt_fee,
+        "account": account,
+        "note": note
+    }}
 
 
 # ── Dividends ──
@@ -1756,7 +1911,7 @@ async def get_reconciliation(
         # 1. Fetch Done sessions for this date
         done_sessions = _mysql_query("""
             SELECT cs.booking_id, cs.console_id, cs.actual_start AS start_time, cs.actual_end AS end_time,
-                   cs.actual_duration_mins AS duration_mins, cs.staff_name, cb.phone, cs.created_at,
+                   cs.actual_duration_mins AS duration_mins, cs.staff_name, cs.customer_name, cb.phone, cs.created_at,
                    TIMESTAMPDIFF(MINUTE, cs.actual_start, cs.actual_end) as actual_mins
             FROM console_sessions cs
             LEFT JOIN console_bookings cb ON cb.id = cs.booking_id
@@ -1836,7 +1991,7 @@ async def get_reconciliation(
                     "start_time": session["start_time"].strftime("%Y-%m-%d %H:%M:%S") if session.get("start_time") else None,
                     "end_time": session["end_time"].strftime("%Y-%m-%d %H:%M:%S") if session.get("end_time") else None,
                     "actual_mins": actual,
-                    "staff_name": session.get("staff_name") or "—",
+                    "staff_name": session.get("customer_name") or session.get("staff_name") or "—",
                     "phone": session.get("phone") or "",
                     "estimated_amount": int(est),
                 })
@@ -1916,6 +2071,29 @@ async def dashboard_get_stock_check(date: str = None, user: dict = Depends(get_c
             "FROM inventory WHERE branch_id = 1 ORDER BY category, item_name"
         ) or []
         
+        # Get today's stock movements (MMT date range)
+        mmt_today_start = f"{date} 00:00:00"
+        mmt_today_end = f"{date} 23:59:59"
+        # Convert MMT date range to UTC for query (MMT = UTC+6:30)
+        stock_in_today = _mysql_query(
+            """SELECT item_name, SUM(quantity) as qty
+                FROM stock_in 
+                WHERE created_at >= CONVERT_TZ(%s, '+06:30', '+00:00')
+                  AND created_at <= CONVERT_TZ(%s, '+06:30', '+00:00')
+                GROUP BY item_name""",
+            (mmt_today_start, mmt_today_end)
+        ) or []
+        stock_out_today = _mysql_query(
+            """SELECT item_name, SUM(quantity) as qty
+                FROM stock_out 
+                WHERE created_at >= CONVERT_TZ(%s, '+06:30', '+00:00')
+                  AND created_at <= CONVERT_TZ(%s, '+06:30', '+00:00')
+                GROUP BY item_name""",
+            (mmt_today_start, mmt_today_end)
+        ) or []
+        stock_in_map = {r["item_name"]: int(r["qty"]) for r in stock_in_today}
+        stock_out_map = {r["item_name"]: int(r["qty"]) for r in stock_out_today}
+        
         # Get saved actual counts for this date
         checks = _mysql_query(
             "SELECT item_name, actual_qty, variance, notes, checked_by, updated_at "
@@ -1935,10 +2113,20 @@ async def dashboard_get_stock_check(date: str = None, user: dict = Depends(get_c
             if actual is not None:
                 has_any_actual = True
                 variance = int(item["system_qty"]) - int(actual)
+            
+            # Live inventory = opening + today's stock_in - today's stock_out
+            si_today = stock_in_map.get(name, 0)
+            so_today = stock_out_map.get(name, 0)
+            live_system_qty = int(item["system_qty"])
+            opening_qty = live_system_qty - si_today + so_today
+            
             result.append({
                 "item_name": name,
                 "category": item.get("category", ""),
-                "system_qty": int(item["system_qty"]),
+                "system_qty": live_system_qty,
+                "opening_qty": opening_qty,
+                "stock_in_today": si_today,
+                "stock_out_today": so_today,
                 "actual_qty": actual,
                 "variance": variance if actual is not None else None,
                 "unit_price": float(item.get("unit_price", 0)),

@@ -30,10 +30,10 @@ r2 = query("""
     )
 """)
 for row in (r2 or []):
-    bk = query("SELECT staff_name, member_id, game_name FROM console_sessions WHERE console_id=%s AND status='Active' LIMIT 1", (row['console_id'],))
+    bk = query("SELECT staff_name, customer_name, member_id, game_name FROM console_sessions WHERE console_id=%s AND status='Active' LIMIT 1", (row['console_id'],))
     if bk:
         b = bk[0]
-        name = b.get('staff_name') or b.get('member_id') or ''
+        name = b.get('customer_name') or b.get('staff_name') or b.get('member_id') or ''
         game = b.get('game_name') or ''
         execute("UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=NOW() WHERE console_id=%s", (name, game, row['console_id']))
         print(f"  🔧 {row['console_id']}: Free → Active ({name})")

@@ -79,7 +79,7 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)) -> JSONResponse
     """Fetch live console statuses from MySQL console_status table."""
     try:
         rows = _mysql_query(
-            "SELECT cs.console_id, cs.status, cs.console_type, cs.current_game, cs.current_member, DATE_FORMAT(cs.start_time, '%%H:%%i') as start_time, DATE_FORMAT(cs.start_time, '%%Y-%%m-%%d %%H:%%i:%%s') as start_time_dt, cb.id as booking_id, cb.staff_name, COALESCE(cb.actual_duration_mins, cobk.planned_duration_mins) as duration_mins FROM console_status cs LEFT JOIN (    SELECT cbsn1.booking_id as id, cbsn1.console_id, cbsn1.staff_name, cbsn1.actual_duration_mins     FROM console_sessions cbsn1     INNER JOIN (        SELECT console_id, MAX(id) as max_id         FROM console_sessions WHERE status = 'active' GROUP BY console_id    ) cbsn2 ON cbsn1.id = cbsn2.max_id) cb ON REPLACE(cb.console_id, ' ', '') LIKE CONCAT(REPLACE(cs.console_id, ' ', ''), '%%') LEFT JOIN console_bookings cobk ON cobk.id=cb.id ORDER BY cs.console_id")
+            "SELECT cs.console_id, cs.status, cs.console_type, cs.current_game, cs.current_member, DATE_FORMAT(cs.start_time, '%%H:%%i') as start_time, DATE_FORMAT(cs.start_time, '%%Y-%%m-%%d %%H:%%i:%%s') as start_time_dt, cb.id as booking_id, cb.staff_name, cb.customer_name, COALESCE(cb.actual_duration_mins, cobk.planned_duration_mins) as duration_mins FROM console_status cs LEFT JOIN (    SELECT cbsn1.booking_id as id, cbsn1.console_id, cbsn1.staff_name, cbsn1.customer_name, cbsn1.actual_duration_mins     FROM console_sessions cbsn1     INNER JOIN (        SELECT console_id, MAX(id) as max_id         FROM console_sessions WHERE status = 'active' GROUP BY console_id    ) cbsn2 ON cbsn1.id = cbsn2.max_id) cb ON REPLACE(cb.console_id, ' ', '') LIKE CONCAT(REPLACE(cs.console_id, ' ', ''), '%%') LEFT JOIN console_bookings cobk ON cobk.id=cb.id ORDER BY cs.console_id")
         # Add id alias for backward compat — bot code uses c["id"] everywhere
         for r in rows:
             if "id" not in r:
@@ -92,7 +92,7 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)) -> JSONResponse
             _now_ref = now_mmt()
             _window_end = _now_ref + timedelta(minutes=120)
             upcoming = _mysql_query(
-                "SELECT cb.console_id, cb.planned_start AS start_time, cb.staff_name, cb.planned_duration_mins AS duration_mins FROM console_bookings cb "
+                "SELECT cb.console_id, cb.planned_start AS start_time, cb.staff_name, cb.customer_name, cb.planned_duration_mins AS duration_mins FROM console_bookings cb "
                 "WHERE cb.status IN ('confirmed', 'pending_check_in') "
                 "AND cb.planned_start <= %s AND cb.planned_end > %s "
                 "AND cb.id = (SELECT MAX(cb2.id) FROM console_bookings cb2 WHERE cb2.console_id = cb.console_id AND cb2.status IN ('confirmed', 'pending_check_in') AND cb2.planned_start <= %s AND cb2.planned_end > %s)",
@@ -104,7 +104,7 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)) -> JSONResponse
                 cid = u["console_id"].strip()
                 st = u.get("start_time")
                 reserved_info[cid] = {
-                    "reserved_for": u.get("staff_name") or "",
+                    "reserved_for": u.get("customer_name") or u.get("staff_name") or "",
                     "reserved_at": st.strftime("%I:%M %p") if st else "",
                     "reserved_duration": u.get("duration_mins") if u.get("duration_mins") else 0,
                 }
@@ -270,7 +270,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
         today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         _now_mmt = now_mmt()
         bk = _mysql_query_one(
-            "SELECT id, member_id, game_name, planned_duration_mins AS duration_mins, telegram_chat_id, staff_name, phone FROM console_bookings "
+            "SELECT id, member_id, game_name, planned_duration_mins AS duration_mins, telegram_chat_id, staff_name, customer_name, phone FROM console_bookings "
             "WHERE console_id=%s AND status IN ('confirmed','checked_in') AND DATE(booking_date)=%s "
             "AND planned_start <= DATE_ADD(%s, INTERVAL 30 MINUTE) "
             "AND planned_end >= %s "
@@ -354,9 +354,9 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 # If staff_name provided, use it (overrides customer name from booking's staff_name)
                 if req.get("staff_name", "") or req.get("staff", ""):
                     _start_staff = req.get("staff_name", "") or req.get("staff", "")
-                    _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), staff_name=%s WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, _start_staff, booking_id))
+                    _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), staff_name=%s, customer_name=COALESCE(NULLIF(customer_name,''), staff_name) WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, _start_staff, booking_id))
                 else:
-                    _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE) WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, booking_id))
+                    _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), customer_name=COALESCE(NULLIF(customer_name,''), staff_name) WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, booking_id))
                 logger.info(f"Auto-checkin booking #{booking_id} for console {console_id}")
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
@@ -367,14 +367,14 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 _dur_end5 = 360 if duration_mins == 0 else duration_mins
                 # Walk-in: create booking row in console_bookings
                 _start_cur.execute(
-                    "INSERT INTO console_bookings (console_id, member_id, status, booking_date, planned_start, planned_duration_mins, planned_end, game_name) VALUES (%s,%s,'active',%s,%s,%s,DATE_ADD(%s, INTERVAL %s MINUTE),%s)",
-                    (console_id, member_id, today, _now_ref, duration_mins, _now_ref, _dur_end5, game_name)
+                    "INSERT INTO console_bookings (console_id, member_id, status, booking_date, planned_start, planned_duration_mins, planned_end, game_name, staff_name, customer_name) VALUES (%s,%s,'active',%s,%s,%s,DATE_ADD(%s, INTERVAL %s MINUTE),%s,%s,%s)",
+                    (console_id, member_id, today, _now_ref, duration_mins, _now_ref, _dur_end5, game_name, member_id, member_id)
                 )
                 booking_id = _start_cur.lastrowid
                 # Walk-in: create session row in console_sessions
                 _start_cur.execute(
-                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_duration_mins, actual_end, game_name, created_at) VALUES (%s,%s,%s,'active',%s,%s,DATE_ADD(%s, INTERVAL %s MINUTE),%s,NOW())",
-                    (booking_id, console_id, member_id, _now_ref, duration_mins, _now_ref, _dur_end5, game_name)
+                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_duration_mins, actual_end, game_name, staff_name, customer_name, created_at) VALUES (%s,%s,%s,'active',%s,%s,DATE_ADD(%s, INTERVAL %s MINUTE),%s,%s,%s,NOW())",
+                    (booking_id, console_id, member_id, _now_ref, duration_mins, _now_ref, _dur_end5, game_name, member_id, member_id)
                 )
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
@@ -388,12 +388,29 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
             )
             _start_conn.commit()
 
-            # Restore deposit if previously forfeited (auto-cancel then reactivate)
+            # Restore deposit if previously forfeited (auto-cancel then reactivate) — 🐛 2026-07-28
             if bk:
-                _mysql_exec(
-                    "UPDATE console_bookings SET deposit_status='verified' WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+                _dep_row = _mysql_query_one(
+                    "SELECT deposit_status, deposit_amount, deposit_method FROM console_bookings WHERE id=%s",
                     (booking_id,)
                 )
+                if _dep_row and _dep_row.get('deposit_status') == 'forfeited' and int(_dep_row.get('deposit_amount', 0) or 0) > 0:
+                    _mysql_exec(
+                        "UPDATE console_bookings SET deposit_status='verified', cancelled_at=NULL WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+                        (booking_id,)
+                    )
+                    # Reverse forfeit cash_movement — insert eject entry
+                    _dep_amt = int(_dep_row.get('deposit_amount', 0) or 0)
+                    _dep_meth = (_dep_row.get('deposit_method', '') or 'kpay').lower()
+                    _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                    if _dep_amt > 0:
+                        _mysql_exec(
+                            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                            "VALUES (%s, %s, %s, %s, %s, NOW())",
+                            ("eject", _meth_label, _dep_amt,
+                             f"Refund forfeit BK#{booking_id} (deposit reverse - reactivated) via {_meth_label}", "system")
+                        )
+                        logger.info(f"Console start BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
 
             # Safety: sync console_status to ensure no drift
             try:
@@ -561,12 +578,12 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 # If staff_name provided, use it (overrides customer name from booking)
                 if req_staff_name:
                     cur.execute(
-                        "UPDATE console_sessions SET status='active', actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), actual_duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), staff_name=%s, console_id=%s WHERE booking_id=%s AND status='checked_in'",
+                        "UPDATE console_sessions SET status='active', actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), actual_duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), staff_name=%s, customer_name=COALESCE(NULLIF(customer_name,''), staff_name), console_id=%s WHERE booking_id=%s AND status='checked_in'",
                         (_now_ref, _now_ref, _dur_end3, duration_mins, game_name, req_staff_name, console_id, linked_booking_id)
                     )
                 else:
                     cur.execute(
-                        "UPDATE console_sessions SET status='active', actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), actual_duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), console_id=%s WHERE booking_id=%s AND status='checked_in'",
+                        "UPDATE console_sessions SET status='active', actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), actual_duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), customer_name=COALESCE(NULLIF(customer_name,''), staff_name), console_id=%s WHERE booking_id=%s AND status='checked_in'",
                         (_now_ref, _now_ref, _dur_end3, duration_mins, game_name, console_id, linked_booking_id)
                     )
                 booking_id = linked_booking_id
@@ -579,15 +596,15 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 # Create booking + session rows for walk-in
                 _dur_end4 = 360 if duration_mins == 0 else duration_mins
                 cur.execute(
-                    "INSERT INTO console_bookings (console_id, member_id, status, booking_date, planned_start, planned_end, planned_duration_mins, game_name) VALUES (%s, %s, 'Active', %s, %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s)",
-                    (console_id, member_id, booking_date, _now_ref, _now_ref, _dur_end4, duration_mins, game_name)
+                    "INSERT INTO console_bookings (console_id, member_id, status, booking_date, planned_start, planned_end, planned_duration_mins, game_name, staff_name, customer_name) VALUES (%s, %s, 'Active', %s, %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s, %s, %s)",
+                    (console_id, member_id, booking_date, _now_ref, _now_ref, _dur_end4, duration_mins, game_name, member_id, member_id)
                 )
                 booking_id = cur.lastrowid
                 # Use req_staff_name if provided (actual staff), else member_name defaults
                 _ses_staff = req_staff_name if req_staff_name else member_name
                 cur.execute(
-                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_end, actual_duration_mins, game_name, staff_name, created_at) VALUES (%s, %s, %s, 'active', %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s, %s, NOW())",
-                    (booking_id, console_id, member_id, _now_ref, _now_ref, _dur_end4, duration_mins, game_name, _ses_staff)
+                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_end, actual_duration_mins, game_name, staff_name, customer_name, created_at) VALUES (%s, %s, %s, 'active', %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s, %s, %s, NOW())",
+                    (booking_id, console_id, member_id, _now_ref, _now_ref, _dur_end4, duration_mins, game_name, _ses_staff, member_name)
                 )
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
@@ -603,12 +620,29 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
             
             conn.commit()
 
-            # Restore deposit if previously forfeited (auto-cancel then reactivate)
+            # Restore deposit if previously forfeited (auto-cancel then reactivate) — 🐛 2026-07-28
             if linked_booking:
-                _mysql_exec(
-                    "UPDATE console_bookings SET deposit_status='verified' WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+                _dep_row = _mysql_query_one(
+                    "SELECT deposit_status, deposit_amount, deposit_method FROM console_bookings WHERE id=%s",
                     (linked_booking_id,)
                 )
+                if _dep_row and _dep_row.get('deposit_status') == 'forfeited' and int(_dep_row.get('deposit_amount', 0) or 0) > 0:
+                    _mysql_exec(
+                        "UPDATE console_bookings SET deposit_status='verified', cancelled_at=NULL WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+                        (linked_booking_id,)
+                    )
+                    # Reverse forfeit cash_movement — insert eject entry
+                    _dep_amt = int(_dep_row.get('deposit_amount', 0) or 0)
+                    _dep_meth = (_dep_row.get('deposit_method', '') or 'kpay').lower()
+                    _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                    if _dep_amt > 0:
+                        _mysql_exec(
+                            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                            "VALUES (%s, %s, %s, %s, %s, NOW())",
+                            ("eject", _meth_label, _dep_amt,
+                             f"Refund forfeit BK#{linked_booking_id} (deposit reverse - reactivated) via {_meth_label}", "system")
+                        )
+                        logger.info(f"Session start BK#{linked_booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
 
             # Safety: sync console_status to ensure no drift
             try:

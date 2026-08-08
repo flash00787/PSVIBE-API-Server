@@ -245,6 +245,10 @@ def register_auth_routes(app):
         from starlette.responses import FileResponse
         fpath = os.path.join(os.path.dirname(__file__), "static", "dashboard.html")
         if os.path.isfile(fpath):
-            return FileResponse(fpath, media_type="text/html")
+            resp = FileResponse(fpath, media_type="text/html")
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+            return resp
         from fastapi.responses import HTMLResponse
         return HTMLResponse("<h1>Dashboard not found</h1>", status_code=404)

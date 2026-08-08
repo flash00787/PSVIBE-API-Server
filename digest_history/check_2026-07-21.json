@@ -1,0 +1,59 @@
+{"success":true,"data":{"timestamp":"2026-07-21T17:31:32.086645Z","date":"2026-07-21","overall_status":"critical","total_issues":12,"checks":{"wallet_balance":{"status":"critical","issues":[{"type":"balance_mismatch","member_id":"PSV_A_004","member_name":"Aung Thurein Oo","balance_mins":85,"expected":-25,"diff":110,"detail":"Member PSV_A_004: balance=85, expected 795-820=-25 (diff=110)"},{"type":"balance_mismatch","member_id":"PSV_A_011","member_name":"Kyaw Min Naing","balance_mins":690,"expected":660,"diff":30,"detail":"Member PSV_A_011: balance=690, expected 660-0=660 (diff=30)"}],"count":2},"topup_chain":{"status":"critical","issues":[{"type":"chain_break","member_id":"PSV_A_003","prev_topup_id":3,"curr_topup_id":13,"prev_after":600,"curr_before":198,"diff":402,"detail":"Member PSV_A_003: topup#3 after=600 → topup#13 before=198 (diff=402)"},{"type":"chain_break","member_id":"PSV_A_004","prev_topup_id":4,"curr_topup_id":11,"prev_after":600,"curr_before":0,"diff":600,"detail":"Member PSV_A_004: topup#4 after=600 → topup#11 before=0 (diff=600)"},{"type":"chain_break","member_id":"PSV_A_010","prev_topup_id":10,"curr_topup_id":15,"prev_after":600,"curr_before":114,"diff":486,"detail":"Member PSV_A_010: topup#10 after=600 → topup#15 before=114 (diff=486)"},{"type":"chain_break","member_id":"PSV_A_013","prev_topup_id":17,"curr_topup_id":18,"prev_after":600,"curr_before":11,"diff":589,"detail":"Member PSV_A_013: topup#17 after=600 → topup#18 before=11 (diff=589)"}],"count":4},"sales_vs_bookings":{"status":"critical","issues":[{"type":"sale_without_booking","sale_id":1427,"voucher_no":"20260721-808","console_id":"-","member_id":"-","sale_date":"2026-07-21","detail":"Sale#1427 (voucher 20260721-808) on 2026-07-21 has no matching booking"}],"count":1},"inventory":{"status":"critical","issues":[{"type":"inventory_mismatch","item_name":"MaMa ဘူးခေါက်ဆွဲ","inventory_quantity":0,"stock_in_total":30,"stock_out_total":31,"expected_quantity":-1,"drift":1,"detail":"MaMa ဘူးခေါက်ဆွဲ: inventory=0, FIFO in(30)-out(31)=-1 (drift=1)"}],"count":1},"receipts_vs_sales":{"status":"warning","issues":[{"type":"receipt_sale_count_mismatch","date":"2026-07-21","receipt_count":0,"sale_count":18,"diff":-18,"detail":"2026-07-21: receipts=0, sales=18 (diff=-18)"}],"count":1},"negative_sales":{"status":"critical","issues":[{"type":"zero_or_negative_amount","source":"sales_daily","sale_id":1427,"voucher_no":"20260721-808","date":"2026-07-21","amount":0.0,"detail":"Sale#1427 voucher 20260721-808: amount=0.0"},{"type":"zero_or_negative_net","source":"sales_daily","sale_id":1429,"voucher_no":"20260721-701","date":"2026-07-21","gross":16150.0,"discount":0.0,"net":0.0,"detail":"Sale#1429: net=0.0 (gross=16150.00, discount=0.00)"}],"count":2},"booking_status":{"status":"error","issues":[{"type":"exception","detail":"1052 (23000): Column 'id' in field list is ambiguous"}],"count":1}}}}          "expected_quantity": -1,
+          "drift": 1,
+          "detail": "MaMa ဘူးခေါက်ဆွဲ: inventory=0, FIFO in(30)-out(31)=-1 (drift=1)"
+        }
+      ],
+      "count": 1
+    },
+    "receipts_vs_sales": {
+      "status": "warning",
+      "issues": [
+        {
+          "type": "receipt_sale_count_mismatch",
+          "date": "2026-07-21",
+          "receipt_count": 0,
+          "sale_count": 18,
+          "diff": -18,
+          "detail": "2026-07-21: receipts=0, sales=18 (diff=-18)"
+        }
+      ],
+      "count": 1
+    },
+    "negative_sales": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1427,
+          "voucher_no": "20260721-808",
+          "date": "2026-07-21",
+          "amount": 0.0,
+          "detail": "Sale#1427 voucher 20260721-808: amount=0.0"
+        },
+        {
+          "type": "zero_or_negative_net",
+          "source": "sales_daily",
+          "sale_id": 1429,
+          "voucher_no": "20260721-701",
+          "date": "2026-07-21",
+          "gross": 16150.0,
+          "discount": 0.0,
+          "net": 0.0,
+          "detail": "Sale#1429: net=0.0 (gross=16150.00, discount=0.00)"
+        }
+      ],
+      "count": 2
+    },
+    "booking_status": {
+      "status": "error",
+      "issues": [
+        {
+          "type": "exception",
+          "detail": "1052 (23000): Column 'id' in field list is ambiguous"
+        }
+      ],
+      "count": 1
+    }
+  }
+}

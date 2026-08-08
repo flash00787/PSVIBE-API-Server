@@ -1,0 +1,151 @@
+{
+  "timestamp": "2026-08-03T17:31:45.851245Z",
+  "date": "2026-08-03",
+  "summary": {
+    "total_sales": {
+      "count": 24,
+      "gross": 330700.0,
+      "net": 306867.0
+    },
+    "total_topups": {
+      "count": 0,
+      "amount": 0.0,
+      "mins_added": 0
+    },
+    "active_sessions": 0,
+    "completed_sessions": 21,
+    "food_sales": {
+      "count": 19,
+      "total": 63700.0
+    },
+    "new_members": 0,
+    "top_consoles": [
+      {
+        "console_id": "C-03",
+        "hours": 5.0
+      },
+      {
+        "console_id": "C-08",
+        "hours": 5.0
+      },
+      {
+        "console_id": "C-09",
+        "hours": 4.5
+      },
+      {
+        "console_id": "C-04",
+        "hours": 4.0
+      },
+      {
+        "console_id": "C-10",
+        "hours": 3.0
+      }
+    ],
+    "top_games": [
+      {
+        "game": "Any",
+        "sessions": 8
+      },
+      {
+        "game": "FC 26",
+        "sessions": 6
+      },
+      {
+        "game": "God of War Ragnarok",
+        "sessions": 2
+      },
+      {
+        "game": "Mortal Kombat 1",
+        "sessions": 1
+      },
+      {
+        "game": "Naruto x Boruto: Ultimate Ninja Storm Connections",
+        "sessions": 1
+      }
+    ],
+    "revenue_by_payment": [
+      {
+        "method": "Cash:10000",
+        "count": 6,
+        "total": 60000.0
+      },
+      {
+        "method": "KPay:3000 (dep)|KPay:37000",
+        "count": 1,
+        "total": 40000.0
+      },
+      {
+        "method": "KPay:4500 (dep)|KPay:29000",
+        "count": 1,
+        "total": 33500.0
+      },
+      {
+        "method": "KPay:27000",
+        "count": 1,
+        "total": 27000.0
+      },
+      {
+        "method": "Cash:24200",
+        "count": 1,
+        "total": 24200.0
+      },
+      {
+        "method": "KPay:12000",
+        "count": 2,
+        "total": 24000.0
+      },
+      {
+        "method": "Cash:20000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "KPay:20000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "Cash:16000",
+        "count": 1,
+        "total": 16167.0
+      },
+      {
+        "method": "Cash:12000",
+        "count": 1,
+        "total": 15000.0
+      },
+      {
+        "method": "KPay:11000",
+        "count": 1,
+        "total": 11000.0
+      },
+      {
+        "method": "KPay:8500",
+        "count": 1,
+        "total": 8500.0
+      },
+      {
+        "method": "Cash:3000",
+        "count": 1,
+        "total": 3000.0
+      },
+      {
+        "method": "KPay:2500",
+        "count": 1,
+        "total": 2500.0
+      },
+      {
+        "method": "KPay:1000",
+        "count": 2,
+        "total": 2000.0
+      },
+      {
+        "method": "Cash:0",
+        "count": 2,
+        "total": 0.0
+      }
+    ]
+  },
+  "alerts": [],
+  "recommendations": []
+}

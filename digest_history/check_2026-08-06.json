@@ -1,0 +1,159 @@
+{
+  "timestamp": "2026-08-06T17:32:11.087784Z",
+  "date": "2026-08-06",
+  "overall_status": "critical",
+  "total_issues": 12,
+  "checks": {
+    "wallet_balance": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "balance_mismatch",
+          "member_id": "PSV_A_004",
+          "member_name": "Aung Thurein Oo",
+          "balance_mins": 85,
+          "expected": -25,
+          "diff": 110,
+          "detail": "Member PSV_A_004: balance=85, expected 795-820=-25 (diff=110)"
+        },
+        {
+          "type": "balance_mismatch",
+          "member_id": "PSV_A_011",
+          "member_name": "Kyaw Min Naing",
+          "balance_mins": 690,
+          "expected": 660,
+          "diff": 30,
+          "detail": "Member PSV_A_011: balance=690, expected 660-0=660 (diff=30)"
+        },
+        {
+          "type": "balance_mismatch",
+          "member_id": "PSV_A_013",
+          "member_name": "Min Thant Ko Ko",
+          "balance_mins": 0,
+          "expected": -106,
+          "diff": 106,
+          "detail": "Member PSV_A_013: balance=0, expected 1260-1366=-106 (diff=106)"
+        }
+      ],
+      "count": 3
+    },
+    "topup_chain": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_003",
+          "prev_topup_id": 3,
+          "curr_topup_id": 13,
+          "prev_after": 600,
+          "curr_before": 198,
+          "diff": 402,
+          "detail": "Member PSV_A_003: topup#3 after=600 → topup#13 before=198 (diff=402)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_004",
+          "prev_topup_id": 4,
+          "curr_topup_id": 11,
+          "prev_after": 600,
+          "curr_before": 0,
+          "diff": 600,
+          "detail": "Member PSV_A_004: topup#4 after=600 → topup#11 before=0 (diff=600)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_010",
+          "prev_topup_id": 10,
+          "curr_topup_id": 15,
+          "prev_after": 600,
+          "curr_before": 114,
+          "diff": 486,
+          "detail": "Member PSV_A_010: topup#10 after=600 → topup#15 before=114 (diff=486)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_013",
+          "prev_topup_id": 17,
+          "curr_topup_id": 18,
+          "prev_after": 600,
+          "curr_before": 11,
+          "diff": 589,
+          "detail": "Member PSV_A_013: topup#17 after=600 → topup#18 before=11 (diff=589)"
+        }
+      ],
+      "count": 4
+    },
+    "sales_vs_bookings": {
+      "status": "pass",
+      "issues": [],
+      "count": 0
+    },
+    "inventory": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "inventory_mismatch",
+          "item_name": "MaMa ဘူးခေါက်ဆွဲ",
+          "inventory_quantity": 7,
+          "stock_in_total": 42,
+          "stock_out_total": 36,
+          "expected_quantity": 6,
+          "drift": 1,
+          "detail": "MaMa ဘူးခေါက်ဆွဲ: inventory=7, FIFO in(42)-out(36)=6 (drift=1)"
+        },
+        {
+          "type": "inventory_mismatch",
+          "item_name": "Spicy ကြက်အူချောင်း",
+          "inventory_quantity": 21,
+          "stock_in_total": 149,
+          "stock_out_total": 118,
+          "expected_quantity": 31,
+          "drift": -10,
+          "detail": "Spicy ကြက်အူချောင်း: inventory=21, FIFO in(149)-out(118)=31 (drift=-10)"
+        }
+      ],
+      "count": 2
+    },
+    "receipts_vs_sales": {
+      "status": "warning",
+      "issues": [
+        {
+          "type": "receipt_sale_count_mismatch",
+          "date": "2026-08-06",
+          "receipt_count": 0,
+          "sale_count": 25,
+          "diff": -25,
+          "detail": "2026-08-06: receipts=0, sales=25 (diff=-25)"
+        }
+      ],
+      "count": 1
+    },
+    "negative_sales": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "zero_or_negative_net",
+          "source": "sales_daily",
+          "sale_id": 1877,
+          "voucher_no": "20260806-906",
+          "date": "2026-08-06",
+          "gross": 15000.0,
+          "discount": 0.0,
+          "net": 0.0,
+          "detail": "Sale#1877: net=0.0 (gross=15000.00, discount=0.00)"
+        }
+      ],
+      "count": 1
+    },
+    "booking_status": {
+      "status": "error",
+      "issues": [
+        {
+          "type": "exception",
+          "detail": "1052 (23000): Column 'id' in field list is ambiguous"
+        }
+      ],
+      "count": 1
+    }
+  }
+}

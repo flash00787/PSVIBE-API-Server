@@ -1,0 +1,72 @@
+{"success":true,"data":{"timestamp":"2026-07-20T17:32:01.163230Z","date":"2026-07-20","summary":{"total_sales":{"count":26,"gross":581000.0,"net":484867.0},"total_topups":{"count":1,"amount":100000.0,"mins_added":660},"active_sessions":0,"completed_sessions":25,"food_sales":{"count":24,"total":82400.0},"new_members":0,"top_consoles":[{"console_id":"C-09","hours":8.0},{"console_id":"C-07","hours":5.5},{"console_id":"C-10","hours":4.5},{"console_id":"C-03","hours":4.0},{"console_id":"C-02","hours":3.5}],"top_games":[{"game":"FC 26","sessions":13},{"game":"Any","sessions":3},{"game":"Reanimal","sessions":2},{"game":"Mortal Kombat 1","sessions":2},{"game":"It Takes Two","sessions":2}],"revenue_by_payment":[{"method":"Kpay:100000/Cash:0","count":1,"total":100000.0},{"method":"KPay:22000|Cash:32000","count":1,"total":54000.0},{"method":"KPay:43200","count":1,"total":43200.0},{"method":"KPay:42700","count":1,"total":42700.0},{"method":"KPay:10000","count":4,"total":40167.0},{"method":"Cash:10000","count":4,"total":40000.0},{"method":"Cash:26200","count":1,"total":26200.0},{"method":"Cash:12000","count":2,"total":24000.0},{"method":"Cash:23000","count":1,"total":23000.0},{"method":"Cash:20000","count":1,"total":20000.0},{"method":"KPay:15600","count":1,"total":15600.0},{"method":"Cash:15000","count":1,"total":15000.0},{"method":"Cash:12800","count":1,"total":12833.0},{"method":"KPay:11600","count":1,"total":11667.0},{"method":"KPay:11000","count":1,"total":11000.0},{"method":"KPay:4500","count":1,"total":4500.0},{"method":"KPay:1000","count":1,"total":1000.0},{"method":"Cash:0","count":2,"total":0.0}]},"alerts":[],"recommendations":[]}}: 40167.0
+      },
+      {
+        "method": "Cash:10000",
+        "count": 4,
+        "total": 40000.0
+      },
+      {
+        "method": "Cash:26200",
+        "count": 1,
+        "total": 26200.0
+      },
+      {
+        "method": "Cash:12000",
+        "count": 2,
+        "total": 24000.0
+      },
+      {
+        "method": "Cash:23000",
+        "count": 1,
+        "total": 23000.0
+      },
+      {
+        "method": "Cash:20000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "KPay:15600",
+        "count": 1,
+        "total": 15600.0
+      },
+      {
+        "method": "Cash:15000",
+        "count": 1,
+        "total": 15000.0
+      },
+      {
+        "method": "Cash:12800",
+        "count": 1,
+        "total": 12833.0
+      },
+      {
+        "method": "KPay:11600",
+        "count": 1,
+        "total": 11667.0
+      },
+      {
+        "method": "KPay:11000",
+        "count": 1,
+        "total": 11000.0
+      },
+      {
+        "method": "KPay:4500",
+        "count": 1,
+        "total": 4500.0
+      },
+      {
+        "method": "KPay:1000",
+        "count": 1,
+        "total": 1000.0
+      },
+      {
+        "method": "Cash:0",
+        "count": 2,
+        "total": 0.0
+      }
+    ]
+  },
+  "alerts": [],
+  "recommendations": []
+}

@@ -19,13 +19,14 @@ def get_stock_in_batches(conn, year_month=None):
             next_month_first = datetime(ym_year + 1, 1, 1)
         else:
             next_month_first = datetime(ym_year, ym_month + 1, 1)
-        last_day_str = (next_month_first - timedelta(days=1)).strftime("%Y-%m-%d")
+        # Use < next_first to include ALL records up to month end (inclusive)
+        cut_off = next_month_first.strftime("%Y-%m-%d")
         cur.execute("""
             SELECT id, item_name, quantity, unit_cost, created_at
             FROM stock_in
-            WHERE created_at <= %s
+            WHERE created_at < %s
             ORDER BY item_name, created_at ASC, id ASC
-        """, (last_day_str,))
+        """, (cut_off,))
     else:
         cur.execute("""
             SELECT id, item_name, quantity, unit_cost, created_at
@@ -37,17 +38,34 @@ def get_stock_in_batches(conn, year_month=None):
     return rows
 
 
-def get_stock_out_items(conn, year_month=None):
+def get_stock_out_items(conn, year_month=None, cumulative=False):
     """Get all stock_out transactions, summed by item_name.
-    If year_month (YYYY-MM) provided, filter to that month only."""
+    If year_month (YYYY-MM) provided and cumulative=False, filter to that month only.
+    If cumulative=True, filter to stock_out on or before end of that month."""
     cur = conn.cursor(pymysql.cursors.DictCursor)
     if year_month:
-        cur.execute("""
-            SELECT item_name, SUM(quantity) as total_qty
-            FROM stock_out
-            WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s
-            GROUP BY item_name
-        """, (year_month,))
+        if cumulative:
+            from datetime import datetime, timedelta
+            ym_year, ym_month = map(int, year_month.split("-"))
+            if ym_month == 12:
+                next_first = datetime(ym_year + 1, 1, 1)
+            else:
+                next_first = datetime(ym_year, ym_month + 1, 1)
+            cut_off = next_first.strftime("%Y-%m-%d")
+            # Use < next_first to include ALL records up to month end (including same day)
+            cur.execute("""
+                SELECT item_name, SUM(quantity) as total_qty
+                FROM stock_out
+                WHERE created_at < %s
+                GROUP BY item_name
+            """, (cut_off,))
+        else:
+            cur.execute("""
+                SELECT item_name, SUM(quantity) as total_qty
+                FROM stock_out
+                WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s
+                GROUP BY item_name
+            """, (year_month,))
     else:
         cur.execute("""
             SELECT item_name, SUM(quantity) as total_qty
@@ -59,7 +77,7 @@ def get_stock_out_items(conn, year_month=None):
     return rows
 
 
-def calc_fifo(conn, year_month=None):
+def calc_fifo(conn, year_month=None, cumulative=False):
     """
     Calculate COGS and remaining inventory value using FIFO.
     
@@ -67,8 +85,9 @@ def calc_fifo(conn, year_month=None):
         conn: MySQL connection
         year_month: If provided (e.g. "2026-06"), calculate COGS for that month only.
                     Stock-in filtered to purchases <= last day of month.
-                    Stock-out filtered to that month.
+                    Stock-out filtered to that month (or up to that month if cumulative=True).
                     If None, calculates lifetime COGS.
+        cumulative: If True, include all stock_out up to end of given month (not just that month).
     
     Returns:
         dict: { "cogs": float, "inventory_value": float, "details": [...] }
@@ -86,7 +105,7 @@ def calc_fifo(conn, year_month=None):
             fifo[name] = []
         fifo[name].append({"qty": qty, "cost": cost})
     
-    sold_items = get_stock_out_items(conn, year_month)
+    sold_items = get_stock_out_items(conn, year_month, cumulative=cumulative)
     
     total_cogs = 0.0
     details = []

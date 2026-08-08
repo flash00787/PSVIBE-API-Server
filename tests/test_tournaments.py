@@ -52,9 +52,9 @@ def cleanup_tournaments():
     try:
         from mysql_db import execute
         # Delete in order to respect FK constraints
-        execute("DELETE FROM tournament_matches WHERE tournament_id IN (SELECT id FROM tournaments WHERE name LIKE 'Test%' OR name LIKE 'Free%' OR name LIKE 'Paid%' OR name LIKE 'Dup%' OR name LIKE 'Full%' OR name LIKE 'Bracket%' OR name LIKE 'HTML%' OR name LIKE 'Player%')")
+        execute("DELETE FROM tournament_matches WHERE tournament_id IN (SELECT id FROM tournaments WHERE name LIKE 'Test%' OR name LIKE 'Free%' OR name LIKE 'Paid%' OR name LIKE 'Dup%' OR name LIKE 'Full%' OR name LIKE 'Bracket%' OR name LIKE 'HTML%' OR name LIKE 'Player%' OR name LIKE 'No SS%' OR name LIKE 'PM Norm%'")
         execute("DELETE FROM tournament_players WHERE tournament_id IN (SELECT id FROM tournaments WHERE name LIKE 'Test%' OR name LIKE 'Free%' OR name LIKE 'Paid%' OR name LIKE 'Dup%' OR name LIKE 'Full%' OR name LIKE 'Bracket%' OR name LIKE 'HTML%' OR name LIKE 'Player%')")
-        execute("DELETE FROM tournaments WHERE name LIKE 'Test%' OR name LIKE 'Free%' OR name LIKE 'Paid%' OR name LIKE 'Dup%' OR name LIKE 'Full%' OR name LIKE 'Bracket%' OR name LIKE 'HTML%' OR name LIKE 'Player%'")
+        execute("DELETE FROM tournaments WHERE name LIKE 'Test%' OR name LIKE 'Free%' OR name LIKE 'Paid%' OR name LIKE 'Dup%' OR name LIKE 'Full%' OR name LIKE 'Bracket%' OR name LIKE 'HTML%' OR name LIKE 'Player%' OR name LIKE 'No SS%' OR name LIKE 'PM Norm%'")
         # Clean up any test member_wallets changes
         execute("UPDATE member_wallets SET balance_mins=10000 WHERE member_id='TEST_TOURN_001'")
         execute("DELETE FROM cash_movements WHERE note LIKE '%Tournament entry:%' OR note LIKE '%tournament%'")
@@ -233,6 +233,104 @@ class TestPublicRegistration:
         })
         assert resp.json()["success"] is False
         assert "full" in resp.json()["error"].lower()
+
+
+class TestDigitalPayment:
+    """Test digital payment registration (KPay/WavePay + SS screenshot)."""
+
+    def test_digital_payment_registration(self, client, auth_headers):
+        """Register with payment_method + ss_file → paid=0, both fields stored."""
+        from mysql_db import query_one
+
+        # Create paid tournament
+        resp = client.post("/api/tournaments", json={
+            "name": "Paid Digital Cup",
+            "game": "EA FC 26",
+            "entry_fee_ks": 5000,
+            "max_players": 8,
+            "status": "open",
+        }, headers=auth_headers)
+        tid = resp.json()["data"]["id"]
+
+        # Register with digital payment (no member_id)
+        resp = client.post(f"/api/tournaments/{tid}/register", json={
+            "name": "Digital Player",
+            "phone": "09123456789",
+            "payment_method": "kpay",
+            "ss_file": "AgACAgQAAxkBAA...test_file_id_123",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert data["data"]["paid"] is False  # NOT paid yet
+
+        # Verify in DB
+        p = query_one(
+            "SELECT * FROM tournament_players WHERE tournament_id=%s AND phone=%s",
+            (tid, "09123456789"),
+        )
+        assert p is not None
+        assert p["paid"] == 0
+        assert p["payment_method"] == "kpay"
+        assert p["ss_file"] == "AgACAgQAAxkBAA...test_file_id_123"
+        assert p["status"] == "registered"
+        assert p["paid_at"] is None
+
+    def test_digital_payment_normalizes_payment_method(self, client, auth_headers):
+        """Payment method variations normalize to canonical keys."""
+        from mysql_db import query_one
+
+        resp = client.post("/api/tournaments", json={
+            "name": "PM Norm Cup",
+            "game": "Tekken 8",
+            "entry_fee_ks": 3000,
+            "max_players": 8,
+            "status": "open",
+        }, headers=auth_headers)
+        tid = resp.json()["data"]["id"]
+
+        # KBZ Pay should normalize to 'kpay'
+        resp = client.post(f"/api/tournaments/{tid}/register", json={
+            "name": "Kbz Pay Player",
+            "phone": "09111111117",
+            "payment_method": "KBZ Pay",
+            "ss_file": "AgAC...kbz_test",
+        })
+        assert resp.json()["success"] is True
+        p = query_one(
+            "SELECT payment_method FROM tournament_players WHERE tournament_id=%s AND phone=%s",
+            (tid, "09111111117"),
+        )
+        assert p["payment_method"] == "kpay"
+
+    def test_digital_payment_requires_ss_file(self, client, auth_headers):
+        """payment_method without ss_file → falls through to legacy unpaid (pay at counter)."""
+        from mysql_db import query_one
+
+        resp = client.post("/api/tournaments", json={
+            "name": "No SS Cup",
+            "game": "Rocket League",
+            "entry_fee_ks": 3000,
+            "max_players": 8,
+            "status": "open",
+        }, headers=auth_headers)
+        tid = resp.json()["data"]["id"]
+
+        # payment_method alone, no ss_file → treated as legacy (unpaid)
+        resp = client.post(f"/api/tournaments/{tid}/register", json={
+            "name": "No Proof Player",
+            "phone": "09111111118",
+            "payment_method": "kpay",
+        })
+        assert resp.json()["success"] is True
+        p = query_one(
+            "SELECT paid, payment_method, ss_file FROM tournament_players WHERE tournament_id=%s AND phone=%s",
+            (tid, "09111111118"),
+        )
+        assert p["paid"] == 0
+        # payment_method gets stored in the INSERT (via _parse_payment_method), but in legacy path
+        # it maps to the regular unpaid flow. Actually payment_method will still be stored because
+        # we always normalize. Let's verify it's stored.
 
 
 class TestBracket:

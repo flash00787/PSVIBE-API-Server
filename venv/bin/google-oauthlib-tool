@@ -1,4 +1,4 @@
-#!/root/psvibe_api_server/venv/bin/python3
+#!/opt/psvibe/api/venv/bin/python3
 import sys
 from google_auth_oauthlib.tool.__main__ import main
 if __name__ == '__main__':

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Optional
 
 from auth import get_current_user
 from console_status import sync_console_status as _sync_console_status
@@ -145,16 +146,18 @@ async def dashboard_get_bookings(
             where.append("DATE(cb.booking_date) = %s")
             params.append(date)
         if search:
-            where.append("(cb.member_id LIKE %s OR cb.staff_name LIKE %s OR cb.phone LIKE %s OR cb.notes LIKE %s)")
+            where.append("(cb.id LIKE %s OR cb.member_id LIKE %s OR cb.staff_name LIKE %s OR cb.phone LIKE %s OR cb.notes LIKE %s)")
             like = f"%{search}%"
-            params.extend([like, like, like, like])
+            params.extend([like, like, like, like, like])
 
         sql = f"""
             SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date,
                    cb.planned_start AS start_time, cb.planned_end AS end_time, cb.status, cb.staff_name,
                    cb.notes, cb.planned_duration_mins AS duration_mins, cb.phone, cb.game_name, cb.created_at,
-                   cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type
+                   cb.deposit_amount, cb.deposit_status, cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type,
+                   cs.actual_start, cs.actual_end, cs.actual_duration_mins
             FROM console_bookings cb
+            LEFT JOIN console_sessions cs ON cs.booking_id = cb.id AND cs.status IN ('active','checked_in','done')
             WHERE {' AND '.join(where)}
             ORDER BY cb.id DESC
             LIMIT %s OFFSET %s
@@ -170,6 +173,7 @@ async def dashboard_get_bookings(
 
         bookings = []
         for r in rows:
+            has_session = r.get("actual_start") is not None
             bookings.append({
                 "id": r["id"],
                 "console_id": r.get("console_id"),
@@ -189,6 +193,10 @@ async def dashboard_get_bookings(
                 "deposit_method": r.get("deposit_method"),
                 "deposit_ref": r.get("deposit_ref"),
                 "deposit_ref_type": r.get("deposit_ref_type"),
+                "actual_start": str(r["actual_start"]) if r.get("actual_start") else None,
+                "actual_end": str(r["actual_end"]) if r.get("actual_end") else None,
+                "actual_duration_mins": r.get("actual_duration_mins"),
+                "has_session": has_session,
             })
         return {"success": True, "data": bookings, "total": total}
     except Exception as e:
@@ -341,12 +349,29 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
         new_status = req.get("status", "")
         old_status = existing.get("status", "")
         old_deposit = existing.get("deposit_status", "")
-        if new_status in ("confirmed", "pending", "pending_check_in") and old_status == "cancelled" and old_deposit == "forfeited":
-            _mysql_exec(
-                "UPDATE console_bookings SET deposit_status='verified' WHERE id=%s AND deposit_status='forfeited'",
+        if new_status in ("confirmed", "pending", "pending_check_in", "checked_in", "Active") and old_status == "cancelled" and old_deposit == "forfeited":
+            # Clear cancelled_at on reactivation (🐛 2026-07-28)
+            _mysql_execute(
+                "UPDATE console_bookings SET deposit_status='verified', cancelled_at=NULL WHERE id=%s AND deposit_status='forfeited'",
                 (booking_id,)
             )
-            logger.info(f"Rebook BK#{booking_id}: deposit_status restored from forfeited → verified")
+            # Reverse forfeit cash_movement — insert eject entry (🐛 2026-07-28)
+            _forfeit_row = _mysql_query_one(
+                "SELECT amount, deposit_method FROM console_bookings WHERE id=%s",
+                (booking_id,)
+            )
+            if _forfeit_row and _forfeit_row.get("amount", 0) or 0:
+                _dep_amt = int(_forfeit_row.get("amount", 0) or 0)
+                _dep_meth = (_forfeit_row.get("deposit_method", "") or "kpay").lower()
+                _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                _mysql_execute(
+                    "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, NOW())",
+                    ("eject", _meth_label, _dep_amt,
+                     f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system")
+                )
+                logger.info(f"Rebook BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
+            logger.info(f"Rebook BK#{booking_id}: deposit_status restored from forfeited → verified, cancelled_at cleared")
 
         # 🐛 Fix Jul 1: Sync console_status when console_id or status changes
         try:
@@ -509,10 +534,49 @@ async def dashboard_delete_booking(booking_id: int, user: dict = Depends(get_cur
 
         # Soft-delete: never physically delete bookings — preserve history
         staff_name = user.get("username", "Dashboard User")
-        _mysql_execute(
-            "UPDATE console_bookings SET status='cancelled', notes=CONCAT(IFNULL(notes,''), ' | Cancelled by ', %s, ' via dashboard') WHERE id=%s",
-            (staff_name, booking_id)
-        )
+        # Fetch deposit state before cancelling (Boss policy 2026-07-31)
+        dep = _mysql_query_one(
+            "SELECT deposit_status, deposit_amount, deposit_method FROM console_bookings WHERE id=%s",
+            (booking_id,)
+        ) or {}
+        dep_status = dep.get('deposit_status') or ''
+        dep_amt = int(dep.get('deposit_amount') or 0)
+        dep_meth = (dep.get('deposit_method') or 'kpay').lower()
+        _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(dep_meth, "KPay")
+
+        # Verified deposits cancelled -> forfeited as revenue; unverified ('paid') -> not revenue, void to none
+        if dep_status == 'verified':
+            _mysql_execute(
+                "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
+                "deposit_status='forfeited', "
+                "notes=CONCAT(IFNULL(notes,''), ' | Cancelled by ', %s, ' via dashboard | Deposit forfeited (verified)') WHERE id=%s",
+                (staff_name, booking_id)
+            )
+            if dep_amt > 0:
+                try:
+                    _mysql_execute(
+                        "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+                        "VALUES (%s, %s, %s, %s, %s, NOW())",
+                        ("inject", _meth_label, dep_amt,
+                         f"Forfeit BK#{booking_id} via {_meth_label}", "system")
+                    )
+                    logger.info(f"Dashboard cancel forfeit: BK#{booking_id} {dep_amt}Ks {_meth_label}")
+                except Exception as ce:
+                    logger.warning(f"Dashboard cancel forfeit cash_movements BK#{booking_id}: {ce}")
+        elif dep_status == 'paid':
+            # Unverified deposit cancelled -> not revenue, void deposit (no cash movement)
+            _mysql_execute(
+                "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
+                "deposit_status='none', "
+                "notes=CONCAT(IFNULL(notes,''), ' | Cancelled by ', %s, ' via dashboard | Deposit voided (unverified, not revenue)') WHERE id=%s",
+                (staff_name, booking_id)
+            )
+        else:
+            _mysql_execute(
+                "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
+                "notes=CONCAT(IFNULL(notes,''), ' | Cancelled by ', %s, ' via dashboard') WHERE id=%s",
+                (staff_name, booking_id)
+            )
         return {"success": True, "data": {"cancelled": booking_id, "message": "Booking soft-deleted (status=cancelled)"}}
     except Exception as e:
         logger.error(f"DELETE /bookings/{booking_id} error: {e}")
@@ -3048,21 +3112,25 @@ async def swap_active_sessions(body: dict, user: dict = Depends(get_current_user
 @router.get("/cumulative")
 async def get_cumulative_stats(user: dict = Depends(require_admin)):
     """All-time cumulative business stats for the dashboard overview. [Admin only]
-    
-    Sections:
-      - summary: key metrics (revenue, profit, bookings, members, hours)
-      - monthly: revenue/profit/bookings by month
-      - top_members: top 15 by total spend
-      - top_games: top 10 by play count
-      - revenue_breakdown: gaming vs food vs topup
-      - console_utilization: pct busy time per console type
-      - member_growth: new members per month
-      - hourly_distribution: bookings by hour of day
-    """
-    try:
-        result = {}
 
-        # ── 1. Summary Cards ──
+    Each sub-query is individually wrapped in try/except so partial data
+    is returned when one section fails.
+    """
+    import traceback
+    result = {}
+    errors = []
+
+    def _safe_val(val, default=0):
+        return val if val is not None else default
+
+    def _safe_int(val):
+        try:
+            return int(_safe_val(val, 0))
+        except (ValueError, TypeError):
+            return 0
+
+    # ── 1. Summary Cards ──
+    try:
         summary = _mysql_query_one("""
             SELECT
                 COUNT(DISTINCT cb.id) AS total_bookings,
@@ -3074,33 +3142,45 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
             FROM console_bookings cb
             LEFT JOIN console_sessions cs ON cs.booking_id = cb.id
         """)
-
-        # Revenue from sales_daily (gaming) + food_cart + topup_log
         rev = _mysql_query_one("""
             SELECT
                 COALESCE((SELECT SUM(amount) FROM sales_daily), 0) AS total_gaming_rev,
                 COALESCE((SELECT SUM(quantity * unit_price) FROM food_cart), 0) AS total_food_rev,
-                COALESCE((SELECT SUM(amount) FROM topup_log), 0) AS total_topup_rev,
-                COALESCE((SELECT SUM(amount) FROM sales_daily), 0) + COALESCE((SELECT SUM(quantity * unit_price) FROM food_cart), 0) AS total_revenue
+                COALESCE((SELECT SUM(amount) FROM topup_log), 0) AS total_topup_rev
         """)
-
+        if not summary:
+            summary = {}
+        if not rev:
+            rev = {}
         result["summary"] = {
-            "total_bookings": summary.get("total_bookings", 0) or 0,
-            "completed_sessions": summary.get("completed_sessions", 0) or 0,
-            "cancelled_bookings": summary.get("cancelled_bookings", 0) or 0,
+            "total_bookings": _safe_int(summary.get("total_bookings")),
+            "completed_sessions": _safe_int(summary.get("completed_sessions")),
+            "cancelled_bookings": _safe_int(summary.get("cancelled_bookings")),
             "cancellation_rate": round(
-                (summary.get("cancelled_bookings", 0) or 0) / max(1, summary.get("total_bookings", 1) or 1) * 100, 1
+                _safe_int(summary.get("cancelled_bookings", 0))
+                / max(1, _safe_int(summary.get("total_bookings", 1))) * 100, 1
             ),
-            "unique_members": summary.get("unique_members", 0) or 0,
-            "total_play_hours": round((summary.get("total_play_mins", 0) or 0) / 60, 1),
-            "avg_session_mins": round(summary.get("avg_session_mins", 0) or 0, 1),
-            "total_gaming_revenue": int(rev.get("total_gaming_rev", 0) or 0),
-            "total_food_revenue": int(rev.get("total_food_rev", 0) or 0),
-            "total_topup_revenue": int(rev.get("total_topup_rev", 0) or 0),
-            "total_revenue": int(rev.get("total_revenue", 0) or 0),
+            "unique_members": _safe_int(summary.get("unique_members")),
+            "total_play_hours": round(_safe_int(summary.get("total_play_mins", 0)) / 60, 1),
+            "avg_session_mins": round(float(summary.get("avg_session_mins", 0) or 0), 1),
+            "total_gaming_revenue": _safe_int(rev.get("total_gaming_rev")),
+            "total_food_revenue": _safe_int(rev.get("total_food_rev")),
+            "total_topup_revenue": _safe_int(rev.get("total_topup_rev")),
+            "total_revenue": _safe_int(rev.get("total_gaming_rev", 0)) + _safe_int(rev.get("total_food_rev", 0)),
+        }
+    except Exception as e:
+        logger.error(f"[cumulative] summary query failed: {e}")
+        logger.error(traceback.format_exc())
+        errors.append(f"summary: {e}")
+        result["summary"] = {
+            "total_bookings": 0, "completed_sessions": 0, "cancelled_bookings": 0,
+            "cancellation_rate": 0, "unique_members": 0, "total_play_hours": 0,
+            "avg_session_mins": 0, "total_gaming_revenue": 0, "total_food_revenue": 0,
+            "total_topup_revenue": 0, "total_revenue": 0,
         }
 
-        # ── 2. Monthly Trends ──
+    # ── 2. Monthly Trends ──
+    try:
         monthly_rows = _mysql_query("""
             SELECT
                 d.month,
@@ -3130,21 +3210,27 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
                 FROM topup_log GROUP BY m
             ) t ON t.m = d.month
             ORDER BY d.month ASC
-        """)
+        """) or []
         result["monthly"] = [
             {
                 "month": r["month"],
-                "gaming_revenue": int(r.get("gaming_rev", 0) or 0),
-                "food_revenue": int(r.get("food_rev", 0) or 0),
-                "topup_revenue": int(r.get("topup_rev", 0) or 0),
-                "total_revenue": int(r.get("total_rev", 0) or 0),
-                "sessions": int(r.get("session_count", 0) or 0),
-                "play_hours": round((r.get("play_mins", 0) or 0) / 60, 1),
+                "gaming_revenue": _safe_int(r.get("gaming_rev")),
+                "food_revenue": _safe_int(r.get("food_rev")),
+                "topup_revenue": _safe_int(r.get("topup_rev")),
+                "total_revenue": _safe_int(r.get("total_rev")),
+                "sessions": _safe_int(r.get("session_count")),
+                "play_hours": round(_safe_int(r.get("play_mins", 0)) / 60, 1),
             }
             for r in monthly_rows
         ]
+    except Exception as e:
+        logger.error(f"[cumulative] monthly query failed: {e}")
+        logger.error(traceback.format_exc())
+        errors.append(f"monthly: {e}")
+        result["monthly"] = []
 
-        # ── 3. Top 15 Members by Spend ──
+    # ── 3. Top 15 Members by Spend ──
+    try:
         top_members_rows = _mysql_query("""
             SELECT
                 cb.member_id AS member,
@@ -3158,20 +3244,26 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
             GROUP BY cb.member_id
             ORDER BY (COALESCE((SELECT SUM(sd2.amount) FROM sales_daily sd2 WHERE sd2.member_id = cb.member_id), 0) + COALESCE((SELECT SUM(fc2.quantity * fc2.unit_price) FROM food_cart fc2 JOIN console_bookings cb3 ON cb3.id = fc2.booking_id WHERE cb3.member_id = cb.member_id), 0)) DESC
             LIMIT 15
-        """)
+        """) or []
         result["top_members"] = [
             {
                 "member": r["member"],
-                "visits": int(r.get("visits", 0) or 0),
-                "total_hours": round((r.get("total_mins", 0) or 0) / 60, 1),
-                "gaming_spend": int(r.get("gaming_spend", 0) or 0),
-                "food_spend": int(r.get("food_spend", 0) or 0),
-                "total_spend": int(r.get("gaming_spend", 0) or 0) + int(r.get("food_spend", 0) or 0),
+                "visits": _safe_int(r.get("visits")),
+                "total_hours": round(_safe_int(r.get("total_mins", 0)) / 60, 1),
+                "gaming_spend": _safe_int(r.get("gaming_spend")),
+                "food_spend": _safe_int(r.get("food_spend")),
+                "total_spend": _safe_int(r.get("gaming_spend", 0)) + _safe_int(r.get("food_spend", 0)),
             }
             for r in top_members_rows
         ]
+    except Exception as e:
+        logger.error(f"[cumulative] top_members query failed: {e}")
+        logger.error(traceback.format_exc())
+        errors.append(f"top_members: {e}")
+        result["top_members"] = []
 
-        # ── 4. Top 10 Games ──
+    # ── 4. Top 10 Games ──
+    try:
         top_games_rows = _mysql_query("""
             SELECT
                 COALESCE(cb.game_name, 'Unknown') AS game,
@@ -3183,24 +3275,34 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
             GROUP BY cb.game_name
             ORDER BY play_count DESC
             LIMIT 10
-        """)
+        """) or []
         result["top_games"] = [
             {
                 "game": r["game"],
-                "play_count": int(r.get("play_count", 0) or 0),
-                "total_hours": round((r.get("total_mins", 0) or 0) / 60, 1),
+                "play_count": _safe_int(r.get("play_count")),
+                "total_hours": round(_safe_int(r.get("total_mins", 0)) / 60, 1),
             }
             for r in top_games_rows
         ]
+    except Exception as e:
+        logger.error(f"[cumulative] top_games query failed: {e}")
+        logger.error(traceback.format_exc())
+        errors.append(f"top_games: {e}")
+        result["top_games"] = []
 
-        # ── 5. Revenue Breakdown (pie chart data) ──
+    # ── 5. Revenue Breakdown ──
+    try:
+        s = result.get("summary", {})
         result["revenue_breakdown"] = [
-            {"category": "Gaming", "amount": result["summary"]["total_gaming_revenue"]},
-            {"category": "Food & Drinks", "amount": result["summary"]["total_food_revenue"]},
-            {"category": "Top-ups", "amount": result["summary"]["total_topup_revenue"]},
+            {"category": "Gaming", "amount": s.get("total_gaming_revenue", 0)},
+            {"category": "Food & Drinks", "amount": s.get("total_food_revenue", 0)},
+            {"category": "Top-ups", "amount": s.get("total_topup_revenue", 0)},
         ]
+    except Exception as e:
+        result["revenue_breakdown"] = []
 
-        # ── 6. Console Utilization ──
+    # ── 6. Console Utilization ──
+    try:
         util_rows = _mysql_query("""
             SELECT
                 SUBSTRING_INDEX(cb.console_id, '-', 1) AS console_type,
@@ -3213,10 +3315,9 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
               AND cb.console_id IS NOT NULL AND cb.console_id != ''
             GROUP BY SUBSTRING_INDEX(cb.console_id, '-', 1)
             ORDER BY total_mins DESC
-        """)
-        # Estimate: days since first booking * 12h/day * console_count
+        """) or []
         first_day = _mysql_query_one("SELECT MIN(booking_date) AS d FROM console_bookings")
-        days_since = 30  # fallback
+        days_since = 30
         if first_day and first_day.get("d"):
             from datetime import date as _date
             try:
@@ -3229,17 +3330,24 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
         result["console_utilization"] = [
             {
                 "type": r["console_type"],
-                "count": int(r.get("console_count", 1) or 1),
-                "sessions": int(r.get("sessions", 0) or 0),
-                "total_hours": round((r.get("total_mins", 0) or 0) / 60, 1),
+                "count": max(1, _safe_int(r.get("console_count", 1))),
+                "sessions": _safe_int(r.get("sessions")),
+                "total_hours": round(_safe_int(r.get("total_mins", 0)) / 60, 1),
                 "utilization_pct": round(
-                    ((r.get("total_mins", 0) or 0) / 60) / max(1, int(r.get("console_count", 1) or 1) * 12 * days_since) * 100, 1
+                    (_safe_int(r.get("total_mins", 0)) / 60)
+                    / max(1, _safe_int(r.get("console_count", 1), 1) * 12 * days_since) * 100, 1
                 ),
             }
             for r in util_rows
         ]
+    except Exception as e:
+        logger.error(f"[cumulative] utilization query failed: {e}")
+        logger.error(traceback.format_exc())
+        errors.append(f"utilization: {e}")
+        result["console_utilization"] = []
 
-        # ── 7. Member Growth (new members per month) ──
+    # ── 7. Member Growth ──
+    try:
         growth_rows = _mysql_query("""
             SELECT
                 DATE_FORMAT(MIN(cb.created_at), '%%Y-%%m') AS month,
@@ -3252,16 +3360,22 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
             ) cb
             GROUP BY DATE_FORMAT(cb.created_at, '%%Y-%%m')
             ORDER BY month ASC
-        """)
+        """) or []
         result["member_growth"] = [
             {
                 "month": r["month"],
-                "new_members": int(r.get("new_members", 0) or 0),
+                "new_members": _safe_int(r.get("new_members")),
             }
             for r in growth_rows
         ]
+    except Exception as e:
+        logger.error(f"[cumulative] growth query failed: {e}")
+        logger.error(traceback.format_exc())
+        errors.append(f"growth: {e}")
+        result["member_growth"] = []
 
-        # ── 8. Hourly Distribution (popular hours) ──
+    # ── 8. Hourly Distribution ──
+    try:
         hourly_rows = _mysql_query("""
             SELECT
                 HOUR(cb.planned_start) AS hour_of_day,
@@ -3270,19 +3384,174 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
             WHERE cb.planned_start IS NOT NULL
             GROUP BY HOUR(cb.planned_start)
             ORDER BY hour_of_day ASC
-        """)
+        """) or []
         result["hourly_distribution"] = [
             {
                 "hour": r["hour_of_day"],
                 "label": f"{r['hour_of_day']:02d}:00",
-                "count": int(r.get("booking_count", 0) or 0),
+                "count": _safe_int(r.get("booking_count")),
             }
             for r in hourly_rows
         ]
-
-        return {"success": True, "data": result}
     except Exception as e:
-        logger.error(f"cumulative GET error: {e}")
+        logger.error(f"[cumulative] hourly query failed: {e}")
+        logger.error(traceback.format_exc())
+        errors.append(f"hourly: {e}")
+        result["hourly_distribution"] = []
+
+    # If all sections failed, return error
+    if not result and errors:
+        return {"success": False, "error": "; ".join(errors)}
+
+    return {"success": True, "data": result}
+
+
+
+
+# ══════════════════════════════════════════════════════════════════
+#  DEPOSIT OVERVIEW
+# ══════════════════════════════════════════════════════════════════
+@router.get("/deposit-overview")
+async def get_deposit_overview(
+    date_from: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="End date YYYY-MM-DD"),
+    user: dict = Depends(get_current_user)
+):
+    """Get deposit summary stats and recent deposit transactions."""
+    try:
+        # 1. Active deposits
+        active_row = _mysql_query_one("""
+            SELECT COUNT(*) as cnt, COALESCE(SUM(deposit_amount),0) as total
+            FROM console_bookings
+            WHERE deposit_status IN ('paid','verified')
+              AND status NOT IN ('done','cancelled','rejected')
+              AND (deposit_amount IS NOT NULL AND deposit_amount > 0)
+        """)
+        active_deposits = int(active_row["cnt"]) if active_row else 0
+        active_deposits_total = float(active_row["total"]) if active_row else 0.0
+
+        # 2. Today collected (MMT date, only money actually collected)
+        mmt_today = _get_mmt_today_str()
+        today_row = _mysql_query_one("""
+            SELECT COUNT(*) as cnt, COALESCE(SUM(deposit_amount),0) as total
+            FROM console_bookings
+            WHERE DATE(CONVERT_TZ(created_at,'+00:00','+06:30')) = %s
+              AND deposit_status IN ('paid','verified','forfeited','redeemed')
+              AND NOT (status='cancelled' AND deposit_status IN ('paid','verified'))
+              AND (deposit_amount IS NOT NULL AND deposit_amount > 0)
+        """, (mmt_today,))
+        today_collected = float(today_row["total"]) if today_row else 0.0
+        today_collected_count = int(today_row["cnt"]) if today_row else 0
+
+        # 3. Forfeited (filtered by date range if provided, else this month)
+        if date_from and date_to:
+            forfeited_row = _mysql_query_one("""
+                SELECT COALESCE(SUM(deposit_amount),0) as total
+                FROM console_bookings
+                WHERE deposit_status = 'forfeited'
+                  AND DATE(COALESCE(cancelled_at, created_at)) >= %s AND DATE(COALESCE(cancelled_at, created_at)) <= %s
+            """, (date_from, date_to))
+        else:
+            forfeited_row = _mysql_query_one("""
+                SELECT COALESCE(SUM(deposit_amount),0) as total
+                FROM console_bookings
+                WHERE deposit_status = 'forfeited'
+                  AND DATE(COALESCE(cancelled_at, created_at)) >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
+            """)
+        this_month_forfeited = float(forfeited_row["total"]) if forfeited_row else 0.0
+
+        # 4. Refunded (filtered by date range if provided, else this month)
+        if date_from and date_to:
+            refunded_row = _mysql_query_one("""
+                SELECT COALESCE(SUM(deposit_amount),0) as total
+                FROM console_bookings
+                WHERE deposit_status = 'refunded'
+                  AND DATE(created_at) >= %s AND DATE(created_at) <= %s
+            """, (date_from, date_to))
+        else:
+            refunded_row = _mysql_query_one("""
+                SELECT COALESCE(SUM(deposit_amount),0) as total
+                FROM console_bookings
+                WHERE deposit_status = 'refunded'
+                  AND DATE(created_at) >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
+            """)
+        this_month_refunded = float(refunded_row["total"]) if refunded_row else 0.0
+
+        # 5. All time totals
+        all_time_rows = _mysql_query("""
+            SELECT deposit_status, COALESCE(SUM(deposit_amount),0) as total
+            FROM console_bookings
+            WHERE deposit_status IN ('forfeited','refunded')
+            GROUP BY deposit_status
+        """) or []
+        total_forfeited_all_time = 0.0
+        total_refunded_all_time = 0.0
+        for row in all_time_rows:
+            if row["deposit_status"] == "forfeited":
+                total_forfeited_all_time = float(row["total"])
+            elif row["deposit_status"] == "refunded":
+                total_refunded_all_time = float(row["total"])
+
+        # 6. Recent transactions (last 50) — with optional date filter
+        txn_where = ""
+        txn_params = []
+        if date_from:
+            txn_where += " AND DATE(cb.created_at) >= %s"
+            txn_params.append(date_from)
+        if date_to:
+            txn_where += " AND DATE(cb.created_at) <= %s"
+            txn_params.append(date_to)
+
+        transactions_rows = _mysql_query(f"""
+            SELECT cb.id, cb.console_id, cb.deposit_amount, cb.deposit_status,
+                   cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type,
+                   cb.booking_date, cb.planned_start AS start_time, cb.status, cb.created_at,
+                   m.name AS customer_name, m.phone
+            FROM console_bookings cb
+            LEFT JOIN members m ON cb.member_id = m.id
+            WHERE cb.deposit_status IS NOT NULL AND cb.deposit_status NOT IN ('','none')
+              AND (cb.deposit_amount IS NOT NULL AND cb.deposit_amount > 0)
+              {txn_where}
+            ORDER BY cb.created_at DESC
+            LIMIT 50
+        """, tuple(txn_params) if txn_params else ()) or []
+
+        transactions = []
+        for r in transactions_rows:
+            transactions.append({
+                "id": r["id"],
+                "booking_id": r.get("booking_id") or r["id"],
+                "console_id": r.get("console_id", ""),
+                "customer_name": r.get("customer_name", ""),
+                "phone": r.get("phone", ""),
+                "deposit_amount": float(r["deposit_amount"]) if r.get("deposit_amount") else 0,
+                "deposit_status": r.get("deposit_status", ""),
+                "deposit_method": r.get("deposit_method", ""),
+                "deposit_ref": r.get("deposit_ref", ""),
+                "booking_date": str(r["booking_date"]) if r.get("booking_date") else None,
+                "start_time": str(r["start_time"]) if r.get("start_time") else None,
+                "status": r.get("status", ""),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+
+        return {
+            "success": True,
+            "data": {
+                "summary": {
+                    "active_deposits": active_deposits,
+                    "active_deposits_total": active_deposits_total,
+                    "today_collected": today_collected,
+                    "today_collected_count": today_collected_count,
+                    "this_month_forfeited": this_month_forfeited,
+                    "this_month_refunded": this_month_refunded,
+                    "total_forfeited_all_time": total_forfeited_all_time,
+                    "total_refunded_all_time": total_refunded_all_time,
+                },
+                "transactions": transactions,
+            },
+        }
+    except Exception as e:
+        logger.error(f"GET /deposit-overview error: {e}")
         return {"success": False, "error": str(e)}
 
 

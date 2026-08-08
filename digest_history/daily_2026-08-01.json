@@ -1,0 +1,216 @@
+{
+  "timestamp": "2026-08-01T17:31:30.448586Z",
+  "date": "2026-08-01",
+  "summary": {
+    "total_sales": {
+      "count": 31,
+      "gross": 492300.0,
+      "net": 491433.0
+    },
+    "total_topups": {
+      "count": 0,
+      "amount": 0.0,
+      "mins_added": 0
+    },
+    "active_sessions": 0,
+    "completed_sessions": 23,
+    "food_sales": {
+      "count": 28,
+      "total": 94800.0
+    },
+    "new_members": 0,
+    "top_consoles": [
+      {
+        "console_id": "C-09",
+        "hours": 8.0
+      },
+      {
+        "console_id": "C-10",
+        "hours": 3.5
+      },
+      {
+        "console_id": "C-05",
+        "hours": 3.5
+      },
+      {
+        "console_id": "C-01",
+        "hours": 3.5
+      },
+      {
+        "console_id": "C-02",
+        "hours": 3.0
+      }
+    ],
+    "top_games": [
+      {
+        "game": "FC 26",
+        "sessions": 13
+      },
+      {
+        "game": "Any",
+        "sessions": 4
+      },
+      {
+        "game": "Black Myth: Wukong",
+        "sessions": 2
+      },
+      {
+        "game": "It Takes Two",
+        "sessions": 2
+      },
+      {
+        "game": "LEGO BATMAN: Legacy Of the Darknight",
+        "sessions": 1
+      }
+    ],
+    "revenue_by_payment": [
+      {
+        "method": "KPay:10800 (dep)|Cash:29600",
+        "count": 1,
+        "total": 40400.0
+      },
+      {
+        "method": "KPay:6000 (dep)|KPay:14000",
+        "count": 2,
+        "total": 40000.0
+      },
+      {
+        "method": "Cash:34000",
+        "count": 1,
+        "total": 34000.0
+      },
+      {
+        "method": "KPay:6000 (dep)|Cash:23600",
+        "count": 1,
+        "total": 29600.0
+      },
+      {
+        "method": "Cash:24000",
+        "count": 1,
+        "total": 24000.0
+      },
+      {
+        "method": "KPay:7000 (dep)|Cash:17000",
+        "count": 1,
+        "total": 24000.0
+      },
+      {
+        "method": "KPay:13500|Cash:10500",
+        "count": 1,
+        "total": 24000.0
+      },
+      {
+        "method": "Cash:21500",
+        "count": 1,
+        "total": 21500.0
+      },
+      {
+        "method": "KPay:20000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "KPay:9000|Cash:9000",
+        "count": 1,
+        "total": 18000.0
+      },
+      {
+        "method": "Cash:17800",
+        "count": 1,
+        "total": 17800.0
+      },
+      {
+        "method": "Cash:17500",
+        "count": 1,
+        "total": 17500.0
+      },
+      {
+        "method": "KPay:6000 (dep)|Cash:11000",
+        "count": 1,
+        "total": 17000.0
+      },
+      {
+        "method": "Cash:16500",
+        "count": 1,
+        "total": 16500.0
+      },
+      {
+        "method": "Cash:16300",
+        "count": 1,
+        "total": 16333.0
+      },
+      {
+        "method": "Cash:16100",
+        "count": 1,
+        "total": 16100.0
+      },
+      {
+        "method": "KPay:15000",
+        "count": 1,
+        "total": 15000.0
+      },
+      {
+        "method": "KPay:3000 (dep)|KPay:12000",
+        "count": 1,
+        "total": 15000.0
+      },
+      {
+        "method": "Cash:15000",
+        "count": 1,
+        "total": 15000.0
+      },
+      {
+        "method": "KPay:3000 (dep)|KPay:9000",
+        "count": 1,
+        "total": 12000.0
+      },
+      {
+        "method": "KPay:12000",
+        "count": 1,
+        "total": 12000.0
+      },
+      {
+        "method": "Cash:10000",
+        "count": 1,
+        "total": 10000.0
+      },
+      {
+        "method": "Cash:9000",
+        "count": 1,
+        "total": 9000.0
+      },
+      {
+        "method": "Cash:8000",
+        "count": 1,
+        "total": 8000.0
+      },
+      {
+        "method": "KPay:6500",
+        "count": 1,
+        "total": 6500.0
+      },
+      {
+        "method": "Cash:4400",
+        "count": 1,
+        "total": 4400.0
+      },
+      {
+        "method": "Cash:1700",
+        "count": 2,
+        "total": 3400.0
+      },
+      {
+        "method": "Cash:3400",
+        "count": 1,
+        "total": 3400.0
+      },
+      {
+        "method": "Cash:1000",
+        "count": 1,
+        "total": 1000.0
+      }
+    ]
+  },
+  "alerts": [],
+  "recommendations": []
+}
