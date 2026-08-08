@@ -47,17 +47,32 @@ def auth_headers():
 
 @pytest.fixture(autouse=True)
 def cleanup_tournaments():
-    """Clean up test tournaments data after each test."""
+    """Clean up test tournaments data after each test (real tournament id=64 is protected)."""
     yield
     try:
-        from mysql_db import execute
-        # Delete in order to respect FK constraints
-        execute("DELETE FROM tournament_matches WHERE tournament_id IN (SELECT id FROM tournaments WHERE name LIKE 'Test%' OR name LIKE 'Free%' OR name LIKE 'Paid%' OR name LIKE 'Dup%' OR name LIKE 'Full%' OR name LIKE 'Bracket%' OR name LIKE 'HTML%' OR name LIKE 'Player%' OR name LIKE 'No SS%' OR name LIKE 'PM Norm%'")
-        execute("DELETE FROM tournament_players WHERE tournament_id IN (SELECT id FROM tournaments WHERE name LIKE 'Test%' OR name LIKE 'Free%' OR name LIKE 'Paid%' OR name LIKE 'Dup%' OR name LIKE 'Full%' OR name LIKE 'Bracket%' OR name LIKE 'HTML%' OR name LIKE 'Player%')")
-        execute("DELETE FROM tournaments WHERE name LIKE 'Test%' OR name LIKE 'Free%' OR name LIKE 'Paid%' OR name LIKE 'Dup%' OR name LIKE 'Full%' OR name LIKE 'Bracket%' OR name LIKE 'HTML%' OR name LIKE 'Player%' OR name LIKE 'No SS%' OR name LIKE 'PM Norm%'")
+        from mysql_db import execute, query
+        # Remove ALL test tournaments except the real one (id=64) — robust vs any test naming
+        test_ids = [r["id"] for r in (query("SELECT id FROM tournaments WHERE id != 64") or [])]
+        if test_ids:
+            ph = ",".join(["%s"] * len(test_ids))
+            execute(f"DELETE FROM tournament_matches WHERE tournament_id IN ({ph})", tuple(test_ids))
+            execute(f"DELETE FROM tournament_players WHERE tournament_id IN ({ph})", tuple(test_ids))
+            execute(f"DELETE FROM tournaments WHERE id IN ({ph})", tuple(test_ids))
         # Clean up any test member_wallets changes
         execute("UPDATE member_wallets SET balance_mins=10000 WHERE member_id='TEST_TOURN_001'")
         execute("DELETE FROM cash_movements WHERE note LIKE '%Tournament entry:%' OR note LIKE '%tournament%'")
+        # Clean orphan test upload files (files whose t<id> tournament no longer exists)
+        import glob
+        import os as _os
+        keep_ids = {str(r["id"]) for r in (query("SELECT id FROM tournaments") or [])}
+        up_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "uploads", "tournaments")
+        for f in glob.glob(_os.path.join(up_dir, "*.jpg")):
+            tid = _os.path.basename(f).split("_")[0].lstrip("t")
+            if tid not in keep_ids:
+                try:
+                    _os.remove(f)
+                except OSError:
+                    pass
     except Exception:
         pass
 
