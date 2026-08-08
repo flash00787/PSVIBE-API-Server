@@ -623,12 +623,12 @@ async def registration_page(token: str, request: Request):
   @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
 </style>
 </head>
-<body class="min-h-screen flex items-center justify-center p-4">
+<body class="min-h-screen flex items-center justify-center px-4 pt-8 pb-12">
 <div class="w-full max-w-lg">
 
   <!-- Header -->
   <div class="text-center mb-6">
-    <img src="/uploads/psvibe-logo-v2.png" alt="PS VIBE - PS5 Gaming Lounge" class="w-64 mx-auto mb-3 drop-shadow-[0_0_18px_rgba(47,79,232,0.35)]">
+    <img src="/uploads/psvibe-logo-v2.png" alt="PS VIBE - PS5 Gaming Lounge" class="w-64 mx-auto mb-6 drop-shadow-[0_0_18px_rgba(47,79,232,0.35)]">
     <h1 class="text-2xl font-bold text-white text-glow">{tn_name}</h1>
     <p class="text-vibe-400 text-sm font-medium">{tn_game} &middot; {tn_format}</p>
     <p class="text-gray-500 text-xs mt-1">Play The Game. Share The VIBE!</p>
@@ -731,7 +731,7 @@ async def registration_page(token: str, request: Request):
   </div>
 
   <!-- Footer -->
-  <div class="text-center mt-6 space-y-1.5">
+  <div class="text-center mt-8 space-y-1.5">
     <p class="text-gray-500 text-xs font-medium">PS VIBE - PS5 Gaming Lounge · Yangon</p>
     <p class="text-gray-600 text-xs">🕘 9:00 AM - 9:00 PM (နေ့စဉ်) · 📞 09254824024</p>
     <p class="text-gray-600 text-xs">Facebook: <a href="https://www.facebook.com/ps5gamecenter" class="text-vibe-400 hover:underline">PS5 Game Center</a> · TikTok: <a href="https://www.tiktok.com/@ps.vibe.gameing.lounge" class="text-vibe-400 hover:underline">@ps.vibe.gameing.lounge</a></p>
