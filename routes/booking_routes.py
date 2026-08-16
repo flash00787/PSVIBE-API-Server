@@ -4,7 +4,7 @@ from config import MMT_HOURS, MMT_MINUTES
 from fastapi.responses import JSONResponse, HTMLResponse
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
 import mysql.connector as _mc
-from helpers import _mysql_get_setting, _mysql_get_settings_dict, ok, error_response, success_response, _parse_pm_and_inject, rate_limit_10pm, rate_limit_5pm, rate_limit_30pm
+from helpers import _mysql_get_setting, _mysql_get_settings_dict, ok, error_response, success_response, _parse_pm_and_inject, rate_limit_10pm, rate_limit_5pm, rate_limit_30pm, insert_cash_movement_if_absent
 from field_utils import normalize_list
 from deps import verify_api_key, verify_webhook_secret
 from models import GenericResponse
@@ -378,12 +378,10 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
                 _dep_meth = (_dep_check.get('deposit_method', '') or 'kpay').lower()
                 _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
                 if _dep_amt > 0:
-                    _mysql_exec(
-                        "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                        "VALUES (%s, %s, %s, %s, %s, NOW())",
-                        ("eject", _meth_label, _dep_amt,
-                         f"Refund forfeit BK#{booking_id} (deposit reverse - reactivated via checkin) via {_meth_label}", "system")
-                    )
+                    insert_cash_movement_if_absent(
+                        "eject", _meth_label, _dep_amt,
+                        f"Refund forfeit BK#{booking_id}%",
+                        f"Refund forfeit BK#{booking_id} (deposit reverse - reactivated via checkin) via {_meth_label}", "system")
                     logger.info(f"Checkin BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
         except Exception:
             _chk_conn.rollback()
@@ -990,12 +988,10 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                 _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
                 if _dep_amt > 0:
                     try:
-                        _mysql_exec(
-                            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                            "VALUES (%s, %s, %s, %s, %s, NOW())",
-                            ("inject", _meth_label, _dep_amt,
-                             f"Forfeit BK#{booking_id} via {_meth_label}", "system")
-                        )
+                        insert_cash_movement_if_absent(
+                            "inject", _meth_label, _dep_amt,
+                            f"Forfeit BK#{booking_id}%",
+                            f"Forfeit BK#{booking_id} via {_meth_label}", "system")
                         logger.info(f"api_update_booking_status forfeit: BK#{booking_id} {_dep_amt}Ks {_meth_label}")
                     except Exception as fe:
                         logger.warning(f"api_update_booking_status forfeit cash_movements BK#{booking_id}: {fe}")
@@ -1016,12 +1012,10 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                     _dep_meth = (_dep_row.get('deposit_method', '') or 'kpay').lower()
                     _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
                     if _dep_amt > 0:
-                        _mysql_exec(
-                            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                            "VALUES (%s, %s, %s, %s, %s, NOW())",
-                            ("eject", _meth_label, _dep_amt,
-                             f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system")
-                        )
+                        insert_cash_movement_if_absent(
+                            "eject", _meth_label, _dep_amt,
+                            f"Refund forfeit BK#{booking_id}%",
+                            f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system")
                         logger.info(f"BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject), cancelled_at cleared")
 
             # 📢 Customer notification on confirm/cancel (fire-and-forget)
@@ -1792,13 +1786,11 @@ async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
         if _pre_deposit_status == 'verified' and _pre_deposit_amount > 0:
             _method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_pre_deposit_method, "KPay")
             try:
-                _mysql_exec(
-                    "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                    "VALUES (%s, %s, %s, %s, %s, NOW())",
-                    ("inject", _method_label, _pre_deposit_amount,
-                     f"Forfeit BK#{booking_id} via {_method_label}",
-                     booking.get("staff_name", "") or "system")
-                )
+                insert_cash_movement_if_absent(
+                    "inject", _method_label, _pre_deposit_amount,
+                    f"Forfeit BK#{booking_id}%",
+                    f"Forfeit BK#{booking_id} via {_method_label}",
+                    booking.get("staff_name", "") or "system")
                 logger.info(f"Forfeit deposit recorded: BK#{booking_id} {_pre_deposit_amount}Ks {_method_label}")
             except Exception as _fe:
                 logger.warning(f"Forfeit cash_movements BK#{booking_id} failed: {_fe}")
@@ -2427,7 +2419,7 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
                 _mysql_exec(
                     "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
                     "deposit_status=CASE WHEN deposit_status='verified' THEN 'forfeited' WHEN deposit_status='paid' THEN 'none' ELSE deposit_status END, "
-                    "notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: no-show') WHERE id=%s",
+                    "notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: no-show') WHERE id=%s AND deposit_status <> 'forfeited'",
                     (bk_id,)
                 )
                 # Clear console_status
@@ -2452,12 +2444,10 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
                         _dep_meth = (_pre.get('deposit_method', '') or 'kpay').lower()
                         _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
                         if _dep_amt > 0:
-                            _mysql_exec(
-                                "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                                "VALUES (%s, %s, %s, %s, %s, NOW())",
-                                ("inject", _meth_label, _dep_amt,
-                                 f"Forfeit BK#{bk_id} via {_meth_label}", "system")
-                            )
+                            insert_cash_movement_if_absent(
+                                "inject", _meth_label, _dep_amt,
+                                f"Forfeit BK#{bk_id}%",
+                                f"Forfeit BK#{bk_id} via {_meth_label}", "system")
                             logger.info(f"Auto-cancel forfeit: BK#{bk_id} {_dep_amt}Ks {_meth_label}")
                     except Exception as _fe:
                         logger.warning(f"Auto-cancel forfeit cash_movements BK#{bk_id}: {_fe}")
@@ -2898,16 +2888,13 @@ def _reverse_outstanding_forfeits(booking_id):
             # Reverse at most the remaining diff (proportional handling for multi-inject)
             reverse_amt = min(amt, remaining_to_reverse)
 
-            _mysql_exec(
-                "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, NOW())",
-                (
-                    "eject",
-                    account,
-                    reverse_amt,
-                    f"Refund forfeit BK#{bk_str} (deposit reverse - redeemed, session played) via {account}",
-                    "system",
-                ),
+            insert_cash_movement_if_absent(
+                "eject",
+                account,
+                reverse_amt,
+                f"Refund forfeit BK#{bk_str}%",
+                f"Refund forfeit BK#{bk_str} (deposit reverse - redeemed, session played) via {account}",
+                "system",
             )
             reversed_count += 1
             reversed_total += reverse_amt

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 import mysql.connector as _mc
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
-from helpers import _mysql_get_setting, ok, error_response
+from helpers import _mysql_get_setting, ok, error_response, insert_cash_movement_if_absent
 from field_utils import normalize_list
 from deps import verify_api_key
 from models import GenericResponse
@@ -404,12 +404,10 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                     _dep_meth = (_dep_row.get('deposit_method', '') or 'kpay').lower()
                     _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
                     if _dep_amt > 0:
-                        _mysql_exec(
-                            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                            "VALUES (%s, %s, %s, %s, %s, NOW())",
-                            ("eject", _meth_label, _dep_amt,
-                             f"Refund forfeit BK#{booking_id} (deposit reverse - reactivated) via {_meth_label}", "system")
-                        )
+                        insert_cash_movement_if_absent(
+                            "eject", _meth_label, _dep_amt,
+                            f"Refund forfeit BK#{booking_id}%",
+                            f"Refund forfeit BK#{booking_id} (deposit reverse - reactivated) via {_meth_label}", "system")
                         logger.info(f"Console start BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
 
             # Safety: sync console_status to ensure no drift
@@ -636,12 +634,10 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                     _dep_meth = (_dep_row.get('deposit_method', '') or 'kpay').lower()
                     _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
                     if _dep_amt > 0:
-                        _mysql_exec(
-                            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                            "VALUES (%s, %s, %s, %s, %s, NOW())",
-                            ("eject", _meth_label, _dep_amt,
-                             f"Refund forfeit BK#{linked_booking_id} (deposit reverse - reactivated) via {_meth_label}", "system")
-                        )
+                        insert_cash_movement_if_absent(
+                            "eject", _meth_label, _dep_amt,
+                            f"Refund forfeit BK#{linked_booking_id}%",
+                            f"Refund forfeit BK#{linked_booking_id} (deposit reverse - reactivated) via {_meth_label}", "system")
                         logger.info(f"Session start BK#{linked_booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
 
             # Safety: sync console_status to ensure no drift

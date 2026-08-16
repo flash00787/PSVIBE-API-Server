@@ -5,10 +5,13 @@ Import these from route modules instead of importing from app.py.
 import json as _json
 import os as _os
 import time
+import logging as _logging
 from collections import defaultdict
 
 from fastapi import HTTPException, Request
-from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute
+from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete_rows
+
+_logger = _logging.getLogger("psvibe_api")
 
 # ── Rate Limiter (in-memory) ──
 _rate_limit_cache = defaultdict(list)
@@ -87,6 +90,34 @@ def _mysql_get_settings_dict(prefix=None):
 
 
 # ── Payment method parser (used by topup, register, etc.) ──
+def insert_cash_movement_if_absent(movement_type: str, account: str, amount, note_pattern: str, note: str, staff_name: str = "system") -> bool:
+    """Insert a cash_movement atomically only if no matching row exists.
+
+    Uses INSERT ... SELECT ... WHERE NOT EXISTS so concurrent duplicate calls
+    cannot double-insert (idempotent guard for forfeit inject / refund eject).
+
+    Returns True if a row was inserted, False if an equivalent row already existed.
+    """
+    try:
+        # note_pattern is matched with LIKE (already includes trailing % by convention).
+        affected = _mysql_delete_rows(
+            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+            "SELECT %s, %s, %s, %s, %s, NOW() "
+            "WHERE NOT EXISTS (SELECT 1 FROM cash_movements WHERE movement_type=%s AND note LIKE %s)",
+            (movement_type, account, amount, note, staff_name, movement_type, note_pattern),
+        )
+        inserted = affected is not None and int(affected) > 0
+        if not inserted:
+            _logger.info(
+                "insert_cash_movement_if_absent: skipped duplicate %s %r (%s)",
+                movement_type, account, note,
+            )
+        return inserted
+    except Exception as _e:
+        _logger.warning("insert_cash_movement_if_absent failed for %s %r (%s): %s", movement_type, account, note, _e)
+        return False
+
+
 def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, staff_name: str) -> None:
     """Parse payment method string (e.g. 'KPay:31000|Cash:20000' or 'KPay:90000/Cash:0')
     and inject cash_movements entries for each account."""

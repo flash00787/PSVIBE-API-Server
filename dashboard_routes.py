@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 
 from auth import get_current_user
+from helpers import insert_cash_movement_if_absent
 from console_status import sync_console_status as _sync_console_status
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
 
@@ -364,12 +365,10 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
                 _dep_amt = int(_forfeit_row.get("amount", 0) or 0)
                 _dep_meth = (_forfeit_row.get("deposit_method", "") or "kpay").lower()
                 _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
-                _mysql_execute(
-                    "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                    "VALUES (%s, %s, %s, %s, %s, NOW())",
-                    ("eject", _meth_label, _dep_amt,
-                     f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system")
-                )
+                insert_cash_movement_if_absent(
+                    "eject", _meth_label, _dep_amt,
+                    f"Refund forfeit BK#{booking_id}%",
+                    f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system")
                 logger.info(f"Rebook BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
             logger.info(f"Rebook BK#{booking_id}: deposit_status restored from forfeited → verified, cancelled_at cleared")
 
@@ -554,12 +553,10 @@ async def dashboard_delete_booking(booking_id: int, user: dict = Depends(get_cur
             )
             if dep_amt > 0:
                 try:
-                    _mysql_execute(
-                        "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                        "VALUES (%s, %s, %s, %s, %s, NOW())",
-                        ("inject", _meth_label, dep_amt,
-                         f"Forfeit BK#{booking_id} via {_meth_label}", "system")
-                    )
+                    insert_cash_movement_if_absent(
+                        "inject", _meth_label, dep_amt,
+                        f"Forfeit BK#{booking_id}%",
+                        f"Forfeit BK#{booking_id} via {_meth_label}", "system")
                     logger.info(f"Dashboard cancel forfeit: BK#{booking_id} {dep_amt}Ks {_meth_label}")
                 except Exception as ce:
                     logger.warning(f"Dashboard cancel forfeit cash_movements BK#{booking_id}: {ce}")

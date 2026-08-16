@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from fastapi.responses import JSONResponse
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
-from helpers import _mysql_get_setting, ok, error_response, _parse_pm_and_inject
+from helpers import _mysql_get_setting, ok, error_response, _parse_pm_and_inject, insert_cash_movement_if_absent
 from deps import verify_api_key
 from auth import get_current_user
 from models import GenericResponse
@@ -345,16 +345,13 @@ def _reverse_outstanding_forfeits(booking_id):
             # Reverse at most the remaining diff (proportional handling for multi-inject)
             reverse_amt = min(amt, remaining_to_reverse)
 
-            _mysql_exec(
-                "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, NOW())",
-                (
-                    "eject",
-                    account,
-                    reverse_amt,
-                    f"Refund forfeit BK#{bk_str} (deposit reverse - redeemed, session played) via {account}",
-                    "system",
-                ),
+            insert_cash_movement_if_absent(
+                "eject",
+                account,
+                reverse_amt,
+                f"Refund forfeit BK#{bk_str}%",
+                f"Refund forfeit BK#{bk_str} (deposit reverse - redeemed, session played) via {account}",
+                "system",
             )
             reversed_count += 1
             reversed_total += reverse_amt

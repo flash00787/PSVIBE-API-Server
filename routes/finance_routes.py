@@ -321,6 +321,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             if note.startswith("Topup") or note.startswith("New member"): continue
             pm = (row.get("payment_method") or "").strip()
             net_amount = float(row.get("net") or 0)
+            if net_amount <= 0: continue
             if not pm: continue
             parts = pm.split("|")
             for part in parts:
@@ -437,6 +438,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             trans_out = sum(cash_map.get(f"transfer_out|{n}", 0) for n in _db_list)
             inject = sum(cash_map.get(f"inject|{n}", 0) for n in _db_list)
             eject = sum(cash_map.get(f"eject|{n}", 0) for n in _db_list)
+            div = sum(cash_map.get(f"dividend|{n}", 0) for n in _db_list)
             si_pay = si_payments.get(db_name, 0)
             # 🆕 Targeted defensive: only cancel forfeit injects of REDEEMED bookings
             # (their deposit became sale income; a forfeit inject would otherwise double-count).
@@ -451,7 +453,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             # Note: stock_in purchases also create cash_movements eject entries,
             # so stock_in_payments may partially overlap with eject for non-split entries.
             # stock_in_payments tracked for info only; cash_movements eject entries already account for stock-in deductions
-            balance = income - opex + trans_in - abs(trans_out) + inject - eject
+            balance = income - opex + trans_in - abs(trans_out) + inject - eject - div
             # Capital expenditure adjustments (all from KBZ Bank)
             ded_assets = 0
             ded_advances = 0
@@ -464,7 +466,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                 ded_prepaid = float(_prepaid_total.get("total", 0) or 0)
                 add_proceeds = float(_disposal_proceeds.get("total", 0) or 0)
                 balance = balance - ded_assets - ded_advances - ded_prepaid + add_proceeds
-            result.append({"key": key, "label": acc["label"], "icon": acc["icon"], "type": acc["type"], "income": round(income, 0), "opex": round(opex, 0), "transfers_in": round(trans_in, 0), "transfers_out": round(abs(trans_out), 0), "injections": round(inject, 0), "ejections": round(eject, 0), "stock_in_payments": round(si_pay, 0), "capital_asset_purchases": round(ded_assets, 0), "capital_advances": round(ded_advances, 0), "capital_prepaid": round(ded_prepaid, 0), "capital_disposal_proceeds": round(add_proceeds, 0), "balance": round(balance, 0)})
+            result.append({"key": key, "label": acc["label"], "icon": acc["icon"], "type": acc["type"], "income": round(income, 0), "opex": round(opex, 0), "transfers_in": round(trans_in, 0), "transfers_out": round(abs(trans_out), 0), "injections": round(inject, 0), "ejections": round(eject, 0), "dividends": round(div, 0), "stock_in_payments": round(si_pay, 0), "capital_asset_purchases": round(ded_assets, 0), "capital_advances": round(ded_advances, 0), "capital_prepaid": round(ded_prepaid, 0), "capital_disposal_proceeds": round(add_proceeds, 0), "balance": round(balance, 0)})
 
         # 🆕 Add back active deposits (paid/verified, not yet redeemed/forfeited)
         # Anti-double-count subtracts ALL "Deposit #" injects, but active deposits
@@ -699,6 +701,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             if note.startswith("Topup") or note.startswith("New member"): continue
             pm = (row.get("payment_method") or "").strip()
             net_amount = float(row.get("net") or 0)
+            if net_amount <= 0: continue
             if not pm: continue
             sep = "|" if "|" in pm else ("/" if "/" in pm else "|")
             for part in pm.split(sep):
@@ -762,6 +765,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             t_out = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='transfer_out' AND created_at < %s", (*db_list, _end))["t"] or 0)
             inj = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
             ej = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='eject' AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
+            dv = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='dividend' AND created_at < %s", (*db_list, _end))["t"] or 0)
 
             # 🆕 Targeted defensive: only cancel forfeit injects of REDEEMED bookings
             # (their deposit became sale income; a forfeit inject would otherwise double-count).
@@ -774,7 +778,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 inj -= min(inj, _forfeit_redeemed)
 
             # t_out is stored as negative in DB, so + t_out works (= subtract)
-            bal = income - opex + t_in + t_out + inj - ej
+            bal = income - opex + t_in + t_out + inj - ej - dv
 
             if key == "kbz_bank":
                 ded_assets = float(_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active' AND created_at < %s", (_end,))["t"] or 0)

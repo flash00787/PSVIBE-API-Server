@@ -1,0 +1,191 @@
+{
+  "timestamp": "2026-08-12T17:34:33.123886Z",
+  "date": "2026-08-12",
+  "summary": {
+    "total_sales": {
+      "count": 24,
+      "gross": 418000.0,
+      "net": 364167.0
+    },
+    "total_topups": {
+      "count": 1,
+      "amount": 50000.0,
+      "mins_added": 330
+    },
+    "active_sessions": 0,
+    "completed_sessions": 19,
+    "food_sales": {
+      "count": 18,
+      "total": 50400.0
+    },
+    "new_members": 0,
+    "top_consoles": [
+      {
+        "console_id": "C-06",
+        "hours": 6.0
+      },
+      {
+        "console_id": "C-04",
+        "hours": 4.5
+      },
+      {
+        "console_id": "C-08",
+        "hours": 4.5
+      },
+      {
+        "console_id": "C-07",
+        "hours": 4.0
+      },
+      {
+        "console_id": "C-09",
+        "hours": 4.0
+      }
+    ],
+    "top_games": [
+      {
+        "game": "Any",
+        "sessions": 8
+      },
+      {
+        "game": "FC 26",
+        "sessions": 3
+      },
+      {
+        "game": "UFC 5",
+        "sessions": 2
+      },
+      {
+        "game": "Marvel's Spider-Man 2",
+        "sessions": 1
+      },
+      {
+        "game": "Mortal Kombat 1",
+        "sessions": 1
+      }
+    ],
+    "revenue_by_payment": [
+      {
+        "method": "Kpay:50000/Cash:0",
+        "count": 1,
+        "total": 50000.0
+      },
+      {
+        "method": "KPay:9000 (dep)|Cash:17700",
+        "count": 1,
+        "total": 26700.0
+      },
+      {
+        "method": "KPay:6000 (dep)|KPay:19000",
+        "count": 1,
+        "total": 25000.0
+      },
+      {
+        "method": "KPay:6000 (dep)|KPay:18000",
+        "count": 1,
+        "total": 24000.0
+      },
+      {
+        "method": "Cash:22600",
+        "count": 1,
+        "total": 22600.0
+      },
+      {
+        "method": "KPay:22200",
+        "count": 1,
+        "total": 22200.0
+      },
+      {
+        "method": "KPay:20000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "KPay:9000 (dep)|Cash:11000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "Cash:16600",
+        "count": 1,
+        "total": 16667.0
+      },
+      {
+        "method": "KPay:16000",
+        "count": 1,
+        "total": 16000.0
+      },
+      {
+        "method": "AYA Pay:3500 (dep)|KPay:12300",
+        "count": 1,
+        "total": 15800.0
+      },
+      {
+        "method": "Cash:15000",
+        "count": 1,
+        "total": 15000.0
+      },
+      {
+        "method": "KPay:14500",
+        "count": 1,
+        "total": 14500.0
+      },
+      {
+        "method": "Cash:13000",
+        "count": 1,
+        "total": 13000.0
+      },
+      {
+        "method": "Cash:10500",
+        "count": 1,
+        "total": 10500.0
+      },
+      {
+        "method": "KPay:10000",
+        "count": 1,
+        "total": 10000.0
+      },
+      {
+        "method": "Cash:10000",
+        "count": 1,
+        "total": 10000.0
+      },
+      {
+        "method": "Cash:9000",
+        "count": 1,
+        "total": 10000.0
+      },
+      {
+        "method": "KPay:3000 (dep)|Cash:6000",
+        "count": 1,
+        "total": 9000.0
+      },
+      {
+        "method": "Cash:4500",
+        "count": 1,
+        "total": 4500.0
+      },
+      {
+        "method": "KPay:4200",
+        "count": 1,
+        "total": 4200.0
+      },
+      {
+        "method": "KPay:3500",
+        "count": 1,
+        "total": 3500.0
+      },
+      {
+        "method": "KPay:1000",
+        "count": 1,
+        "total": 1000.0
+      },
+      {
+        "method": "Cash:0",
+        "count": 1,
+        "total": 0.0
+      }
+    ]
+  },
+  "alerts": [],
+  "recommendations": []
+}

@@ -1,0 +1,362 @@
+{
+  "timestamp": "2026-08-09T17:31:58.861861Z",
+  "date": "2026-08-09",
+  "overall_status": "critical",
+  "total_issues": 34,
+  "checks": {
+    "wallet_balance": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "balance_mismatch",
+          "member_id": "PSV_A_000",
+          "member_name": "Ko Aung Chan Myint",
+          "balance_mins": 989999,
+          "expected": 999999,
+          "diff": -10000,
+          "detail": "Member PSV_A_000: balance=989999, expected 999999-0=999999 (diff=-10000)"
+        },
+        {
+          "type": "balance_mismatch",
+          "member_id": "PSV_A_004",
+          "member_name": "Aung Thurein Oo",
+          "balance_mins": 85,
+          "expected": -25,
+          "diff": 110,
+          "detail": "Member PSV_A_004: balance=85, expected 795-820=-25 (diff=110)"
+        },
+        {
+          "type": "balance_mismatch",
+          "member_id": "PSV_A_011",
+          "member_name": "Kyaw Min Naing",
+          "balance_mins": 690,
+          "expected": 660,
+          "diff": 30,
+          "detail": "Member PSV_A_011: balance=690, expected 660-0=660 (diff=30)"
+        },
+        {
+          "type": "balance_mismatch",
+          "member_id": "PSV_A_013",
+          "member_name": "Min Thant Ko Ko",
+          "balance_mins": 0,
+          "expected": -106,
+          "diff": 106,
+          "detail": "Member PSV_A_013: balance=0, expected 1260-1366=-106 (diff=106)"
+        }
+      ],
+      "count": 4
+    },
+    "topup_chain": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_003",
+          "prev_topup_id": 3,
+          "curr_topup_id": 13,
+          "prev_after": 600,
+          "curr_before": 198,
+          "diff": 402,
+          "detail": "Member PSV_A_003: topup#3 after=600 → topup#13 before=198 (diff=402)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_004",
+          "prev_topup_id": 4,
+          "curr_topup_id": 11,
+          "prev_after": 600,
+          "curr_before": 0,
+          "diff": 600,
+          "detail": "Member PSV_A_004: topup#4 after=600 → topup#11 before=0 (diff=600)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_009",
+          "prev_topup_id": 9,
+          "curr_topup_id": 20,
+          "prev_after": 600,
+          "curr_before": 148,
+          "diff": 452,
+          "detail": "Member PSV_A_009: topup#9 after=600 → topup#20 before=148 (diff=452)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_010",
+          "prev_topup_id": 10,
+          "curr_topup_id": 15,
+          "prev_after": 600,
+          "curr_before": 114,
+          "diff": 486,
+          "detail": "Member PSV_A_010: topup#10 after=600 → topup#15 before=114 (diff=486)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_013",
+          "prev_topup_id": 17,
+          "curr_topup_id": 18,
+          "prev_after": 600,
+          "curr_before": 11,
+          "diff": 589,
+          "detail": "Member PSV_A_013: topup#17 after=600 → topup#18 before=11 (diff=589)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_014",
+          "prev_topup_id": 19,
+          "curr_topup_id": 21,
+          "prev_after": 600,
+          "curr_before": 154,
+          "diff": 446,
+          "detail": "Member PSV_A_014: topup#19 after=600 → topup#21 before=154 (diff=446)"
+        }
+      ],
+      "count": 6
+    },
+    "sales_vs_bookings": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "sale_without_booking",
+          "sale_id": 1932,
+          "voucher_no": "20260809-419",
+          "console_id": "-",
+          "member_id": "-",
+          "sale_date": "2026-08-09",
+          "detail": "Sale#1932 (voucher 20260809-419) on 2026-08-09 has no matching booking"
+        },
+        {
+          "type": "sale_without_booking",
+          "sale_id": 1937,
+          "voucher_no": "20260809-353",
+          "console_id": "-",
+          "member_id": "-",
+          "sale_date": "2026-08-09",
+          "detail": "Sale#1937 (voucher 20260809-353) on 2026-08-09 has no matching booking"
+        },
+        {
+          "type": "sale_without_booking",
+          "sale_id": 1943,
+          "voucher_no": "20260809-936",
+          "console_id": "-",
+          "member_id": "-",
+          "sale_date": "2026-08-09",
+          "detail": "Sale#1943 (voucher 20260809-936) on 2026-08-09 has no matching booking"
+        },
+        {
+          "type": "sale_without_booking",
+          "sale_id": 1944,
+          "voucher_no": "20260809-496",
+          "console_id": "-",
+          "member_id": "-",
+          "sale_date": "2026-08-09",
+          "detail": "Sale#1944 (voucher 20260809-496) on 2026-08-09 has no matching booking"
+        },
+        {
+          "type": "sale_without_booking",
+          "sale_id": 1946,
+          "voucher_no": "20260809-768",
+          "console_id": "-",
+          "member_id": "-",
+          "sale_date": "2026-08-09",
+          "detail": "Sale#1946 (voucher 20260809-768) on 2026-08-09 has no matching booking"
+        },
+        {
+          "type": "sale_without_booking",
+          "sale_id": 1947,
+          "voucher_no": "20260809-320",
+          "console_id": "-",
+          "member_id": "-",
+          "sale_date": "2026-08-09",
+          "detail": "Sale#1947 (voucher 20260809-320) on 2026-08-09 has no matching booking"
+        },
+        {
+          "type": "sale_without_booking",
+          "sale_id": 1951,
+          "voucher_no": "20260809-259",
+          "console_id": "-",
+          "member_id": "-",
+          "sale_date": "2026-08-09",
+          "detail": "Sale#1951 (voucher 20260809-259) on 2026-08-09 has no matching booking"
+        },
+        {
+          "type": "sale_without_booking",
+          "sale_id": 1952,
+          "voucher_no": "20260809-841",
+          "console_id": "-",
+          "member_id": "-",
+          "sale_date": "2026-08-09",
+          "detail": "Sale#1952 (voucher 20260809-841) on 2026-08-09 has no matching booking"
+        },
+        {
+          "type": "sale_without_booking",
+          "sale_id": 1965,
+          "voucher_no": "20260809-202",
+          "console_id": "-",
+          "member_id": "-",
+          "sale_date": "2026-08-09",
+          "detail": "Sale#1965 (voucher 20260809-202) on 2026-08-09 has no matching booking"
+        }
+      ],
+      "count": 9
+    },
+    "inventory": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "inventory_mismatch",
+          "item_name": "MaMa ဘူးခေါက်ဆွဲ",
+          "inventory_quantity": 4,
+          "stock_in_total": 42,
+          "stock_out_total": 39,
+          "expected_quantity": 3,
+          "drift": 1,
+          "detail": "MaMa ဘူးခေါက်ဆွဲ: inventory=4, FIFO in(42)-out(39)=3 (drift=1)"
+        },
+        {
+          "type": "inventory_mismatch",
+          "item_name": "Spicy ကြက်အူချောင်း",
+          "inventory_quantity": 15,
+          "stock_in_total": 149,
+          "stock_out_total": 124,
+          "expected_quantity": 25,
+          "drift": -10,
+          "detail": "Spicy ကြက်အူချောင်း: inventory=15, FIFO in(149)-out(124)=25 (drift=-10)"
+        }
+      ],
+      "count": 2
+    },
+    "receipts_vs_sales": {
+      "status": "warning",
+      "issues": [
+        {
+          "type": "receipt_sale_count_mismatch",
+          "date": "2026-08-09",
+          "receipt_count": 0,
+          "sale_count": 37,
+          "diff": -37,
+          "detail": "2026-08-09: receipts=0, sales=37 (diff=-37)"
+        }
+      ],
+      "count": 1
+    },
+    "negative_sales": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1932,
+          "voucher_no": "20260809-419",
+          "date": "2026-08-09",
+          "amount": 0.0,
+          "detail": "Sale#1932 voucher 20260809-419: amount=0.0"
+        },
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1937,
+          "voucher_no": "20260809-353",
+          "date": "2026-08-09",
+          "amount": 0.0,
+          "detail": "Sale#1937 voucher 20260809-353: amount=0.0"
+        },
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1943,
+          "voucher_no": "20260809-936",
+          "date": "2026-08-09",
+          "amount": 0.0,
+          "detail": "Sale#1943 voucher 20260809-936: amount=0.0"
+        },
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1944,
+          "voucher_no": "20260809-496",
+          "date": "2026-08-09",
+          "amount": 0.0,
+          "detail": "Sale#1944 voucher 20260809-496: amount=0.0"
+        },
+        {
+          "type": "zero_or_negative_net",
+          "source": "sales_daily",
+          "sale_id": 1945,
+          "voucher_no": "20260809-608",
+          "date": "2026-08-09",
+          "gross": 11850.0,
+          "discount": 0.0,
+          "net": 0.0,
+          "detail": "Sale#1945: net=0.0 (gross=11850.00, discount=0.00)"
+        },
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1946,
+          "voucher_no": "20260809-768",
+          "date": "2026-08-09",
+          "amount": 0.0,
+          "detail": "Sale#1946 voucher 20260809-768: amount=0.0"
+        },
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1947,
+          "voucher_no": "20260809-320",
+          "date": "2026-08-09",
+          "amount": 0.0,
+          "detail": "Sale#1947 voucher 20260809-320: amount=0.0"
+        },
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1951,
+          "voucher_no": "20260809-259",
+          "date": "2026-08-09",
+          "amount": 0.0,
+          "detail": "Sale#1951 voucher 20260809-259: amount=0.0"
+        },
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1952,
+          "voucher_no": "20260809-841",
+          "date": "2026-08-09",
+          "amount": 0.0,
+          "detail": "Sale#1952 voucher 20260809-841: amount=0.0"
+        },
+        {
+          "type": "zero_or_negative_net",
+          "source": "sales_daily",
+          "sale_id": 1960,
+          "voucher_no": "20260809-542",
+          "date": "2026-08-09",
+          "gross": 34500.0,
+          "discount": 0.0,
+          "net": 0.0,
+          "detail": "Sale#1960: net=0.0 (gross=34500.00, discount=0.00)"
+        },
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 1965,
+          "voucher_no": "20260809-202",
+          "date": "2026-08-09",
+          "amount": 0.0,
+          "detail": "Sale#1965 voucher 20260809-202: amount=0.0"
+        }
+      ],
+      "count": 11
+    },
+    "booking_status": {
+      "status": "error",
+      "issues": [
+        {
+          "type": "exception",
+          "detail": "1052 (23000): Column 'id' in field list is ambiguous"
+        }
+      ],
+      "count": 1
+    }
+  }
+}
