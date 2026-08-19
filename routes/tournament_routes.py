@@ -97,6 +97,39 @@ def _parse_prize_ks(prize_raw) -> float:
         return 0.0
 
 
+def _get_prizes(tid: int) -> list:
+    """Return ordered prize-tier list for a tournament (empty if none)."""
+    rows = _mysql_query(
+        "SELECT place, label, amount_ks FROM tournament_prizes WHERE tournament_id=%s ORDER BY place ASC",
+        (tid,),
+    )
+    return [{"place": int(r["place"]), "label": r.get("label"), "amount_ks": float(r["amount_ks"] or 0)} for r in rows]
+
+
+def _resolve_champion_prize_ks(tid: int, prize_raw, prize_pool) -> float:
+    """Resolve champion prize amount with tier priority:
+    1st-place tier → prize_pool_ks → parsed prize text."""
+    tier = _mysql_query_one(
+        "SELECT amount_ks FROM tournament_prizes WHERE tournament_id=%s AND place=1", (tid,)
+    )
+    if tier and tier.get("amount_ks") is not None:
+        return float(tier["amount_ks"])
+    if prize_pool is not None:
+        return float(prize_pool)
+    return _parse_prize_ks(prize_raw)
+
+
+_MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+
+def _place_medal(place: int) -> str:
+    return _MEDALS.get(place, "🏅")
+
+
+def _fmt_amount(amount) -> str:
+    return f"{float(amount or 0):,.0f}"
+
+
 def _get_champion(tid: int):
     """Return champion dict for a tournament, or None."""
     row = _mysql_query_one(
@@ -141,7 +174,7 @@ def _crown_champion(tid: int, winner_id: int):
     t = _mysql_query_one("SELECT prize, prize_pool_ks FROM tournaments WHERE id=%s", (tid,))
     prize_raw = t.get("prize") if t else None
     prize_pool = t.get("prize_pool_ks") if t else None
-    prize_ks = float(prize_pool) if prize_pool is not None else _parse_prize_ks(prize_raw)
+    prize_ks = _resolve_champion_prize_ks(tid, prize_raw, prize_pool)
     prize_text = prize_raw
     # Upsert champion (unique on tournament_id)
     _mysql_exec(
@@ -254,6 +287,7 @@ async def list_tournaments(
             for f in ("created_at", "updated_at", "reg_open_at", "reg_close_at", "start_at"):
                 if d.get(f):
                     d[f] = str(d[f])
+            d["prizes"] = _get_prizes(r["id"])
             result.append(d)
 
         return ok(result)
@@ -353,9 +387,84 @@ async def get_tournament(tid: int, auth=Depends(verify_api_key)):
             if t.get(f):
                 t[f] = str(t[f])
         t["champion"] = _get_champion(tid)
+        t["prizes"] = _get_prizes(tid)
         return ok(t)
     except Exception as e:
         logger.error("get_tournament error: %s", e)
+        return error_response(message=str(e))
+
+
+_PLACE_LABELS = {1: "Champion", 2: "Runner-up", 3: "3rd Place"}
+
+
+def _default_place_label(place: int) -> str:
+    if place in _PLACE_LABELS:
+        return _PLACE_LABELS[place]
+    return f"{place}th Place"
+
+
+@router.get("/api/tournaments/{tid}/prizes")
+async def get_tournament_prizes(tid: int):
+    """Public: return prize tiers ordered by place."""
+    try:
+        t = _mysql_query_one("SELECT id FROM tournaments WHERE id=%s", (tid,))
+        if not t:
+            return error_response(message=f"Tournament {tid} not found", code=404)
+        return ok(_get_prizes(tid))
+    except Exception as e:
+        logger.error("get_tournament_prizes error: %s", e)
+        return error_response(message=str(e))
+
+
+@router.put("/api/tournaments/{tid}/prizes")
+async def put_tournament_prizes(tid: int, body: dict, auth=Depends(verify_api_key)):
+    """Replace-all prize tiers for a tournament: {prizes: [{place, label?, amount_ks}]}."""
+    try:
+        t = _mysql_query_one("SELECT id FROM tournaments WHERE id=%s", (tid,))
+        if not t:
+            return error_response(message=f"Tournament {tid} not found", code=404)
+
+        prizes = body.get("prizes") if isinstance(body, dict) else None
+        if not isinstance(prizes, list):
+            return error_response(message="prizes must be a list", code=400)
+
+        normalized = []
+        seen_places = set()
+        for p in prizes:
+            if not isinstance(p, dict):
+                return error_response(message="each prize must be an object", code=400)
+            try:
+                place = int(p.get("place"))
+            except (ValueError, TypeError):
+                return error_response(message="place must be an integer", code=400)
+            if place < 1:
+                return error_response(message="place must be >= 1", code=400)
+            if place in seen_places:
+                return error_response(message=f"duplicate place {place}", code=400)
+            seen_places.add(place)
+            try:
+                amount_ks = float(p.get("amount_ks", 0) or 0)
+            except (ValueError, TypeError):
+                return error_response(message="amount_ks must be a number", code=400)
+            if amount_ks < 0:
+                return error_response(message="amount_ks must be >= 0", code=400)
+            label = (p.get("label") or "").strip()
+            if not label:
+                label = _default_place_label(place)
+            normalized.append({"place": place, "label": label, "amount_ks": amount_ks})
+
+        # Replace-all
+        _mysql_exec("DELETE FROM tournament_prizes WHERE tournament_id=%s", (tid,))
+        for n in normalized:
+            _mysql_exec(
+                "INSERT INTO tournament_prizes (tournament_id, place, label, amount_ks) VALUES (%s, %s, %s, %s)",
+                (tid, n["place"], n["label"], n["amount_ks"]),
+            )
+
+        logger.info("Tournament %s prize tiers replaced: %s", tid, [n["place"] for n in normalized])
+        return ok(_get_prizes(tid))
+    except Exception as e:
+        logger.error("put_tournament_prizes error: %s", e)
         return error_response(message=str(e))
 
 
@@ -791,6 +900,7 @@ async def registration_page(token: str, request: Request):
         # Format prize and dates for display
         prize_str = t.get("prize") or ""
         prize_pool = t.get("prize_pool_ks")
+        prizes = _get_prizes(t["id"])
         try:
             prize_pool_float = float(prize_pool) if prize_pool is not None else None
         except (ValueError, TypeError):
@@ -809,6 +919,18 @@ async def registration_page(token: str, request: Request):
         tn_rules = _html.escape(rules)
         tn_format = "Single Elimination" if t.get("format") == "single" else "Double Elimination"
         tn_id = int(t["id"])
+
+        # Prize breakdown block (structured tiers)
+        prize_breakdown = ''
+        if prizes:
+            rows = ''.join(
+                f'<div class="flex items-center justify-between text-sm py-1"><span class="text-gray-400">{_place_medal(p["place"])} {_html.escape(p["label"] or "")}</span><span class="text-amber-300 font-semibold">{_fmt_amount(p["amount_ks"])} Ks</span></div>'
+                for p in prizes
+            )
+            prize_breakdown = f'''<div class="mt-4 pt-3 border-t border-gray-700/50">
+    <p class="text-xs text-gray-500 font-semibold mb-1">🏆 ဆုစာရင်း (Prize Breakdown)</p>
+    {rows}
+  </div>'''
 
         # Registration availability: full / closed → show notice instead of form
         t_status = (t.get("status") or "").lower()
@@ -1006,6 +1128,7 @@ async def registration_page(token: str, request: Request):
       {f'<div class="text-gray-400">🏅 Prize</div><div class="text-right text-amber-300 font-semibold">{tn_prize}</div>' if (prize_str and prize_pool_float is None) else ''}
       {f'<div class="text-gray-400">📅 Date</div><div class="text-right text-white">{start_str}</div>' if start_str else ''}
     </div>
+    {prize_breakdown}
     {f'<p class="mt-4 pt-3 border-t border-gray-700/50 text-gray-400 text-xs leading-relaxed">{tn_desc}</p>' if description else ''}
   </div>
 
@@ -1709,7 +1832,7 @@ async def admin_set_winner(tid: int, body: dict, auth=Depends(verify_api_key)):
         if prize_ks is None and prize_text is None:
             prize_raw = t.get("prize")
             _pool = t.get("prize_pool_ks")
-            prize_ks = float(_pool) if _pool is not None else _parse_prize_ks(prize_raw)
+            prize_ks = _resolve_champion_prize_ks(tid, prize_raw, _pool)
             prize_text = prize_raw
 
         _mysql_exec(
@@ -1779,6 +1902,7 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
         prize_pool_float = None
     rules = t.get("rules") or ""
     champion = _get_champion(tid)
+    prizes = _get_prizes(tid)
 
     # Total rounds = log2(next power of 2 >= player_count): 64→6, 32→5, 5→3, 4→2
     total_rounds = max(1, (player_count - 1).bit_length())
@@ -1901,12 +2025,18 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
 
     # ── Prize + Rules panels ──
     info_panels = ''
-    if prize_pool_float is not None or prize or rules or champion:
+    if prize_pool_float is not None or prize or rules or champion or prizes:
         info_panels = '<div class="grid grid-cols-1 gap-3 mb-5">'
         if prize_pool_float is not None:
             info_panels += f'<div class="rounded-lg border border-amber-700/40 bg-surface-800 p-3"><span class="text-xs text-gray-400">🏅 ဆုကြေး စုစုပေါင်း (Prize Pool)</span><p class="text-amber-300 font-semibold mt-0.5">{prize_pool_float:,.0f} Ks</p></div>'
         if prize:
             info_panels += f'<div class="rounded-lg border border-amber-700/40 bg-surface-800 p-3"><span class="text-xs text-gray-400">ဆုခွဲဝေမှု (Breakdown)</span><p class="text-amber-300 font-semibold mt-0.5">{_html.escape(prize)}</p></div>'
+        if prizes:
+            _pb = ''.join(
+                f'<p class="text-amber-200 text-sm mt-0.5">{_place_medal(p["place"])} {_html.escape(p["label"] or "")}: {_fmt_amount(p["amount_ks"])} Ks</p>'
+                for p in prizes
+            )
+            info_panels += f'<div class="rounded-lg border border-amber-700/40 bg-surface-800 p-3"><span class="text-xs text-gray-400">🏆 ဆုစာရင်း (Prize Breakdown)</span>{_pb}</div>'
         if rules:
             info_panels += f'<a href="/api/tournaments/{t["id"]}/rules?view=html" target="psvibe-tournament-rules" rel="noopener" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-vibe-600 hover:bg-vibe-500 text-white transition-colors">📖 စည်းကမ်းများ ကြည့်ရန် (Rules)</a>'
         info_panels += '</div>'
@@ -1999,6 +2129,7 @@ def _render_rules_html(t: dict) -> HTMLResponse:
     except (ValueError, TypeError):
         prize_pool_float = None
     rules = t.get("rules") or ""
+    prizes = _get_prizes(t["id"])
 
     prize_line = ''
     if prize_pool_float is not None:
@@ -2007,6 +2138,12 @@ def _render_rules_html(t: dict) -> HTMLResponse:
             prize_line += f'<p class="text-gray-400 text-xs mt-0.5">ဆုခွဲဝေမှု: {_html.escape(prize)}</p>'
     elif prize:
         prize_line = f'<p class="text-amber-300 font-semibold text-sm mt-1">💰 ဆုကြေး: {_html.escape(prize)}</p>'
+    if prizes:
+        _pb = ''.join(
+            f'<p class="text-gray-300 text-xs mt-0.5">{_place_medal(p["place"])} {_html.escape(p["label"] or "")}: {_fmt_amount(p["amount_ks"])} Ks</p>'
+            for p in prizes
+        )
+        prize_line += f'<div class="mt-2"><p class="text-amber-300 font-semibold text-sm">🏆 ဆုစာရင်း (Prize Breakdown)</p>{_pb}</div>'
 
     if rules:
         rules_body = f'''<div class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 shadow-xl shadow-vibe-950/30">
