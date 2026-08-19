@@ -1953,12 +1953,14 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
             span = 2 ** rnum
             by_pos = {int(m.get("position") or 0): m for m in matches}
             final_cls = " final-col" if is_final_col else ""
+            if rnum == 1:
+                final_cls += " first-col"
             cells = []
             for pos in range(1, slot_count + 1):
                 start = (pos - 1) * span + 1
                 m = by_pos.get(pos)
                 if m is None:
-                    cells.append(f'''<div class="match-cell{final_cls}" style="grid-column:{rnum};grid-row:{start} / span {span}"><div class="glass-card dashed-card"><div class="py-1.5 text-center text-[10px] text-gray-600"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full bg-gray-600 mr-1 animate-pulse"></span>TBD</div></div></div>''')
+                    cells.append(f'''<div class="match-cell{final_cls}" style="grid-column:{rnum};grid-row:{start} / span {span}"><span class="cell-conn"></span><div class="glass-card dashed-card"><div class="py-1.5 text-center text-[10px] text-gray-600"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full bg-gray-600 mr-1 animate-pulse"></span>TBD</div></div></div>''')
                     continue
                 p1_n = m["player1"]["name"] or "BYE"
                 p2_n = m["player2"]["name"] or "BYE"
@@ -1997,10 +1999,10 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
                 else:
                     card_cls = "glass-card"
 
-                cells.append(f'''<div class="match-cell{final_cls}" style="grid-column:{rnum};grid-row:{start} / span {span}"><div class="{card_cls}">{ring}{row1}{row2}</div></div>''')
+                cells.append(f'''<div class="match-cell{final_cls}" style="grid-column:{rnum};grid-row:{start} / span {span}"><span class="cell-conn"></span><div class="{card_cls}">{ring}{row1}{row2}</div></div>''')
             cells_by_round.append("".join(cells))
 
-        bracket_body = f'''<div class="overflow-x-auto pb-4 pt-1">
+        bracket_body = f'''<div class="overflow-x-auto pb-4 pt-1 pr-4">
     <div class="bracket-heads" style="grid-template-columns:repeat({total_rounds}, minmax(12rem, 1fr));">
       {"".join(headers)}
     </div>
@@ -2195,9 +2197,11 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
   h1, .font-display {{ font-family: 'Outfit','Inter',sans-serif; }}
 
   @media (max-width: 640px) {{
-    .bracket-grid {{ gap: 0.35rem; }}
-    .match-cell::before {{ height: 1px; width: 0.45rem; right: -0.35rem; background: rgba(157,172,252,0.18); }}
-    .match-cell::after {{ width: 1px; right: -0.35rem; background: rgba(157,172,252,0.08); }}
+    .bracket-heads {{ gap: 0.75rem; }}
+    .bracket-grid {{ gap: 0.75rem; }}
+    .match-cell::before {{ height: 2px; width: 0.875rem; right: -0.375rem; }}
+    .match-cell::after {{ width: 2px; left: -0.375rem; }}
+    .cell-conn {{ height: 2px; width: 0.875rem; left: -0.375rem; }}
   }}
 </style>
 </head>
