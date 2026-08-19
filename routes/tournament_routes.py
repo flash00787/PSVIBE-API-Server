@@ -1959,8 +1959,14 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
             for pos in range(1, slot_count + 1):
                 start = (pos - 1) * span + 1
                 m = by_pos.get(pos)
+                # per-cell connector divs (plain HTML + CSS, NO SVG / NO filters)
+                conns = ''
+                if not is_final_col:
+                    conns += '<div class="conn conn-r"></div>'
+                if rnum > 1:
+                    conns += '<div class="conn conn-v"></div><div class="conn conn-l"></div>'
                 if m is None:
-                    cells.append(f'''<div class="match-cell{final_cls}" style="grid-column:{rnum};grid-row:{start} / span {span}"><span class="cell-conn"></span><div class="glass-card dashed-card"><div class="py-1.5 text-center text-[10px] text-gray-600"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full bg-gray-600 mr-1 animate-pulse"></span>TBD</div></div></div>''')
+                    cells.append(f'''<div class="match-cell{final_cls}" data-round="{rnum}" data-pos="{pos}" style="grid-column:{rnum};grid-row:{start} / span {span}">{conns}<div class="glass-card dashed-card"><div class="py-1.5 text-center text-[10px] text-gray-600"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full bg-gray-600 mr-1 animate-pulse"></span>TBD</div></div></div>''')
                     continue
                 p1_n = m["player1"]["name"] or "BYE"
                 p2_n = m["player2"]["name"] or "BYE"
@@ -1999,14 +2005,14 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
                 else:
                     card_cls = "glass-card"
 
-                cells.append(f'''<div class="match-cell{final_cls}" style="grid-column:{rnum};grid-row:{start} / span {span}"><span class="cell-conn"></span><div class="{card_cls}">{ring}{row1}{row2}</div></div>''')
+                cells.append(f'''<div class="match-cell{final_cls}" data-round="{rnum}" data-pos="{pos}" style="grid-column:{rnum};grid-row:{start} / span {span}">{conns}<div class="{card_cls}">{ring}{row1}{row2}</div></div>''')
             cells_by_round.append("".join(cells))
 
-        bracket_body = f'''<div class="overflow-x-auto pb-4 pt-1 pr-4">
+        bracket_body = f'''<div class="bracket-scroll overflow-x-auto pb-4 pt-1 pr-4" id="bracketScroll">
     <div class="bracket-heads" style="grid-template-columns:repeat({total_rounds}, minmax(12rem, 1fr));">
       {"".join(headers)}
     </div>
-    <div class="bracket-grid" style="grid-template-columns:repeat({total_rounds}, minmax(12rem, 1fr));grid-template-rows:repeat({T}, 1fr);">
+    <div class="bracket-grid" id="bracketGrid" data-total-rounds="{total_rounds}" style="grid-template-columns:repeat({total_rounds}, minmax(12rem, 1fr));grid-template-rows:repeat({T}, 1fr);">
       {"".join(cells_by_round)}
     </div>
   </div>'''
@@ -2091,41 +2097,45 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
   }}
 
   /* match cell: vertically centers card within its grid span */
-  .match-cell {{ position: relative; display: flex; align-items: center; justify-content: center; padding: 0 0.5rem; min-height: 0; }}
+  .match-cell {{ position: relative; display: flex; align-items: center; justify-content: center; padding: 0 0.5rem; min-height: 0; overflow: visible; }}
   .match-cell > .glass-card {{ width: 100%; margin: 0.5rem 0; }}
 
-  /* ── Connector lines (symmetric grid) ── */
-  .bracket-heads {{ display: grid; gap: 0.5rem; min-width: max-content; margin-bottom: 0.4rem; }}
-  .bracket-grid {{ display: grid; gap: 0.5rem; min-width: max-content; }}
+  /* ── Connector lines (per-cell HTML divs — NO SVG / NO filters, 100% reliable) ── */
+  .bracket-heads {{ display: grid; gap: 1.5rem; min-width: max-content; margin-bottom: 0.4rem; overflow: visible; }}
+  .bracket-grid {{ display: grid; gap: 1.5rem; min-width: max-content; overflow: visible; --gap-half: 0.75rem; }}
   .col-head {{ display: flex; }}
   .col-head > div {{ width: 100%; }}
 
-  /* horizontal stub: from card right edge toward next column gap */
-  .match-cell::before {{
-    content: '';
-    position: absolute;
-    right: -0.5rem;
-    top: 50%;
-    width: 0.6rem;
-    height: 2px;
-    background: linear-gradient(to right, rgba(157,172,252,0.35), rgba(157,172,252,0.05));
-    z-index: 1;
+  .conn {{ position: absolute; z-index: 2; box-sizing: border-box; }}
+  /* right stub: card right edge → next column gap */
+  .conn-r {{
+    top: 50%; transform: translateY(-50%);
+    right: calc(-1 * var(--gap-half));
+    width: calc(0.5rem + var(--gap-half));
+    height: 3px;
+    background: linear-gradient(90deg, #9dacfc, #7585f8);
+    box-shadow: 0 0 6px rgba(117,133,248,0.9), 0 0 2px rgba(255,255,255,0.25);
   }}
-  /* hide horizontal stub on the final round column */
-  .match-cell.final-col::before {{ display: none; }}
+  /* vertical join: links the two feeder card centers in the left gap */
+  .conn-v {{
+    left: calc(-1 * var(--gap-half));
+    top: 25%; bottom: 25%;
+    width: 3px;
+    background: linear-gradient(180deg, #9dacfc, #7585f8);
+    box-shadow: 0 0 6px rgba(117,133,248,0.9), 0 0 2px rgba(255,255,255,0.25);
+  }}
+  /* left stub: gap center → card left edge */
+  .conn-l {{
+    top: 50%; transform: translateY(-50%);
+    left: calc(-1 * var(--gap-half));
+    width: calc(0.5rem + var(--gap-half));
+    height: 3px;
+    background: linear-gradient(90deg, #7585f8, #9dacfc);
+    box-shadow: 0 0 6px rgba(117,133,248,0.9);
+  }}
 
-  /* vertical join lines: top/bottom halves feeding into the card center */
-  .match-cell::after {{
-    content: '';
-    position: absolute;
-    right: -0.5rem;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    background: rgba(157,172,252,0.14);
-    z-index: 0;
-    display: none;
-  }}
+  /* glass card sits above connector divs */
+  .glass-card {{ position: relative; z-index: 3; }}
 
   /* live / gold match highlight */
   .card-live {{ border-color: rgba(45,212,191,0.55); box-shadow: 0 0 0 3px rgba(45,212,191,0.15), 0 0 24px rgba(45,212,191,0.3); }}
@@ -2197,11 +2207,8 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
   h1, .font-display {{ font-family: 'Outfit','Inter',sans-serif; }}
 
   @media (max-width: 640px) {{
-    .bracket-heads {{ gap: 0.75rem; }}
-    .bracket-grid {{ gap: 0.75rem; }}
-    .match-cell::before {{ height: 2px; width: 0.875rem; right: -0.375rem; }}
-    .match-cell::after {{ width: 2px; left: -0.375rem; }}
-    .cell-conn {{ height: 2px; width: 0.875rem; left: -0.375rem; }}
+    .bracket-heads {{ gap: 1rem; }}
+    .bracket-grid {{ gap: 1rem; --gap-half: 0.5rem; }}
   }}
 </style>
 </head>
