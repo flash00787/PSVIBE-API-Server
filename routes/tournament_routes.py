@@ -1928,109 +1928,85 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
         return "from-vibe-600 to-vibe-800 text-vibe-100"
 
     if rounds:
-        # ── Full bracket structure: real matches + TBD placeholders for future rounds ──
-        round_cols = []
+        # ── Symmetric single-elimination bracket via one CSS Grid across all rounds ──
+        # R = total_rounds; M = round-1 matches = 2^(R-1); total grid rows T = 2*M.
+        # Round r (1-indexed), match position p (1-indexed): span = 2^r,
+        # start row = (p-1)*2^r + 1. Each card is vertically centered in its span
+        # → symmetric Challonge/jquery-bracket tree (later rounds centered, no dead space).
+        M = 2 ** (total_rounds - 1)
+        T = 2 * M
+
+        def _score_badge(s, is_w):
+            if s is None:
+                return ""
+            cls = "text-amber-300 bg-amber-400/20 border-amber-400/40" if is_w else "text-gray-300 bg-white/10 border-white/10"
+            return f'<span class="ml-auto shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded-md border {cls}">{s}</span>'
+
+        cells_by_round = []
+        headers = []
+        for rnum in range(1, total_rounds + 1):
+            headers.append(f'<div class="col-head" style="grid-column:{rnum}"><div class="text-center text-[11px] font-bold py-1.5 bg-gradient-to-r {round_header_cls(rnum)} rounded-lg shadow-md">{round_label(rnum)}</div></div>')
         for rnum in range(1, total_rounds + 1):
             matches = rounds.get(rnum) or []
             is_final_col = (rnum == total_rounds)
-            # slot_count = how many matches this round will eventually hold
             slot_count = 2 ** (total_rounds - rnum)
-            if matches:
-                match_cards = []
-                for m in matches:
-                    p1_n = m["player1"]["name"] or "BYE"
-                    p2_n = m["player2"]["name"] or "BYE"
-                    s1 = m.get("score1")
-                    s2 = m.get("score2")
-                    winner = m.get("winner")
-                    status_m = m.get("status", "pending")
-                    p1_seed = (m["player1"] or {}).get("seed")
-                    p2_seed = (m["player2"] or {}).get("seed")
+            span = 2 ** rnum
+            by_pos = {int(m.get("position") or 0): m for m in matches}
+            final_cls = " final-col" if is_final_col else ""
+            cells = []
+            for pos in range(1, slot_count + 1):
+                start = (pos - 1) * span + 1
+                m = by_pos.get(pos)
+                if m is None:
+                    cells.append(f'''<div class="match-cell{final_cls}" style="grid-column:{rnum};grid-row:{start} / span {span}"><div class="glass-card dashed-card"><div class="py-1.5 text-center text-[10px] text-gray-600"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full bg-gray-600 mr-1 animate-pulse"></span>TBD</div></div></div>''')
+                    continue
+                p1_n = m["player1"]["name"] or "BYE"
+                p2_n = m["player2"]["name"] or "BYE"
+                s1 = m.get("score1")
+                s2 = m.get("score2")
+                winner = m.get("winner")
+                status_m = m.get("status", "pending")
+                p1_seed = (m["player1"] or {}).get("seed")
+                p2_seed = (m["player2"] or {}).get("seed")
 
-                    p1_is_w = bool(winner and winner == p1_n)
-                    p2_is_w = bool(winner and winner == p2_n)
-                    if p1_is_w:
-                        p1_row_cls = "bracket-row-winner"
-                        p1_cls = "text-amber-300 font-bold"
-                    elif winner and p1_n != "BYE":
-                        p1_row_cls = ""
-                        p1_cls = "line-through text-gray-500 opacity-70"
+                p1_is_w = bool(winner and winner == p1_n)
+                p2_is_w = bool(winner and winner == p2_n)
+
+                def _row(pn, seed, s_str, is_w):
+                    p_name = pn or "BYE"
+                    if is_w:
+                        row_cls = "bracket-row-winner"
+                        p_cls = "text-amber-300 font-bold"
+                    elif winner and p_name != "BYE":
+                        row_cls = ""
+                        p_cls = "line-through text-gray-500 opacity-70"
                     else:
-                        p1_row_cls = ""
-                        p1_cls = "text-gray-200"
-                    if p2_is_w:
-                        p2_row_cls = "bracket-row-winner"
-                        p2_cls = "text-amber-300 font-bold"
-                    elif winner and p2_n != "BYE":
-                        p2_row_cls = ""
-                        p2_cls = "line-through text-gray-500 opacity-70"
-                    else:
-                        p2_row_cls = ""
-                        p2_cls = "text-gray-200"
+                        row_cls = ""
+                        p_cls = "text-gray-200"
+                    seed_chip = f'<span class="seed-chip">{seed}</span>' if seed else ''
+                    award_mark = '<span class="text-[10px] ml-0.5">🏆</span>' if is_w else ""
+                    return f'''<div class="flex items-center gap-1.5 text-xs min-w-0 {row_cls}">{seed_chip}<span class="flex-1 truncate {p_cls}">{_html.escape(p_name)}{award_mark}</span>{s_str}</div>'''
 
-                    def _score_badge(s, is_w):
-                        if s is None:
-                            return ""
-                        cls = "text-amber-300 bg-amber-400/20 border-amber-400/40" if is_w else "text-gray-300 bg-white/10 border-white/10"
-                        return f'<span class="ml-auto shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded-md border {cls}">{s}</span>'
+                row1 = _row(p1_n, p1_seed, _score_badge(s1, p1_is_w), p1_is_w)
+                row2 = _row(p2_n, p2_seed, _score_badge(s2, p2_is_w), p2_is_w).replace('<div class="flex items-center', '<div class="flex items-center mt-1.5 pt-1.5 border-t border-white/5', 1)
 
-                    s1_str = _score_badge(s1, p1_is_w)
-                    s2_str = _score_badge(s2, p2_is_w)
-                    seed1 = f'<span class="seed-chip">{p1_seed}</span>' if p1_seed else ''
-                    seed2 = f'<span class="seed-chip">{p2_seed}</span>' if p2_seed else ''
-                    award1 = '<span class="text-[10px] ml-0.5">🏆</span>' if p1_is_w else ""
-                    award2 = '<span class="text-[10px] ml-0.5">🏆</span>' if p2_is_w else ""
+                ring = ''
+                if status == "live":
+                    ring = '<span class="live-dot"></span>'
+                    card_cls = "glass-card card-live-gold" if is_final_col else "glass-card card-live"
+                else:
+                    card_cls = "glass-card"
 
-                    # card appearance
-                    if status_m == "complete":
-                        card_cls = "glass-card"
-                        ring = ""
-                    elif status == "live" and is_final_col:
-                        card_cls = "glass-card card-live-gold"
-                        ring = '<span class="live-dot"></span>'
-                    elif status == "live":
-                        card_cls = "glass-card card-live"
-                        ring = '<span class="live-dot"></span>'
-                    else:
-                        card_cls = "glass-card"
-                        ring = ""
+                cells.append(f'''<div class="match-cell{final_cls}" style="grid-column:{rnum};grid-row:{start} / span {span}"><div class="{card_cls}">{ring}{row1}{row2}</div></div>''')
+            cells_by_round.append("".join(cells))
 
-                    match_cards.append(f'''
-            <div class="match-slot">
-              <div class="{card_cls}">
-                <div class="flex items-center gap-1.5 text-xs min-w-0 {p1_row_cls}">
-                  {seed1}{ring}
-                  <span class="flex-1 truncate {p1_cls}">{_html.escape(p1_n)}{award1}</span>{s1_str}
-                </div>
-                <div class="flex items-center gap-1.5 text-xs min-w-0 mt-1.5 pt-1.5 border-t border-white/5 {p2_row_cls}">
-                  {seed2}
-                  <span class="flex-1 truncate {p2_cls}">{_html.escape(p2_n)}{award2}</span>{s2_str}
-                </div>
-              </div>
-            </div>''')
-                # TBD fillers for remaining slots
-                body = "".join(match_cards) + "".join(f'''
-            <div class="match-slot">
-              <div class="glass-card dashed-card">
-                <div class="py-1.5 text-center text-[10px] text-gray-600"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full bg-gray-600 mr-1 animate-pulse"></span>TBD</div>
-              </div>
-            </div>''' for _ in range(max(0, slot_count - len(match_cards))))
-            else:
-                body = "".join(f'''
-            <div class="match-slot">
-              <div class="glass-card dashed-card">
-                <div class="py-1.5 text-center text-[10px] text-gray-600"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full bg-gray-600 mr-1 animate-pulse"></span>TBD</div>
-              </div>
-            </div>''' for _ in range(slot_count))
-
-            round_cols.append(f'''
-        <div class="flex-shrink-0 w-48 md:w-52 bracket-col">
-          <div class="text-center text-[11px] font-bold mb-2 py-1.5 bg-gradient-to-r {round_header_cls(rnum)} rounded-lg shadow-md">{round_label(rnum)}</div>
-          {body}
-        </div>''')
-
-        bracket_body = f'''<div class="flex gap-3 overflow-x-auto pb-4 pt-1">
-    {"".join(round_cols)}
+        bracket_body = f'''<div class="overflow-x-auto pb-4 pt-1">
+    <div class="bracket-heads" style="grid-template-columns:repeat({total_rounds}, minmax(12rem, 1fr));">
+      {"".join(headers)}
+    </div>
+    <div class="bracket-grid" style="grid-template-columns:repeat({total_rounds}, minmax(12rem, 1fr));grid-template-rows:repeat({T}, 1fr);">
+      {"".join(cells_by_round)}
+    </div>
   </div>'''
     else:
         bracket_body = '''<div class="text-center py-14 fade-in">
@@ -2112,31 +2088,42 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     transform: translateY(-1px);
   }}
 
-  /* match slot spacing + connector host */
-  .match-slot {{ position: relative; margin-bottom: 0.75rem; }}
-  .match-slot:last-child {{ margin-bottom: 0; }}
+  /* match cell: vertically centers card within its grid span */
+  .match-cell {{ position: relative; display: flex; align-items: center; justify-content: center; padding: 0 0.5rem; min-height: 0; }}
+  .match-cell > .glass-card {{ width: 100%; margin: 0.5rem 0; }}
 
-  /* ── Connector lines (centerConnectors style) ── */
-  .bracket-col {{ position: relative; }}
-  .bracket-col:not(:first-child)::before {{
+  /* ── Connector lines (symmetric grid) ── */
+  .bracket-heads {{ display: grid; gap: 0.5rem; min-width: max-content; margin-bottom: 0.4rem; }}
+  .bracket-grid {{ display: grid; gap: 0.5rem; min-width: max-content; }}
+  .col-head {{ display: flex; }}
+  .col-head > div {{ width: 100%; }}
+
+  /* horizontal stub: from card right edge toward next column gap */
+  .match-cell::before {{
     content: '';
     position: absolute;
-    left: -0.75rem;
-    top: 1.9rem;
-    bottom: 1.9rem;
-    width: 2px;
-    background: linear-gradient(to bottom, rgba(157,172,252,0.05), rgba(157,172,252,0.5), rgba(157,172,252,0.05));
-  }}
-  .match-slot::after {{
-    content: '';
-    position: absolute;
-    right: -0.75rem;
+    right: -0.5rem;
     top: 50%;
-    width: 0.75rem;
+    width: 0.6rem;
     height: 2px;
-    background: rgba(157,172,252,0.28);
+    background: linear-gradient(to right, rgba(157,172,252,0.35), rgba(157,172,252,0.05));
+    z-index: 1;
   }}
-  .bracket-col:last-child .match-slot::after {{ display: none; }}
+  /* hide horizontal stub on the final round column */
+  .match-cell.final-col::before {{ display: none; }}
+
+  /* vertical join lines: top/bottom halves feeding into the card center */
+  .match-cell::after {{
+    content: '';
+    position: absolute;
+    right: -0.5rem;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: rgba(157,172,252,0.14);
+    z-index: 0;
+    display: none;
+  }}
 
   /* live / gold match highlight */
   .card-live {{ border-color: rgba(45,212,191,0.55); box-shadow: 0 0 0 3px rgba(45,212,191,0.15), 0 0 24px rgba(45,212,191,0.3); }}
@@ -2208,8 +2195,9 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
   h1, .font-display {{ font-family: 'Outfit','Inter',sans-serif; }}
 
   @media (max-width: 640px) {{
-    .bracket-col:not(:first-child)::before {{ width: 1px; }}
-    .match-slot::after {{ height: 1px; background: rgba(157,172,252,0.18); }}
+    .bracket-grid {{ gap: 0.35rem; }}
+    .match-cell::before {{ height: 1px; width: 0.45rem; right: -0.35rem; background: rgba(157,172,252,0.18); }}
+    .match-cell::after {{ width: 1px; right: -0.35rem; background: rgba(157,172,252,0.08); }}
   }}
 </style>
 </head>
