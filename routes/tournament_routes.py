@@ -985,16 +985,15 @@ async def registration_page(token: str, request: Request):
     {f'<p class="mt-4 pt-3 border-t border-gray-700/50 text-gray-400 text-xs leading-relaxed">{tn_desc}</p>' if description else ''}
   </div>
 
-  {f'''<!-- Rules Card -->
+  {f'''<!-- Rules Button -->
   <div class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 mb-5 shadow-xl shadow-vibe-950/30">
-    <h2 class="text-white font-bold text-sm mb-3">📖 စည်းကမ်းများ (Rules)</h2>
-    <div class="text-gray-300 text-xs leading-relaxed whitespace-pre-wrap">{tn_rules}</div>
+    <button type="button" onclick="openRules()" class="w-full text-sm font-semibold px-3 py-2.5 rounded-lg bg-vibe-600 hover:bg-vibe-500 text-white transition-colors">📖 စည်းကမ်းများ ကြည့်ရန် (Rules)</button>
   </div>''' if rules else ''}
+
+  {form_html}
 
   <!-- Message area -->
   <div id="msg" class="hidden rounded-lg p-3 mb-4 text-sm font-medium"></div>
-
-  {form_html}
 
   <!-- Registered Players + Bracket -->
   <div class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 mb-5 shadow-xl shadow-vibe-950/30">
@@ -1131,6 +1130,9 @@ function escapeHtml(s) {{
 }}
 function openBracket() {{
   window.open('/api/tournaments/' + TID + '/bracket?view=html', '_blank');
+}}
+function openRules() {{
+  window.open('/api/tournaments/' + TID + '/rules?view=html', '_blank');
 }}
 async function loadPlayers() {{
   try {{
@@ -1374,6 +1376,32 @@ async def view_bracket(tid: int, request: Request = None, view: str = Query(None
         })
     except Exception as e:
         logger.error("view_bracket error: %s", e)
+        return error_response(message=str(e))
+
+
+@router.get("/api/tournaments/{tid}/rules")
+async def view_rules(tid: int, request: Request = None, view: str = Query(None)):
+    """Public standalone rules page: tournament info + rules content.
+
+    Pass ?view=html for a styled HTML rules page (shareable, opens in new tab).
+    Default returns JSON.
+    """
+    try:
+        t = _ensure_tournament(tid)
+        t_info = dict(t)
+        for f in ("created_at", "updated_at", "reg_open_at", "reg_close_at", "start_at"):
+            if t_info.get(f):
+                t_info[f] = str(t_info[f])
+
+        if view == "html":
+            return _render_rules_html(t)
+
+        return ok({
+            "tournament": t_info,
+            "rules": t.get("rules") or "",
+        })
+    except Exception as e:
+        logger.error("view_rules error: %s", e)
         return error_response(message=str(e))
 
 
@@ -1916,6 +1944,72 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
   }}, 25000);
 }})();
 </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
+
+
+def _render_rules_html(t: dict) -> HTMLResponse:
+    """Render a styled standalone Rules page (Tailwind CDN, VIBE dark theme).
+
+    Public, shareable — opens in a new tab via the reg page / dashboard View button.
+    Empty rules → friendly empty state (still HTTP 200).
+    """
+    import html as _html
+    tn_name = _html.escape(t.get("name", "Tournament"))
+    tn_game = _html.escape(t.get("game", ""))
+    reg_token = t.get("reg_token") or ""
+    reg_link = f"https://ps-vibe.com/t/{_html.escape(reg_token)}" if reg_token else "#"
+    prize = t.get("prize") or ""
+    rules = t.get("rules") or ""
+
+    prize_line = f'<p class="text-amber-300 font-semibold text-sm mt-1">💰 ဆုကြေး: {_html.escape(prize)}</p>' if prize else ''
+
+    if rules:
+        rules_body = f'''<div class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 shadow-xl shadow-vibe-950/30">
+      <h2 class="text-white font-bold text-sm mb-3">📖 စည်းကမ်းများ (Rules)</h2>
+      <div class="text-gray-300 text-xs leading-relaxed whitespace-pre-wrap">{_html.escape(rules)}</div>
+    </div>'''
+    else:
+        rules_body = '''<div class="bg-surface-800 rounded-xl border border-vibe-900/50 p-8 text-center shadow-xl shadow-vibe-950/30">
+      <div class="text-4xl mb-3">📖</div>
+      <p class="text-gray-300 font-semibold">စည်းကမ်းများ မရှိသေးပါ</p>
+      <p class="text-gray-500 text-xs mt-2">Rules မကြာမီ ထည့်ပေးပါမယ် — ခဏနေ ပြန်ကြည့်ပါဦး 🙏</p>
+    </div>'''
+
+    html = f"""<!DOCTYPE html>
+<html lang="my">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="{tn_name} — PS VIBE tournament rules">
+<title>{tn_name} — Rules</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={{theme:{{extend:{{colors:{{vibe:{{300:'#9dacfc',400:'#7585f8',500:'#4a55ba',600:'#1D2BA9',700:'#172287',800:'#111a65',950:'#0a0f33'}},surface:{{900:'#0f0f1a',800:'#1a1a2e',700:'#16213e',600:'#111827'}}}}}}}}}}</script>
+<style>
+  body {{ background: #0f0f1a; }}
+  ::-webkit-scrollbar {{ width: 8px; }}
+  ::-webkit-scrollbar-thumb {{ background: #1D2BA9; border-radius: 8px; }}
+  ::-webkit-scrollbar-track {{ background: #1a1a2e; border-radius: 8px; }}
+</style>
+</head>
+<body class="min-h-screen text-white font-sans p-4">
+<div class="max-w-3xl mx-auto">
+  <div class="flex items-center justify-between mb-5">
+    <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-surface-700 hover:bg-vibe-800 text-gray-300 transition-colors">← Back</a>
+    <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-vibe-600 hover:bg-vibe-500 text-white transition-colors">🏆 Tournament Page</a>
+  </div>
+  <div class="text-center mb-5">
+    <img src="/uploads/psvibe-logo-v2.png" alt="PS VIBE" class="w-36 mx-auto mb-3">
+    <h1 class="text-2xl font-bold">📖 {tn_name}</h1>
+    <p class="text-vibe-400 text-sm mt-1">{tn_game} &middot; စည်းကမ်းများ (Rules)</p>
+    {prize_line}
+  </div>
+  {rules_body}
+  <div class="text-center mt-8 space-y-1">
+    <p class="text-gray-600 text-xs">PS VIBE Gaming Lounge &middot; Yangon</p>
+  </div>
+</div>
 </body>
 </html>"""
     return HTMLResponse(content=html)
