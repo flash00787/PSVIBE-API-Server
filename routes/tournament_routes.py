@@ -1876,7 +1876,7 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
         if prize:
             info_panels += f'<div class="rounded-lg border border-amber-700/40 bg-surface-800 p-3"><span class="text-xs text-gray-400">🏅 ဆုကြေး (Prize)</span><p class="text-amber-300 font-semibold mt-0.5">{_html.escape(prize)}</p></div>'
         if rules:
-            info_panels += f'<div class="rounded-lg border border-gray-700 bg-surface-800 p-3"><span class="text-xs text-gray-400">📖 စည်းကမ်းများ (Rules)</span><pre class="text-gray-300 text-xs leading-relaxed whitespace-pre-wrap mt-1 font-sans">{_html.escape(rules)}</pre></div>'
+            info_panels += f'<a href="/api/tournaments/{t["id"]}/rules?view=html" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-vibe-600 hover:bg-vibe-500 text-white transition-colors">📖 စည်းကမ်းများ ကြည့်ရန် (Rules)</a>'
         info_panels += '</div>'
 
     html = f"""<!DOCTYPE html>
