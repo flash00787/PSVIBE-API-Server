@@ -1881,11 +1881,16 @@ def _player_ss_url(player: dict) -> str | None:
 
 
 def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLResponse:
-    """Render a styled HTML bracket page (Tailwind CDN) with FULL bracket structure.
+    """Render a PREMIUM styled HTML bracket page (Tailwind CDN) with FULL bracket structure.
 
     Once started, ALL rounds (1..total_rounds) render as columns; rounds without
     matches yet (created lazily on score entry) show dashed TBD placeholder slots.
     Not-started tournaments show an empty-state message.
+
+    Premium redesign (2026-08-19): glassmorphism match cards, gold winner accents,
+    score badges, seed chips, CSS connector lines between rounds, gradient round
+    headers, animated live ring, upgraded champion banner + info panels, Google
+    Fonts (Outfit/Inter), fade-in load animation.
     """
     import html as _html
     tn_name = _html.escape(t.get("name", "Tournament"))
@@ -1907,14 +1912,20 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     # Total rounds = log2(next power of 2 >= player_count): 64→6, 32→5, 5→3, 4→2
     total_rounds = max(1, (player_count - 1).bit_length())
 
+    # Round → emoji+label (premium headers)
     def round_label(rnum: int) -> str:
         if rnum == total_rounds:
-            return "🏆 Final"
+            return "Final 🏆"
         if rnum == total_rounds - 1:
-            return "Semi-Final"
+            return "Semi-Final ⚡"
         if total_rounds >= 4 and rnum == total_rounds - 2:
-            return "Quarter-Final"
-        return f"Round {rnum}"
+            return "Quarter-Final 🔥"
+        return f"Round {rnum} 🎮"
+
+    def round_header_cls(rnum: int) -> str:
+        if rnum == total_rounds:
+            return "from-amber-400 to-amber-600 text-black"
+        return "from-vibe-600 to-vibe-800 text-vibe-100"
 
     if rounds:
         # ── Full bracket structure: real matches + TBD placeholders for future rounds ──
@@ -1922,6 +1933,8 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
         for rnum in range(1, total_rounds + 1):
             matches = rounds.get(rnum) or []
             is_final_col = (rnum == total_rounds)
+            # slot_count = how many matches this round will eventually hold
+            slot_count = 2 ** (total_rounds - rnum)
             if matches:
                 match_cards = []
                 for m in matches:
@@ -1937,61 +1950,82 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
                     p1_is_w = bool(winner and winner == p1_n)
                     p2_is_w = bool(winner and winner == p2_n)
                     if p1_is_w:
+                        p1_row_cls = "bracket-row-winner"
                         p1_cls = "text-amber-300 font-bold"
                     elif winner and p1_n != "BYE":
-                        p1_cls = "line-through text-gray-500"
+                        p1_row_cls = ""
+                        p1_cls = "line-through text-gray-500 opacity-70"
                     else:
-                        p1_cls = "text-gray-300"
+                        p1_row_cls = ""
+                        p1_cls = "text-gray-200"
                     if p2_is_w:
+                        p2_row_cls = "bracket-row-winner"
                         p2_cls = "text-amber-300 font-bold"
                     elif winner and p2_n != "BYE":
-                        p2_cls = "line-through text-gray-500"
+                        p2_row_cls = ""
+                        p2_cls = "line-through text-gray-500 opacity-70"
                     else:
-                        p2_cls = "text-gray-300"
+                        p2_row_cls = ""
+                        p2_cls = "text-gray-200"
 
-                    s1_str = f'<span class="ml-auto shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded bg-surface-900 text-gray-300">{s1}</span>' if s1 is not None else ""
-                    s2_str = f'<span class="ml-auto shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded bg-surface-900 text-gray-300">{s2}</span>' if s2 is not None else ""
-                    seed1 = f'<span class="shrink-0 text-[10px] text-gray-500 w-5 text-right">{p1_seed}</span>' if p1_seed else '<span class="shrink-0 w-5"></span>'
-                    seed2 = f'<span class="shrink-0 text-[10px] text-gray-500 w-5 text-right">{p2_seed}</span>' if p2_seed else '<span class="shrink-0 w-5"></span>'
-                    trophy1 = '<span class="text-[10px] ml-0.5">🏆</span>' if p1_is_w else ""
-                    trophy2 = '<span class="text-[10px] ml-0.5">🏆</span>' if p2_is_w else ""
+                    def _score_badge(s, is_w):
+                        if s is None:
+                            return ""
+                        cls = "text-amber-300 bg-amber-400/20 border-amber-400/40" if is_w else "text-gray-300 bg-white/10 border-white/10"
+                        return f'<span class="ml-auto shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded-md border {cls}">{s}</span>'
+
+                    s1_str = _score_badge(s1, p1_is_w)
+                    s2_str = _score_badge(s2, p2_is_w)
+                    seed1 = f'<span class="seed-chip">{p1_seed}</span>' if p1_seed else ''
+                    seed2 = f'<span class="seed-chip">{p2_seed}</span>' if p2_seed else ''
+                    award1 = '<span class="text-[10px] ml-0.5">🏆</span>' if p1_is_w else ""
+                    award2 = '<span class="text-[10px] ml-0.5">🏆</span>' if p2_is_w else ""
+
+                    # card appearance
                     if status_m == "complete":
-                        border_cls = "border-vibe-600/40 bg-vibe-950/20"
+                        card_cls = "glass-card"
+                        ring = ""
                     elif status == "live" and is_final_col:
-                        # Winners deserve a champion highlight in the final column
-                        border_cls = "border-amber-500/60 bg-amber-950/20"
+                        card_cls = "glass-card card-live-gold"
+                        ring = '<span class="live-dot"></span>'
                     elif status == "live":
-                        border_cls = "border-vibe-400/60 bg-vibe-950/20 animate-pulse-border"
+                        card_cls = "glass-card card-live"
+                        ring = '<span class="live-dot"></span>'
                     else:
-                        border_cls = "border-gray-700/70"
+                        card_cls = "glass-card"
+                        ring = ""
 
                     match_cards.append(f'''
-            <div class="bg-surface-700/70 rounded-lg border {border_cls} p-2.5 mb-2 transition-colors">
-              <div class="flex items-center gap-1.5 text-xs min-w-0">
-                {seed1}
-                <span class="flex-1 truncate {p1_cls}">{_html.escape(p1_n)}{trophy1}</span>{s1_str}
-              </div>
-              <div class="flex items-center gap-1.5 text-xs min-w-0 mt-1 pt-1 border-t border-gray-700/40">
-                {seed2}
-                <span class="flex-1 truncate {p2_cls}">{_html.escape(p2_n)}{trophy2}</span>{s2_str}
+            <div class="match-slot">
+              <div class="{card_cls}">
+                <div class="flex items-center gap-1.5 text-xs min-w-0 {p1_row_cls}">
+                  {seed1}{ring}
+                  <span class="flex-1 truncate {p1_cls}">{_html.escape(p1_n)}{award1}</span>{s1_str}
+                </div>
+                <div class="flex items-center gap-1.5 text-xs min-w-0 mt-1.5 pt-1.5 border-t border-white/5 {p2_row_cls}">
+                  {seed2}
+                  <span class="flex-1 truncate {p2_cls}">{_html.escape(p2_n)}{award2}</span>{s2_str}
+                </div>
               </div>
             </div>''')
-                slot_count = 2 ** (total_rounds - rnum)
-                # Fill remaining slots of a partially-played round with TBD placeholders
+                # TBD fillers for remaining slots
                 body = "".join(match_cards) + "".join(f'''
-            <div class="bg-surface-800/40 rounded-lg border border-dashed border-gray-700/50 p-2.5 mb-2">
-              <div class="py-1.5 text-center text-[10px] text-gray-600">TBD</div>
+            <div class="match-slot">
+              <div class="glass-card dashed-card">
+                <div class="py-1.5 text-center text-[10px] text-gray-600"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full bg-gray-600 mr-1 animate-pulse"></span>TBD</div>
+              </div>
             </div>''' for _ in range(max(0, slot_count - len(match_cards))))
             else:
-                slot_count = 2 ** (total_rounds - rnum)
                 body = "".join(f'''
-            <div class="bg-surface-800/40 rounded-lg border border-dashed border-gray-700/50 p-2.5 mb-2">
-              <div class="py-1.5 text-center text-[10px] text-gray-600">TBD</div>
+            <div class="match-slot">
+              <div class="glass-card dashed-card">
+                <div class="py-1.5 text-center text-[10px] text-gray-600"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full bg-gray-600 mr-1 animate-pulse"></span>TBD</div>
+              </div>
             </div>''' for _ in range(slot_count))
 
             round_cols.append(f'''
-        <div class="flex-shrink-0 w-44">
-          <div class="text-center text-[11px] font-bold text-vibe-300 mb-2 py-1.5 bg-vibe-950/60 border border-vibe-800/40 rounded-lg">{round_label(rnum)}</div>
+        <div class="flex-shrink-0 w-48 md:w-52 bracket-col">
+          <div class="text-center text-[11px] font-bold mb-2 py-1.5 bg-gradient-to-r {round_header_cls(rnum)} rounded-lg shadow-md">{round_label(rnum)}</div>
           {body}
         </div>''')
 
@@ -1999,7 +2033,7 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     {"".join(round_cols)}
   </div>'''
     else:
-        bracket_body = '''<div class="text-center py-14">
+        bracket_body = '''<div class="text-center py-14 fade-in">
     <div class="text-5xl mb-3">⏳</div>
     <p class="text-gray-300 font-semibold text-lg">Bracket မစရသေးပါ</p>
     <p class="text-gray-500 text-xs mt-2">Tournament စတင်ပြီးမှ bracket ပေါ်ပါမယ် — မကြာမီ ပြန်ကြည့်ပါဦး 🙏</p>
@@ -2008,37 +2042,38 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     # ── LIVE badge ──
     live_badge = ''
     if status == "live":
-        live_badge = '<span class="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-red-600 text-white animate-pulse">● LIVE</span>'
+        live_badge = '<span class="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-red-600 text-white animate-pulse shadow-lg shadow-red-600/30">● LIVE</span>'
     elif status == "completed":
-        live_badge = '<span class="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-emerald-700 text-white">✓ Completed</span>'
+        live_badge = '<span class="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-emerald-700 text-white shadow-lg shadow-emerald-700/30">✓ Completed</span>'
 
-    # ── Champion banner ──
+    # ── Champion banner (premium gold glass) ──
     champion_banner = ''
     if champion:
-        champ_prize = champion.get("prize_text") or f"{champion.get('prize_ks', 0):,.0f} Ks" if champion.get("prize_ks") else ""
+        champ_prize = champion.get("prize_text") or (f"{champion.get('prize_ks', 0):,.0f} Ks" if champion.get("prize_ks") else "")
+        prize_line = f'<p class="text-amber-200/90 text-sm mt-1.5">ဆုကြေး: {_html.escape(champ_prize)}</p>' if champ_prize else ''
         champion_banner = f'''
-  <div class="mb-5 rounded-xl border border-amber-600/50 bg-gradient-to-r from-amber-950/60 to-vibe-950/40 p-4 text-center shadow-lg">
-    <div class="text-3xl mb-1">🏆</div>
-    <p class="text-amber-300 font-bold text-lg">ချန်ပီယံ: {_html.escape(champion['player_name'])}</p>
-    {f'<p class="text-gray-300 text-sm mt-1">ဆုကြေး: {_html.escape(champ_prize)}</p>' if champ_prize else ''}
+  <div class="mb-5 rounded-2xl border border-amber-400/40 bg-gradient-to-r from-amber-500/20 via-amber-400/10 to-vibe-600/20 backdrop-blur-md p-5 text-center shadow-xl shadow-amber-900/20 champion-banner fade-in">
+    <div class="text-4xl mb-1 sparkle">🏆</div>
+    <p class="text-amber-300 font-black text-xl tracking-tight">ချန်ပီယံ: {_html.escape(champion['player_name'])}</p>
+    {prize_line}
   </div>'''
 
-    # ── Prize + Rules panels ──
+    # ── Prize + Rules panels (glass cards) ──
     info_panels = ''
     if prize_pool_float is not None or prize or rules or champion or prizes:
-        info_panels = '<div class="grid grid-cols-1 gap-3 mb-5">'
+        info_panels = '<div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5 fade-in">'
         if prize_pool_float is not None:
-            info_panels += f'<div class="rounded-lg border border-amber-700/40 bg-surface-800 p-3"><span class="text-xs text-gray-400">🏅 ဆုကြေး စုစုပေါင်း (Prize Pool)</span><p class="text-amber-300 font-semibold mt-0.5">{prize_pool_float:,.0f} Ks</p></div>'
+            info_panels += f'<div class="glass-card rounded-xl p-3"><span class="text-xs text-gray-400">🏅 ဆုကြေး စုစုပေါင်း (Prize Pool)</span><p class="text-amber-300 font-bold text-lg mt-1">💰 {prize_pool_float:,.0f} Ks</p></div>'
         if prize:
-            info_panels += f'<div class="rounded-lg border border-amber-700/40 bg-surface-800 p-3"><span class="text-xs text-gray-400">ဆုခွဲဝေမှု (Breakdown)</span><p class="text-amber-300 font-semibold mt-0.5">{_html.escape(prize)}</p></div>'
+            info_panels += f'<div class="glass-card rounded-xl p-3"><span class="text-xs text-gray-400">ဆုခွဲဝေမှု (Breakdown)</span><p class="text-amber-300 font-semibold mt-1">{_html.escape(prize)}</p></div>'
         if prizes:
             _pb = ''.join(
-                f'<p class="text-amber-200 text-sm mt-0.5">{_place_medal(p["place"])} {_html.escape(p["label"] or "")}: {_fmt_amount(p["amount_ks"])} Ks</p>'
+                f'<p class="text-amber-200 text-sm mt-0.5">{_place_medal(p["place"])} {_html.escape(p["label"] or "")}: <span class="font-mono text-amber-300">{_fmt_amount(p["amount_ks"])} Ks</span></p>'
                 for p in prizes
             )
-            info_panels += f'<div class="rounded-lg border border-amber-700/40 bg-surface-800 p-3"><span class="text-xs text-gray-400">🏆 ဆုစာရင်း (Prize Breakdown)</span>{_pb}</div>'
+            info_panels += f'<div class="glass-card rounded-xl p-3"><span class="text-xs text-gray-400">🏆 ဆုစာရင်း (Prize Breakdown)</span>{_pb}</div>'
         if rules:
-            info_panels += f'<a href="/api/tournaments/{t["id"]}/rules?view=html" target="psvibe-tournament-rules" rel="noopener" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-vibe-600 hover:bg-vibe-500 text-white transition-colors">📖 စည်းကမ်းများ ကြည့်ရန် (Rules)</a>'
+            info_panels += f'<a href="/api/tournaments/{t["id"]}/rules?view=html" target="psvibe-tournament-rules" rel="noopener" class="inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-gradient-to-r from-vibe-600 to-vibe-500 hover:from-vibe-500 hover:to-vibe-400 text-white transition-all shadow-md">📖 စည်းကမ်းများ ကြည့်ရန် (Rules)</a>'
         info_panels += '</div>'
 
     html = f"""<!DOCTYPE html>
@@ -2048,30 +2083,153 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="{tn_name} — PS VIBE tournament bracket">
 <title>{tn_name} — Bracket</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
-<script>tailwind.config={{theme:{{extend:{{colors:{{vibe:{{300:'#9dacfc',400:'#7585f8',500:'#4a55ba',600:'#1D2BA9',700:'#172287',800:'#111a65',950:'#0a0f33'}},surface:{{900:'#0f0f1a',800:'#1a1a2e',700:'#16213e',600:'#111827'}}}}}}}}}}</script>
+<script>tailwind.config={{theme:{{extend:{{colors:{{vibe:{{300:'#9dacfc',400:'#7585f8',500:'#4a55ba',600:'#1D2BA9',700:'#172287',800:'#111a65',950:'#0a0f33'}},surface:{{900:'#0f0f1a',800:'#1a1a2e',700:'#16213e',600:'#111827'}}}},fontFamily:{{sans:['Inter','ui-sans-serif','system-ui'],display:['Outfit','Inter','sans-serif']}}}}}}}}</script>
 <style>
-  body {{ background: #0f0f1a; }}
-  ::-webkit-scrollbar {{ height: 8px; }}
+  body {{ background: radial-gradient(ellipse at 20% 0%, #1a1a3e 0%, #0f0f1a 45%, #0f0f1a 100%); }}
+  ::-webkit-scrollbar {{ height: 8px; width: 8px; }}
   ::-webkit-scrollbar-thumb {{ background: #1D2BA9; border-radius: 8px; }}
   ::-webkit-scrollbar-track {{ background: #1a1a2e; border-radius: 8px; }}
-  @keyframes pulseBorder {{ 0%,100% {{ box-shadow: 0 0 0 0 rgba(29,43,169,0.5); }} 50% {{ box-shadow: 0 0 0 4px rgba(29,43,169,0.2); }} }}
-  .animate-pulse-border {{ animation: pulseBorder 2s ease-in-out infinite; }}
+
+  /* ── Glassmorphism match card ── */
+  .glass-card {{
+    background: rgba(255,255,255,0.05);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 0.75rem;
+    padding: 0.625rem 0.625rem;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 4px 16px rgba(0,0,0,0.25);
+    transition: all .2s ease;
+  }}
+  .glass-card:hover {{
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(157,172,252,0.5);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 20px rgba(117,133,248,0.25);
+    transform: translateY(-1px);
+  }}
+
+  /* match slot spacing + connector host */
+  .match-slot {{ position: relative; margin-bottom: 0.75rem; }}
+  .match-slot:last-child {{ margin-bottom: 0; }}
+
+  /* ── Connector lines (centerConnectors style) ── */
+  .bracket-col {{ position: relative; }}
+  .bracket-col:not(:first-child)::before {{
+    content: '';
+    position: absolute;
+    left: -0.75rem;
+    top: 1.9rem;
+    bottom: 1.9rem;
+    width: 2px;
+    background: linear-gradient(to bottom, rgba(157,172,252,0.05), rgba(157,172,252,0.5), rgba(157,172,252,0.05));
+  }}
+  .match-slot::after {{
+    content: '';
+    position: absolute;
+    right: -0.75rem;
+    top: 50%;
+    width: 0.75rem;
+    height: 2px;
+    background: rgba(157,172,252,0.28);
+  }}
+  .bracket-col:last-child .match-slot::after {{ display: none; }}
+
+  /* live / gold match highlight */
+  .card-live {{ border-color: rgba(45,212,191,0.55); box-shadow: 0 0 0 3px rgba(45,212,191,0.15), 0 0 24px rgba(45,212,191,0.3); }}
+  .card-live-gold {{ border-color: rgba(245,158,11,0.6); box-shadow: 0 0 0 3px rgba(245,158,11,0.15), 0 0 28px rgba(245,158,11,0.35); }}
+
+  /* live indicator dot (pulsing ring) */
+  .live-dot {{
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 9999px;
+    background: #34d399;
+    box-shadow: 0 0 0 0 rgba(52,211,153,0.6);
+    animation: liveRing 1.6s ease-out infinite;
+    margin-right: 4px;
+    flex-shrink: 0;
+  }}
+  @keyframes liveRing {{
+    0% {{ box-shadow: 0 0 0 0 rgba(52,211,153,0.6); }}
+    70% {{ box-shadow: 0 0 0 6px rgba(52,211,153,0); }}
+    100% {{ box-shadow: 0 0 0 0 rgba(52,211,153,0); }}
+  }}
+
+  /* winner row gold accent (left glow) */
+  .bracket-row-winner {{
+    position: relative;
+    background: linear-gradient(90deg, rgba(245,158,11,0.12), transparent 55%);
+    border-radius: 0.375rem;
+  }}
+
+  /* seed chip */
+  .seed-chip {{
+    display: inline-block;
+    min-width: 1.25rem;
+    text-align: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: #dfe3ff;
+    background: rgba(29,43,169,0.35);
+    border: 1px solid rgba(117,133,248,0.25);
+    border-radius: 0.25rem;
+    padding: 0 2px;
+    flex-shrink: 0;
+    line-height: 1rem;
+  }}
+
+  /* dashed TBD placeholder */
+  .dashed-card {{ border-style: dashed; border-color: rgba(255,255,255,0.12); background: rgba(255,255,255,0.02); }}
+
+  /* champion sparkle */
+  .sparkle {{ animation: sparkle 2s ease-in-out infinite; display: inline-block; }}
+  @keyframes sparkle {{
+    0%,100% {{ transform: scale(1); filter: drop-shadow(0 0 4px rgba(245,158,11,0.5)); }}
+    50% {{ transform: scale(1.12); filter: drop-shadow(0 0 14px rgba(245,200,80,0.9)); }}
+  }}
+  .champion-banner {{ position: relative; overflow: hidden; }}
+  .champion-banner::after {{
+    content: '✨';
+    position: absolute;
+    top: 0.5rem; right: 1rem;
+    font-size: 1.25rem;
+    opacity: 0.8;
+    animation: sparkle 2.4s ease-in-out infinite;
+  }}
+
+  /* page load fade-in */
+  .fade-in {{ animation: fadeIn .5s ease-out both; }}
+  @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(6px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+
+  h1, .font-display {{ font-family: 'Outfit','Inter',sans-serif; }}
+
+  @media (max-width: 640px) {{
+    .bracket-col:not(:first-child)::before {{ width: 1px; }}
+    .match-slot::after {{ height: 1px; background: rgba(157,172,252,0.18); }}
+  }}
 </style>
 </head>
 <body class="min-h-screen text-white font-sans p-4">
 <div class="max-w-5xl mx-auto">
-  <div class="flex items-center justify-between mb-5">
-    <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-surface-700 hover:bg-vibe-800 text-gray-300 transition-colors">← Back</a>
+  <div class="flex items-center justify-between mb-5 fade-in">
+    <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 transition-colors border border-white/10">← Back</a>
     <div class="flex items-center gap-2">
-      <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-vibe-600 hover:bg-vibe-500 text-white transition-colors">🏆 Tournament Page</a>
+      <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-gradient-to-r from-vibe-600 to-vibe-500 hover:from-vibe-500 hover:to-vibe-400 text-white transition-all shadow-md">🏆 Tournament Page</a>
     </div>
   </div>
-  <div class="text-center mb-5">
-    <img src="/uploads/psvibe-logo-v2.png" alt="PS VIBE" class="w-36 mx-auto mb-3">
-    <h1 class="text-2xl font-bold">🏆 {tn_name}</h1>
-    <p class="text-vibe-400 text-sm mt-1">{tn_game} &middot; {player_count} players &middot; Single Elimination</p>
-    <div class="mt-2">{live_badge}</div>
+  <div class="text-center mb-5 fade-in">
+    <img src="/uploads/psvibe-logo-v2.png" alt="PS VIBE" class="w-36 mx-auto mb-3 drop-shadow-lg">
+    <h1 class="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-vibe-300 to-vibe-400">🏆 {tn_name}</h1>
+    <div class="flex items-center justify-center flex-wrap gap-2 mt-2 text-xs text-gray-300">
+      <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">🎮 {tn_game}</span>
+      <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">👥 {player_count} players</span>
+      <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">🏆 Single Elimination</span>
+      {live_badge}
+    </div>
   </div>
   {champion_banner}
   {info_panels}
@@ -2095,8 +2253,6 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
         var fresh = doc.getElementById('bracketContainer');
         var cur = document.getElementById('bracketContainer');
         if (fresh && cur) {{ cur.innerHTML = fresh.innerHTML; }}
-        // refresh champion/info panels too (simple: reload only those sections)
-        var fb = doc.querySelector('.max-w-5xl');
       }} else {{
         location.reload();
       }}
