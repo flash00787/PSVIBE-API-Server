@@ -79,6 +79,82 @@ def _parse_payment_method(raw: str) -> str:
     return mapping.get(r, r[:20])  # fallback: use trimmed raw value
 
 
+def _parse_prize_ks(prize_raw) -> float:
+    """Parse a prize string like '100,000 Ks' → 100000.00, else return 0."""
+    if prize_raw is None:
+        return 0.0
+    import re as _re
+    if isinstance(prize_raw, (int, float)):
+        return float(prize_raw)
+    s = str(prize_raw)
+    # Match a number possibly containing commas/decimals embedded in text
+    m = _re.search(r"\d[\d,]*(?:\.\d+)?", s)
+    if not m:
+        return 0.0
+    try:
+        return float(m.group(0).replace(",", ""))
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _get_champion(tid: int):
+    """Return champion dict for a tournament, or None."""
+    row = _mysql_query_one(
+        "SELECT * FROM tournament_champions WHERE tournament_id=%s", (tid,)
+    )
+    if not row:
+        return None
+    return {
+        "player_id": row["player_id"],
+        "player_name": row["player_name"],
+        "prize_ks": float(row["prize_ks"] or 0),
+        "prize_text": row["prize_text"],
+        "won_at": str(row["won_at"]) if row.get("won_at") else None,
+    }
+
+
+def _insert_notification(tid: int, player_id, telegram_id, message: str, kind: str = "match"):
+    """Insert a notification row for a player (only if telegram_id is present)."""
+    if not telegram_id:
+        return
+    try:
+        _mysql_exec(
+            """INSERT INTO tournament_notifications
+               (tournament_id, player_id, telegram_id, message, kind)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (tid, player_id, telegram_id, message, kind),
+        )
+    except Exception as e:
+        logger.warning("Failed to insert notification for player %s: %s", player_id, e)
+
+
+def _player_by_id(pid: int):
+    return _mysql_query_one("SELECT * FROM tournament_players WHERE id=%s", (pid,))
+
+
+def _crown_champion(tid: int, winner_id: int):
+    """Insert/replace champion row for a tournament based on winner player + prize parsing."""
+    winner = _player_by_id(winner_id)
+    if not winner:
+        logger.warning("_crown_champion: winner player %s not found", winner_id)
+        return
+    t = _mysql_query_one("SELECT prize FROM tournaments WHERE id=%s", (tid,))
+    prize_raw = t.get("prize") if t else None
+    prize_ks = _parse_prize_ks(prize_raw)
+    prize_text = prize_raw
+    # Upsert champion (unique on tournament_id)
+    _mysql_exec(
+        """INSERT INTO tournament_champions
+           (tournament_id, player_id, player_name, prize_ks, prize_text, won_at)
+           VALUES (%s, %s, %s, %s, %s, NOW())
+           ON DUPLICATE KEY UPDATE
+             player_id=VALUES(player_id), player_name=VALUES(player_name),
+             prize_ks=VALUES(prize_ks), prize_text=VALUES(prize_text), won_at=NOW()""",
+        (tid, winner["id"], winner["name"], prize_ks, prize_text),
+    )
+    logger.info("Champion crowned for tournament %s: player %s (%s) prize=%s", tid, winner["id"], winner["name"], prize_text)
+
+
 # ═══════════════════════════════════════
 #  Admin — CRUD
 # ═══════════════════════════════════════
@@ -178,6 +254,77 @@ async def list_tournaments(
         return error_response(message=str(e))
 
 
+# ── Public literal routes (MUST be declared before /{tid} to avoid path collision) ──
+
+@router.get("/api/tournaments/champions")
+async def list_champions():
+    """Public: recent champions JOIN tournaments, ordered by won_at DESC."""
+    try:
+        rows = _mysql_query(
+            """SELECT c.player_id, c.player_name, c.prize_ks, c.prize_text, c.won_at,
+                      t.id AS tournament_id, t.name AS tournament_name, t.game
+               FROM tournament_champions c
+               JOIN tournaments t ON t.id = c.tournament_id
+               ORDER BY c.won_at DESC
+               LIMIT 20""",
+        )
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["prize_ks"] = float(d["prize_ks"] or 0)
+            if d.get("won_at"):
+                d["won_at"] = str(d["won_at"])
+            result.append(d)
+        return ok(result)
+    except Exception as e:
+        logger.error("list_champions error: %s", e)
+        return error_response(message=str(e))
+
+
+@router.get("/api/tournaments/notifications/pending")
+async def pending_notifications(
+    limit: int = Query(20),
+    auth=Depends(verify_api_key),
+):
+    """Admin/bot: unsent notification rows with tournament name."""
+    try:
+        limit = max(1, min(int(limit), 100))
+        rows = _mysql_query(
+            """SELECT n.id, n.tournament_id, n.player_id, n.telegram_id, n.message, n.kind, n.created_at,
+                      t.name AS tournament_name
+               FROM tournament_notifications n
+               LEFT JOIN tournaments t ON t.id = n.tournament_id
+               WHERE n.sent = 0
+               ORDER BY n.id ASC
+               LIMIT %s""",
+            (limit,),
+        )
+        result = []
+        for r in rows:
+            d = dict(r)
+            if d.get("created_at"):
+                d["created_at"] = str(d["created_at"])
+            result.append(d)
+        return ok(result)
+    except Exception as e:
+        logger.error("pending_notifications error: %s", e)
+        return error_response(message=str(e))
+
+
+@router.post("/api/tournaments/notifications/{nid}/done")
+async def mark_notification_done(nid: int, auth=Depends(verify_api_key)):
+    """Mark a notification as sent."""
+    try:
+        _mysql_exec(
+            "UPDATE tournament_notifications SET sent=1, sent_at=NOW() WHERE id=%s",
+            (nid,),
+        )
+        return ok({"marked": True})
+    except Exception as e:
+        logger.error("mark_notification_done error: %s", e)
+        return error_response(message=str(e))
+
+
 @router.get("/api/tournaments/{tid}")
 async def get_tournament(tid: int, auth=Depends(verify_api_key)):
     """Get single tournament with player count."""
@@ -197,6 +344,7 @@ async def get_tournament(tid: int, auth=Depends(verify_api_key)):
         for f in ("created_at", "updated_at", "reg_open_at", "reg_close_at", "start_at"):
             if t.get(f):
                 t[f] = str(t[f])
+        t["champion"] = _get_champion(tid)
         return ok(t)
     except Exception as e:
         logger.error("get_tournament error: %s", e)
@@ -340,11 +488,63 @@ async def remove_player(tid: int, pid: int, auth=Depends(verify_api_key)):
 #  Admin — Bracket Operations
 # ═══════════════════════════════════════
 
+def _generate_seeded_bracket(tid: int, t: dict, players: list):
+    """Shared seed + round-1 bracket generator.
+
+    Randomly shuffles players, assigns seed numbers, generates round-1 matches.
+    Returns (total_rounds, r1_matches, shuffled). Inserts notifications for r1 matches.
+    """
+    import random
+    shuffled = list(players)
+    random.shuffle(shuffled)
+    for idx, p in enumerate(shuffled):
+        _mysql_exec("UPDATE tournament_players SET seed=%s WHERE id=%s", (idx + 1, p["id"]))
+
+    total_rounds = _calculate_total_rounds(len(shuffled))
+    if total_rounds == 0:
+        return 0, 0, shuffled
+
+    matches_in_r1 = 2 ** total_rounds  # next power of 2 >= player_count
+    r1_matches = matches_in_r1 // 2
+
+    # Assign players to round-1 matches; higher seeds get byes if needed
+    for pos in range(1, r1_matches + 1):
+        # Standard seeding: 1 vs last, 2 vs second-last, etc.
+        idx_a = pos - 1
+        idx_b = matches_in_r1 - pos
+        p1_id = shuffled[idx_a]["id"] if idx_a < len(shuffled) else None
+        p2_id = shuffled[idx_b]["id"] if idx_b < len(shuffled) and idx_b != idx_a else None
+
+        _mysql_exec(
+            """INSERT INTO tournament_matches
+               (tournament_id, round, position, player1_id, player2_id, status)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (tid, 1, pos, p1_id, p2_id, "pending"),
+        )
+
+        # Notify both players in this r1 match
+        _id_to_player = {p["id"]: p for p in shuffled}
+        if p1_id and p2_id:
+            p1, p2 = _id_to_player[p1_id], _id_to_player[p2_id]
+            _insert_notification(
+                tid, p1["id"], p1.get("telegram_id"),
+                f"🔔 {t['name']} — မင်းရဲ့ Round 1 Match စပါပြီ! ပြိုင်ဘက်: {p2['name']} (#{p2['seed']}) — PS VIBE",
+            )
+            _insert_notification(
+                tid, p2["id"], p2.get("telegram_id"),
+                f"🔔 {t['name']} — မင်းရဲ့ Round 1 Match စပါပြီ! ပြိုင်ဘက်: {p1['name']} (#{p1['seed']}) — PS VIBE",
+            )
+
+    return total_rounds, r1_matches, shuffled
+
+
 @router.post("/api/tournaments/{tid}/start")
 async def start_tournament(tid: int, auth=Depends(verify_api_key)):
     """Start the tournament: seed players, generate round-1 bracket.
 
-    Status must be 'closed' or 'open'. Must have >= min_players confirmed players.
+    Status must be 'closed' or 'open'. Must have >= min_players eligible players.
+    Eligible players = status IN ('registered','confirmed','checked_in').
+    Non-eligible players (e.g. not checked-in) are marked 'dnf' (no-show).
     Players are randomly seeded. If count isn't a power of 2, higher seeds get byes.
     """
     try:
@@ -354,43 +554,34 @@ async def start_tournament(tid: int, auth=Depends(verify_api_key)):
                 message=f"Cannot start tournament with status '{t['status']}'. Must be 'open' or 'closed'."
             )
 
+        # Mark any non-eligible players (status not in eligible set, and not already eliminated/dnf) as no-show
+        eligible_statuses = ("registered", "confirmed", "checked_in")
+
         players = _mysql_query(
-            "SELECT * FROM tournament_players WHERE tournament_id=%s AND status IN ('registered','confirmed') ORDER BY id",
+            "SELECT * FROM tournament_players WHERE tournament_id=%s AND status IN ('registered','confirmed','checked_in') ORDER BY id",
             (tid,),
         )
         if len(players) < int(t["min_players"]):
+            missing = int(t["min_players"]) - len(players)
             return error_response(
-                message=f"Need at least {t['min_players']} players. Currently have {len(players)}."
+                message=f"Need at least {t['min_players']} eligible players. Currently have {len(players)} (missing {missing}).",
+                code=400,
             )
 
-        # Random shuffle for seeding
-        import random
-        shuffled = list(players)
-        random.shuffle(shuffled)
-        for idx, p in enumerate(shuffled):
-            _mysql_exec("UPDATE tournament_players SET seed=%s WHERE id=%s", (idx + 1, p["id"]))
+        # Mark no-shows (anything that isn't eligible and isn't already finished)
+        _mysql_exec(
+            """UPDATE tournament_players SET status='dnf'
+               WHERE tournament_id=%s AND status NOT IN ('registered','confirmed','checked_in','eliminated','dnf')""",
+            (tid,),
+        )
 
-        total_rounds = _calculate_total_rounds(len(shuffled))
+        # Idempotent: clear any existing matches before (re)generating bracket
+        _mysql_exec("DELETE FROM tournament_matches WHERE tournament_id=%s", (tid,))
+        _mysql_exec("DELETE FROM tournament_notifications WHERE tournament_id=%s", (tid,))
+
+        total_rounds, r1_matches, shuffled = _generate_seeded_bracket(tid, t, players)
         if total_rounds == 0:
             return error_response(message="Need at least 2 players to start")
-
-        matches_in_r1 = 2 ** total_rounds  # next power of 2 >= player_count
-        r1_matches = matches_in_r1 // 2
-
-        # Assign players to round-1 matches; higher seeds get byes if needed
-        for pos in range(1, r1_matches + 1):
-            # Standard seeding: 1 vs last, 2 vs second-last, etc.
-            idx_a = pos - 1
-            idx_b = matches_in_r1 - pos
-            p1_id = shuffled[idx_a]["id"] if idx_a < len(shuffled) else None
-            p2_id = shuffled[idx_b]["id"] if idx_b < len(shuffled) and idx_b != idx_a else None
-
-            _mysql_exec(
-                """INSERT INTO tournament_matches
-                   (tournament_id, round, position, player1_id, player2_id, status)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
-                (tid, 1, pos, p1_id, p2_id, "pending"),
-            )
 
         _mysql_exec(
             "UPDATE tournaments SET status='live', start_at=NOW() WHERE id=%s",
@@ -419,7 +610,7 @@ async def submit_match_score(tid: int, mid: int, body: dict, auth=Depends(verify
     If final round → tournament marked 'completed'.
     """
     try:
-        _ensure_tournament(tid)
+        t = _ensure_tournament(tid)
         match = _mysql_query_one("SELECT * FROM tournament_matches WHERE id=%s AND tournament_id=%s", (mid, tid))
         if not match:
             return error_response(message="Match not found", code=404)
@@ -458,6 +649,16 @@ async def submit_match_score(tid: int, mid: int, body: dict, auth=Depends(verify
 
         if is_final:
             _mysql_exec("UPDATE tournaments SET status='completed' WHERE id=%s", (tid,))
+            # Insert champion row
+            _crown_champion(tid, winner_id)
+            # Notify winner
+            winner = _player_by_id(winner_id)
+            if winner:
+                _insert_notification(
+                    tid, winner["id"], winner.get("telegram_id"),
+                    f"🏆 ချန်ပီယံဖြစ်ပြီ! {t['name']} — ဆုကြေး: {t.get('prize') or '—'} — ဂုဏ်ယူပါတယ်!",
+                    kind="champion",
+                )
             logger.info("Tournament %s completed! Winner: player %s", tid, winner_id)
         else:
             # Advance winner to next round
@@ -485,6 +686,25 @@ async def submit_match_score(tid: int, mid: int, body: dict, auth=Depends(verify
                     "UPDATE tournament_matches SET player2_id=%s, status='pending' WHERE id=%s",
                     (winner_id, next_match["id"]),
                 )
+
+            # Notify the advanced winner about their next opponent (only if next match has both players)
+            _refreshed_next = _mysql_query_one(
+                "SELECT * FROM tournament_matches WHERE tournament_id=%s AND round=%s AND position=%s",
+                (tid, next_round, next_pos),
+            )
+            if _refreshed_next and _refreshed_next["player1_id"] and _refreshed_next["player2_id"]:
+                winner = _player_by_id(winner_id)
+                opp_id = (
+                    _refreshed_next["player2_id"]
+                    if _refreshed_next["player1_id"] == winner_id
+                    else _refreshed_next["player1_id"]
+                )
+                opp = _player_by_id(opp_id)
+                if winner and opp:
+                    _insert_notification(
+                        tid, winner["id"], winner.get("telegram_id"),
+                        f"🎮 Round {match['round']} ကို တက်ပြီ — နောက်ပြိုင်ဘက်: {opp['name']} (#{opp['seed'] or ''}) — PS VIBE",
+                    )
 
         logger.info("Match %s scored: %s-%s, winner=%s", mid, s1, s2, winner_id)
         return ok({
@@ -556,6 +776,7 @@ async def registration_page(token: str, request: Request):
         start_str = str(t.get("start_at", ""))[:16] if t.get("start_at") else ""
         reg_close_str = str(t.get("reg_close_at", ""))[:16] if t.get("reg_close_at") else ""
         description = t.get("description") or ""
+        rules = t.get("rules") or ""
         
         # Escape for JS/HTML safety
         import html as _html
@@ -563,6 +784,7 @@ async def registration_page(token: str, request: Request):
         tn_game = _html.escape(t["game"])
         tn_desc = _html.escape(description)
         tn_prize = _html.escape(prize_str)
+        tn_rules = _html.escape(rules)
         tn_format = "Single Elimination" if t.get("format") == "single" else "Double Elimination"
         tn_id = int(t["id"])
 
@@ -762,6 +984,12 @@ async def registration_page(token: str, request: Request):
     </div>
     {f'<p class="mt-4 pt-3 border-t border-gray-700/50 text-gray-400 text-xs leading-relaxed">{tn_desc}</p>' if description else ''}
   </div>
+
+  {f'''<!-- Rules Card -->
+  <div class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 mb-5 shadow-xl shadow-vibe-950/30">
+    <h2 class="text-white font-bold text-sm mb-3">📖 စည်းကမ်းများ (Rules)</h2>
+    <div class="text-gray-300 text-xs leading-relaxed whitespace-pre-wrap">{tn_rules}</div>
+  </div>''' if rules else ''}
 
   <!-- Message area -->
   <div id="msg" class="hidden rounded-lg p-3 mb-4 text-sm font-medium"></div>
@@ -1246,6 +1474,217 @@ async def upload_player_ss(tid: int, pid: int, file: UploadFile = File(...)):
 
 
 # ═══════════════════════════════════════
+#  FEATURE 1 — Check-in System
+# ═══════════════════════════════════════
+
+@router.post("/api/tournaments/{tid}/checkin")
+async def public_checkin(tid: int, body: dict):
+    """Public check-in: find player by tournament_id + phone, set status='checked_in'."""
+    try:
+        name = (body.get("name") or "").strip()
+        phone = (body.get("phone") or "").strip()
+        if not phone:
+            return error_response(message="phone is required", code=400)
+
+        player = _mysql_query_one(
+            "SELECT * FROM tournament_players WHERE tournament_id=%s AND TRIM(phone)=%s",
+            (tid, phone),
+        )
+        if not player:
+            return error_response(message="Player not found", code=404)
+
+        if player["status"] not in ("registered", "confirmed", "checked_in"):
+            return error_response(
+                message="Player already eliminated or dropped out", code=400
+            )
+
+        _mysql_exec(
+            "UPDATE tournament_players SET status='checked_in' WHERE id=%s",
+            (player["id"],),
+        )
+        return ok({"checked_in": True, "player_name": player["name"]})
+    except Exception as e:
+        logger.error("public_checkin error: %s", e)
+        return error_response(message=str(e))
+
+
+@router.post("/api/tournaments/{tid}/players/{pid}/checkin")
+async def admin_checkin(tid: int, pid: int, auth=Depends(verify_api_key)):
+    """Admin: toggle/set a specific player's check-in status."""
+    try:
+        player = _mysql_query_one(
+            "SELECT * FROM tournament_players WHERE id=%s AND tournament_id=%s",
+            (pid, tid),
+        )
+        if not player:
+            return error_response(message="Player not found", code=404)
+
+        new_status = "checked_in" if player["status"] != "checked_in" else "confirmed"
+        _mysql_exec(
+            "UPDATE tournament_players SET status=%s WHERE id=%s",
+            (new_status, pid),
+        )
+        return ok({"player_id": pid, "status": new_status})
+    except Exception as e:
+        logger.error("admin_checkin error: %s", e)
+        return error_response(message=str(e))
+
+
+@router.get("/api/tournaments/{tid}/checkins")
+async def admin_checkins(tid: int, auth=Depends(verify_api_key)):
+    """Admin: players with check-in status + counts."""
+    try:
+        _ensure_tournament(tid)
+        players = _mysql_query(
+            "SELECT id, name, phone, seed, status, paid FROM tournament_players WHERE tournament_id=%s ORDER BY seed ASC, id ASC",
+            (tid,),
+        )
+        total = len(players)
+        checked_in = sum(1 for p in players if p["status"] == "checked_in")
+        return ok({
+            "total": total,
+            "checked_in": checked_in,
+            "missing": total - checked_in,
+            "players": [dict(p) for p in players],
+        })
+    except Exception as e:
+        logger.error("admin_checkins error: %s", e)
+        return error_response(message=str(e))
+
+
+# ═══════════════════════════════════════
+#  FEATURE 2 — Seeding / Randomize
+# ═══════════════════════════════════════
+
+@router.post("/api/tournaments/{tid}/seeds/randomize")
+async def randomize_seeds(tid: int, auth=Depends(verify_api_key)):
+    """Reshuffle seed numbers among confirmed+checked_in players."""
+    try:
+        t = _ensure_tournament(tid)
+        if t["status"] not in ("open", "closed", "draft"):
+            return error_response(
+                message=f"Cannot randomize seeds with status '{t['status']}'. Must be open/closed/draft.",
+                code=400,
+            )
+        import random
+        players = _mysql_query(
+            "SELECT id FROM tournament_players WHERE tournament_id=%s AND status IN ('confirmed','checked_in') ORDER BY id",
+            (tid,),
+        )
+        ids = [p["id"] for p in players]
+        random.shuffle(ids)
+        for idx, pid in enumerate(ids):
+            _mysql_exec("UPDATE tournament_players SET seed=%s WHERE id=%s", (idx + 1, pid))
+        return ok({"randomized": len(ids)})
+    except Exception as e:
+        logger.error("randomize_seeds error: %s", e)
+        return error_response(message=str(e))
+
+
+@router.patch("/api/tournaments/{tid}/players/{pid}/seed")
+async def set_player_seed(tid: int, pid: int, body: dict, auth=Depends(verify_api_key)):
+    """Set a specific player's seed number (400 if tournament is live)."""
+    try:
+        t = _ensure_tournament(tid)
+        if t["status"] == "live":
+            return error_response(message="Cannot change seeds while tournament is live", code=400)
+        seed = int(body.get("seed", 0))
+        if seed < 1:
+            return error_response(message="seed must be >= 1", code=400)
+        player = _mysql_query_one(
+            "SELECT * FROM tournament_players WHERE id=%s AND tournament_id=%s",
+            (pid, tid),
+        )
+        if not player:
+            return error_response(message="Player not found", code=404)
+        _mysql_exec("UPDATE tournament_players SET seed=%s WHERE id=%s", (seed, pid))
+        return ok({"player_id": pid, "seed": seed})
+    except Exception as e:
+        logger.error("set_player_seed error: %s", e)
+        return error_response(message=str(e))
+
+
+@router.post("/api/tournaments/{tid}/bracket/regenerate")
+async def regenerate_bracket(tid: int, auth=Depends(verify_api_key)):
+    """Delete existing matches, re-run seeding + round-1 generation."""
+    try:
+        t = _ensure_tournament(tid)
+        if t["status"] == "live":
+            return error_response(message="Cannot regenerate bracket while tournament is live", code=400)
+        players = _mysql_query(
+            "SELECT * FROM tournament_players WHERE tournament_id=%s AND status IN ('registered','confirmed','checked_in') ORDER BY id",
+            (tid,),
+        )
+        if len(players) < int(t["min_players"]):
+            missing = int(t["min_players"]) - len(players)
+            return error_response(
+                message=f"Need at least {t['min_players']} eligible players. Currently have {len(players)} (missing {missing}).",
+                code=400,
+            )
+
+        _mysql_exec("DELETE FROM tournament_matches WHERE tournament_id=%s", (tid,))
+        _mysql_exec("DELETE FROM tournament_notifications WHERE tournament_id=%s", (tid,))
+        total_rounds, r1_matches, shuffled = _generate_seeded_bracket(tid, t, players)
+        if total_rounds == 0:
+            return error_response(message="Need at least 2 players to start")
+        return ok({"regenerated": True, "players": len(shuffled), "r1_matches": r1_matches})
+    except Exception as e:
+        logger.error("regenerate_bracket error: %s", e)
+        return error_response(message=str(e))
+
+
+# ═══════════════════════════════════════
+#  FEATURE 3 — Winner Flow + Prize + Champion History
+# ═══════════════════════════════════════
+
+@router.post("/api/tournaments/{tid}/winner")
+async def admin_set_winner(tid: int, body: dict, auth=Depends(verify_api_key)):
+    """Admin fallback: set champion + mark tournament completed."""
+    try:
+        t = _ensure_tournament(tid)
+        player_id = int(body.get("player_id", 0))
+        if not player_id:
+            return error_response(message="player_id is required", code=400)
+        player = _mysql_query_one(
+            "SELECT * FROM tournament_players WHERE id=%s AND tournament_id=%s",
+            (player_id, tid),
+        )
+        if not player:
+            return error_response(message="Player not found", code=404)
+
+        prize_ks = body.get("prize_ks")
+        prize_text = body.get("prize_text")
+        if prize_ks is None and prize_text is None:
+            prize_raw = t.get("prize")
+            prize_ks = _parse_prize_ks(prize_raw)
+            prize_text = prize_raw
+
+        _mysql_exec(
+            """INSERT INTO tournament_champions
+               (tournament_id, player_id, player_name, prize_ks, prize_text, won_at)
+               VALUES (%s, %s, %s, %s, %s, NOW())
+               ON DUPLICATE KEY UPDATE
+                 player_id=VALUES(player_id), player_name=VALUES(player_name),
+                 prize_ks=VALUES(prize_ks), prize_text=VALUES(prize_text), won_at=NOW()""",
+            (tid, player["id"], player["name"], prize_ks, prize_text),
+        )
+
+        if t["status"] != "completed":
+            _mysql_exec("UPDATE tournaments SET status='completed' WHERE id=%s", (tid,))
+
+        # Notify winner
+        _insert_notification(
+            tid, player["id"], player.get("telegram_id"),
+            f"🏆 ချန်ပီယံဖြစ်ပြီ! {t['name']} — ဆုကြေး: {prize_text or '—'} — ဂုဏ်ယူပါတယ်!",
+            kind="champion",
+        )
+        return ok({"champion": _get_champion(tid)})
+    except Exception as e:
+        logger.error("admin_set_winner error: %s", e)
+        return error_response(message=str(e))
+
+
+# ═══════════════════════════════════════
 #  Utility
 # ═══════════════════════════════════════
 
@@ -1277,6 +1716,11 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     tn_game = _html.escape(t.get("game", ""))
     reg_token = t.get("reg_token") or ""
     reg_link = f"https://ps-vibe.com/t/{_html.escape(reg_token)}" if reg_token else "#"
+    tid = int(t["id"])
+    status = (t.get("status") or "").lower()
+    prize = t.get("prize") or ""
+    rules = t.get("rules") or ""
+    champion = _get_champion(tid)
 
     # Total rounds = log2(next power of 2 >= player_count): 64→6, 32→5, 5→3, 4→2
     total_rounds = max(1, (player_count - 1).bit_length())
@@ -1295,6 +1739,7 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
         round_cols = []
         for rnum in range(1, total_rounds + 1):
             matches = rounds.get(rnum) or []
+            is_final_col = (rnum == total_rounds)
             if matches:
                 match_cards = []
                 for m in matches:
@@ -1303,20 +1748,20 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
                     s1 = m.get("score1")
                     s2 = m.get("score2")
                     winner = m.get("winner")
-                    status = m.get("status", "pending")
+                    status_m = m.get("status", "pending")
                     p1_seed = (m["player1"] or {}).get("seed")
                     p2_seed = (m["player2"] or {}).get("seed")
 
                     p1_is_w = bool(winner and winner == p1_n)
                     p2_is_w = bool(winner and winner == p2_n)
                     if p1_is_w:
-                        p1_cls = "text-vibe-300 font-bold"
+                        p1_cls = "text-amber-300 font-bold"
                     elif winner and p1_n != "BYE":
                         p1_cls = "line-through text-gray-500"
                     else:
                         p1_cls = "text-gray-300"
                     if p2_is_w:
-                        p2_cls = "text-vibe-300 font-bold"
+                        p2_cls = "text-amber-300 font-bold"
                     elif winner and p2_n != "BYE":
                         p2_cls = "line-through text-gray-500"
                     else:
@@ -1328,10 +1773,18 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
                     seed2 = f'<span class="shrink-0 text-[10px] text-gray-500 w-5 text-right">{p2_seed}</span>' if p2_seed else '<span class="shrink-0 w-5"></span>'
                     trophy1 = '<span class="text-[10px] ml-0.5">🏆</span>' if p1_is_w else ""
                     trophy2 = '<span class="text-[10px] ml-0.5">🏆</span>' if p2_is_w else ""
-                    done = "border-vibe-600/40 bg-vibe-950/20" if status == "complete" else "border-gray-700/70"
+                    if status_m == "complete":
+                        border_cls = "border-vibe-600/40 bg-vibe-950/20"
+                    elif status == "live" and is_final_col:
+                        # Winners deserve a champion highlight in the final column
+                        border_cls = "border-amber-500/60 bg-amber-950/20"
+                    elif status == "live":
+                        border_cls = "border-vibe-400/60 bg-vibe-950/20 animate-pulse-border"
+                    else:
+                        border_cls = "border-gray-700/70"
 
                     match_cards.append(f'''
-            <div class="bg-surface-700/70 rounded-lg border {done} p-2.5 mb-2 transition-colors">
+            <div class="bg-surface-700/70 rounded-lg border {border_cls} p-2.5 mb-2 transition-colors">
               <div class="flex items-center gap-1.5 text-xs min-w-0">
                 {seed1}
                 <span class="flex-1 truncate {p1_cls}">{_html.escape(p1_n)}{trophy1}</span>{s1_str}
@@ -1370,6 +1823,34 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     <p class="text-gray-500 text-xs mt-2">Tournament စတင်ပြီးမှ bracket ပေါ်ပါမယ် — မကြာမီ ပြန်ကြည့်ပါဦး 🙏</p>
   </div>'''
 
+    # ── LIVE badge ──
+    live_badge = ''
+    if status == "live":
+        live_badge = '<span class="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-red-600 text-white animate-pulse">● LIVE</span>'
+    elif status == "completed":
+        live_badge = '<span class="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-emerald-700 text-white">✓ Completed</span>'
+
+    # ── Champion banner ──
+    champion_banner = ''
+    if champion:
+        champ_prize = champion.get("prize_text") or f"{champion.get('prize_ks', 0):,.0f} Ks" if champion.get("prize_ks") else ""
+        champion_banner = f'''
+  <div class="mb-5 rounded-xl border border-amber-600/50 bg-gradient-to-r from-amber-950/60 to-vibe-950/40 p-4 text-center shadow-lg">
+    <div class="text-3xl mb-1">🏆</div>
+    <p class="text-amber-300 font-bold text-lg">ချန်ပီယံ: {_html.escape(champion['player_name'])}</p>
+    {f'<p class="text-gray-300 text-sm mt-1">ဆုကြေး: {_html.escape(champ_prize)}</p>' if champ_prize else ''}
+  </div>'''
+
+    # ── Prize + Rules panels ──
+    info_panels = ''
+    if prize or rules or champion:
+        info_panels = '<div class="grid grid-cols-1 gap-3 mb-5">'
+        if prize:
+            info_panels += f'<div class="rounded-lg border border-amber-700/40 bg-surface-800 p-3"><span class="text-xs text-gray-400">🏅 ဆုကြေး (Prize)</span><p class="text-amber-300 font-semibold mt-0.5">{_html.escape(prize)}</p></div>'
+        if rules:
+            info_panels += f'<div class="rounded-lg border border-gray-700 bg-surface-800 p-3"><span class="text-xs text-gray-400">📖 စည်းကမ်းများ (Rules)</span><pre class="text-gray-300 text-xs leading-relaxed whitespace-pre-wrap mt-1 font-sans">{_html.escape(rules)}</pre></div>'
+        info_panels += '</div>'
+
     html = f"""<!DOCTYPE html>
 <html lang="my">
 <head>
@@ -1384,24 +1865,57 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
   ::-webkit-scrollbar {{ height: 8px; }}
   ::-webkit-scrollbar-thumb {{ background: #1D2BA9; border-radius: 8px; }}
   ::-webkit-scrollbar-track {{ background: #1a1a2e; border-radius: 8px; }}
+  @keyframes pulseBorder {{ 0%,100% {{ box-shadow: 0 0 0 0 rgba(29,43,169,0.5); }} 50% {{ box-shadow: 0 0 0 4px rgba(29,43,169,0.2); }} }}
+  .animate-pulse-border {{ animation: pulseBorder 2s ease-in-out infinite; }}
 </style>
 </head>
 <body class="min-h-screen text-white font-sans p-4">
 <div class="max-w-5xl mx-auto">
   <div class="flex items-center justify-between mb-5">
     <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-surface-700 hover:bg-vibe-800 text-gray-300 transition-colors">← Back</a>
-    <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-vibe-600 hover:bg-vibe-500 text-white transition-colors">🏆 Tournament Page</a>
+    <div class="flex items-center gap-2">
+      <a href="{reg_link}" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-vibe-600 hover:bg-vibe-500 text-white transition-colors">🏆 Tournament Page</a>
+    </div>
   </div>
-  <div class="text-center mb-6">
+  <div class="text-center mb-5">
     <img src="/uploads/psvibe-logo-v2.png" alt="PS VIBE" class="w-36 mx-auto mb-3">
     <h1 class="text-2xl font-bold">🏆 {tn_name}</h1>
-    <p class="text-vibe-400 text-sm">{tn_game} &middot; {player_count} players &middot; Single Elimination</p>
+    <p class="text-vibe-400 text-sm mt-1">{tn_game} &middot; {player_count} players &middot; Single Elimination</p>
+    <div class="mt-2">{live_badge}</div>
   </div>
+  {champion_banner}
+  {info_panels}
+  <div id="bracketContainer">
   {bracket_body}
+  </div>
   <div class="text-center mt-8 space-y-1">
     <p class="text-gray-600 text-xs">PS VIBE Gaming Lounge &middot; Yangon</p>
   </div>
 </div>
+<script>
+// Auto-refresh bracket every 25s (in-place, keep scroll position)
+(function() {{
+  var TID = {tid};
+  setInterval(function() {{
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/tournaments/' + TID + '/bracket?view=html', true);
+    xhr.onload = function() {{
+      if (xhr.status >= 200 && xhr.status < 400) {{
+        var doc = new DOMParser().parseFromString(xhr.responseText, 'text/html');
+        var fresh = doc.getElementById('bracketContainer');
+        var cur = document.getElementById('bracketContainer');
+        if (fresh && cur) {{ cur.innerHTML = fresh.innerHTML; }}
+        // refresh champion/info panels too (simple: reload only those sections)
+        var fb = doc.querySelector('.max-w-5xl');
+      }} else {{
+        location.reload();
+      }}
+    }};
+    xhr.onerror = function() {{ location.reload(); }};
+    xhr.send();
+  }}, 25000);
+}})();
+</script>
 </body>
 </html>"""
     return HTMLResponse(content=html)
