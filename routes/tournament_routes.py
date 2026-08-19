@@ -138,9 +138,10 @@ def _crown_champion(tid: int, winner_id: int):
     if not winner:
         logger.warning("_crown_champion: winner player %s not found", winner_id)
         return
-    t = _mysql_query_one("SELECT prize FROM tournaments WHERE id=%s", (tid,))
+    t = _mysql_query_one("SELECT prize, prize_pool_ks FROM tournaments WHERE id=%s", (tid,))
     prize_raw = t.get("prize") if t else None
-    prize_ks = _parse_prize_ks(prize_raw)
+    prize_pool = t.get("prize_pool_ks") if t else None
+    prize_ks = float(prize_pool) if prize_pool is not None else _parse_prize_ks(prize_raw)
     prize_text = prize_raw
     # Upsert champion (unique on tournament_id)
     _mysql_exec(
@@ -177,11 +178,17 @@ async def create_tournament(body: dict, auth=Depends(verify_api_key)):
         if fmt not in ("single", "double"):
             fmt = "single"
 
+        _pool = body.get("prize_pool_ks")
+        if _pool is not None and _pool != "":
+            try:
+                _pool = float(_pool)
+            except (ValueError, TypeError):
+                _pool = None
         t_id = _mysql_exec(
             """INSERT INTO tournaments
                (name, game, description, format, entry_fee_ks, max_players, min_players,
-                status, reg_token, reg_open_at, reg_close_at, start_at, prize, rules, created_by)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                status, reg_token, reg_open_at, reg_close_at, start_at, prize, prize_pool_ks, rules, created_by)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 name,
                 game,
@@ -196,6 +203,7 @@ async def create_tournament(body: dict, auth=Depends(verify_api_key)):
                 body.get("reg_close_at"),
                 body.get("start_at"),
                 body.get("prize"),
+                _pool,
                 body.get("rules"),
                 body.get("created_by"),
             ),
@@ -362,14 +370,23 @@ async def update_tournament(tid: int, body: dict, auth=Depends(verify_api_key)):
         allowed = [
             "name", "game", "description", "format", "entry_fee_ks",
             "max_players", "min_players", "status", "reg_open_at",
-            "reg_close_at", "start_at", "prize", "rules",
+            "reg_close_at", "start_at", "prize", "prize_pool_ks", "rules",
         ]
         updates = []
         params = []
         for k in allowed:
             if k in body:
+                v = body[k]
+                if k == "prize_pool_ks":
+                    if v is None or v == "":
+                        v = None
+                    else:
+                        try:
+                            v = float(v)
+                        except (ValueError, TypeError):
+                            continue
                 updates.append(f"{k} = %s")
-                params.append(body[k])
+                params.append(v)
 
         if not updates:
             return error_response(message="No valid fields to update")
@@ -773,6 +790,11 @@ async def registration_page(token: str, request: Request):
 
         # Format prize and dates for display
         prize_str = t.get("prize") or ""
+        prize_pool = t.get("prize_pool_ks")
+        try:
+            prize_pool_float = float(prize_pool) if prize_pool is not None else None
+        except (ValueError, TypeError):
+            prize_pool_float = None
         start_str = str(t.get("start_at", ""))[:16] if t.get("start_at") else ""
         reg_close_str = str(t.get("reg_close_at", ""))[:16] if t.get("reg_close_at") else ""
         description = t.get("description") or ""
@@ -979,7 +1001,9 @@ async def registration_page(token: str, request: Request):
       <div class="text-gray-400">📐 Format</div>
       <div class="text-right text-white">{tn_format}</div>
       
-      {f'<div class="text-gray-400">🏅 Prize</div><div class="text-right text-amber-300 font-semibold">{tn_prize}</div>' if prize_str else ''}
+      {f'<div class="text-gray-400">💰 ဆုကြေး စုစုပေါင်း (Prize Pool)</div><div class="text-right text-amber-300 font-semibold">{prize_pool_float:,.0f} Ks</div>' if prize_pool_float is not None else ''}
+      {f'<div class="text-gray-400">ဆုခွဲဝေမှု</div><div class="text-right text-amber-300 font-semibold">{tn_prize}</div>' if (prize_str and prize_pool_float is not None) else ''}
+      {f'<div class="text-gray-400">🏅 Prize</div><div class="text-right text-amber-300 font-semibold">{tn_prize}</div>' if (prize_str and prize_pool_float is None) else ''}
       {f'<div class="text-gray-400">📅 Date</div><div class="text-right text-white">{start_str}</div>' if start_str else ''}
     </div>
     {f'<p class="mt-4 pt-3 border-t border-gray-700/50 text-gray-400 text-xs leading-relaxed">{tn_desc}</p>' if description else ''}
@@ -1684,7 +1708,8 @@ async def admin_set_winner(tid: int, body: dict, auth=Depends(verify_api_key)):
         prize_text = body.get("prize_text")
         if prize_ks is None and prize_text is None:
             prize_raw = t.get("prize")
-            prize_ks = _parse_prize_ks(prize_raw)
+            _pool = t.get("prize_pool_ks")
+            prize_ks = float(_pool) if _pool is not None else _parse_prize_ks(prize_raw)
             prize_text = prize_raw
 
         _mysql_exec(
@@ -1747,6 +1772,11 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     tid = int(t["id"])
     status = (t.get("status") or "").lower()
     prize = t.get("prize") or ""
+    prize_pool = t.get("prize_pool_ks")
+    try:
+        prize_pool_float = float(prize_pool) if prize_pool is not None else None
+    except (ValueError, TypeError):
+        prize_pool_float = None
     rules = t.get("rules") or ""
     champion = _get_champion(tid)
 
@@ -1871,10 +1901,12 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
 
     # ── Prize + Rules panels ──
     info_panels = ''
-    if prize or rules or champion:
+    if prize_pool_float is not None or prize or rules or champion:
         info_panels = '<div class="grid grid-cols-1 gap-3 mb-5">'
+        if prize_pool_float is not None:
+            info_panels += f'<div class="rounded-lg border border-amber-700/40 bg-surface-800 p-3"><span class="text-xs text-gray-400">🏅 ဆုကြေး စုစုပေါင်း (Prize Pool)</span><p class="text-amber-300 font-semibold mt-0.5">{prize_pool_float:,.0f} Ks</p></div>'
         if prize:
-            info_panels += f'<div class="rounded-lg border border-amber-700/40 bg-surface-800 p-3"><span class="text-xs text-gray-400">🏅 ဆုကြေး (Prize)</span><p class="text-amber-300 font-semibold mt-0.5">{_html.escape(prize)}</p></div>'
+            info_panels += f'<div class="rounded-lg border border-amber-700/40 bg-surface-800 p-3"><span class="text-xs text-gray-400">ဆုခွဲဝေမှု (Breakdown)</span><p class="text-amber-300 font-semibold mt-0.5">{_html.escape(prize)}</p></div>'
         if rules:
             info_panels += f'<a href="/api/tournaments/{t["id"]}/rules?view=html" target="psvibe-tournament-rules" rel="noopener" class="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-vibe-600 hover:bg-vibe-500 text-white transition-colors">📖 စည်းကမ်းများ ကြည့်ရန် (Rules)</a>'
         info_panels += '</div>'
@@ -1961,9 +1993,20 @@ def _render_rules_html(t: dict) -> HTMLResponse:
     reg_token = t.get("reg_token") or ""
     reg_link = f"https://ps-vibe.com/t/{_html.escape(reg_token)}" if reg_token else "#"
     prize = t.get("prize") or ""
+    prize_pool = t.get("prize_pool_ks")
+    try:
+        prize_pool_float = float(prize_pool) if prize_pool is not None else None
+    except (ValueError, TypeError):
+        prize_pool_float = None
     rules = t.get("rules") or ""
 
-    prize_line = f'<p class="text-amber-300 font-semibold text-sm mt-1">💰 ဆုကြေး: {_html.escape(prize)}</p>' if prize else ''
+    prize_line = ''
+    if prize_pool_float is not None:
+        prize_line = f'<p class="text-amber-300 font-semibold text-sm mt-1">💰 ဆုကြေး စုစုပေါင်း (Prize Pool): {prize_pool_float:,.0f} Ks</p>'
+        if prize:
+            prize_line += f'<p class="text-gray-400 text-xs mt-0.5">ဆုခွဲဝေမှု: {_html.escape(prize)}</p>'
+    elif prize:
+        prize_line = f'<p class="text-amber-300 font-semibold text-sm mt-1">💰 ဆုကြေး: {_html.escape(prize)}</p>'
 
     if rules:
         rules_body = f'''<div class="bg-surface-800 rounded-xl border border-vibe-900/50 p-5 shadow-xl shadow-vibe-950/30">
