@@ -129,6 +129,10 @@ class TestPublicRegistration:
         resp = client.post(f"/api/tournaments/{tid}/register", json={
             "name": "Player One",
             "phone": "09111111111",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
         })
         assert resp.status_code == 200
         data = resp.json()
@@ -173,6 +177,10 @@ class TestPublicRegistration:
         resp = client.post(f"/api/tournaments/{tid}/register", json={
             "name": "Wallet Player",
             "phone": "09777777777",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
             "member_id": "TEST_TOURN_001",
         })
         assert resp.status_code == 200
@@ -209,6 +217,10 @@ class TestPublicRegistration:
         resp = client.post(f"/api/tournaments/{tid}/register", json={
             "name": "Player A",
             "phone": "09555555555",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
         })
         assert resp.status_code == 200
         assert resp.json()["success"] is True
@@ -217,6 +229,10 @@ class TestPublicRegistration:
         resp = client.post(f"/api/tournaments/{tid}/register", json={
             "name": "Player B",
             "phone": "09555555555",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
         })
         assert resp.status_code == 200
         assert resp.json()["success"] is False
@@ -239,15 +255,69 @@ class TestPublicRegistration:
         client.post(f"/api/tournaments/{tid}/register", json={
             "name": "First Player",
             "phone": "09123456780",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
         })
 
         # Try to register when full
         resp = client.post(f"/api/tournaments/{tid}/register", json={
             "name": "Second Player",
             "phone": "09123456781",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
         })
         assert resp.json()["success"] is False
         assert "full" in resp.json()["error"].lower()
+
+    def test_missing_teams_rejected(self, client, auth_headers):
+        """Registration without all 3 team names → 400 error."""
+        resp = client.post("/api/tournaments", json={
+            "name": "No Teams Cup",
+            "game": "EA FC 26",
+            "entry_fee_ks": 0,
+            "max_players": 8,
+            "status": "open",
+        }, headers=auth_headers)
+        tid = resp.json()["data"]["id"]
+
+        resp = client.post(f"/api/tournaments/{tid}/register", json={
+            "name": "No Team Player",
+            "phone": "09122222222",
+            "rules_ack": True,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is False
+        assert data["code"] == 400
+        assert "team" in data["error"].lower()
+
+    def test_missing_rules_ack_rejected(self, client, auth_headers):
+        """Registration without rules acknowledgment → 400 error."""
+        resp = client.post("/api/tournaments", json={
+            "name": "No Rules Cup",
+            "game": "EA FC 26",
+            "entry_fee_ks": 0,
+            "max_players": 8,
+            "status": "open",
+        }, headers=auth_headers)
+        tid = resp.json()["data"]["id"]
+
+        resp = client.post(f"/api/tournaments/{tid}/register", json={
+            "name": "No Rules Player",
+            "phone": "09133333333",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is False
+        assert data["code"] == 400
+        assert "rules" in data["error"].lower()
 
 
 class TestDigitalPayment:
@@ -271,6 +341,10 @@ class TestDigitalPayment:
         resp = client.post(f"/api/tournaments/{tid}/register", json={
             "name": "Digital Player",
             "phone": "09123456789",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
             "payment_method": "kpay",
             "ss_file": "AgACAgQAAxkBAA...test_file_id_123",
         })
@@ -308,6 +382,10 @@ class TestDigitalPayment:
         resp = client.post(f"/api/tournaments/{tid}/register", json={
             "name": "Kbz Pay Player",
             "phone": "09111111117",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
             "payment_method": "KBZ Pay",
             "ss_file": "AgAC...kbz_test",
         })
@@ -335,6 +413,10 @@ class TestDigitalPayment:
         resp = client.post(f"/api/tournaments/{tid}/register", json={
             "name": "No Proof Player",
             "phone": "09111111118",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
             "payment_method": "kpay",
         })
         assert resp.json()["success"] is True
@@ -367,6 +449,10 @@ class TestBracket:
             client.post(f"/api/tournaments/{tid}/register", json={
                 "name": f"Player {i+1}",
                 "phone": f"0990000000{i}",
+                "team1": "Real Madrid",
+                "team2": "Barcelona",
+                "team3": "Man City",
+                "rules_ack": True,
             })
         return tid
 
@@ -525,6 +611,10 @@ class TestSSUpload:
         resp = client.post(f"/api/tournaments/{tid}/register", json={
             "name": "SS Player",
             "phone": "09123456710",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
             "payment_method": "kpay",
             "ss_file": "old_telegram_file_id",
         })
@@ -577,6 +667,10 @@ class TestSSUpload:
         resp = client.post(f"/api/tournaments/{tid}/register", json={
             "name": "Fake SS Player",
             "phone": "09123456711",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
             "payment_method": "kpay",
             "ss_file": "dummy",
         })
@@ -609,6 +703,10 @@ class TestSSUpload:
         resp = client.post(f"/api/tournaments/{tid}/register", json={
             "name": "URL Player",
             "phone": "09123456712",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
             "payment_method": "wavepay",
             "ss_file": "legacy_id",
         })
@@ -685,6 +783,10 @@ class TestPublicEndpoints:
         client.post(f"/api/tournaments/{tid}/register", json={
             "name": "Visible Player",
             "phone": "09987654321",
+            "team1": "Real Madrid",
+            "team2": "Barcelona",
+            "team3": "Man City",
+            "rules_ack": True,
         })
 
         resp = client.get(f"/api/tournaments/{tid}/players")

@@ -45,6 +45,106 @@ router = APIRouter(tags=["Tournaments"])
 
 # ── helpers ──
 
+def _ensure_team_columns():
+    """Idempotent schema guard: add team1/team2/team3/rules_ack columns if missing.
+
+    Runs cheaply at import/startup and self-heals fresh installs.
+    """
+    try:
+        existing = _mysql_query(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = 'psvibe_api' AND TABLE_NAME = 'tournament_players' "
+            "AND COLUMN_NAME IN ('team1','team2','team3','rules_ack')"
+        )
+        have = {r["COLUMN_NAME"] for r in (existing or [])}
+        missing = []
+        for col in ("team1", "team2", "team3", "rules_ack"):
+            if col not in have:
+                missing.append(col)
+        if not missing:
+            return
+        stmts = []
+        for col in missing:
+            if col == "rules_ack":
+                stmts.append("ADD COLUMN rules_ack TINYINT(1) NOT NULL DEFAULT 0")
+            else:
+                stmts.append(f"ADD COLUMN {col} VARCHAR(100) NULL")
+        _mysql_exec(f"ALTER TABLE tournament_players {', '.join(stmts)}")
+        logger.info("Tournament schema migrated (added columns: %s)", ", ".join(missing))
+    except Exception as e:
+        logger.warning("_ensure_team_columns failed: %s", e)
+
+
+# Self-heal tournament_players schema at import/startup (team1-3 + rules_ack).
+try:
+    _ensure_team_columns()
+except Exception:
+    pass
+
+
+def _ensure_match_columns():
+    """Idempotent schema guard: add bracket + feeds_from columns to tournament_matches.
+
+    Supports double-elimination: `bracket` tags each match as winners/losers/final,
+    and `feeds_from` records the winners-bracket match whose loser drops into this
+    losers-bracket match. Runs cheaply at import/startup and self-heals fresh mounts.
+    """
+    try:
+        existing = _mysql_query(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = 'psvibe_api' AND TABLE_NAME = 'tournament_matches' "
+            "AND COLUMN_NAME IN ('bracket','feeds_from')"
+        )
+        have = {r["COLUMN_NAME"] for r in (existing or [])}
+        if "bracket" not in have or "feeds_from" not in have:
+            stmts = []
+            if "bracket" not in have:
+                stmts.append("ADD COLUMN bracket ENUM('winners','losers','final') NOT NULL DEFAULT 'winners' AFTER status")
+            if "feeds_from" not in have:
+                stmts.append("ADD COLUMN feeds_from INT DEFAULT NULL AFTER bracket")
+            _mysql_exec(f"ALTER TABLE tournament_matches {', '.join(stmts)}")
+            logger.info("Tournament matches schema migrated (added columns: bracket, feeds_from)")
+        # Double-elim reuses (round, position) across winners/losers/final lanes,
+        # so the uniqueness key must span bracket too (idempotent).
+        _ensure_match_unique_key()
+    except Exception as e:
+        logger.warning("_ensure_match_columns failed: %s", e)
+
+
+def _ensure_match_unique_key():
+    """Ensure tournament_matches uniqueness spans (tournament_id, round, position, bracket).
+
+    The legacy key `uq_tourn_match` covers only (tournament_id, round, position),
+    which collides for double-elimination (winners & losers both use round=1, pos=1).
+    """
+    try:
+        keys = _mysql_query(
+            "SHOW INDEX FROM tournament_matches WHERE Key_name='uq_tourn_match'"
+        )
+        cols = [r["Column_name"] for r in (keys or [])]
+        if cols and "bracket" in cols:
+            return  # already spans bracket
+        # Drop legacy unique key and re-add with bracket included.
+        # The legacy key doubles as the index backing fk_tm_tournament (tournament_id),
+        # so add a standalone tournament_id index first.
+        _mysql_exec("ALTER TABLE tournament_matches ADD KEY idx_tournament (tournament_id)")
+        _mysql_exec("ALTER TABLE tournament_matches DROP INDEX uq_tourn_match")
+        _mysql_exec(
+            "ALTER TABLE tournament_matches ADD UNIQUE KEY uq_tourn_match "
+            "(tournament_id, round, position, bracket)"
+        )
+        logger.info("tournament_matches unique key now spans bracket")
+    except Exception as e:
+        logger.warning("_ensure_match_unique_key failed: %s", e)
+
+
+# Self-heal tournament_matches schema at import/startup (bracket + feeds_from).
+try:
+    _ensure_match_columns()
+except Exception:
+    pass
+
+
 def _calculate_total_rounds(player_count: int) -> int:
     """Calculate number of rounds needed for a single-elimination bracket."""
     if player_count <= 1:
@@ -664,6 +764,285 @@ def _generate_seeded_bracket(tid: int, t: dict, players: list):
     return total_rounds, r1_matches, shuffled
 
 
+# ═══════════════════════════════════════════
+#  Double-Elimination Bracket Generator
+# ═══════════════════════════════════════════
+
+_DBL_STRUCT = {
+    # r -> (matches_in_round, slot_type) where slot_type describes how player slots
+    # are sourced. 'seed' = fill from shuffled seeds at generation time (W1 only).
+    # 'winner_loser' = two feeder losers; 'win_lose' = winner+loser mix.
+}
+
+
+def _generate_double_elim_bracket(tid: int, t: dict, players: list):
+    """Generate a full double-elimination bracket for `players`.
+
+    For N=64 (k=6, no byes, no bracket reset):
+      Winners bracket: W1..W6 (round column 1..6): 32+16+8+4+2+1 = 63 matches.
+      Losers bracket:  L1..L10 (round column 1..10): 16+16+8+8+4+4+2+2+1+1 = 62 matches.
+      Grand final:     1 match (bracket='final', round=1).
+    Total = 126 = 2N - 2.
+
+    All matches are inserted upfront with `bracket` / `feeds_from` set; players are
+    filled only into W1 matches (and later rounds are populated on score submission).
+    Returns (rounds_used, total_matches, shuffled).
+    """
+    import random
+    n = len(players)
+    if n < 4:
+        return 0, 0, []
+
+    shuffled = list(players)
+    random.shuffle(shuffled)
+    for idx, p in enumerate(shuffled):
+        _mysql_exec("UPDATE tournament_players SET seed=%s WHERE id=%s", (idx + 1, p["id"]))
+
+    k = math.ceil(math.log2(n))  # winners-bracket rounds (6 for 64)
+    if 2 ** k != n:
+        # Non-power-of-2 would need byes; for now require exact power of two for
+        # double-elim (we generate the full 2N-2 structure).
+        k = k  # still proceed with next-power-of-two assumption (W1 slots = 2^(k-1))
+
+    w1_matches = 2 ** (k - 1)  # 32
+
+    id_by_pos = {}  # (bracket, round, position) -> match id (for feeds_from/lookup)
+
+    def _wb_count(r):
+        return 2 ** (k - r)
+
+    # ── Winners bracket ──
+    for r in range(1, k + 1):
+        count = _wb_count(r)
+        for pos in range(1, count + 1):
+            p1_id = p2_id = None
+            if r == 1:
+                idx_a = pos - 1
+                idx_b = (2 * w1_matches) - pos
+                p1_id = shuffled[idx_a]["id"] if idx_a < n else None
+                p2_id = shuffled[idx_b]["id"] if idx_b < n and idx_b != idx_a else None
+            _mysql_exec(
+                """INSERT INTO tournament_matches
+                   (tournament_id, round, position, player1_id, player2_id, status, bracket)
+                   VALUES (%s, %s, %s, %s, %s, 'pending', 'winners')""",
+                (tid, r, pos, p1_id, p2_id),
+            )
+            mid = _mysql_query_one(
+                "SELECT id FROM tournament_matches WHERE tournament_id=%s AND bracket='winners' AND round=%s AND position=%s",
+                (tid, r, pos),
+            )["id"]
+            id_by_pos[("winners", r, pos)] = mid
+
+    # ── Losers bracket (round column L1..L10 maps to 1..10) ──
+    lb_structure = []
+    # L1: 16 matches — losers of W1[2p-1] & W1[2p]
+    lb_structure.append(("L1", w1_matches // 2, "ww"))              # 16
+    # L2: 16 — winner L1[p] + loser W2[p]
+    lb_structure.append(("L2", _wb_count(2), "wl"))                  # 16
+    # L3: 8 — winners of L2[2p-1] & L2[2p]
+    lb_structure.append(("L3", _wb_count(3), "ww"))                  # 8
+    # L4: 8 — winner L3[p] + loser W3[p]
+    lb_structure.append(("L4", _wb_count(3), "wl"))                  # 8
+    # L5: 4 — winners L4[2p-1] & L4[2p]
+    lb_structure.append(("L5", _wb_count(4), "ww"))                  # 4
+    # L6: 4 — winner L5[p] + loser W4[p]
+    lb_structure.append(("L6", _wb_count(4), "wl"))                  # 4
+    # L7: 2 — winners L6[2p-1] & L6[2p]
+    lb_structure.append(("L7", _wb_count(5), "ww"))                  # 2
+    # L8: 2 — winner L7[p] + loser W5[p]
+    lb_structure.append(("L8", _wb_count(5), "wl"))                  # 2
+    # L9: 1 — winners L8[1] & L8[2]
+    lb_structure.append(("L9", 1, "ww"))                             # 1
+    # L10: 1 — winner L9[1] + loser W6[1]
+    lb_structure.append(("L10", 1, "wl"))                            # 1
+
+    for lb_round, (label, count, kind) in enumerate(lb_structure, start=1):
+        for pos in range(1, count + 1):
+            _mysql_exec(
+                """INSERT INTO tournament_matches
+                   (tournament_id, round, position, status, bracket)
+                   VALUES (%s, %s, %s, 'pending', 'losers')""",
+                (tid, lb_round, pos),
+            )
+            mid = _mysql_query_one(
+                "SELECT id FROM tournament_matches WHERE tournament_id=%s AND bracket='losers' AND round=%s AND position=%s",
+                (tid, lb_round, pos),
+            )["id"]
+            id_by_pos[("losers", lb_round, pos)] = mid
+
+    # ── Grand final ──
+    _mysql_exec(
+        """INSERT INTO tournament_matches
+           (tournament_id, round, position, status, bracket)
+           VALUES (%s, 1, 1, 'pending', 'final')""",
+        (tid,),
+    )
+    final_mid = _mysql_query_one(
+        "SELECT id FROM tournament_matches WHERE tournament_id=%s AND bracket='final' AND round=1 AND position=1",
+        (tid,),
+    )["id"]
+    id_by_pos[("final", 1, 1)] = final_mid
+
+    # ── Set feeds_from on losers-bracket matches ──
+    # For each LB match, feeds_from = the WB match whose LOSER feeds its player2
+    # (the "drops down" stream). player1 of LB matches always comes from the LB
+    # advance path (winner of a prior LB round), except L1 where BOTH come from W1
+    # losers. We tag feeds_from with the primary WB source for traceability:
+    #   L1 pos p  -> W1[2p-1]
+    #   L2 pos p  -> W2[p]
+    #   L4 pos p  -> W3[p]
+    #   L6 pos p  -> W4[p]
+    #   L8 pos p  -> W5[p]
+    #   L10 pos 1 -> W6[1]
+    for p in range(1, w1_matches // 2 + 1):  # L1
+        wb_p1 = id_by_pos[("winners", 1, 2 * p - 1)]
+        _mysql_exec("UPDATE tournament_matches SET feeds_from=%s WHERE id=%s", (wb_p1, id_by_pos[("losers", 1, p)]))
+    for p in range(1, _wb_count(2) + 1):      # L2 <- W2
+        _mysql_exec("UPDATE tournament_matches SET feeds_from=%s WHERE id=%s",
+                    (id_by_pos[("winners", 2, p)], id_by_pos[("losers", 2, p)]))
+    for p in range(1, _wb_count(3) + 1):      # L4 <- W3
+        _mysql_exec("UPDATE tournament_matches SET feeds_from=%s WHERE id=%s",
+                    (id_by_pos[("winners", 3, p)], id_by_pos[("losers", 4, p)]))
+    for p in range(1, _wb_count(4) + 1):      # L6 <- W4
+        _mysql_exec("UPDATE tournament_matches SET feeds_from=%s WHERE id=%s",
+                    (id_by_pos[("winners", 4, p)], id_by_pos[("losers", 6, p)]))
+    for p in range(1, _wb_count(5) + 1):      # L8 <- W5
+        _mysql_exec("UPDATE tournament_matches SET feeds_from=%s WHERE id=%s",
+                    (id_by_pos[("winners", 5, p)], id_by_pos[("losers", 8, p)]))
+    _mysql_exec("UPDATE tournament_matches SET feeds_from=%s WHERE id=%s",
+                (id_by_pos[("winners", 6, 1)], id_by_pos[("losers", 10, 1)]))
+
+    # Notify W1 players (mirror single-elim behaviour)
+    _id_to_player = {p["id"]: p for p in shuffled}
+    for pos in range(1, w1_matches + 1):
+        idx_a = pos - 1
+        idx_b = (2 * w1_matches) - pos
+        p1_id = shuffled[idx_a]["id"] if idx_a < n else None
+        p2_id = shuffled[idx_b]["id"] if idx_b < n and idx_b != idx_a else None
+        if p1_id and p2_id:
+            p1, p2 = _id_to_player[p1_id], _id_to_player[p2_id]
+            _insert_notification(
+                tid, p1["id"], p1.get("telegram_id"),
+                f"🔔 {t['name']} — မင်းရဲ့ Winners R1 Match စပါပြီ! ပြိုင်ဘက်: {p2['name']} (#{p2['seed']}) — PS VIBE",
+            )
+            _insert_notification(
+                tid, p2["id"], p2.get("telegram_id"),
+                f"🔔 {t['name']} — မင်းရဲ့ Winners R1 Match စပါပြီ! ပြိုင်ဘက်: {p1['name']} (#{p1['seed']}) — PS VIBE",
+            )
+
+    total_matches = (2 ** (k + 1) - 2)  # 63 + 62 + 1 = 126 = 2N - 2
+    return k, total_matches, shuffled
+
+
+def _set_match_player(mid: int, slot: str, pid: int):
+    """Fill player1/player2 slot of a match row (leave status pending)."""
+    m = _mysql_query_one("SELECT player1_id, player2_id FROM tournament_matches WHERE id=%s", (mid,))
+    if not m:
+        return
+    col = "player1_id" if slot == "p1" else "player2_id"
+    cur = m[col]
+    if cur is None:
+        _mysql_exec(f"UPDATE tournament_matches SET {col}=%s WHERE id=%s", (pid, mid))
+
+
+def _double_elim_advance(tid: int, t: dict, match: dict, winner_id, loser_id, s1, s2, mid):
+    """Advance a winner/loser across the double-elimination bracket after a score.
+
+    Returns an `ok`-shaped dict via the same semantics as single-elim (match_id,
+    score, winner, is_final). Handles WB losers dropping into LB, LB winners
+    advancing, and the grand final crowning the champion.
+    """
+    mbracket = match.get("bracket") or "winners"
+    rround = int(match["round"])
+    pos = int(match["position"])
+
+    def _find(bracket, round_no, position):
+        return _mysql_query_one(
+            "SELECT * FROM tournament_matches WHERE tournament_id=%s AND bracket=%s AND round=%s AND position=%s",
+            (tid, bracket, round_no, position),
+        )
+
+    if mbracket == "winners":
+        # Advance winner in WB
+        if rround < 6:
+            nxt = _find("winners", rround + 1, math.ceil(pos / 2))
+            if nxt:
+                slot = "p1" if (pos % 2 == 1) else "p2"
+                _set_match_player(nxt["id"], slot, winner_id)
+        else:
+            # WB final (round 6) winner -> grand final player1
+            gf = _find("final", 1, 1)
+            if gf:
+                _set_match_player(gf["id"], "p1", winner_id)
+        # Loser drops into losers bracket (NOT eliminated)
+        if loser_id:
+            if rround == 1:
+                lb = _find("losers", 1, math.ceil(pos / 2))
+                if lb:
+                    slot = "p1" if (pos % 2 == 1) else "p2"
+                    _set_match_player(lb["id"], slot, loser_id)
+            elif 2 <= rround <= 5:
+                # L(2r-2), pos = pos, player2 slot
+                lb_round = 2 * rround - 2
+                lb = _find("losers", lb_round, pos)
+                if lb:
+                    _set_match_player(lb["id"], "p2", loser_id)
+            elif rround == 6:
+                # WB final loser -> L10 player2
+                lb = _find("losers", 10, 1)
+                if lb:
+                    _set_match_player(lb["id"], "p2", loser_id)
+        is_final = False
+
+    elif mbracket == "losers":
+        # Loser of LB = 2nd loss -> eliminated
+        if loser_id:
+            _mysql_exec("UPDATE tournament_players SET status='eliminated' WHERE id=%s", (loser_id,))
+        if rround == 10:
+            # L10 winner -> grand final player2
+            gf = _find("final", 1, 1)
+            if gf:
+                _set_match_player(gf["id"], "p2", winner_id)
+        else:
+            if rround % 2 == 1:
+                # odd LB round -> L(r+1) same position, player1 slot
+                nxt = _find("losers", rround + 1, pos)
+                if nxt:
+                    _set_match_player(nxt["id"], "p1", winner_id)
+            else:
+                # even LB round -> L(r+1) ceil(pos/2); slot depends on source parity
+                nxt = _find("losers", rround + 1, math.ceil(pos / 2))
+                if nxt:
+                    slot = "p1" if (pos % 2 == 1) else "p2"
+                    _set_match_player(nxt["id"], slot, winner_id)
+        is_final = False
+
+    else:  # 'final'
+        if loser_id:
+            _mysql_exec("UPDATE tournament_players SET status='eliminated' WHERE id=%s", (loser_id,))
+        _mysql_exec("UPDATE tournaments SET status='completed' WHERE id=%s", (tid,))
+        _crown_champion(tid, winner_id)
+        winner = _player_by_id(winner_id)
+        if winner:
+            _insert_notification(
+                tid, winner["id"], winner.get("telegram_id"),
+                f"🏆 ချန်ပီယံဖြစ်ပြီ! {t['name']} — ဆုကြေး: {t.get('prize') or '—'} — ဂုဏ်ယူပါတယ်!",
+                kind="champion",
+            )
+        logger.info("Double-elim tournament %s completed! Winner: player %s", tid, winner_id)
+        is_final = True
+
+    logger.info("Match %s scored (double-elim, %s): %s-%s, winner=%s", mid, mbracket, s1, s2, winner_id)
+    return ok({
+        "match_id": mid,
+        "score1": s1,
+        "score2": s2,
+        "winner_id": winner_id,
+        "bracket": mbracket,
+        "is_final": is_final,
+    })
+
+
 @router.post("/api/tournaments/{tid}/start")
 async def start_tournament(tid: int, auth=Depends(verify_api_key)):
     """Start the tournament: seed players, generate round-1 bracket.
@@ -705,23 +1084,31 @@ async def start_tournament(tid: int, auth=Depends(verify_api_key)):
         _mysql_exec("DELETE FROM tournament_matches WHERE tournament_id=%s", (tid,))
         _mysql_exec("DELETE FROM tournament_notifications WHERE tournament_id=%s", (tid,))
 
-        total_rounds, r1_matches, shuffled = _generate_seeded_bracket(tid, t, players)
-        if total_rounds == 0:
-            return error_response(message="Need at least 2 players to start")
+        if t.get("format") == "double":
+            total_rounds, match_count, shuffled = _generate_double_elim_bracket(tid, t, players)
+            if total_rounds == 0:
+                return error_response(message="Need at least 4 players to start a double-elimination tournament")
+        else:
+            total_rounds, r1_matches, shuffled = _generate_seeded_bracket(tid, t, players)
+            match_count = r1_matches
+            if total_rounds == 0:
+                return error_response(message="Need at least 2 players to start")
 
         _mysql_exec(
             "UPDATE tournaments SET status='live', start_at=NOW() WHERE id=%s",
             (tid,),
         )
         logger.info(
-            "Tournament %s started: %s players, %s rounds, %s r1 matches",
-            tid, len(shuffled), total_rounds, r1_matches,
+            "Tournament %s started: %s players, %s rounds (format=%s), %s matches generated",
+            tid, len(shuffled), total_rounds, t.get("format"), match_count,
         )
         return ok({
             "started": True,
             "players": len(shuffled),
+            "format": t.get("format"),
             "total_rounds": total_rounds,
-            "r1_matches": r1_matches,
+            "r1_matches": match_count if t.get("format") == "double" else r1_matches,
+            "matches_generated": match_count,
         })
     except Exception as e:
         logger.error("start_tournament error: %s", e)
@@ -758,6 +1145,11 @@ async def submit_match_score(tid: int, mid: int, body: dict, auth=Depends(verify
             (s1, s2, winner_id, mid),
         )
 
+        mbracket = match.get("bracket") or "winners"
+        if t.get("format") == "double" or mbracket in ("losers", "final"):
+            return _double_elim_advance(tid, t, match, winner_id, loser_id, s1, s2, mid)
+
+        # ── Single-elimination (unchanged) ──
         # Mark loser as eliminated (unless bye — player2 was None)
         if loser_id:
             _mysql_exec(
@@ -864,7 +1256,7 @@ async def get_standings(tid: int, auth=Depends(verify_api_key)):
             (tid,),
         )
         registered = _mysql_query(
-            "SELECT id, name, phone, seed, status, paid FROM tournament_players WHERE tournament_id=%s AND status IN ('registered','confirmed')",
+            "SELECT id, name, phone, seed, status, paid, team1, team2, team3, rules_ack FROM tournament_players WHERE tournament_id=%s AND status IN ('registered','confirmed')",
             (tid,),
         )
         return ok({
@@ -985,6 +1377,21 @@ async def registration_page(token: str, request: Request):
                placeholder-gray-500 focus:outline-none focus:border-vibe-500 focus:ring-1 focus:ring-vibe-500/30 transition-colors">
     </div>
 
+    <!-- Teams (used throughout the tournament) -->
+    <div class="mb-4">
+      <p class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">⚽ အသင်း သုံးသင်း <span class="text-red-400">*</span></p>
+      <input type="text" id="team1" placeholder="အသင်း ၁" required
+        class="w-full px-3.5 py-2.5 rounded-lg bg-surface-600 border border-gray-700 text-white text-sm mb-2
+               placeholder-gray-500 focus:outline-none focus:border-vibe-500 focus:ring-1 focus:ring-vibe-500/30 transition-colors">
+      <input type="text" id="team2" placeholder="အသင်း ၂" required
+        class="w-full px-3.5 py-2.5 rounded-lg bg-surface-600 border border-gray-700 text-white text-sm mb-2
+               placeholder-gray-500 focus:outline-none focus:border-vibe-500 focus:ring-1 focus:ring-vibe-500/30 transition-colors">
+      <input type="text" id="team3" placeholder="အသင်း ၃" required
+        class="w-full px-3.5 py-2.5 rounded-lg bg-surface-600 border border-gray-700 text-white text-sm
+               placeholder-gray-500 focus:outline-none focus:border-vibe-500 focus:ring-1 focus:ring-vibe-500/30 transition-colors">
+      <p class="text-gray-500 text-xs mt-1">ပြိုင်ပွဲတစ်လျှောက် အသုံးပြုမည့် အသင်း သုံးသင်းကို ဖြည့်ပါ</p>
+    </div>
+
     {f'''<!-- Payment Method -->
     <div class="mb-4" id="paySection">
       <label class="block text-gray-400 text-xs font-medium mb-1.5 ml-1">💳 ငွေပေးချေနည်း ({fee:,} Ks)</label>
@@ -1016,6 +1423,12 @@ async def registration_page(token: str, request: Request):
     </div>''' if fee > 0 else ''}
 
     <!-- Submit -->
+    <div class="mb-3">
+      <label class="flex items-start gap-2 text-sm text-gray-300 cursor-pointer select-none">
+        <input type="checkbox" id="rulesAck" required class="mt-0.5 h-4 w-4 accent-vibe-600 shrink-0">
+        <span>📖 စည်းကမ်းများကို ဖတ်ရှုပြီး သဘောတူပါသည် <a href="#" onclick="openRules(); return false;" class="text-vibe-400 hover:underline">(Rules)</a></span>
+      </label>
+    </div>
     <button type="submit" id="submitBtn"
       class="w-full py-3 rounded-lg font-bold text-white text-base mt-2
              bg-gradient-to-r from-vibe-600 to-vibe-800 hover:from-vibe-500 hover:to-vibe-700
@@ -1189,6 +1602,10 @@ async function handleSubmit(e) {{
   const btn = document.getElementById('submitBtn');
   const name = document.getElementById('name').value.trim();
   const phone = document.getElementById('phone').value.trim();
+  const team1 = document.getElementById('team1').value.trim();
+  const team2 = document.getElementById('team2').value.trim();
+  const team3 = document.getElementById('team3').value.trim();
+  const rulesAck = document.getElementById('rulesAck').checked;
   document.getElementById('msg').className = 'hidden';
 
   // Validation
@@ -1198,6 +1615,14 @@ async function handleSubmit(e) {{
   }}
   if (phone.length < 8 || !/^0[0-9]/.test(phone)) {{
     showMsg('error', '❌ ဖုန်းနံပါတ် မှန်မမှန် ပြန်စစ်ပေးပါ (09xxx...)');
+    return;
+  }}
+  if (!team1 || !team2 || !team3) {{
+    showMsg('error', '❌ အသင်း သုံးသင်းလုံး ဖြည့်ပေးပါ');
+    return;
+  }}
+  if (!rulesAck) {{
+    showMsg('error', '❌ စည်းကမ်းများကို ဖတ်ရှုပြီး သဘောတူပါ');
     return;
   }}
   if (FEE > 0 && !selectedPay) {{
@@ -1217,7 +1642,7 @@ async function handleSubmit(e) {{
 
   try {{
     // Step 1: Register
-    const regBody = {{ name, phone, payment_method: selectedPay || null }};
+    const regBody = {{ name, phone, team1, team2, team3, rules_ack: true, payment_method: selectedPay || null }};
     // For digital payment, pass a temporary ss_file placeholder
     // The actual SS will be uploaded in step 2
     const resp = await fetch('/api/tournaments/' + TID + '/register', {{
@@ -1339,8 +1764,22 @@ async def register_player(tid: int, body: dict):
 
         name = (body.get("name") or "").strip()
         phone = (body.get("phone") or "").strip()
+        team1 = (body.get("team1") or "").strip()
+        team2 = (body.get("team2") or "").strip()
+        team3 = (body.get("team3") or "").strip()
+        rules_ack = body.get("rules_ack")
         if not name or not phone:
             return error_response(message="name and phone are required")
+
+        # All 3 team names are required (used throughout the tournament).
+        if not team1 or not team2 or not team3:
+            return error_response(
+                message="အသင်း သုံးသင်း ဖြည့်ပေးပါ (team1/team2/team3 required)", code=400
+            )
+
+        # Rules acknowledgment is mandatory.
+        if not rules_ack or rules_ack in (0, "0", False, "false", "False"):
+            return error_response(message="rules must be acknowledged", code=400)
 
         # Check max players
         reg_count = _mysql_query_one(
@@ -1413,8 +1852,8 @@ async def register_player(tid: int, body: dict):
         try:
             pid = _mysql_exec(
                 """INSERT INTO tournament_players
-                   (tournament_id, member_id, name, phone, paid, payment_method, ss_file, paid_at, status)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   (tournament_id, member_id, name, phone, paid, payment_method, ss_file, paid_at, status, team1, team2, team3, rules_ack)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     tid,
                     member_id,
@@ -1425,6 +1864,10 @@ async def register_player(tid: int, body: dict):
                     ss_file,
                     datetime.now() if paid else None,
                     "confirmed" if paid else "registered",
+                    team1,
+                    team2,
+                    team3,
+                    1 if rules_ack else 0,
                 ),
             )
         except Exception as dup_err:
@@ -1495,6 +1938,7 @@ async def view_bracket(tid: int, request: Request = None, view: str = Query(None
             rounds[r].append({
                 "match_id": m["id"],
                 "position": m["position"],
+                "bracket": m.get("bracket") or "winners",
                 "player1": {"id": m["player1_id"], "name": m.get("player1_name"), "seed": m.get("player1_seed")},
                 "player2": {"id": m["player2_id"], "name": m.get("player2_name"), "seed": m.get("player2_seed")},
                 "score1": m["score1"],
@@ -1516,11 +1960,36 @@ async def view_bracket(tid: int, request: Request = None, view: str = Query(None
         if view == "html":
             return _render_bracket_html(t, rounds, player_count)
 
-        return ok({
+        result = {
             "tournament": t_info,
             "player_count": player_count,
             "rounds": rounds,
-        })
+        }
+        if t.get("format") == "double":
+            # Build per-bracket view: winners (round 1..k), losers (round 1..10), final.
+            brackets = {"winners": {}, "losers": {}, "final": []}
+            for m in matches:
+                b = m.get("bracket") or "winners"
+                rr = m["round"]
+                entry = {
+                    "match_id": m["id"],
+                    "position": m["position"],
+                    "bracket": b,
+                    "feeds_from": m.get("feeds_from"),
+                    "player1": {"id": m["player1_id"], "name": m.get("player1_name"), "seed": m.get("player1_seed")},
+                    "player2": {"id": m["player2_id"], "name": m.get("player2_name"), "seed": m.get("player2_seed")},
+                    "score1": m["score1"],
+                    "score2": m["score2"],
+                    "winner": m.get("winner_name"),
+                    "status": m["status"],
+                }
+                if b == "final":
+                    brackets["final"].append(entry)
+                else:
+                    brackets[b].setdefault(rr, []).append(entry)
+            result["brackets"] = brackets
+
+        return ok(result)
     except Exception as e:
         logger.error("view_bracket error: %s", e)
         return error_response(message=str(e))
@@ -1558,7 +2027,7 @@ async def list_players_public(tid: int):
     try:
         _ensure_tournament(tid)
         players = _mysql_query(
-            "SELECT id, name, phone, seed, status, paid, payment_method, ss_file FROM tournament_players WHERE tournament_id=%s ORDER BY seed ASC, id ASC",
+            "SELECT id, name, phone, seed, status, paid, payment_method, ss_file, team1, team2, team3, rules_ack FROM tournament_players WHERE tournament_id=%s ORDER BY seed ASC, id ASC",
             (tid,),
         )
         result = []
@@ -1799,6 +2268,11 @@ async def regenerate_bracket(tid: int, auth=Depends(verify_api_key)):
 
         _mysql_exec("DELETE FROM tournament_matches WHERE tournament_id=%s", (tid,))
         _mysql_exec("DELETE FROM tournament_notifications WHERE tournament_id=%s", (tid,))
+        if t.get("format") == "double":
+            total_rounds, match_count, shuffled = _generate_double_elim_bracket(tid, t, players)
+            if total_rounds == 0:
+                return error_response(message="Need at least 4 players to regenerate a double-elimination bracket")
+            return ok({"regenerated": True, "format": "double", "players": len(shuffled), "matches_generated": match_count})
         total_rounds, r1_matches, shuffled = _generate_seeded_bracket(tid, t, players)
         if total_rounds == 0:
             return error_response(message="Need at least 2 players to start")
@@ -1880,6 +2354,129 @@ def _player_ss_url(player: dict) -> str | None:
     return None
 
 
+def _render_double_elim_html(t: dict, rounds: dict, player_count: int, champion, prizes) -> HTMLResponse:
+    """Render a double-elimination bracket page: Winners + Losers + Grand Final lanes."""
+    import html as _html
+    tn_name = _html.escape(t.get("name", "Tournament"))
+    tn_game = _html.escape(t.get("game", ""))
+    tid = int(t["id"])
+    status = (t.get("status") or "").lower()
+
+    winners = {}
+    losers = {}
+    final = []
+    for rnum, ms in rounds.items():
+        for m in ms:
+            b = m.get("bracket") or "winners"
+            if b == "final":
+                final.append(m)
+            elif b == "losers":
+                losers.setdefault(int(rnum), []).append(m)
+            else:
+                winners.setdefault(int(rnum), []).append(m)
+
+    def _match_card(m, label):
+        p1_n = (m["player1"]["name"] if m["player1"] else None) or "BYE"
+        p2_n = (m["player2"]["name"] if m["player2"] else None) or "BYE"
+        s1 = m.get("score1")
+        s2 = m.get("score2")
+        winner = m.get("winner")
+        p1_seed = (m["player1"] or {}).get("seed")
+        p2_seed = (m["player2"] or {}).get("seed")
+        p1_w = bool(winner and winner == p1_n)
+        p2_w = bool(winner and winner == p2_n)
+
+        def _row(pn, seed, sc, is_w):
+            name = pn or "BYE"
+            if is_w:
+                ncls = "text-amber-300 font-bold"
+            elif winner and name != "BYE":
+                ncls = "line-through text-gray-500 opacity-70"
+            else:
+                ncls = "text-gray-200"
+            seed_chip = f'<span class="seed-chip">{seed}</span>' if seed else ""
+            sc_badge = ""
+            if sc is not None:
+                sc_cls = "text-amber-300 bg-amber-400/20 border-amber-400/40" if is_w else "text-gray-300 bg-white/10 border-white/10"
+                sc_badge = f'<span class="ml-auto text-[11px] font-mono px-1.5 py-0.5 rounded-md border {sc_cls}">{sc}</span>'
+            return f'<div class="flex items-center gap-1.5 text-xs min-w-0">{seed_chip}<span class="flex-1 truncate {ncls}">{_html.escape(name)}</span>{sc_badge}</div>'
+
+        r1 = _row(p1_n, p1_seed, s1, p1_w)
+        r2 = _row(p2_n, p2_seed, s2, p2_w).replace('<div class="flex items-center', '<div class="flex items-center mt-1.5 pt-1.5 border-t border-white/5', 1)
+        hdr = f'<div class="text-[10px] font-bold text-gray-500 uppercase mb-1">{label}</div>' if label else ""
+        return f'<div class="glass-card">{hdr}{r1}{r2}</div>'
+
+    def _lane(title, subtitle, data):
+        if not data:
+            return f'<div class="min-w-[240px]"><h3 class="text-sm font-bold text-vibe-300 mb-3">{title}</h3><p class="text-gray-500 text-xs">{subtitle}</p></div>'
+        rns = sorted(data.keys())
+        cols = []
+        for rn in rns:
+            ms = sorted(data[rn], key=lambda x: int(x.get("position") or 0))
+            cards = "".join(_match_card(m, f"Round {rn}") for m in ms)
+            cols.append(f'<div class="flex flex-col gap-3 min-w-[220px]">{cards}</div>')
+        return f'<div class="min-w-[240px]"><h3 class="text-sm font-bold text-vibe-300 mb-3">{title} <span class="text-gray-500 font-normal">{subtitle}</span></h3><div class="flex gap-4 items-start">{"".join(cols)}</div></div>'
+
+    winners_html = _lane("🏆 Winners Bracket", f"{len(winners)} rounds", winners)
+    losers_html = _lane("🔄 Losers Bracket", f"{len(losers)} rounds", losers)
+    final_cards = "".join(_match_card(m, "Grand Final") for m in final)
+    final_html = f'<div class="min-w-[240px]"><h3 class="text-sm font-bold text-amber-300 mb-3">🏆 Grand Final</h3><div class="flex flex-col gap-3">{final_cards}</div></div>' if final else ""
+
+    champion_banner = ""
+    if champion:
+        cp = champion.get("prize_text") or (f"{champion.get('prize_ks', 0):,.0f} Ks" if champion.get("prize_ks") else "")
+        pl = f'<p class="text-amber-200/90 text-sm mt-1.5">ဆုကြေး: {_html.escape(cp)}</p>' if cp else ""
+        champion_banner = f'<div class="mb-5 rounded-2xl border border-amber-400/40 bg-gradient-to-r from-amber-500/20 via-amber-400/10 to-vibe-600/20 backdrop-blur-md p-5 text-center"><div class="text-4xl mb-1">🏆</div><p class="text-amber-300 font-black text-xl">ချန်ပီယံ: {_html.escape(champion["player_name"])}</p>{pl}</div>'
+
+    live_badge = ""
+    if status == "live":
+        live_badge = '<span class="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-red-600 text-white animate-pulse">● LIVE</span>'
+    elif status == "completed":
+        live_badge = '<span class="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-emerald-700 text-white">✓ Completed</span>'
+
+    html = f"""<!DOCTYPE html>
+<html lang="my">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{tn_name} — Bracket</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={{theme:{{extend:{{colors:{{vibe:{{300:'#9dacfc',400:'#7585f8',500:'#4a55ba',600:'#1D2BA9',700:'#172287',800:'#111a65',950:'#0a0f33'}},surface:{{900:'#0f0f1a',800:'#1a1a2e',700:'#16213e',600:'#111827'}}}}}}}}}}</script>
+<style>
+  body {{ background: radial-gradient(ellipse at 20% 0%, #1a1a3e 0%, #0f0f1a 45%, #0f0f1a 100%); }}
+  .glass-card {{ background: rgba(255,255,255,0.05); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.10); border-radius: 0.75rem; padding: 0.625rem; box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 4px 16px rgba(0,0,0,0.25); }}
+  .seed-chip {{ display: inline-block; min-width: 1.25rem; text-align: center; font-size: 10px; font-weight: 700; color: #dfe3ff; background: rgba(29,43,169,0.35); border: 1px solid rgba(117,133,248,0.25); border-radius: 0.25rem; padding: 0 2px; }}
+</style>
+</head>
+<body class="min-h-screen text-white font-sans p-4">
+<div class="max-w-6xl mx-auto">
+  <div class="text-center mb-5">
+    <h1 class="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-vibe-300 to-vibe-400">🏆 {tn_name}</h1>
+    <div class="flex items-center justify-center flex-wrap gap-2 mt-2 text-xs text-gray-300">
+      <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">🎮 {tn_game}</span>
+      <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">👥 {player_count} players</span>
+      <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">🏆 Double Elimination</span>
+      {live_badge}
+    </div>
+  </div>
+  {champion_banner}
+  <div class="overflow-x-auto pb-4">
+    <div class="flex gap-8 items-start min-w-max">
+      {winners_html}
+      {losers_html}
+      {final_html}
+    </div>
+  </div>
+  <div class="text-center mt-8"><p class="text-gray-600 text-xs">PS VIBE Gaming Lounge &middot; Yangon</p></div>
+</div>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
+
+
 def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLResponse:
     """Render a PREMIUM styled HTML bracket page (Tailwind CDN) with FULL bracket structure.
 
@@ -1908,6 +2505,9 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     rules = t.get("rules") or ""
     champion = _get_champion(tid)
     prizes = _get_prizes(tid)
+
+    if t.get("format") == "double":
+        return _render_double_elim_html(t, rounds, player_count, champion, prizes)
 
     # Total rounds = log2(next power of 2 >= player_count): 64→6, 32→5, 5→3, 4→2
     total_rounds = max(1, (player_count - 1).bit_length())
