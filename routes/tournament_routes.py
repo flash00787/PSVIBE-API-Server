@@ -83,27 +83,32 @@ except Exception:
 
 
 def _ensure_match_columns():
-    """Idempotent schema guard: add bracket + feeds_from columns to tournament_matches.
+    """Idempotent schema guard: add bracket + feeds_from + console_id columns to tournament_matches.
 
     Supports double-elimination: `bracket` tags each match as winners/losers/final,
     and `feeds_from` records the winners-bracket match whose loser drops into this
-    losers-bracket match. Runs cheaply at import/startup and self-heals fresh mounts.
+    losers-bracket match. `console_id` + `scheduled_at` allow staff to assign which
+    PS5 console a match is played on and when. Runs cheaply at import/startup.
     """
     try:
         existing = _mysql_query(
             "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
             "WHERE TABLE_SCHEMA = 'psvibe_api' AND TABLE_NAME = 'tournament_matches' "
-            "AND COLUMN_NAME IN ('bracket','feeds_from')"
+            "AND COLUMN_NAME IN ('bracket','feeds_from','console_id','scheduled_at')"
         )
         have = {r["COLUMN_NAME"] for r in (existing or [])}
-        if "bracket" not in have or "feeds_from" not in have:
-            stmts = []
-            if "bracket" not in have:
-                stmts.append("ADD COLUMN bracket ENUM('winners','losers','final') NOT NULL DEFAULT 'winners' AFTER status")
-            if "feeds_from" not in have:
-                stmts.append("ADD COLUMN feeds_from INT DEFAULT NULL AFTER bracket")
+        stmts = []
+        if "bracket" not in have:
+            stmts.append("ADD COLUMN bracket ENUM('winners','losers','final') NOT NULL DEFAULT 'winners' AFTER status")
+        if "feeds_from" not in have:
+            stmts.append("ADD COLUMN feeds_from INT DEFAULT NULL AFTER bracket")
+        if "console_id" not in have:
+            stmts.append("ADD COLUMN console_id VARCHAR(20) DEFAULT NULL AFTER feeds_from")
+        if "scheduled_at" not in have:
+            stmts.append("ADD COLUMN scheduled_at DATETIME DEFAULT NULL AFTER console_id")
+        if stmts:
             _mysql_exec(f"ALTER TABLE tournament_matches {', '.join(stmts)}")
-            logger.info("Tournament matches schema migrated (added columns: bracket, feeds_from)")
+            logger.info("Tournament matches schema migrated (added: %s)", ", ".join(x.split()[1] for x in stmts))
         # Double-elim reuses (round, position) across winners/losers/final lanes,
         # so the uniqueness key must span bracket too (idempotent).
         _ensure_match_unique_key()
@@ -1237,6 +1242,53 @@ async def submit_match_score(tid: int, mid: int, body: dict, auth=Depends(verify
         return error_response(message=str(e))
 
 
+@router.post("/api/tournaments/{tid}/matches/{mid}/schedule")
+async def schedule_match(tid: int, mid: int, body: dict, auth=Depends(verify_api_key)):
+    """Assign console + play time for a tournament match.
+
+    Body (all optional): {console_id: str (e.g. "C-01"), scheduled_at: str|None,
+    notes: str|None}. Clears a field when null/"".
+    """
+    try:
+        _ensure_tournament(tid)
+        match = _mysql_query_one(
+            "SELECT * FROM tournament_matches WHERE id=%s AND tournament_id=%s", (mid, tid)
+        )
+        if not match:
+            return error_response(message="Match not found", code=404)
+
+        console_id = body.get("console_id")
+        scheduled_at = body.get("scheduled_at")
+        notes = body.get("notes")
+
+        console_id = (console_id or "").strip() or None
+        notes = (notes or "").strip() or None
+
+        sched_dt = None
+        if scheduled_at:
+            sched_str = str(scheduled_at).strip()
+            if sched_str:
+                try:
+                    sched_dt = datetime.fromisoformat(sched_str.replace("Z", "+00:00"))
+                except ValueError:
+                    return error_response(message="scheduled_at must be ISO datetime", code=400)
+
+        _mysql_exec(
+            "UPDATE tournament_matches SET console_id=%s, scheduled_at=%s, notes=%s WHERE id=%s",
+            (console_id, sched_dt, notes, mid),
+        )
+        logger.info("Match %s scheduled: console=%s at=%s", mid, console_id, sched_dt)
+        return ok({
+            "match_id": mid,
+            "console_id": console_id,
+            "scheduled_at": str(sched_dt) if sched_dt else None,
+            "notes": notes,
+        })
+    except Exception as e:
+        logger.error("schedule_match error: %s", e)
+        return error_response(message=str(e))
+
+
 @router.get("/api/tournaments/{tid}/standings")
 async def get_standings(tid: int, auth=Depends(verify_api_key)):
     """Get tournament standings: winners and eliminated players."""
@@ -1348,7 +1400,7 @@ async def registration_page(token: str, request: Request):
   <div class="bg-surface-800 rounded-xl border border-amber-900/50 p-6 text-center shadow-xl shadow-amber-950/20">
     <div class="text-5xl mb-3">😔</div>
     <h2 class="text-xl font-bold text-amber-400 mb-2">နေရာအပြည့် ဖြစ်နေပါပြီ</h2>
-    <p class="text-gray-400 text-sm leading-relaxed">ဒီပြိုင်ပွဲအတွက် Spots ({t["max_players"]}) အားလုံး ပြည့်သွားပါပြီ။<br>နောက်ပြိုင်ပွဲတွေအတွက် <a href="https://t.me/psvibeofficial" class="text-vibe-400 hover:underline">@psvibeofficial</a> ကို ဆက်သွယ်ပါဦး 🙏</p>
+    <p class="text-gray-400 text-sm leading-relaxed">ဒီပြိုင်ပွဲအတွက် Spots ({t["max_players"]}) အားလုံး ပြည့်သွားပါပြီ။<br>နောက်ပြိုင်ပွဲတွေရှိတဲ့အခါ PS VIBE TikTok / Facebook မှာ announce ထပ်လုပ်ပေးသွားပါ့မယ်ဗျ 🙏<br>ပြိုင်ပွဲစတင်သွားပြီဆိုရင်တော့ Bracket ကို နှိပ်ပြီး Live Bracket ကို ဝင်ကြည့်လို့ရပါတယ်။</p>
   </div>'''
         elif closed_reason == "closed":
             form_html = f'''  <!-- Closed Notice -->
@@ -1718,7 +1770,11 @@ async function loadPlayers() {{
       el.innerHTML = '<p class="text-gray-500 text-xs py-2">လူဦးရေ မရှိသေးပါ — ပထမဆုံး Register လုပ်သူ ဖြစ်လိုက်ပါ! 🎉</p>';
       return;
     }}
-    el.innerHTML = ps.map(function(p) {{
+    let hint = '';
+    if (d.data.anonymous) {{
+      hint = '<p class="text-[11px] text-gray-400 italic mb-2">🎭 Registration ပိတ်ချိန်အထိ အမည်များကို ဖော်ပြမထားပါ</p>';
+    }}
+    el.innerHTML = hint + ps.map(function(p) {{
       const badge = p.paid
         ? '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-900/50 border border-emerald-700 text-emerald-300">✅ Confirmed</span>'
         : '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-900/40 border border-amber-700 text-amber-300">⏳ Pending</span>';
@@ -1939,6 +1995,9 @@ async def view_bracket(tid: int, request: Request = None, view: str = Query(None
                 "match_id": m["id"],
                 "position": m["position"],
                 "bracket": m.get("bracket") or "winners",
+                "console_id": m.get("console_id"),
+                "scheduled_at": str(m["scheduled_at"]) if m.get("scheduled_at") else None,
+                "notes": m.get("notes"),
                 "player1": {"id": m["player1_id"], "name": m.get("player1_name"), "seed": m.get("player1_seed")},
                 "player2": {"id": m["player2_id"], "name": m.get("player2_name"), "seed": m.get("player2_seed")},
                 "score1": m["score1"],
@@ -1976,6 +2035,9 @@ async def view_bracket(tid: int, request: Request = None, view: str = Query(None
                     "position": m["position"],
                     "bracket": b,
                     "feeds_from": m.get("feeds_from"),
+                    "console_id": m.get("console_id"),
+                    "scheduled_at": str(m["scheduled_at"]) if m.get("scheduled_at") else None,
+                    "notes": m.get("notes"),
                     "player1": {"id": m["player1_id"], "name": m.get("player1_name"), "seed": m.get("player1_seed")},
                     "player2": {"id": m["player2_id"], "name": m.get("player2_name"), "seed": m.get("player2_seed")},
                     "score1": m["score1"],
@@ -2021,11 +2083,50 @@ async def view_rules(tid: int, request: Request = None, view: str = Query(None))
         return error_response(message=str(e))
 
 
+def _fmt_sched(dt_val) -> str:
+    """Format scheduled_at as 'Sep 25, 10:30 PM' (HH:MM AM/PM + short date)."""
+    if not dt_val:
+        return ""
+    try:
+        s = str(dt_val).strip()
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt.strftime("%b %d, %I:%M %p").replace(" 0", " ")
+    except Exception:
+        return s
+
+
+def _is_authenticated(request: Request) -> bool:
+    """True if request carries a valid API key or JWT (dashboard/admin).
+
+    Non-raising variant of deps.verify_api_key — used to decide whether to
+    return full phone numbers in public player list endpoints.
+    """
+    try:
+        from config import API_KEY
+        key = request.headers.get("X-API-Key")
+        if key and API_KEY and key == API_KEY:
+            return True
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            from auth import decode_token
+            payload = decode_token(auth[7:])
+            if payload and payload.get("sub"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 @router.get("/api/tournaments/{tid}/players")
-async def list_players_public(tid: int):
-    """Public player list with masked phone numbers."""
+async def list_players_public(tid: int, request: Request):
+    """Player list — phone masked for anonymous visitors, full number for authenticated dashboard.
+
+    Player NAMES are always shown publicly (real names). Phones remain masked for
+    anonymous visitors; full number only for authenticated dashboard.
+    """
     try:
         _ensure_tournament(tid)
+        show_full_phone = _is_authenticated(request)
         players = _mysql_query(
             "SELECT id, name, phone, seed, status, paid, payment_method, ss_file, team1, team2, team3, rules_ack FROM tournament_players WHERE tournament_id=%s ORDER BY seed ASC, id ASC",
             (tid,),
@@ -2033,15 +2134,16 @@ async def list_players_public(tid: int):
         result = []
         for p in players:
             p = dict(p)
-            # Mask phone: show first 3 and last 2 digits
-            raw = p.get("phone", "")
-            if len(raw) >= 5:
-                p["phone"] = raw[:3] + "*" * (len(raw) - 5) + raw[-2:]
+            if not show_full_phone:
+                # Mask phone: show first 3 and last 2 digits
+                raw = p.get("phone", "")
+                if len(raw) >= 5:
+                    p["phone"] = raw[:3] + "*" * (len(raw) - 5) + raw[-2:]
             p["ss_url"] = _player_ss_url(p)
             result.append(p)
 
         count = len(result)
-        return ok({"count": count, "players": result})
+        return ok({"count": count, "players": result, "anonymous": False})
     except Exception as e:
         logger.error("list_players_public error: %s", e)
         return error_response(message=str(e))
@@ -2404,7 +2506,15 @@ def _render_double_elim_html(t: dict, rounds: dict, player_count: int, champion,
         r1 = _row(p1_n, p1_seed, s1, p1_w)
         r2 = _row(p2_n, p2_seed, s2, p2_w).replace('<div class="flex items-center', '<div class="flex items-center mt-1.5 pt-1.5 border-t border-white/5', 1)
         hdr = f'<div class="text-[10px] font-bold text-gray-500 uppercase mb-1">{label}</div>' if label else ""
-        return f'<div class="glass-card">{hdr}{r1}{r2}</div>'
+        sched_line = ''
+        if m.get('console_id') or m.get('scheduled_at'):
+            parts = []
+            if m.get('console_id'):
+                parts.append(f'🎮 {_html.escape(str(m["console_id"]))}')
+            if m.get('scheduled_at'):
+                parts.append(f'🕐 {_html.escape(_fmt_sched(m["scheduled_at"]))}')
+            sched_line = f'<div class="flex items-center justify-center gap-1.5 mt-1.5 pt-1.5 border-t border-white/5 text-[10px] text-gray-400">{" · ".join(parts)}</div>'
+        return f'<div class="glass-card">{hdr}{r1}{r2}{sched_line}</div>'
 
     def _lane(title, subtitle, data):
         if not data:
@@ -2598,6 +2708,16 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
                 row1 = _row(p1_n, p1_seed, _score_badge(s1, p1_is_w), p1_is_w)
                 row2 = _row(p2_n, p2_seed, _score_badge(s2, p2_is_w), p2_is_w).replace('<div class="flex items-center', '<div class="flex items-center mt-1.5 pt-1.5 border-t border-white/5', 1)
 
+                # Console + scheduled time footer
+                sched_line = ''
+                if m.get('console_id') or m.get('scheduled_at'):
+                    parts = []
+                    if m.get('console_id'):
+                        parts.append(f'🎮 {_html.escape(str(m["console_id"]))}')
+                    if m.get('scheduled_at'):
+                        parts.append(f'🕐 {_html.escape(_fmt_sched(m["scheduled_at"]))}')
+                    sched_line = f'<div class="flex items-center justify-center gap-1.5 mt-1.5 pt-1.5 border-t border-white/5 text-[10px] text-gray-400">{" · ".join(parts)}</div>'
+
                 ring = ''
                 if status == "live":
                     ring = '<span class="live-dot"></span>'
@@ -2605,7 +2725,7 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
                 else:
                     card_cls = "glass-card"
 
-                cells.append(f'''<div class="match-cell{final_cls}" data-round="{rnum}" data-pos="{pos}" style="grid-column:{rnum};grid-row:{start} / span {span}">{conns}<div class="{card_cls}">{ring}{row1}{row2}</div></div>''')
+                cells.append(f'''<div class="match-cell{final_cls}" data-round="{rnum}" data-pos="{pos}" style="grid-column:{rnum};grid-row:{start} / span {span}">{conns}<div class="{card_cls}">{ring}{row1}{row2}{sched_line}</div></div>''')
             cells_by_round.append("".join(cells))
 
         bracket_body = f'''<div class="bracket-scroll overflow-x-auto pb-4 pt-1 pr-4" id="bracketScroll">

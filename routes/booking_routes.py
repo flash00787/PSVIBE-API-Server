@@ -201,7 +201,7 @@ async def api_extend_booking_duration(req: dict, auth=Depends(verify_api_key)):
         _mysql_exec("UPDATE console_status SET last_updated=NOW() WHERE console_id=%s", (console_id,))
         # ── Sync updated duration to bot's session_reminders.json ──
         try:
-            _br_file = "/root/psvibe-sales-bot/data/session_reminders.json"
+            _br_file = "/opt/psvibe/sales-bot/data/session_reminders.json"
             if os.path.isfile(_br_file):
                 with open(_br_file, "r") as _brf:
                     _br_store = _json_notify.load(_brf)
@@ -1173,7 +1173,7 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
               "cb.status, cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, " \
               "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, " \
               "cb.phone, cb.game_name, cb.created_at, cb.cancelled_at, " \
-              "cb.deposit_status, cb.deposit_amount " \
+              "cb.deposit_status, cb.deposit_method, cb.deposit_amount " \
               "FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id = cb.id"
         where_clauses = []
         params = []
@@ -1311,7 +1311,9 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
                 "cancelled_at": str(r.get("cancelled_at","") or ""),
                 "cancelledAt": str(r.get("cancelled_at","") or ""),
                 "deposit_status": r.get("deposit_status","") or "",
-                "deposit_amount": int(r.get("deposit_amount",0) or 0)
+                "deposit_method": r.get("deposit_method","") or "",
+                "deposit_amount": int(r.get("deposit_amount",0) or 0),
+                "notes": r.get("notes","") or ""
             })
         return ok({"bookings": normalized})
     except Exception as e:
@@ -1575,7 +1577,7 @@ async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
 async def api_confirmed_bookings_for_console(console_id: str, auth=Depends(verify_api_key)):
     """Get today's Confirmed booking for a console (for auto-checkin)."""
     try:
-        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        today = (datetime.now(timezone.utc) + timedelta(hours=6, minutes=30)).strftime('%Y-%m-%d')
         row = _mysql_query_one(
             "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, "
             "COALESCE(cs.actual_start, cb.planned_start) AS start_time, "
@@ -1924,7 +1926,7 @@ async def api_receipt_save(req: dict, auth=Depends(verify_api_key)):
 
         logger.info("Saving receipt to DB: voucher_id=%s", voucher_id)
 
-        mysql_execute(
+        _mysql_exec(
             "INSERT INTO receipts (receipt_no, voucher_id, member_id, amount, payment_method, items, receipt_data, receipt_date, staff_name) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
             "ON DUPLICATE KEY UPDATE receipt_data=VALUES(receipt_data), amount=VALUES(amount), payment_method=VALUES(payment_method), items=VALUES(items), receipt_date=VALUES(receipt_date)",
@@ -1964,7 +1966,7 @@ async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
 
         logger.info("Saving receipt to MySQL: receipt_no=%s", receipt_no)
 
-        mysql_execute(
+        _mysql_exec(
             "INSERT INTO receipts (receipt_no, member_id, amount, payment_method, items, receipt_data, receipt_date, staff_name) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             (receipt_no, member_id, amount, payment_method, items, receipt_data, receipt_date, staff_name)
@@ -2532,7 +2534,7 @@ def _auto_cancel_expired_pending():
             cancelled = 0
             for row in (rows or []):
                 try:
-                    mysql_execute(
+                    _mysql_exec(
                         "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: expired pending') WHERE id=%s AND status='pending'",
                         (row['id'],)
                     )

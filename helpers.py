@@ -152,9 +152,9 @@ def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, st
         }
         account = acct_map.get(method.strip().lower().replace("  ", " "), method)
         if val > 0:
-            _mysql_exec(
+            _mysql_execute(
                 "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) VALUES (%s, %s, %s, %s, %s, NOW())",
                 ("inject", account, val, note, staff_name)
             )
-            logger.info("Cash movement inject: %s +%.0f Ks (%s)", account, val, note)
+            _logger.info("Cash movement inject: %s +%.0f Ks (%s)", account, val, note)
 

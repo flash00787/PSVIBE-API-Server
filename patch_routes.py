@@ -871,6 +871,79 @@ async def food_cart_cancel(data: dict, auth=Depends(verify_api_key)):
         return error_response(str(e))
 
 
+@app.post("/api/food-cart/sync", tags=["Food"])
+async def food_cart_sync(data: dict, auth=Depends(verify_api_key)):
+    """Sync the food cart for a booking.
+
+    mode="replace" (default) — delete existing rows + holds, insert the provided
+        item list, re-hold stock. Used by the Active Food Orders edit popup where
+        the staff SEES all items and can edit/remove them.
+    mode="add" — MERGE: preserve existing cart rows, add incoming item qtys onto
+        matching item_name (or insert new), then delete+reinsert the merged full
+        list and re-hold stock. Used by the Consoles 🍔 Food Order ADD flow so
+        previously recorded items are never accidentally cleared.
+    """
+    try:
+        booking_id = str(data.get("booking_id", "")).strip()
+        items = data.get("items", [])
+        mode = str(data.get("mode", "replace")).strip().lower() or "replace"
+        if not booking_id:
+            return error_response("booking_id required")
+        if not isinstance(items, list):
+            return error_response("items must be a list")
+        cleaned = []
+        for it in items:
+            name = str(it.get("item_name", "")).strip()
+            qty = int(it.get("quantity", 1) or 0)
+            price = int(it.get("unit_price", 0) or 0)
+            if name and qty > 0:
+                cleaned.append((name, qty, price))
+        # ADD mode: merge incoming qtys onto existing cart rows (preserve + accumulate)
+        if mode == "add":
+            existing = _mysql_query(
+                "SELECT item_name, quantity, unit_price FROM food_cart WHERE booking_id = %s",
+                (booking_id,)
+            )
+            merged = {}
+            for r in existing:
+                nm = str(r["item_name"]).strip()
+                if nm:
+                    merged[nm] = (int(r["quantity"] or 0), int(r["unit_price"] or 0))
+            for name, qty, price in cleaned:
+                if name in merged:
+                    old_qty, old_price = merged[name]
+                    # keep existing unit_price if incoming is 0; otherwise incoming wins
+                    final_price = price if price > 0 else old_price
+                    merged[name] = (old_qty + qty, final_price)
+                else:
+                    merged[name] = (qty, price)
+            cleaned = [(n, q, p) for n, (q, p) in merged.items() if q > 0]
+        # 1) delete existing cart rows + holds for this booking
+        _mysql_exec("DELETE FROM food_cart WHERE booking_id = %s", (booking_id,))
+        _mysql_exec('DELETE FROM stock_hold WHERE booking_id = %s AND status IN ("held", "cancelled")', (booking_id,))
+        # 2) insert (merged) cart rows
+        for name, qty, price in cleaned:
+            _mysql_exec(
+                "INSERT INTO food_cart (booking_id, item_name, quantity, unit_price) VALUES (%s, %s, %s, %s)",
+                (booking_id, name, qty, price)
+            )
+        # 3) re-hold stock (non-fatal)
+        try:
+            for name, qty, price in cleaned:
+                _mysql_exec(
+                    "INSERT INTO stock_hold (booking_id, item_name, quantity, unit_price, status) VALUES (%s, %s, %s, %s, 'held')",
+                    (booking_id, name, qty, price)
+                )
+            _mysql_exec("UPDATE food_cart SET fulfilled_at = DATE_ADD(NOW(), INTERVAL 390 MINUTE) WHERE booking_id = %s AND fulfilled_at IS NULL", (booking_id,))
+        except Exception as he:
+            logger.warning("food_cart_sync hold (non-fatal): %s", he)
+        total = sum(q * p for _, q, p in cleaned)
+        return ok({"message": f"Synced {len(cleaned)} items", "items": [{"item_name": n, "quantity": q, "unit_price": p} for n, q, p in cleaned], "total": total})
+    except Exception as e:
+        logger.error("food_cart_sync: %s", e)
+        return error_response(str(e))
+
+
 # ─── PS VIBE: Stale Check-In Auto-Cleanup ───
 
 @app.post("/api/cleanup/stale-checkins", tags=["Maintenance"])

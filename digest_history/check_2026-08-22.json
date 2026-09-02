@@ -1,0 +1,245 @@
+{
+  "timestamp": "2026-08-22T17:31:44.037536Z",
+  "date": "2026-08-22",
+  "overall_status": "critical",
+  "total_issues": 21,
+  "checks": {
+    "wallet_balance": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "balance_mismatch",
+          "member_id": "PSV_A_000",
+          "member_name": "Ko Aung Chan Myint",
+          "balance_mins": 989999,
+          "expected": 999999,
+          "diff": -10000,
+          "detail": "Member PSV_A_000: balance=989999, expected 999999-0=999999 (diff=-10000)"
+        },
+        {
+          "type": "balance_mismatch",
+          "member_id": "PSV_A_004",
+          "member_name": "Aung Thurein Oo",
+          "balance_mins": 0,
+          "expected": -110,
+          "diff": 110,
+          "detail": "Member PSV_A_004: balance=0, expected 795-905=-110 (diff=110)"
+        },
+        {
+          "type": "balance_mismatch",
+          "member_id": "PSV_A_011",
+          "member_name": "Kyaw Min Naing",
+          "balance_mins": 690,
+          "expected": 660,
+          "diff": 30,
+          "detail": "Member PSV_A_011: balance=690, expected 660-0=660 (diff=30)"
+        },
+        {
+          "type": "balance_mismatch",
+          "member_id": "PSV_A_013",
+          "member_name": "Min Thant Ko Ko",
+          "balance_mins": 0,
+          "expected": -106,
+          "diff": 106,
+          "detail": "Member PSV_A_013: balance=0, expected 1260-1366=-106 (diff=106)"
+        },
+        {
+          "type": "balance_mismatch",
+          "member_id": "TEST_TOURN_001",
+          "member_name": "Test Tournament Member",
+          "balance_mins": 10000,
+          "expected": 0,
+          "diff": 10000,
+          "detail": "Member TEST_TOURN_001: balance=10000, expected 0-0=0 (diff=10000)"
+        }
+      ],
+      "count": 5
+    },
+    "topup_chain": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_003",
+          "prev_topup_id": 3,
+          "curr_topup_id": 13,
+          "prev_after": 600,
+          "curr_before": 198,
+          "diff": 402,
+          "detail": "Member PSV_A_003: topup#3 after=600 → topup#13 before=198 (diff=402)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_004",
+          "prev_topup_id": 4,
+          "curr_topup_id": 11,
+          "prev_after": 600,
+          "curr_before": 0,
+          "diff": 600,
+          "detail": "Member PSV_A_004: topup#4 after=600 → topup#11 before=0 (diff=600)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_009",
+          "prev_topup_id": 9,
+          "curr_topup_id": 20,
+          "prev_after": 600,
+          "curr_before": 148,
+          "diff": 452,
+          "detail": "Member PSV_A_009: topup#9 after=600 → topup#20 before=148 (diff=452)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_010",
+          "prev_topup_id": 10,
+          "curr_topup_id": 15,
+          "prev_after": 600,
+          "curr_before": 114,
+          "diff": 486,
+          "detail": "Member PSV_A_010: topup#10 after=600 → topup#15 before=114 (diff=486)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_013",
+          "prev_topup_id": 17,
+          "curr_topup_id": 18,
+          "prev_after": 600,
+          "curr_before": 11,
+          "diff": 589,
+          "detail": "Member PSV_A_013: topup#17 after=600 → topup#18 before=11 (diff=589)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_014",
+          "prev_topup_id": 19,
+          "curr_topup_id": 21,
+          "prev_after": 600,
+          "curr_before": 154,
+          "diff": 446,
+          "detail": "Member PSV_A_014: topup#19 after=600 → topup#21 before=154 (diff=446)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_014",
+          "prev_topup_id": 21,
+          "curr_topup_id": 22,
+          "prev_after": 349,
+          "curr_before": 71,
+          "diff": 278,
+          "detail": "Member PSV_A_014: topup#21 after=349 → topup#22 before=71 (diff=278)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_014",
+          "prev_topup_id": 22,
+          "curr_topup_id": 23,
+          "prev_after": 266,
+          "curr_before": 0,
+          "diff": 266,
+          "detail": "Member PSV_A_014: topup#22 after=266 → topup#23 before=0 (diff=266)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_014",
+          "prev_topup_id": 23,
+          "curr_topup_id": 24,
+          "prev_after": 330,
+          "curr_before": 119,
+          "diff": 211,
+          "detail": "Member PSV_A_014: topup#23 after=330 → topup#24 before=119 (diff=211)"
+        },
+        {
+          "type": "chain_break",
+          "member_id": "PSV_A_014",
+          "prev_topup_id": 24,
+          "curr_topup_id": 26,
+          "prev_after": 449,
+          "curr_before": 20,
+          "diff": 429,
+          "detail": "Member PSV_A_014: topup#24 after=449 → topup#26 before=20 (diff=429)"
+        }
+      ],
+      "count": 10
+    },
+    "sales_vs_bookings": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "sale_without_booking",
+          "sale_id": 2305,
+          "voucher_no": "20260822-108",
+          "console_id": "-",
+          "member_id": "-",
+          "sale_date": "2026-08-22",
+          "detail": "Sale#2305 (voucher 20260822-108) on 2026-08-22 has no matching booking"
+        }
+      ],
+      "count": 1
+    },
+    "inventory": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "inventory_mismatch",
+          "item_name": "MaMa ဘူးခေါက်ဆွဲ",
+          "inventory_quantity": 1,
+          "stock_in_total": 42,
+          "stock_out_total": 42,
+          "expected_quantity": 0,
+          "drift": 1,
+          "detail": "MaMa ဘူးခေါက်ဆွဲ: inventory=1, FIFO in(42)-out(42)=0 (drift=1)"
+        },
+        {
+          "type": "inventory_mismatch",
+          "item_name": "Spicy ကြက်အူချောင်း",
+          "inventory_quantity": 14,
+          "stock_in_total": 159,
+          "stock_out_total": 135,
+          "expected_quantity": 24,
+          "drift": -10,
+          "detail": "Spicy ကြက်အူချောင်း: inventory=14, FIFO in(159)-out(135)=24 (drift=-10)"
+        }
+      ],
+      "count": 2
+    },
+    "receipts_vs_sales": {
+      "status": "warning",
+      "issues": [
+        {
+          "type": "receipt_sale_count_mismatch",
+          "date": "2026-08-22",
+          "receipt_count": 0,
+          "sale_count": 25,
+          "diff": -25,
+          "detail": "2026-08-22: receipts=0, sales=25 (diff=-25)"
+        }
+      ],
+      "count": 1
+    },
+    "negative_sales": {
+      "status": "critical",
+      "issues": [
+        {
+          "type": "zero_or_negative_amount",
+          "source": "sales_daily",
+          "sale_id": 2305,
+          "voucher_no": "20260822-108",
+          "date": "2026-08-22",
+          "amount": 0.0,
+          "detail": "Sale#2305 voucher 20260822-108: amount=0.0"
+        }
+      ],
+      "count": 1
+    },
+    "booking_status": {
+      "status": "error",
+      "issues": [
+        {
+          "type": "exception",
+          "detail": "1052 (23000): Column 'id' in field list is ambiguous"
+        }
+      ],
+      "count": 1
+    }
+  }
+}

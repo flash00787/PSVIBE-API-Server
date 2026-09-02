@@ -1,0 +1,194 @@
+/* PS VIBE Mini App — Phase 3 theme + layout
+ * Dark-by-default with indigo/teal brand accents. Telegram theme sync via CSS vars.
+ */
+
+:root {
+  /* Light fallback */
+  --van-background: #f2f3f5;
+  --van-background-2: #ffffff;
+  --van-text-color: #23262f;
+  --van-text-color-2: #7d8aa2;
+
+  /* Brand */
+  --brand-indigo: #6366f1;
+  --brand-indigo-deep: #4f46e5;
+  --brand-teal: #14b8a6;
+
+  /* App custom */
+  --pv-card-bg: #ffffff;
+  --pv-card-border: #e5e7eb;
+  --pv-muted: #7d8aa2;
+  --pv-success: #16a34a;
+  --pv-danger: #dc2626;
+  --pv-accent-grad: linear-gradient(135deg, #6366f1 0%, #14b8a6 100%);
+}
+
+/* Dark scheme (default) */
+html.dark,
+html[data-theme="dark"] {
+  --van-background: #0b1220;
+  --van-background-2: #111a2e;
+  --van-text-color: #e5e9f2;
+  --van-text-color-2: #8b98b3;
+  --pv-card-bg: #131c31;
+  --pv-card-border: #1f2a45;
+  --pv-muted: #8b98b3;
+  --pv-success: #22c55e;
+  --pv-danger: #f87171;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--van-background);
+  color: var(--van-text-color);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans Myanmar", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+[v-cloak] { display: none; }
+
+#app {
+  min-height: 100vh;
+  padding-bottom: calc(50px + env(safe-area-inset-bottom, 0px));
+}
+
+/* ── Cards / surfaces ─────────────────────────────── */
+.pv-card {
+  background: var(--pv-card-bg);
+  border: 1px solid var(--pv-card-border);
+  border-radius: 14px;
+  padding: 16px;
+  margin: 12px 14px;
+}
+.pv-card--pad { margin: 0; }
+
+.pv-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pv-muted);
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  margin: 18px 16px 8px;
+}
+
+.pv-gradient-text {
+  background: var(--pv-accent-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.pv-brand {
+  font-weight: 800;
+  letter-spacing: -.3px;
+  font-size: 20px;
+}
+.pv-brand .vibe {
+  background: var(--pv-accent-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.pv-tagline {
+  font-size: 12px;
+  color: var(--pv-muted);
+  margin-top: 2px;
+}
+
+/* Greeting header */
+.pv-header {
+  padding: 18px 16px 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.pv-hello { font-size: 14px; color: var(--pv-muted); }
+.pv-staff-name { font-size: 22px; font-weight: 700; }
+
+/* Stat cards */
+.pv-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 6px 14px 0;
+}
+.pv-stat {
+  background: var(--pv-card-bg);
+  border: 1px solid var(--pv-card-border);
+  border-radius: 14px;
+  padding: 14px;
+}
+.pv-stat__value { font-size: 24px; font-weight: 800; line-height: 1.1; }
+.pv-stat__label { font-size: 12px; color: var(--pv-muted); margin-top: 4px; }
+.pv-stat--accent .pv-stat__value { color: var(--brand-indigo); }
+.pv-stat--teal .pv-stat__value { color: var(--brand-teal); }
+
+/* Quick action grid */
+.pv-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  padding: 10px 14px;
+}
+.pv-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 4px;
+  background: var(--pv-card-bg);
+  border: 1px solid var(--pv-card-border);
+  border-radius: 14px;
+  cursor: pointer;
+  transition: transform .08s ease;
+}
+.pv-action:active { transform: scale(.95); }
+.pv-action__icon {
+  width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 12px;
+  font-size: 20px;
+  background: rgba(99, 102, 241, .14);
+}
+.pv-action__label { font-size: 11px; color: var(--van-text-color); text-align: center; }
+
+/* More grid (secondary features) */
+.pv-more {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+  padding: 4px 14px 12px;
+}
+
+/* Status dot */
+.pv-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.pv-dot--active, .pv-dot--free { background: #22c55e; }
+.pv-dot--reserved { background: #f59e0b; }
+.pv-dot--busy, .pv-dot--maintenance { background: #ef4444; }
+.pv-dot--idle, .pv-dot--offline { background: #64748b; }
+
+/* Generic row helpers */
+.pv-row { display: flex; align-items: center; justify-content: space-between; }
+.pv-k { color: var(--pv-muted); font-size: 13px; }
+.pv-v { font-weight: 600; font-size: 14px; }
+
+/* Vant overrides for dark polish */
+.van-tabbar { background: var(--van-background-2); border-top: 1px solid var(--pv-card-border); }
+.van-nav-bar { background: var(--van-background-2); }
+.van-cell { background: transparent; }
+.van-cell-group { background: var(--pv-card-bg); }
+.van-field__control { color: var(--van-text-color); }
+
+.app-tabbar { z-index: 200; }
+
+/* Page container spacing so content isn't hidden behind navbar/tabbar */
+.pv-page { padding-top: 8px; }
+
+/* Amount input readability */
+.pv-amount {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}

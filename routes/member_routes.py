@@ -12,6 +12,65 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=['Members'])
 
 
+def _calc_rank(total_spend, master_thresh, immortal_thresh):
+    """Compute rank from total_spend vs thresholds (mirrors bot get_member_rank)."""
+    try:
+        total_spend = int(float(total_spend or 0))
+        master_thresh = int(float(master_thresh or 0))
+        immortal_thresh = int(float(immortal_thresh or 0))
+    except (ValueError, TypeError):
+        total_spend = 0
+        master_thresh = 300000
+        immortal_thresh = 1000000
+    if total_spend >= immortal_thresh:
+        return "Immortal"
+    if total_spend >= master_thresh:
+        return "Master"
+    return "Warrior"
+
+
+def _calc_bonus_mins(rank, amount, bonus_table):
+    """Compute bonus minutes from amount vs bonus_table (mirrors bot logic).
+
+    bonus_table = list of [threshold, warrior, master, immortal];
+    pick the row with the HIGHEST threshold <= amount, then take the member's rank column.
+    """
+    try:
+        amount = int(float(amount or 0))
+    except (ValueError, TypeError):
+        amount = 0
+    if amount <= 0:
+        return 0
+    # Normalize table rows
+    rows = []
+    if isinstance(bonus_table, list):
+        for row in bonus_table:
+            if isinstance(row, list) and len(row) >= 4:
+                rows.append([int(row[0] or 0), int(row[1] or 0), int(row[2] or 0), int(row[3] or 0)])
+            elif isinstance(row, dict):
+                rows.append([
+                    int(row.get("threshold", 0) or 0),
+                    int(row.get("warrior_bonus", 0) or 0),
+                    int(row.get("master_bonus", 0) or 0),
+                    int(row.get("immortal_bonus", 0) or 0),
+                ])
+    if not rows:
+        return 0
+    # Pick row with highest threshold <= amount
+    chosen = None
+    for row in rows:
+        if row[0] <= amount:
+            if chosen is None or row[0] > chosen[0]:
+                chosen = row
+    if chosen is None:
+        return 0
+    if rank == "Immortal":
+        return chosen[3]
+    if rank == "Master":
+        return chosen[2]
+    return chosen[1]
+
+
 def _calc_member_liability_kyat(member_id):
     """Calculate FIFO-based liability in kyat for a member."""
     try:
@@ -132,7 +191,9 @@ async def api_fetch_balance_mins(member_id: str, auth=Depends(verify_api_key)):
         rows = _mysql_query("SELECT balance_mins FROM member_wallets WHERE member_id=%s", (member_id,))
         if rows:
             return ok(rows[0]["balance_mins"] or 0)
-        raise HTTPException(status_code=404, detail=f"Member {member_id} not found")
+        # Consistent with fetch_wallet_mins: return ok(0) for missing members instead
+        # of 404 so bot-side callers always receive an int (avoids dict>=int TypeError).
+        return ok(0)
     except HTTPException:
         raise
     except Exception as e:
@@ -284,11 +345,71 @@ async def api_topup_log(req: dict, auth=Depends(verify_api_key)) -> JSONResponse
     try:
         member_id = req.get("member_id", "")
         amount = req.get("amount", 0)
+        amount = float(amount or 0)
         mins_added = req.get("mins_added", 0)
-        pm = req.get("payment_method") or f"Kpay:{req.get('kpay',0)}/Cash:{req.get('cash',0)}"
         staff = req.get("staff_name") or req.get("staff", "")
+        client_ref = req.get("client_ref") or None
+
+        # ── Payment method resolution ────────────────────────────────
+        # Prefer direct payment_method split string; else build from kpay/cash/aya fields.
+        pm = req.get("payment_method")
+        if not pm:
+            kpay = req.get("kpay", 0)
+            cash = req.get("cash", 0)
+            aya = req.get("aya", 0)
+            pm = f"Kpay:{kpay}/Cash:{cash}/AYA:{aya}"
+
+        # ── Auto-calc base + bonus if mins_added missing ─────────────
+        base_mins = None
+        bonus_mins = None
+        tier = None
+        if not mins_added and amount > 0:
+            try:
+                base_rate = _mysql_get_setting("base_rate", 0)
+                bonus_table = _mysql_get_setting("bonus_table", [])
+                master_thresh = int(_mysql_get_setting("master_threshold", "300000"))
+                immortal_thresh = int(_mysql_get_setting("immortal_threshold", "1000000"))
+                cur = _mysql_query_one(
+                    "SELECT total_spend FROM member_wallets WHERE member_id=%s",
+                    (member_id,)
+                )
+                total_spend = (cur["total_spend"] if cur else 0) or 0
+                tier = _calc_rank(total_spend, master_thresh, immortal_thresh)
+                base_rate = int(float(base_rate or 0))
+                if base_rate > 0:
+                    base_mins = round((amount * 60) / base_rate)
+                else:
+                    base_mins = int(amount)
+                bonus_mins = _calc_bonus_mins(tier, amount, bonus_table)
+                mins_added = base_mins + bonus_mins
+                logger.info(
+                    "Topup auto-calc: member=%s amount=%s rank=%s base=%s bonus=%s mins=%s",
+                    member_id, amount, tier, base_mins, bonus_mins, mins_added,
+                )
+            except Exception as _e:
+                logger.warning("Topup auto-calc failed (%s) — falling back to amount", _e)
+                base_mins = int(amount)
+                bonus_mins = 0
+                tier = None
+                mins_added = int(amount)
+        else:
+            mins_added = int(mins_added or 0)
 
         logger.info("Topup: member=%s amount=%s mins=%s", member_id, amount, mins_added)
+
+        # ── Idempotency guard (client_ref) ────────────────────────────────
+        if client_ref:
+            existing = _mysql_query_one(
+                "SELECT balance_mins_after FROM topup_log WHERE client_ref=%s",
+                (client_ref,)
+            )
+            if existing:
+                cur_bal = _mysql_query_one(
+                    "SELECT balance_mins FROM member_wallets WHERE member_id=%s",
+                    (member_id,)
+                )
+                return ok({"success": True, "duplicate": True,
+                          "balance_mins": (cur_bal["balance_mins"] if cur_bal else 0)})
 
         current = _mysql_query_one(
             "SELECT balance_mins, total_bought_mins, total_spend FROM member_wallets WHERE member_id=%s",
@@ -296,11 +417,11 @@ async def api_topup_log(req: dict, auth=Depends(verify_api_key)) -> JSONResponse
         bal_before = current["balance_mins"] if current else 0
         bal_after = bal_before + mins_added
         bought = (current["total_bought_mins"] if current else 0) + mins_added
-        new_spend = (current["total_spend"] if current else 0) + amount
+        new_spend = (float(current["total_spend"]) if current and current.get("total_spend") is not None else 0.0) + amount
 
         _mysql_exec(
-            "INSERT INTO topup_log (member_id, amount, mins_added, topup_date, staff_name, payment_method, balance_before, balance_after, balance_mins_before, balance_mins_after) VALUES (%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s)",
-            (member_id, amount, mins_added, staff, pm, amount, amount, bal_before, bal_after))
+            "INSERT INTO topup_log (member_id, amount, mins_added, topup_date, staff_name, payment_method, balance_before, balance_after, balance_mins_before, balance_mins_after, client_ref) VALUES (%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s,%s)",
+            (member_id, amount, mins_added, staff, pm, amount, amount, bal_before, bal_after, client_ref))
 
         _mysql_exec(
             "INSERT INTO member_wallets (member_id, balance_mins, total_bought_mins, total_spend) VALUES (%s,%s,%s,%s) ON DUPLICATE KEY UPDATE balance_mins=%s, total_bought_mins=%s, total_spend=%s, last_updated=NOW()",
@@ -309,20 +430,31 @@ async def api_topup_log(req: dict, auth=Depends(verify_api_key)) -> JSONResponse
         # 🆕 Record cash_movements for top-up income
         if float(amount) > 0:
             try:
-                _parse_pm_and_inject(amount, pm, f"Topup {member_id} + {mins_added} mins", staff)
+                note = f"Topup {member_id} + {mins_added} mins"
+                if base_mins is not None:
+                    note = f"Topup {mins_added} mins (base {base_mins} + bonus {bonus_mins})"
+                _parse_pm_and_inject(amount, pm, note, staff)
             except Exception as _e:
                 logger.warning("Topup cash_movements failed: %s", _e)
         # ✅ Also create sales_daily record for topup
         if float(amount) > 0:
             try:
+                note = f"Topup {mins_added} mins"
+                if base_mins is not None:
+                    note = f"Topup {mins_added} mins (base {base_mins} + bonus {bonus_mins})"
                 _mysql_exec(
                     "INSERT INTO sales_daily (sale_date, member_id, amount, gross, net, payment_method, notes, staff_name, customer_name) "
                     "VALUES (CURDATE(), %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (member_id, amount, amount, amount, pm, f"Topup {mins_added} mins", staff, staff))
+                    (member_id, amount, amount, amount, pm, note, staff, staff))
             except Exception as _e:
                 logger.warning("Topup sales_daily failed: %s", _e)
 
-        return ok({"success": True, "balance_mins": bal_after, "total_spend": new_spend})
+        resp = {"success": True, "balance_mins": bal_after, "total_spend": new_spend, "mins_added": mins_added}
+        if base_mins is not None:
+            resp["base_mins"] = base_mins
+            resp["bonus_mins"] = bonus_mins
+            resp["tier"] = tier
+        return ok(resp)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

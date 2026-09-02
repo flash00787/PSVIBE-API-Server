@@ -50,6 +50,15 @@ def _send_telegram(chat_id: str, text: str, keyboard: Optional[List[List[Dict[st
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
         resp = urllib.request.urlopen(req, timeout=5)
+        try:
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+            if not body.get("ok"):
+                logger.warning(
+                    f"_send_telegram: Telegram returned ok=false — {body.get('description', 'no description')}"
+                )
+                return False
+        except Exception as _parse_err:
+            logger.warning(f"_send_telegram: response parse failed: {_parse_err}")
         return True
     except Exception as e:
         logger.warning(f"_send_telegram: {e}")
@@ -66,7 +75,16 @@ def _edit_telegram(chat_id: str, message_id: str, text: str, keyboard: Optional[
         data = json.dumps(payload).encode()
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
-        urllib.request.urlopen(req, timeout=5)
+        resp = urllib.request.urlopen(req, timeout=5)
+        try:
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+            if not body.get("ok"):
+                logger.warning(
+                    f"_edit_telegram: Telegram returned ok=false — {body.get('description', 'no description')}"
+                )
+                return False
+        except Exception as _parse_err:
+            logger.warning(f"_edit_telegram: response parse failed: {_parse_err}")
         return True
     except Exception as e:
         logger.warning(f"_edit_telegram: {e}")
@@ -171,31 +189,91 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
             actual_end = actual_end.replace(tzinfo=MMT)
         
         remaining = int((actual_end - now).total_seconds() / 60)
-        if remaining <= 0:
-            return
         
         bk_name = member_id or booking
-        lines = [
-            f"⏰ <b>Timer Alert — Session ဆုံးခါနီး!</b>\n",
-            f"🎮 Console: <code>{console_id}</code>",
-            f"👤 Member: <code>{bk_name}</code>",
-            f"⏱ Remaining: <b>{remaining} min</b>",
-            f"",
-            f"⚠️ <b>Manual End လုပ်ပါ</b> — Session auto-end မဖြစ်ပါ",
-            f"End Session နှိပ်မှသာ session ဆုံးမည်။",
+        
+        # Inline keyboard: mirror bot _extend_timer_kb format (ext:{extra}:{cid}|{member}|{chat})
+        # Sales bot has CallbackQueryHandler cb_extend_timer with pattern ^ext: — buttons work
+        try:
+            _tag_chat = int(STAFF_NOTIFY_CHAT) if STAFF_NOTIFY_CHAT else 0
+        except (ValueError, TypeError):
+            _tag_chat = 0
+        _tag = f"{console_id}|{bk_name}|{_tag_chat}"
+        keyboard = [
+            [
+                {"text": "➕ +30 min", "callback_data": f"ext:30:{_tag}"},
+                {"text": "➕ +60 min", "callback_data": f"ext:60:{_tag}"},
+                {"text": "➕ +90 min", "callback_data": f"ext:90:{_tag}"},
+            ],
+            [{"text": "✏️ Custom (မိနစ် ကိုယ်တိုင်ထည့်)", "callback_data": f"ext:custom:{_tag}"}],
+            [{"text": "⏹️ Sale Bot → Session End", "callback_data": f"ext:redirect:{_tag}"}],
         ]
-        text = "\n".join(lines)
         
-        # Inline keyboard: (disabled - sales bot needs CallbackQueryHandler)
-        # Uncomment when callback handler is added to sales bot
-        keyboard = []  # TODO: enable inline buttons after adding CallbackQueryHandler
-        
-        if telegram_msg_id:
-            _edit_telegram(STAFF_NOTIFY_CHAT, telegram_msg_id, text, keyboard)
-        else:
-            _send_telegram(STAFF_NOTIFY_CHAT, text, keyboard)
-        
-        logger.info(f"Timer reminder sent for booking {booking_id} ({remaining} min left)")
+        # ── Repeat reminder loop (mirror bot _remind_loop) ──
+        # fire=1 → 5-min-before; fire=2 → session end reached; fire>=3 → overdue (every 5 min)
+        # First fire: always send (even if remaining<=0 — overdue case must still alert).
+        fire_count = 0
+        max_fires = 30  # ⚠️ Safety cap (~150 min overdue) — prevents infinite spam if end fails
+        while True:
+            fire_count += 1
+            now = datetime.now(timezone.utc)
+            # Re-fetch actual end (may have been extended via Extend button while we slept)
+            booking_data = _mysql_query(
+                "SELECT COALESCE(cs.actual_end, cb.planned_end) AS end_time, "
+                "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, "
+                "cb.console_id, cb.member_id "
+                "FROM console_bookings cb "
+                "LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
+                "WHERE cb.id=%s",
+                (booking_id,))
+            if not booking_data:
+                logger.info(f"Session {booking_id} gone — stopping reminder loop")
+                break
+            b = booking_data[0]
+            actual_end = b.get("end_time") or (start_time + timedelta(minutes=duration_mins))
+            if isinstance(actual_end, str):
+                actual_end = datetime.fromisoformat(actual_end)
+            if actual_end is not None and actual_end.tzinfo is None:
+                actual_end = actual_end.replace(tzinfo=MMT)
+            remaining = int((actual_end - now).total_seconds() / 60) if actual_end else 0
+            
+            if remaining > 0:
+                _warn_line = f"⏱ Remaining: <b>{remaining} min</b>"
+                _title = "⏰ <b>Timer Alert — Session ဆုံးခါနီး!</b>"
+            else:
+                # Past end — show ACTUAL overdue minutes (works for resumed timers too)
+                _overdue_mins = max(1, int(abs(remaining)))
+                _warn_line = f"🚨 <b>Session ကျော်လွန်နေပြီ! ({_overdue_mins} မိနစ်)</b>"
+                _title = "⏰ <b>Timer Alert — Session Overdue</b>"
+            
+            lines = [
+                f"{_title}\n",
+                f"🎮 Console: <code>{console_id}</code>",
+                f"👤 Member: <code>{bk_name}</code>",
+                f"{_warn_line}",
+                f"",
+                f"⚠️ <b>Manual End လုပ်ပါ</b> — Session auto-end မဖြစ်ပါ",
+                f"End Session နှိပ်မှသာ session ဆုံးမည်။",
+            ]
+            text = "\n".join(lines)
+            
+            if telegram_msg_id:
+                _edit_telegram(STAFF_NOTIFY_CHAT, telegram_msg_id, text, keyboard)
+            else:
+                _send_telegram(STAFF_NOTIFY_CHAT, text, keyboard)
+            logger.info(f"Timer reminder sent for booking {booking_id} (fire={fire_count}, remaining={remaining} min)")
+            
+            # Stop repeating if session no longer active
+            chk = _mysql_query("SELECT status FROM console_bookings WHERE id=%s", (booking_id,))
+            if not chk or chk[0].get("status") != "Active":
+                logger.info(f"Session {booking_id} ended — stopping reminder loop")
+                break
+            
+            if fire_count >= max_fires:
+                logger.warning(f"Timer for booking {booking_id} reached max_fires={max_fires} — stopping loop")
+                break
+            
+            await asyncio.sleep(5 * 60)  # next reminder in 5 min (while overdue / near end)
         
     except asyncio.CancelledError:
         logger.info(f"Timer for booking {booking_id} cancelled (extended/ended)")
@@ -378,7 +456,7 @@ def _bot_has_persistent_reminder(console_id: str, chat_id: Optional[str] = None)
     (admin group) differs from the booking's telegram_chat_id (customer).
     """
     try:
-        reminder_file = "/root/psvibe-sales-bot/data/session_reminders.json"
+        reminder_file = "/opt/psvibe/sales-bot/data/session_reminders.json"
         if not os.path.isfile(reminder_file):
             return False
         with open(reminder_file) as f:
@@ -440,15 +518,14 @@ def resume_active_timers() -> None:
                 start_time_utc = start_time.astimezone(timezone.utc)
                 end_time = start_time_utc + timedelta(minutes=duration)
                 if end_time < now:
-                    # Session expired — log but DO NOT auto-end (by Boss request).
-                    # Staff must manually end sessions. The sales bot's _remind_loop
-                    # will continue sending reminders until staff clicks "End Session".
+                    # Session expired — do NOT auto-end (by Boss request), but DO resume
+                    # the reminder loop so staff keeps getting overdue alerts until they
+                    # manually end the session. The loop's first fire = overdue alert.
                     logger.warning(
                         f"resume_active_timers: booking {r['id']} expired "
                         f"(end={end_time.isoformat()}, now={now.isoformat()}) — "
-                        f"NOT auto-ending (manual-only policy)"
+                        f"NOT auto-ending (manual-only policy); resuming overdue reminders"
                     )
-                    continue
             except Exception as _tz_err:
                 logger.error(f"resume_active_timers timezone error for booking {r['id']}: {_tz_err} — skipping (manual-only policy)")
                 continue

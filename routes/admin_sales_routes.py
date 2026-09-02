@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
 from helpers import _mysql_get_setting, ok, error_response, _parse_pm_and_inject, insert_cash_movement_if_absent
 from deps import verify_api_key
-from auth import get_current_user
+from auth import get_current_user, get_staff_or_dashboard_user
 from models import GenericResponse
 import logging, json as _json, os
 from datetime import datetime, timezone, timedelta
@@ -172,7 +172,9 @@ async def api_fetch_attendance(month_str: str, auth=Depends(verify_api_key)):
     """Fetch attendance for a month from MySQL."""
     try:
         rows = _mysql_query(
-            "SELECT staff_name, login_time, logout_time, date, hours_worked, status FROM attendance_log WHERE DATE_FORMAT(date, %s)=%s ORDER BY date DESC",
+            "SELECT a.staff_id, s.staff_name, a.check_in, a.check_out, a.date, a.hours_worked, a.status, a.hourly_rate, a.daily_pay "
+            "FROM attendance_log a LEFT JOIN staff_records s ON s.staff_id = a.staff_id "
+            "WHERE DATE_FORMAT(a.date, %s)=%s ORDER BY a.date DESC",
             ("%Y-%m", month_str))
         return ok({"attendance": rows, "month": month_str})
     except Exception as e:
@@ -183,10 +185,53 @@ async def api_fetch_attendance(month_str: str, auth=Depends(verify_api_key)):
 async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
     """Save attendance record to MySQL."""
     try:
-        _mysql_exec(
-            "INSERT INTO attendance_log (staff_name, login_time, date, status) VALUES (%s, NOW(), CURDATE(), %s)",
-            (req.get("staff_name") or req.get("staff", ""), req.get("status", "Present")))
-        return ok({"saved": True})
+        staff_name = req.get("staff_name") or req.get("staff", "")
+        status_val = req.get("status", "Present")
+        # Resolve staff_id from staff_name (bot sends name string).
+        staff_id = req.get("staff_id")
+        if not staff_id and staff_name:
+            rec = _mysql_query_one("SELECT staff_id FROM staff_records WHERE staff_name = %s", (staff_name,))
+            staff_id = rec["staff_id"] if rec else None
+        if not staff_id:
+            raise HTTPException(status_code=400, detail=f"Unknown staff: {staff_name!r}")
+        # Upsert: update today's row for this staff if present, else insert.
+        existing = _mysql_query_one(
+            "SELECT id FROM attendance_log WHERE staff_id = %s AND date = CURDATE()", (staff_id,))
+        if existing:
+            _mysql_exec(
+                "UPDATE attendance_log SET status = %s, check_in = COALESCE(check_in, NOW()) WHERE id = %s",
+                (status_val, existing["id"]))
+        else:
+            _mysql_exec(
+                "INSERT INTO attendance_log (staff_id, check_in, date, status) VALUES (%s, NOW(), CURDATE(), %s)",
+                (staff_id, status_val))
+        return ok({"saved": True, "staff_id": staff_id})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════
+#  sales list-today (Mini App)
+# ═══════════════════════════════════════
+@router.get("/sales/list-today", response_model=GenericResponse, tags=["Sales"], summary="Today's sales list [MySQL]")
+async def api_sales_list_today(auth=Depends(verify_api_key)):
+    """Return today's sales records + total net for the Mini App."""
+    try:
+        import datetime as _dt
+        _mmt_today = (_dt.datetime.now(_dt.timezone(_dt.timedelta(hours=6, minutes=30)))).strftime("%Y-%m-%d")
+        _mmt_today_start = _mmt_today + " 00:00:00"
+        rows = _mysql_query(
+            "SELECT sd.id, sd.voucher_no, sd.sale_date, DATE_FORMAT(COALESCE(sd.created_at, sd.sale_date), '%%H:%%i') AS sale_time, "
+            "sd.console_id, sd.member_id, "
+            "COALESCE(NULLIF(w.member_name, ''), sd.customer_name) AS customer_name, "
+            "sd.gross, sd.amount, sd.discount, sd.net, sd.staff_name, sd.payment_method, sd.notes "
+            "FROM sales_daily sd "
+            "LEFT JOIN member_wallets w ON w.member_id = sd.member_id AND sd.member_id NOT IN ('', '0', '0 (Guest)', '-', 'Guest') "
+            "WHERE sd.sale_date >= %s ORDER BY sd.sale_date DESC, sd.id DESC LIMIT 200", (_mmt_today_start,))
+        total_row = _mysql_query_one(
+            "SELECT COALESCE(SUM(net), 0) AS total FROM sales_daily WHERE sale_date >= %s", (_mmt_today_start,))
+        total_net = float(total_row["total"]) if total_row else 0.0
+        return ok({"records": rows, "total_net": total_net, "count": len(rows), "date": _mmt_today})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -389,6 +434,17 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
         promotion_name = req.get("promotion_name", "")
         coupon_code = req.get("coupon_code", "")
         booking_id = req.get("booking_id", "")
+        client_ref = req.get("client_ref") or None
+
+        # ── Idempotency guard (client_ref) ────────────────────────────────
+        if client_ref:
+            existing = _mysql_query_one(
+                "SELECT voucher_no FROM sales_daily WHERE client_ref=%s",
+                (client_ref,)
+            )
+            if existing:
+                return ok({"success": True, "duplicate": True, "existing": True,
+                          "voucher_no": existing.get("voucher_no", "")})
 
         if not voucher_no:
             return error_response(message="voucher_no required")
@@ -454,10 +510,21 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
         sale_date = created_at if created_at else datetime.now(timezone(timedelta(hours=6, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
         gross = game_amt + food_total
 
+        # Resolve customer_name from member_wallets for member sales (staff name must NOT leak here).
+        # Guest rows (member_id empty / '0 (Guest)' / '-' / 'Guest') keep customer_name empty unless a guest name is supplied.
+        _is_guest = (not member_id) or member_id.strip() in ("", "0 (Guest)", "0", "-", "Guest")
+        customer_name = req.get("customer_name") or ""
+        if not _is_guest:
+            _mw = _mysql_query_one(
+                "SELECT member_name FROM member_wallets WHERE member_id=%s", (member_id,)
+            )
+            if _mw and _mw.get("member_name"):
+                customer_name = _mw["member_name"]
+
         _mysql_exec(
-            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, customer_name, payment_method, notes) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (voucher_no, sale_date, console_id, member_id, game_amt, gross, discount, net_total, staff, staff, payment_method, combined_notes)
+            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, customer_name, payment_method, notes, client_ref) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (voucher_no, sale_date, console_id, member_id, game_amt, gross, discount, net_total, staff, customer_name, payment_method, combined_notes, client_ref)
         )
 
         # Deduct wallet balance for member sales
@@ -548,8 +615,8 @@ async def api_stock_in_log(req: dict, auth=Depends(verify_api_key)):
         _mysql_exec(
             "INSERT INTO inventory (item_name, category, quantity, unit_price, reorder_level, last_updated) "
             "VALUES (%s, %s, %s, %s, %s, NOW()) "
-            "ON DUPLICATE KEY UPDATE quantity = quantity + %s, unit_price = %s, last_updated = NOW()",
-            (item_name, "", qty, unit_cost, 0, qty, unit_cost)
+            "ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity), last_updated = NOW()",
+            (item_name, "", qty, unit_cost, 0)
         )
 
         # 🆕 Create cash_movements eject entry if payment_method is provided
@@ -607,8 +674,8 @@ async def api_stock_in(req: dict, auth=Depends(verify_api_key)):
         _mysql_exec(
             """INSERT INTO inventory (item_name, category, quantity, unit_price, reorder_level, last_updated)
                VALUES (%s, %s, %s, %s, %s, NOW())
-               ON DUPLICATE KEY UPDATE quantity = quantity + %s, unit_price = %s, last_updated = NOW()""",
-            (item_name, "", quantity, unit_cost, 0, quantity, unit_cost)
+               ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity), last_updated = NOW()""",
+            (item_name, "", quantity, unit_cost, 0)
         )
 
         # Create cash_movements entries to deduct from account balance
@@ -654,6 +721,112 @@ async def api_stock_in(req: dict, auth=Depends(verify_api_key)):
         return error_response(str(e))
 
 
+@router.post("/stock/in/batch", response_model=GenericResponse, tags=["Stock"], summary="Multi-item stock-in (batch) with payment deduction [MySQL]")
+async def api_stock_in_batch(req: dict, auth=Depends(verify_api_key)):
+    """Multi-item stock-in: one request = one batch_id covering several items.
+
+    Body: {"items": [{"item_name", "quantity", "unit_cost"}, ...],
+           "payment_method", "staff_name", "paid_by", "source", "receipt_no",
+           "cash_amount"?, "kpay_amount"?}
+    """
+    try:
+        items = req.get("items") or []
+        if not isinstance(items, list) or not items:
+            return error_response(message="items[] (non-empty) required")
+
+        cleaned = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            name = str(it.get("item_name", "")).strip()
+            try:
+                qty = int(it.get("quantity", 0))
+            except (TypeError, ValueError):
+                qty = 0
+            try:
+                cost = float(it.get("unit_cost", 0))
+            except (TypeError, ValueError):
+                cost = 0
+            if not name or qty <= 0:
+                continue
+            cleaned.append({"item_name": name, "quantity": qty, "unit_cost": cost})
+
+        if not cleaned:
+            return error_response(message="At least one valid item (name + qty>0) required")
+
+        payment_method = req.get("payment_method", "")
+        paid_by = req.get("paid_by", "")
+        staff_name = req.get("staff_name", "")
+        source = req.get("source", "")
+        receipt_no = req.get("receipt_no", "")
+        cash_amount = req.get("cash_amount")
+        kpay_amount = req.get("kpay_amount")
+
+        import uuid
+        base_id = "SI-" + uuid.uuid4().hex[:12].upper()
+        total_amount = sum(it["quantity"] * it["unit_cost"] for it in cleaned)
+
+        # ── Insert stock_in rows (one per item, same batch base_id + seq suffix ──
+        # stock_in.batch_id is UNIQUE → per-item suffix keeps grouping without collision
+        added_rows = []
+        for idx, it in enumerate(cleaned, start=1):
+            batch_id = f"{base_id}-{idx:02d}"
+            _mysql_exec(
+                """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (batch_id, it["item_name"], it["quantity"], it["unit_cost"], source or "", receipt_no or "", payment_method, paid_by, staff_name)
+            )
+            _mysql_exec(
+                """INSERT INTO inventory (item_name, category, quantity, unit_price, reorder_level, last_updated)
+                   VALUES (%s, %s, %s, %s, %s, NOW())
+                   ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity), last_updated = NOW()""",
+                (it["item_name"], "", it["quantity"], it["unit_cost"], 0)
+            )
+            added_rows.append({
+                "item_name": it["item_name"],
+                "qty": it["quantity"],
+                "unit_cost": it["unit_cost"],
+                "subtotal": it["quantity"] * it["unit_cost"],
+            })
+
+        # ── Payment deduction (aggregated; split Cash/KPay supported) ──
+        note = f"Stock In (batch): {base_id}"
+        if cash_amount is not None and kpay_amount is not None:
+            if float(cash_amount) > 0:
+                _mysql_exec(
+                    """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    ("eject", "Cash", float(cash_amount), note, staff_name)
+                )
+            if float(kpay_amount) > 0:
+                _mysql_exec(
+                    """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    ("eject", "KPay", float(kpay_amount), note, staff_name)
+                )
+        elif payment_method and total_amount > 0:
+            _mysql_exec(
+                """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                ("eject", payment_method, total_amount, note, staff_name)
+            )
+
+        logger.info(
+            "Stock-in batch via /api/stock/in/batch: batch=%s items=%d total=%s payment=%s split=Cash%s/KPay%s",
+            base_id, len(cleaned), total_amount, payment_method, cash_amount or 0, kpay_amount or 0
+        )
+        return ok({
+            "batch_id": base_id,
+            "items": added_rows,
+            "total": total_amount,
+            "payment_method": payment_method,
+            "success": True
+        })
+    except Exception as e:
+        logger.error(f"api_stock_in_batch: {e}")
+        return error_response(str(e))
+
+
 
 
 
@@ -662,7 +835,7 @@ async def api_stock_in(req: dict, auth=Depends(verify_api_key)):
 async def api_opex_list(
     date_from: str = "", date_to: str = "",
     category: str = "", limit: int = 100,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_staff_or_dashboard_user),
 ):
     from datetime import datetime as _dt, timedelta as _td
     import calendar
@@ -690,7 +863,7 @@ async def api_opex_list(
 
 
 @router.post("/opex/add", tags=["OPEX"], summary="Add expense")
-async def api_opex_add(body: dict = Body(...), user: dict = Depends(get_current_user)):
+async def api_opex_add(body: dict = Body(...), user: dict = Depends(get_staff_or_dashboard_user)):
     from datetime import datetime as _dt, timedelta as _td
     _mmt_now = _dt.utcnow() + _td(hours=6, minutes=30)
     cat = body.get("category", "").strip()
@@ -716,7 +889,7 @@ async def api_opex_add(body: dict = Body(...), user: dict = Depends(get_current_
 @router.get("/opex/summary", tags=["OPEX"], summary="Expense summary by category + date")
 async def api_opex_summary(
     date_from: str = "", date_to: str = "",
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_staff_or_dashboard_user),
 ):
     from datetime import datetime as _dt, timedelta as _td
     import calendar

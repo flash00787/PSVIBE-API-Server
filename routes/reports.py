@@ -5,7 +5,7 @@ import calendar
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
-from auth import get_current_user
+from auth import get_current_user, get_staff_or_dashboard_user
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one
 
 logger = logging.getLogger(__name__)
@@ -18,10 +18,11 @@ router = APIRouter(prefix="/api", tags=["Reports"])
 # ═══════════════════════════════════════
 
 @router.get("/dashboard/stats")
-async def get_dashboard_stats(user: dict = Depends(get_current_user)):
+async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user)):
     """Get today's summary statistics for the dashboard"""
     try:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        from datetime import timedelta as _td
+        today = datetime.now(timezone(_td(hours=6, minutes=30))).strftime("%Y-%m-%d")  # MMT date — sale_date stored in MMT
 
         today_bookings = _mysql_query_one(
             "SELECT COUNT(*) as cnt FROM console_bookings WHERE DATE(booking_date) = %s", (today,)
@@ -29,17 +30,16 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
         today_bookings = today_bookings["cnt"] if today_bookings else 0
 
         active_players = _mysql_query_one(
-            "SELECT COUNT(*) as cnt FROM console_sessions WHERE DATE(actual_start) = %s AND status = 'Active' AND console_id IS NOT NULL AND console_id != ''",
-            (today,)
+            "SELECT COUNT(*) as cnt FROM console_status WHERE status = 'Active'"
         )
         active_players = active_players["cnt"] if active_players else 0
 
         today_revenue = _mysql_query_one(
-            "SELECT COALESCE(SUM(net), 0) as total FROM sales_daily WHERE DATE(sale_date) = %s", (today,)
+            "SELECT COALESCE(SUM(net), 0) as total FROM sales_daily WHERE sale_date >= %s", (today + " 00:00:00",)
         )
         today_revenue = float(today_revenue["total"]) if today_revenue else 0.0
 
-        total_members = _mysql_query_one("SELECT COUNT(*) as cnt FROM members")
+        total_members = _mysql_query_one("SELECT COUNT(*) as cnt FROM member_wallets WHERE member_id IS NOT NULL AND member_id != ''")
         total_members = total_members["cnt"] if total_members else 0
 
         return {

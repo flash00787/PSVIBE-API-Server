@@ -16,7 +16,7 @@ from datetime import datetime, timezone, timedelta
 import asyncio
 
 # ── Session Reminder Bridge (API → Bot) ─────────────────────────────────────
-_BOT_REMINDER_FILE = "/root/psvibe-sales-bot/data/session_reminders.json"
+_BOT_REMINDER_FILE = "/opt/psvibe/sales-bot/data/session_reminders.json"
 
 def _persist_session_for_bot(console_id: str, member_id: str, duration_mins: int,
                                start_dt, chat_id: int = 0, message_thread_id: int = 0):
@@ -84,6 +84,23 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)) -> JSONResponse
         for r in rows:
             if "id" not in r:
                 r["id"] = r.get("console_id", "")
+        # Plan end time + elapsed minutes for Active consoles (computed from start_time_dt + duration_mins)
+        _now_mmt = now_mmt()
+        for r in rows:
+            if r.get("status") != "Active":
+                continue
+            try:
+                _st = r.get("start_time_dt")
+                if _st:
+                    _st_dt = datetime.strptime(str(_st), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=6, minutes=30)))
+                    _dur = int(r.get("duration_mins") or 0)
+                    _end = _st_dt + timedelta(minutes=_dur)
+                    r["plan_end"] = _end.strftime("%H:%M")
+                    r["plan_end_dt"] = _end.strftime("%Y-%m-%d %H:%M:%S")
+                    _el = int((_now_mmt - _st_dt).total_seconds() // 60)
+                    r["elapsed_mins"] = max(0, _el)
+            except Exception:
+                pass
         # Display-only Reserved: show Free consoles as "Reserved" if a confirmed
         # booking starts within 120 minutes. Does NOT change console_status table —
         # consoles remain Free for walk-ins. This is display-only indication.

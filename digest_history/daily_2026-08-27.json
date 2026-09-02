@@ -1,0 +1,186 @@
+{
+  "timestamp": "2026-08-27T17:32:02.628509Z",
+  "date": "2026-08-27",
+  "summary": {
+    "total_sales": {
+      "count": 23,
+      "gross": 375450.0,
+      "net": 375400.0
+    },
+    "total_topups": {
+      "count": 0,
+      "amount": 0.0,
+      "mins_added": 0
+    },
+    "active_sessions": 0,
+    "completed_sessions": 16,
+    "food_sales": {
+      "count": 23,
+      "total": 83100.0
+    },
+    "new_members": 0,
+    "top_consoles": [
+      {
+        "console_id": "C-01",
+        "hours": 4.0
+      },
+      {
+        "console_id": "C-09",
+        "hours": 3.5
+      },
+      {
+        "console_id": "C-02",
+        "hours": 3.0
+      },
+      {
+        "console_id": "C-07",
+        "hours": 2.5
+      },
+      {
+        "console_id": "C-03",
+        "hours": 2.0
+      }
+    ],
+    "top_games": [
+      {
+        "game": "FC 26",
+        "sessions": 7
+      },
+      {
+        "game": "Any",
+        "sessions": 4
+      },
+      {
+        "game": "GTA 5",
+        "sessions": 2
+      },
+      {
+        "game": "Naruto x Boruto: Ultimate Ninja Storm Connections",
+        "sessions": 2
+      },
+      {
+        "game": "Split Fiction",
+        "sessions": 1
+      }
+    ],
+    "revenue_by_payment": [
+      {
+        "method": "KPay:39600",
+        "count": 1,
+        "total": 39600.0
+      },
+      {
+        "method": "Cash:35500",
+        "count": 1,
+        "total": 35500.0
+      },
+      {
+        "method": "Cash:34600",
+        "count": 1,
+        "total": 34600.0
+      },
+      {
+        "method": "Cash:29500",
+        "count": 1,
+        "total": 29500.0
+      },
+      {
+        "method": "Cash:27500",
+        "count": 1,
+        "total": 27500.0
+      },
+      {
+        "method": "KPay:20600",
+        "count": 1,
+        "total": 20600.0
+      },
+      {
+        "method": "Cash:20000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "KPay:6000 (dep)|KPay:14000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "AYA Pay:6000 (dep)|KPay:14000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "KPay:16600",
+        "count": 1,
+        "total": 16600.0
+      },
+      {
+        "method": "KPay:4500 (dep)|Cash:10500",
+        "count": 1,
+        "total": 15000.0
+      },
+      {
+        "method": "Cash:15000",
+        "count": 1,
+        "total": 15000.0
+      },
+      {
+        "method": "Cash:13500",
+        "count": 1,
+        "total": 13500.0
+      },
+      {
+        "method": "Cash:12000",
+        "count": 1,
+        "total": 12000.0
+      },
+      {
+        "method": "Cash:10000",
+        "count": 1,
+        "total": 10000.0
+      },
+      {
+        "method": "Cash:8500",
+        "count": 1,
+        "total": 8500.0
+      },
+      {
+        "method": "Cash:7000",
+        "count": 1,
+        "total": 7000.0
+      },
+      {
+        "method": "KPay:6500",
+        "count": 1,
+        "total": 6500.0
+      },
+      {
+        "method": "Cash:6000",
+        "count": 1,
+        "total": 6000.0
+      },
+      {
+        "method": "KPay:6000",
+        "count": 1,
+        "total": 6000.0
+      },
+      {
+        "method": "Cash:4500",
+        "count": 1,
+        "total": 4500.0
+      },
+      {
+        "method": "Cash:4000",
+        "count": 1,
+        "total": 4000.0
+      },
+      {
+        "method": "Cash:3500",
+        "count": 1,
+        "total": 3500.0
+      }
+    ]
+  },
+  "alerts": [],
+  "recommendations": []
+}

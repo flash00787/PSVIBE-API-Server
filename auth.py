@@ -167,6 +167,24 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
+async def get_staff_or_dashboard_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """Accept either a dashboard-user JWT (get_current_user) or a Mini App staff JWT (scope=staff-webapp)."""
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    payload = decode_token(credentials.credentials)
+    if payload.get("type") != "access":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+    if payload.get("scope") == "staff-webapp":
+        return {"username": str(payload.get("sub")), "role": payload.get("role", "staff"), "source": "telegram-webapp"}
+    username = payload.get("sub")
+    user = get_user(username)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
 async def require_admin(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")

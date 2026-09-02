@@ -57,6 +57,7 @@ from routes.finance_routes import router as finance_router
 from routes.reports import router as reports_router
 from routes.promotions import router as promotions_router
 from routes.tournament_routes import router as tournament_router
+from routes.telegram_webapp import router as telegram_webapp_router
 from dashboard_routes import router as dashboard_router
 from kora_cmds import router as kora_cmds_router
 from digest_routes import router as digest_router
@@ -318,6 +319,7 @@ app.include_router(finance_router)
 app.include_router(reports_router)
 app.include_router(promotions_router)
 app.include_router(tournament_router)
+app.include_router(telegram_webapp_router)
 
 # ── Config Cache ──
 _config_cache_data = None
@@ -729,6 +731,14 @@ try:
                 resp.headers["Pragma"] = "no-cache"
                 return resp
             return HTMLResponse("<h1>Dashboard not built</h1>", status_code=404)
+
+        # ═══════════════════════════════════════
+        #  TELEGRAM MINI APP (Phase 1 — read-only)
+        # ═══════════════════════════════════════
+        webapp_dir = os.path.join(os.path.dirname(__file__), "webapp-dist")
+        if os.path.isdir(webapp_dir):
+            app.mount("/webapp", _NoCacheStaticFiles(directory=webapp_dir, html=True), name="webapp_static")
+            logger.info("Telegram Mini App mounted at /webapp")
 
         # ═══ SEL Currency Exchange Dashboard ═══
         _sel_dash_dir = "/opt/kora-projects/sel_exchange/dashboard"

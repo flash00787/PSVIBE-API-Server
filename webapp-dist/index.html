@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>PS VIBE — Mini App</title>
+  <meta name="theme-color" content="#0b1220" />
+  <!-- Vendor: Vant 4 (local, no runtime CDN) -->
+  <link rel="stylesheet" href="vendor/vant.css" />
+  <link rel="stylesheet" href="style.css" />
+  <!-- Telegram WebApp SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div id="app" v-cloak>
+    <!-- App shell -->
+    <transition name="van-slide-up">
+      <router-view v-slot="{ Component }">
+        <keep-alive :max="8">
+          <component :is="Component" />
+        </keep-alive>
+      </router-view>
+    </transition>
+
+    <!-- Bottom Tabbar -->
+    <van-tabbar
+      v-model="activeTab"
+      route
+      active-color="#818cf8"
+      inactive-color="#64748b"
+      :safe-area-inset-bottom="true"
+      class="app-tabbar"
+    >
+      <van-tabbar-item name="/" icon="wap-home-o">ပင်မ</van-tabbar-item>
+      <van-tabbar-item name="/sales" icon="balance-list-o">အရောင်း</van-tabbar-item>
+      <van-tabbar-item name="/members" icon="friends-o">အဖွဲ့ဝင်</van-tabbar-item>
+      <van-tabbar-item name="/bookings" icon="calendar-o">ကြိုတင်</van-tabbar-item>
+      <van-tabbar-item name="/more" icon="apps-o">ပိုများ</van-tabbar-item>
+    </van-tabbar>
+  </div>
+
+  <script src="vendor/vue.global.prod.js"></script>
+  <script src="vendor/vant.min.js"></script>
+  <script src="api.js?v=20260826c"></script>
+  <script src="app.js?v=20260826k"></script>
+</body>
+</html>

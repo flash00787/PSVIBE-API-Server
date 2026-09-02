@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 
-from auth import get_current_user
+from auth import get_current_user, get_staff_or_dashboard_user
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ async def dashboard_get_inventory(
     category: str | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_staff_or_dashboard_user),
 ):
     """List inventory items with optional filters."""
     try:
@@ -472,6 +472,90 @@ async def dashboard_get_stock_out(
         return {"success": False, "error": str(e)}
 
 
+@router.get("/food-cart/booking/{booking_id}")
+async def api_food_cart_by_booking(booking_id: str, auth=Depends(get_staff_or_dashboard_user)):
+    """Fetch food_cart items for a booking (session food order) — staff webapp + dashboard."""
+    try:
+        rows = _mysql_query(
+            "SELECT id, booking_id, item_name, quantity, unit_price, created_at, fulfilled_at "
+            "FROM food_cart WHERE booking_id=%s ORDER BY id ASC",
+            (booking_id,))
+        items = []
+        for r in rows:
+            items.append({
+                "id": r["id"],
+                "booking_id": r.get("booking_id"),
+                "item_name": r.get("item_name"),
+                "quantity": int(r.get("quantity") or 0),
+                "unit_price": float(r.get("unit_price") or 0),
+                "created_at": str(r["created_at"]) if r.get("created_at") else None,
+            })
+        return {"success": True, "items": items}
+    except Exception as e:
+        logger.error(f"GET /food-cart/booking/{booking_id} error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/food-orders/active")
+async def api_food_orders_active(auth=Depends(get_staff_or_dashboard_user)):
+    """List ACTIVE console sessions with their CURRENT food carts.
+
+    An active session's food_cart = food still to be charged (charging happens at
+    session end via the sale voucher). fulfilled_at is only a stock-hold marker
+    (always set = created_at shortly after creation), so we include ALL cart rows
+    for active sessions rather than filtering on fulfilled_at.
+    Used by Mini App '🍔 Food Orders' page (view + edit active food orders).
+    """
+    try:
+        sql = """
+            SELECT
+                cs.id            AS session_id,
+                cs.booking_id    AS booking_id,
+                cs.console_id    AS console_id,
+                COALESCE(NULLIF(cs.customer_name, ''), NULLIF(cs.member_id, ''), 'Guest') AS customer_name,
+                fc.item_name     AS item_name,
+                fc.quantity      AS quantity,
+                fc.unit_price    AS unit_price
+            FROM console_sessions cs
+            JOIN food_cart fc ON fc.booking_id = cs.booking_id
+            WHERE cs.status = 'active'
+            ORDER BY cs.id ASC, fc.id ASC
+        """
+        rows = _mysql_query(sql)
+
+        sessions = {}
+        order = []
+        for r in rows:
+            sid = r["session_id"]
+            key = str(sid)
+            if key not in sessions:
+                sessions[key] = {
+                    "session_id": sid,
+                    "booking_id": r.get("booking_id"),
+                    "console_id": r.get("console_id"),
+                    "customer_name": r.get("customer_name") or "Guest",
+                    "items": [],
+                    "total": 0,
+                }
+                order.append(key)
+            qty = int(r.get("quantity") or 0)
+            price = float(r.get("unit_price") or 0)
+            sessions[key]["items"].append({
+                "item_name": r.get("item_name"),
+                "quantity": qty,
+                "unit_price": price,
+            })
+            sessions[key]["total"] += qty * price
+
+        entries = [sessions[k] for k in order]
+        total = len(entries)
+        logger.info(f"GET /food-orders/active: returning {total} active session(s) with pending food")
+        return {"success": True, "data": entries, "total": total}
+    except Exception as e:
+        logger.error(f"GET /food-orders/active error: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 @router.get("/dashboard/food-orders")
 async def dashboard_get_food_orders(
     limit: int = Query(50, ge=1, le=500),
@@ -549,7 +633,7 @@ async def dashboard_delete_stock_out(entry_id: int, user: dict = Depends(get_cur
 
 @router.get("/dashboard/inventory/alerts")
 async def dashboard_inventory_alerts(
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_staff_or_dashboard_user),
 ):
     """Get inventory items below reorder level."""
     try:
