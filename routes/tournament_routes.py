@@ -856,6 +856,20 @@ def _generate_seeded_bracket(tid: int, t: dict, players: list):
                 f"🔔 {t['name']} — မင်းရဲ့ Round 1 Match စပါပြီ! ပြိုင်ဘက်: {p1['name']} (#{p1['seed']}) — PS VIBE",
             )
 
+    # Pre-create ALL winners-bracket rounds (2..total_rounds) upfront so the bracket
+    # page shows the FULL tree immediately (empty future slots render as TBD) instead
+    # of lazily INSERTing rows as matches get scored. Players fill into these
+    # pre-existing rows via _advance_winner_single / submit_match_score advance paths.
+    for r in range(2, total_rounds + 1):
+        count = 2 ** (total_rounds - r)
+        for pos in range(1, count + 1):
+            _mysql_exec(
+                """INSERT INTO tournament_matches
+                   (tournament_id, round, position, status, bracket)
+                   VALUES (%s, %s, %s, 'pending', 'winners')""",
+                (tid, r, pos),
+            )
+
     # Advance bye players (single-player R1 matches) into round 2 so every R1 slot
     # contributes exactly one winner. Needed by BOTH single-elim and hybrid formats
     # when N is not a power of two (idempotent: no-op for exact powers of two).
@@ -1149,8 +1163,9 @@ def _generate_hybrid_bracket(tid: int, t: dict, players: list):
     4-team double-elimination tail with NO grand-final reset.
 
     Reuses single-elim seeding + round-1 generation (bracket defaults to 'winners'),
-    then pre-creates the Top-4 tail rows:
-        WB R2 (WB final) : bracket='winners', round=total_rounds, pos=1
+    which now pre-creates the FULL winners bracket (R1..total_rounds). It then adds
+    the Top-4 tail rows (players fill in as scores arrive):
+        WB final       : bracket='winners', round=total_rounds, pos=1  (from seeded bracket)
         LB R1           : bracket='losers',  round=1, pos=1
         LB R2           : bracket='losers',  round=2, pos=1
         Grand Final     : bracket='final',   round=1, pos=1
@@ -1164,11 +1179,9 @@ def _generate_hybrid_bracket(tid: int, t: dict, players: list):
         return total_rounds, r1_matches, shuffled
 
     # Pre-create the Top-4 double-elim tail rows (players fill in as scores arrive).
-    _mysql_exec(
-        """INSERT INTO tournament_matches (tournament_id, round, position, status, bracket)
-           VALUES (%s, %s, 1, 'pending', 'winners')""",
-        (tid, total_rounds),
-    )
+    # The WB final (round=total_rounds, bracket='winners') is already pre-created by
+    # _generate_seeded_bracket's full-round pre-creation, so only the losers lanes +
+    # grand final are added here.
     _mysql_exec(
         """INSERT INTO tournament_matches (tournament_id, round, position, status, bracket)
            VALUES (%s, 1, 1, 'pending', 'losers')""",
@@ -2818,19 +2831,31 @@ def _render_double_elim_html(t: dict, rounds: dict, player_count: int, champion,
             else:
                 winners.setdefault(int(rnum), []).append(m)
 
-    def _match_card(m):
-        p1_n = (m["player1"]["name"] if m["player1"] else None) or "BYE"
-        p2_n = (m["player2"]["name"] if m["player2"] else None) or "BYE"
+    def _match_card(m, rnum=None):
+        bracket = m.get("bracket") or "winners"
+        p1 = m.get("player1") or {}
+        p2 = m.get("player2") or {}
+        p1_id = p1.get("id")
+        p2_id = p2.get("id")
+        # Genuine bye = a round-1 winners match with exactly one real player
+        # (bracket padded to a power of 2). Every other empty slot = TBD.
+        is_bye = bracket == "winners" and rnum == 1 and bool(p1_id) != bool(p2_id)
+        p1_n = p1.get("name") or ("BYE" if is_bye else "TBD")
+        p2_n = p2.get("name") or ("BYE" if is_bye else "TBD")
         s1 = m.get("score1")
         s2 = m.get("score2")
         winner = m.get("winner")
-        p1_seed = (m["player1"] or {}).get("seed")
-        p2_seed = (m["player2"] or {}).get("seed")
+        p1_seed = p1.get("seed")
+        p2_seed = p2.get("seed")
         p1_w = bool(winner and winner == p1_n)
         p2_w = bool(winner and winner == p2_n)
 
         def _row(pn, seed, sc, is_w):
-            name = pn or "BYE"
+            name = pn or "TBD"
+            if name in ("TBD", "BYE"):
+                ph_style = (' style="color:#9b8bff;font-style:italic;opacity:.8;text-shadow:0 0 8px rgba(109,94,255,0.5)"'
+                            if name == "TBD" else ' style="color:#8A8FA8;font-style:italic;opacity:.75"')
+                return f'<div class="bracket-row"><span class="seed"></span><span class="player-name"{ph_style}>{_html.escape(name)}</span></div>'
             if seed is not None and str(seed) != "":
                 seed_cls = "win" if is_w else ("loss" if winner else "")
                 seed_chip = f'<span class="seed {seed_cls}">{_html.escape(str(seed))}</span>'
@@ -2883,14 +2908,14 @@ def _render_double_elim_html(t: dict, rounds: dict, player_count: int, champion,
         cols = []
         for rn in rns:
             ms = sorted(data[rn], key=lambda x: int(x.get("position") or 0))
-            cards = "".join(_match_card(m) for m in ms)
+            cards = "".join(_match_card(m, rn) for m in ms)
             cols.append(f'<div class="bracket-col">{_round_pill(f"Round {rn}", active=(rn == active_rn))}<div class="flex flex-col gap-3">{cards}</div></div>')
         return f'<div class="min-w-[240px]"><h3 class="lane-title">{title} <span class="lane-sub">{subtitle}</span></h3><div class="flex gap-6 items-start">{"".join(cols)}</div></div>'
 
     winners_html = _lane("🏆 Winners Bracket", f"{len(winners)} rounds", winners)
     losers_html = _lane("🔄 Losers Bracket", f"{len(losers)} rounds", losers)
     if final:
-        final_cards = "".join(_match_card(m) for m in final)
+        final_cards = "".join(_match_card(m, None) for m in final)
         final_html = f'<div class="min-w-[240px]"><h3 class="lane-title">🏆 Grand Final</h3><div class="bracket-col">{_round_pill("Grand Final", active=True)}<div class="flex flex-col gap-3">{final_cards}</div></div></div>'
     else:
         final_html = ""
@@ -3102,20 +3127,31 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
                 if m is None:
                     cells.append(f'''<div class="match-cell{final_cls}" data-round="{rnum}" data-pos="{pos}" style="grid-column:{rnum};grid-row:{start} / span {span}">{conns}<div class="bracket-card dashed-card"><div class="py-1.5 text-center tbd"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full mr-1 animate-pulse"></span>TBD</div></div></div>''')
                     continue
-                p1_n = m["player1"]["name"] or "BYE"
-                p2_n = m["player2"]["name"] or "BYE"
+                p1 = m["player1"] or {}
+                p2 = m["player2"] or {}
+                p1_id = p1.get("id")
+                p2_id = p2.get("id")
+                # Genuine bye = a round-1 match with exactly one real player
+                # (bracket padded to a power of 2). All other empty slots = TBD.
+                is_bye = (rnum == 1) and bool(p1_id) != bool(p2_id)
+                p1_n = p1.get("name") or ("BYE" if is_bye else "TBD")
+                p2_n = p2.get("name") or ("BYE" if is_bye else "TBD")
                 s1 = m.get("score1")
                 s2 = m.get("score2")
                 winner = m.get("winner")
                 status_m = m.get("status", "pending")
-                p1_seed = (m["player1"] or {}).get("seed")
-                p2_seed = (m["player2"] or {}).get("seed")
+                p1_seed = p1.get("seed")
+                p2_seed = p2.get("seed")
 
                 p1_is_w = bool(winner and winner == p1_n)
                 p2_is_w = bool(winner and winner == p2_n)
 
                 def _row(pn, seed, s_str, is_w):
-                    p_name = pn or "BYE"
+                    p_name = pn or "TBD"
+                    if p_name in ("TBD", "BYE"):
+                        ph_style = (' style="color:#9b8bff;font-style:italic;opacity:.8;text-shadow:0 0 8px rgba(109,94,255,0.5)"'
+                                    if p_name == "TBD" else ' style="color:#8A8FA8;font-style:italic;opacity:.75"')
+                        return f'<div class="bracket-row"><span class="seed"></span><span class="player-name"{ph_style}>{_html.escape(p_name)}</span></div>'
                     row_cls = "bracket-row bracket-row-winner" if is_w else "bracket-row"
                     if is_w:
                         name_cls = "win"
