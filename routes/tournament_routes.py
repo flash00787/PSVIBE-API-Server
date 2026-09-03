@@ -787,7 +787,9 @@ def _generate_seeded_bracket(tid: int, t: dict, players: list):
     """Shared seed + round-1 bracket generator.
 
     Randomly shuffles players, assigns seed numbers, generates round-1 matches.
-    Returns (total_rounds, r1_matches, shuffled). Inserts notifications for r1 matches.
+    Round-1 pairing is a pure random draw (adjacent players in the shuffled
+    order); seeds are only a label and do not drive matchups. Returns
+    (total_rounds, r1_matches, shuffled). Inserts notifications for r1 matches.
     """
     import random
     shuffled = list(players)
@@ -802,13 +804,13 @@ def _generate_seeded_bracket(tid: int, t: dict, players: list):
     matches_in_r1 = 2 ** total_rounds  # next power of 2 >= player_count
     r1_matches = matches_in_r1 // 2
 
-    # Assign players to round-1 matches; higher seeds get byes if needed
+    # Assign players to round-1 matches; R1 pairing is a pure random draw
+    # (adjacent pairs in the shuffled order), not seeded 1-vs-last mirroring.
     for pos in range(1, r1_matches + 1):
-        # Standard seeding: 1 vs last, 2 vs second-last, etc.
-        idx_a = pos - 1
-        idx_b = matches_in_r1 - pos
+        idx_a = 2 * (pos - 1)
+        idx_b = 2 * pos - 1
         p1_id = shuffled[idx_a]["id"] if idx_a < len(shuffled) else None
-        p2_id = shuffled[idx_b]["id"] if idx_b < len(shuffled) and idx_b != idx_a else None
+        p2_id = shuffled[idx_b]["id"] if idx_b < len(shuffled) else None
 
         _mysql_exec(
             """INSERT INTO tournament_matches
@@ -886,10 +888,11 @@ def _generate_double_elim_bracket(tid: int, t: dict, players: list):
         for pos in range(1, count + 1):
             p1_id = p2_id = None
             if r == 1:
-                idx_a = pos - 1
-                idx_b = (2 * w1_matches) - pos
+                # R1 pairing = pure random draw (adjacent in shuffled order).
+                idx_a = 2 * (pos - 1)
+                idx_b = 2 * pos - 1
                 p1_id = shuffled[idx_a]["id"] if idx_a < n else None
-                p2_id = shuffled[idx_b]["id"] if idx_b < n and idx_b != idx_a else None
+                p2_id = shuffled[idx_b]["id"] if idx_b < n else None
             _mysql_exec(
                 """INSERT INTO tournament_matches
                    (tournament_id, round, position, player1_id, player2_id, status, bracket)
@@ -981,13 +984,13 @@ def _generate_double_elim_bracket(tid: int, t: dict, players: list):
     _mysql_exec("UPDATE tournament_matches SET feeds_from=%s WHERE id=%s",
                 (id_by_pos[("winners", 6, 1)], id_by_pos[("losers", 10, 1)]))
 
-    # Notify W1 players (mirror single-elim behaviour)
+    # Notify W1 players (random-draw R1, matching the fill above)
     _id_to_player = {p["id"]: p for p in shuffled}
     for pos in range(1, w1_matches + 1):
-        idx_a = pos - 1
-        idx_b = (2 * w1_matches) - pos
+        idx_a = 2 * (pos - 1)
+        idx_b = 2 * pos - 1
         p1_id = shuffled[idx_a]["id"] if idx_a < n else None
-        p2_id = shuffled[idx_b]["id"] if idx_b < n and idx_b != idx_a else None
+        p2_id = shuffled[idx_b]["id"] if idx_b < n else None
         if p1_id and p2_id:
             p1, p2 = _id_to_player[p1_id], _id_to_player[p2_id]
             _insert_notification(
@@ -1160,8 +1163,8 @@ def _generate_hybrid_bracket(tid: int, t: dict, players: list):
 def _auto_advance_byes(tid: int, total_rounds: int):
     """Advance round-1 bye players (player2 = NULL) into round 2 using parity-based slots.
 
-    Single-elim seeding places higher seeds on a bye in round 1 when N is not a power
-    of two. Those players must still reach the semifinal (round 2) so the 4-player
+    The round-1 random draw leaves a trailing player with no opponent (a bye) when
+    N is odd. Those players must still reach the semifinal (round 2) so the 4-player
     tail forms correctly. Only relevant when total_rounds >= 3 (N >= 5); N=4 has no
     byes and N<4 returns before this point.
     """
