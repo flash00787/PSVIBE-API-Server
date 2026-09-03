@@ -25,7 +25,7 @@ import secrets
 import math
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 
 # Uploads directory for tournament payment screenshots
 _UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", "tournaments")
+
+# Myanmar Standard Time (Asia/Yangon) = UTC+6:30. scheduled_at is stored as a NAIVE
+# Myanmar wall-clock datetime (matching tournament start_at/reg times).
+_MMT = timezone(timedelta(hours=6, minutes=30))
 
 router = APIRouter(tags=["Tournaments"])
 
@@ -1595,6 +1599,11 @@ async def schedule_match(tid: int, mid: int, body: dict, auth=Depends(verify_api
             if sched_str:
                 try:
                     sched_dt = datetime.fromisoformat(sched_str.replace("Z", "+00:00"))
+                    # Normalize any tz-aware value (e.g. Z/offset from older cached UI)
+                    # to a NAIVE Myanmar wall-clock time (Asia/Yangon, UTC+6:30).
+                    # Naive values are assumed already-MMT and left unchanged.
+                    if sched_dt.tzinfo is not None and sched_dt.utcoffset() is not None:
+                        sched_dt = sched_dt.astimezone(_MMT).replace(tzinfo=None)
                 except ValueError:
                     return error_response(message="scheduled_at must be ISO datetime", code=400)
 
