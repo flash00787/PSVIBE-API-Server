@@ -852,6 +852,11 @@ def _generate_seeded_bracket(tid: int, t: dict, players: list):
                 f"🔔 {t['name']} — မင်းရဲ့ Round 1 Match စပါပြီ! ပြိုင်ဘက်: {p1['name']} (#{p1['seed']}) — PS VIBE",
             )
 
+    # Advance bye players (single-player R1 matches) into round 2 so every R1 slot
+    # contributes exactly one winner. Needed by BOTH single-elim and hybrid formats
+    # when N is not a power of two (idempotent: no-op for exact powers of two).
+    _auto_advance_byes(tid, total_rounds)
+
     return total_rounds, r1_matches, shuffled
 
 
@@ -1175,18 +1180,20 @@ def _generate_hybrid_bracket(tid: int, t: dict, players: list):
            VALUES (%s, 1, 1, 'pending', 'final')""",
         (tid,),
     )
-    # Auto-advance round-1 bye players to the semifinal (needed for non-power-of-2 N).
-    _auto_advance_byes(tid, total_rounds)
+    # Auto-advance round-1 bye players into the semifinal is handled inside
+    # _generate_seeded_bracket (called above), so nothing extra is needed here.
     return total_rounds, r1_matches, shuffled
 
 
 def _auto_advance_byes(tid: int, total_rounds: int):
     """Advance round-1 bye players (player2 = NULL) into round 2 using parity-based slots.
 
-    The round-1 random draw leaves a trailing player with no opponent (a bye) when
-    N is odd. Those players must still reach the semifinal (round 2) so the 4-player
-    tail forms correctly. Only relevant when total_rounds >= 3 (N >= 5); N=4 has no
-    byes and N<4 returns before this point.
+    With balanced bye redistribution, single-player bye matches sit in the FIRST
+    `byes` R1 positions (p1 = bye player, p2 = NULL). Those players must still
+    reach round 2 so the bracket stays a clean power-of-2 and (for hybrid) the
+    4-player tail forms correctly. Each bye match contributes exactly one winner,
+    so round 2 always fills fully. Only relevant when total_rounds >= 3 (N >= 5);
+    N=4 has no byes and N<4 has total_rounds < 3.
     """
     if total_rounds < 3:
         return
