@@ -790,6 +790,14 @@ def _generate_seeded_bracket(tid: int, t: dict, players: list):
     Round-1 pairing is a pure random draw (adjacent players in the shuffled
     order); seeds are only a label and do not drive matchups. Returns
     (total_rounds, r1_matches, shuffled). Inserts notifications for r1 matches.
+
+    Balanced bye redistribution: when the player count is NOT a power of two,
+    the `byes = matches_in_r1 - len(shuffled)` extra slots become single-player
+    bye matches placed in the FIRST `byes` positions (p1 = bye player, p2 = NULL).
+    The leftover players (always an even count) then fill the remaining positions
+    as adjacent pairs in the shuffled order, preserving the pure random draw.
+    Every round-1 slot therefore produces exactly one winner, so round 2 is always
+    a clean power-of-2 bracket (no trailing empty-vs-empty matches).
     """
     import random
     shuffled = list(players)
@@ -803,12 +811,25 @@ def _generate_seeded_bracket(tid: int, t: dict, players: list):
 
     matches_in_r1 = 2 ** total_rounds  # next power of 2 >= player_count
     r1_matches = matches_in_r1 // 2
+    byes = matches_in_r1 - len(shuffled)  # 0 for exact powers of 2
 
-    # Assign players to round-1 matches; R1 pairing is a pure random draw
-    # (adjacent pairs in the shuffled order), not seeded 1-vs-last mirroring.
-    for pos in range(1, r1_matches + 1):
-        idx_a = 2 * (pos - 1)
-        idx_b = 2 * pos - 1
+    _id_to_player = {p["id"]: p for p in shuffled}
+
+    # First `byes` positions: single-player bye matches (auto-advance to round 2).
+    for pos in range(1, byes + 1):
+        p = shuffled[pos - 1]
+        _mysql_exec(
+            """INSERT INTO tournament_matches
+               (tournament_id, round, position, player1_id, player2_id, status)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (tid, 1, pos, p["id"], None, "pending"),
+        )
+
+    # Remaining positions: adjacent pairs of the leftover shuffled players.
+    # When byes == 0 this is identical to the pure adjacent pairing (unchanged).
+    for pair_pos in range(byes + 1, r1_matches + 1):
+        idx_a = byes + 2 * (pair_pos - byes - 1)
+        idx_b = idx_a + 1
         p1_id = shuffled[idx_a]["id"] if idx_a < len(shuffled) else None
         p2_id = shuffled[idx_b]["id"] if idx_b < len(shuffled) else None
 
@@ -816,11 +837,10 @@ def _generate_seeded_bracket(tid: int, t: dict, players: list):
             """INSERT INTO tournament_matches
                (tournament_id, round, position, player1_id, player2_id, status)
                VALUES (%s, %s, %s, %s, %s, %s)""",
-            (tid, 1, pos, p1_id, p2_id, "pending"),
+            (tid, 1, pair_pos, p1_id, p2_id, "pending"),
         )
 
-        # Notify both players in this r1 match
-        _id_to_player = {p["id"]: p for p in shuffled}
+        # Notify both players in this r1 match (bye matches have no opponent → no notify)
         if p1_id and p2_id:
             p1, p2 = _id_to_player[p1_id], _id_to_player[p2_id]
             _insert_notification(
