@@ -3031,7 +3031,7 @@ def _render_double_elim_html(t: dict, rounds: dict, player_count: int, champion,
     return HTMLResponse(content=html)
 
 
-def _match_card_html(m: dict, rnum=None, is_final_col: bool = False, status: str = "") -> str:
+def _match_card_html(m: dict, rnum=None, is_final_col: bool = False, status: str = "", p1_ph: str = "", p2_ph: str = "") -> str:
     """Render one match card in the neon bracket style (shared by the hybrid Top-4 tail).
 
     Mirrors the inline card markup used by the single-elimination tree so the
@@ -3045,8 +3045,25 @@ def _match_card_html(m: dict, rnum=None, is_final_col: bool = False, status: str
     bracket = m.get("bracket") or "winners"
     # Genuine bye = a round-1 winners match with exactly one real player.
     is_bye = (bracket == "winners") and rnum == 1 and bool(p1_id) != bool(p2_id)
-    p1_n = p1.get("name") or ("BYE" if is_bye else "TBD")
-    p2_n = p2.get("name") or ("BYE" if is_bye else "TBD")
+    # Source placeholders (hybrid Top-4 tail): an empty slot shows where the
+    # incoming player comes from ("Winner SF1", "Loser WB Final", …) instead of a
+    # bare "TBD". Only applies when the slot is empty AND a hint was supplied.
+    p1_n = p1.get("name")
+    p2_n = p2.get("name")
+    p1_src = False
+    p2_src = False
+    if not p1_n:
+        if p1_ph:
+            p1_n = p1_ph
+            p1_src = True
+        else:
+            p1_n = "BYE" if is_bye else "TBD"
+    if not p2_n:
+        if p2_ph:
+            p2_n = p2_ph
+            p2_src = True
+        else:
+            p2_n = "BYE" if is_bye else "TBD"
     s1 = m.get("score1")
     s2 = m.get("score2")
     winner = m.get("winner")
@@ -3061,8 +3078,11 @@ def _match_card_html(m: dict, rnum=None, is_final_col: bool = False, status: str
         cls = "win" if is_w else ""
         return f'<span class="score-pill {cls}">{_html.escape(str(s))}</span>'
 
-    def _row(pn, seed, sc, is_w):
+    def _row(pn, seed, sc, is_w, src=False):
         p_name = pn or "TBD"
+        if src:
+            ph_style = ' style="color:#9b8bff;font-style:italic;opacity:.8;text-shadow:0 0 8px rgba(109,94,255,0.5)"'
+            return f'<div class="bracket-row"><span class="seed"></span><span class="player-name"{ph_style}>← {_html.escape(p_name)}</span></div>'
         if p_name in ("TBD", "BYE"):
             ph_style = (' style="color:#9b8bff;font-style:italic;opacity:.8;text-shadow:0 0 8px rgba(109,94,255,0.5)"'
                         if p_name == "TBD" else ' style="color:#8A8FA8;font-style:italic;opacity:.75"')
@@ -3079,8 +3099,8 @@ def _match_card_html(m: dict, rnum=None, is_final_col: bool = False, status: str
         trophy = '<span class="win-trophy">🏆</span>' if is_w else ""
         return f'<div class="{row_cls}">{seed_chip}<span class="player-name {name_cls}">{_html.escape(p_name)}{trophy}</span>{_score_badge(sc, is_w)}</div>'
 
-    row1 = _row(p1_n, p1_seed, s1, p1_w)
-    row2 = _row(p2_n, p2_seed, s2, p2_w)
+    row1 = _row(p1_n, p1_seed, s1, p1_w, src=p1_src)
+    row2 = _row(p2_n, p2_seed, s2, p2_w, src=p2_src)
 
     sched_line = ''
     if m.get('console_id') or m.get('scheduled_at'):
@@ -3332,19 +3352,27 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
         wb_m = wb_final_matches[0] if wb_final_matches else None
         gf_m = final_matches[0] if final_matches else None
 
-        def _tail_card(m, col, row, is_gf=False, conns=""):
+        def _tail_card(m, col, row, is_gf=False, conns="", p1_ph="", p2_ph=""):
             if m is None:
-                inner = '<div class="bracket-card dashed-card"><div class="py-1.5 text-center tbd"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full mr-1 animate-pulse"></span>TBD</div></div>'
+                # Dashed empty-state card; show feeder hints when known (nice-to-have).
+                if p1_ph or p2_ph:
+                    rows = ""
+                    for ph in (p1_ph, p2_ph):
+                        if ph:
+                            rows += f'<div class="bracket-row"><span class="seed"></span><span class="player-name" style="color:#9b8bff;font-style:italic;opacity:.8;text-shadow:0 0 8px rgba(109,94,255,0.5)">← {_html.escape(ph)}</span></div>'
+                    inner = f'<div class="bracket-card dashed-card">{rows}</div>'
+                else:
+                    inner = '<div class="bracket-card dashed-card"><div class="py-1.5 text-center tbd"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full mr-1 animate-pulse"></span>TBD</div></div>'
             else:
-                inner = _match_card_html(m, rnum=None, is_final_col=is_gf, status=status)
+                inner = _match_card_html(m, rnum=None, is_final_col=is_gf, status=status, p1_ph=p1_ph, p2_ph=p2_ph)
             final_cls = " final-col" if is_gf else ""
             return f'<div class="match-cell{final_cls}" data-bracket="tail" style="grid-column:{col};grid-row:{row}">{conns}{inner}</div>'
 
         tail_cells = [
-            _tail_card(lb_r1_m, 1, 2, conns='<div class="conn conn-r"></div>'),
-            _tail_card(lb_r2_m, 2, 2, conns='<div class="conn conn-r"></div>'),
-            _tail_card(wb_m, 2, 1, conns='<div class="conn conn-r"></div>'),
-            _tail_card(gf_m, 3, "1 / span 2", is_gf=True),
+            _tail_card(lb_r1_m, 1, 2, conns='<div class="conn conn-r"></div>', p1_ph="Loser SF1", p2_ph="Loser SF2"),
+            _tail_card(lb_r2_m, 2, 2, conns='<div class="conn conn-r"></div>', p1_ph="Winner Losers R1", p2_ph="Loser WB Final"),
+            _tail_card(wb_m, 2, 1, conns='<div class="conn conn-r"></div>', p1_ph="Winner SF1", p2_ph="Winner SF2"),
+            _tail_card(gf_m, 3, "1 / span 2", is_gf=True, p1_ph="Winner WB Final", p2_ph="Winner Losers R2"),
         ]
         tail_cols = [
             f'<div class="col-head" style="grid-column:1;grid-row:2">{_pill(lb_r1_label)}</div>',
