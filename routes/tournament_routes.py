@@ -116,6 +116,38 @@ def _ensure_match_columns():
         logger.warning("_ensure_match_columns failed: %s", e)
 
 
+def _ensure_hybrid_schema():
+    """Idempotent schema guard for the 'hybrid' format (single-elim + Top-4 double-elim tail).
+
+    - Adds tournament_players.placement INT NULL (records 2nd/3rd/4th place finishes).
+    - Extends tournaments.format ENUM to include 'hybrid'.
+    """
+    # placement column
+    try:
+        cols = _mysql_query(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA='psvibe_api' AND TABLE_NAME='tournament_players' AND COLUMN_NAME='placement'"
+        )
+        if not cols:
+            _mysql_exec("ALTER TABLE tournament_players ADD COLUMN placement INT DEFAULT NULL AFTER status")
+            logger.info("tournament_players.placement column added")
+    except Exception as e:
+        logger.warning("_ensure_hybrid_schema (placement) failed: %s", e)
+
+    # format enum
+    try:
+        row = _mysql_query_one(
+            "SELECT COLUMN_TYPE FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA='psvibe_api' AND TABLE_NAME='tournaments' AND COLUMN_NAME='format'"
+        )
+        ctype = (row or {}).get("COLUMN_TYPE", "") or ""
+        if "hybrid" not in ctype:
+            _mysql_exec("ALTER TABLE tournaments MODIFY COLUMN format ENUM('single','double','hybrid') NOT NULL DEFAULT 'single'")
+            logger.info("tournaments.format enum extended with 'hybrid'")
+    except Exception as e:
+        logger.warning("_ensure_hybrid_schema (format) failed: %s", e)
+
+
 def _ensure_match_unique_key():
     """Ensure tournament_matches uniqueness spans (tournament_id, round, position, bracket).
 
@@ -146,6 +178,12 @@ def _ensure_match_unique_key():
 # Self-heal tournament_matches schema at import/startup (bracket + feeds_from).
 try:
     _ensure_match_columns()
+except Exception:
+    pass
+
+# Self-heal hybrid-format schema (tournament_players.placement + tournaments.format enum).
+try:
+    _ensure_hybrid_schema()
 except Exception:
     pass
 
@@ -270,6 +308,31 @@ def _player_by_id(pid: int):
     return _mysql_query_one("SELECT * FROM tournament_players WHERE id=%s", (pid,))
 
 
+def _record_placement(tid: int, player_id, place: int):
+    """Record a player's final placement (2nd/3rd/4th) and mark them eliminated."""
+    if not player_id:
+        return
+    _mysql_exec(
+        "UPDATE tournament_players SET placement=%s, status='eliminated' WHERE id=%s AND tournament_id=%s",
+        (place, player_id, tid),
+    )
+
+
+def _get_placements(tid: int) -> list:
+    """Return top-4 placements: place 1 = champion row, places 2-4 = players.placement."""
+    result = []
+    champ = _get_champion(tid)
+    if champ:
+        result.append({"place": 1, "player_id": champ["player_id"], "name": champ["player_name"]})
+    rows = _mysql_query(
+        "SELECT id, name, placement FROM tournament_players WHERE tournament_id=%s AND placement IS NOT NULL ORDER BY placement ASC",
+        (tid,),
+    )
+    for r in rows:
+        result.append({"place": int(r["placement"]), "player_id": r["id"], "name": r["name"]})
+    return result
+
+
 def _crown_champion(tid: int, winner_id: int):
     """Insert/replace champion row for a tournament based on winner player + prize parsing."""
     winner = _player_by_id(winner_id)
@@ -313,7 +376,7 @@ async def create_tournament(body: dict, auth=Depends(verify_api_key)):
             reg_token = secrets.token_hex(6)
 
         fmt = body.get("format", "single")
-        if fmt not in ("single", "double"):
+        if fmt not in ("single", "double", "hybrid"):
             fmt = "single"
 
         _pool = body.get("prize_pool_ks")
@@ -493,13 +556,14 @@ async def get_tournament(tid: int, auth=Depends(verify_api_key)):
                 t[f] = str(t[f])
         t["champion"] = _get_champion(tid)
         t["prizes"] = _get_prizes(tid)
+        t["placements"] = _get_placements(tid)
         return ok(t)
     except Exception as e:
         logger.error("get_tournament error: %s", e)
         return error_response(message=str(e))
 
 
-_PLACE_LABELS = {1: "Champion", 2: "Runner-up", 3: "3rd Place"}
+_PLACE_LABELS = {1: "Champion", 2: "Runner-up", 3: "3rd Place", 4: "4th Place"}
 
 
 def _default_place_label(place: int) -> str:
@@ -1048,6 +1112,230 @@ def _double_elim_advance(tid: int, t: dict, match: dict, winner_id, loser_id, s1
     })
 
 
+def _generate_hybrid_bracket(tid: int, t: dict, players: list):
+    """Generate the 'hybrid' bracket: single-elimination until 4 players remain, then a
+    4-team double-elimination tail with NO grand-final reset.
+
+    Reuses single-elim seeding + round-1 generation (bracket defaults to 'winners'),
+    then pre-creates the Top-4 tail rows:
+        WB R2 (WB final) : bracket='winners', round=total_rounds, pos=1
+        LB R1           : bracket='losers',  round=1, pos=1
+        LB R2           : bracket='losers',  round=2, pos=1
+        Grand Final     : bracket='final',   round=1, pos=1
+
+    For N < 4 (total_rounds < 2) there is no 4-player tail — behaves exactly like
+    single elimination. Returns (total_rounds, r1_matches, shuffled).
+    """
+    total_rounds, r1_matches, shuffled = _generate_seeded_bracket(tid, t, players)
+    if len(shuffled) < 4:
+        # N < 4: no 4-player tail can form — behave exactly like single elimination.
+        return total_rounds, r1_matches, shuffled
+
+    # Pre-create the Top-4 double-elim tail rows (players fill in as scores arrive).
+    _mysql_exec(
+        """INSERT INTO tournament_matches (tournament_id, round, position, status, bracket)
+           VALUES (%s, %s, 1, 'pending', 'winners')""",
+        (tid, total_rounds),
+    )
+    _mysql_exec(
+        """INSERT INTO tournament_matches (tournament_id, round, position, status, bracket)
+           VALUES (%s, 1, 1, 'pending', 'losers')""",
+        (tid,),
+    )
+    _mysql_exec(
+        """INSERT INTO tournament_matches (tournament_id, round, position, status, bracket)
+           VALUES (%s, 2, 1, 'pending', 'losers')""",
+        (tid,),
+    )
+    _mysql_exec(
+        """INSERT INTO tournament_matches (tournament_id, round, position, status, bracket)
+           VALUES (%s, 1, 1, 'pending', 'final')""",
+        (tid,),
+    )
+    # Auto-advance round-1 bye players to the semifinal (needed for non-power-of-2 N).
+    _auto_advance_byes(tid, total_rounds)
+    return total_rounds, r1_matches, shuffled
+
+
+def _auto_advance_byes(tid: int, total_rounds: int):
+    """Advance round-1 bye players (player2 = NULL) into round 2 using parity-based slots.
+
+    Single-elim seeding places higher seeds on a bye in round 1 when N is not a power
+    of two. Those players must still reach the semifinal (round 2) so the 4-player
+    tail forms correctly. Only relevant when total_rounds >= 3 (N >= 5); N=4 has no
+    byes and N<4 returns before this point.
+    """
+    if total_rounds < 3:
+        return
+    r1 = _mysql_query(
+        "SELECT * FROM tournament_matches WHERE tournament_id=%s AND round=1 AND bracket='winners'",
+        (tid,),
+    )
+    for m in r1:
+        if m["player1_id"] and not m["player2_id"]:
+            pos = int(m["position"])
+            next_pos = math.ceil(pos / 2)
+            slot = "p1" if (pos % 2 == 1) else "p2"
+            nxt = _mysql_query_one(
+                "SELECT * FROM tournament_matches WHERE tournament_id=%s AND round=2 AND position=%s AND bracket='winners'",
+                (tid, next_pos),
+            )
+            if nxt:
+                _set_match_player(nxt["id"], slot, m["player1_id"])
+            else:
+                col = "player1_id" if slot == "p1" else "player2_id"
+                _mysql_exec(
+                    f"INSERT INTO tournament_matches (tournament_id, round, position, {col}, status, bracket) VALUES (%s,2,%s,%s,'pending','winners')",
+                    (tid, next_pos, m["player1_id"]),
+                )
+
+
+def _advance_winner_single(tid: int, rround: int, pos: int, winner_id):
+    """Advance a single-elim winners-bracket winner to the next round (parity-based slot)."""
+    next_round = rround + 1
+    next_pos = math.ceil(pos / 2)
+    slot = "p1" if (pos % 2 == 1) else "p2"
+    nxt = _mysql_query_one(
+        "SELECT * FROM tournament_matches WHERE tournament_id=%s AND round=%s AND position=%s AND bracket='winners'",
+        (tid, next_round, next_pos),
+    )
+    if not nxt:
+        col = "player1_id" if slot == "p1" else "player2_id"
+        _mysql_exec(
+            f"INSERT INTO tournament_matches (tournament_id, round, position, {col}, status, bracket) VALUES (%s,%s,%s,%s,'pending','winners')",
+            (tid, next_round, next_pos, winner_id),
+        )
+    else:
+        _set_match_player(nxt["id"], slot, winner_id)
+
+
+def _hybrid_advance(tid: int, t: dict, match: dict, winner_id, loser_id, s1, s2, mid):
+    """Advance a match in the hybrid (single-elim + Top-4 double-elim tail) bracket.
+
+    Early rounds (round < total_rounds-1) are pure single-elim (loser eliminated).
+    The Top-4 tail:
+      semifinal (round=total_rounds-1, bracket='winners') -> winner to WB final,
+        loser to LB R1 (NOT eliminated).
+      WB final (round=total_rounds, bracket='winners') -> winner to GF p1,
+        loser to LB R2 p2 (NOT eliminated).
+      LB R1 (bracket='losers', round=1) -> winner to LB R2 p1; loser = 4th place.
+      LB R2 (bracket='losers', round=2) -> winner to GF p2; loser = 3rd place.
+      GF (bracket='final') -> winner = champion (crown + completed); loser = 2nd place.
+    """
+    mbracket = match.get("bracket") or "winners"
+    rround = int(match["round"])
+    pos = int(match["position"])
+
+    def _find(bracket, round_no, position):
+        return _mysql_query_one(
+            "SELECT * FROM tournament_matches WHERE tournament_id=%s AND bracket=%s AND round=%s AND position=%s",
+            (tid, bracket, round_no, position),
+        )
+
+    r1_info = _mysql_query_one(
+        "SELECT COUNT(*) as cnt FROM tournament_matches WHERE tournament_id=%s AND round=1 AND bracket='winners'",
+        (tid,),
+    )
+    total_rounds = _calculate_total_rounds(r1_info["cnt"] * 2)
+    semifinal_round = total_rounds - 1
+    has_tail = _find("final", 1, 1) is not None
+
+    is_final = False
+
+    if mbracket == "winners":
+        if not has_tail:
+            # N <= 3: no Top-4 tail — behave exactly like single elimination.
+            if loser_id:
+                _mysql_exec("UPDATE tournament_players SET status='eliminated' WHERE id=%s", (loser_id,))
+            if rround == total_rounds:
+                _mysql_exec("UPDATE tournaments SET status='completed' WHERE id=%s", (tid,))
+                _crown_champion(tid, winner_id)
+                winner = _player_by_id(winner_id)
+                if winner:
+                    _insert_notification(
+                        tid, winner["id"], winner.get("telegram_id"),
+                        f"🏆 ချန်ပီယံဖြစ်ပြီ! {t['name']} — ဆုကြေး: {t.get('prize') or '—'} — ဂုဏ်ယူပါတယ်!",
+                        kind="champion",
+                    )
+                logger.info("Hybrid (no-tail) tournament %s completed! Winner: player %s", tid, winner_id)
+                is_final = True
+            else:
+                _advance_winner_single(tid, rround, pos, winner_id)
+        elif rround < semifinal_round:
+            # Early single-elim round (tail mode): loser eliminated, winner advances.
+            if loser_id:
+                _mysql_exec("UPDATE tournament_players SET status='eliminated' WHERE id=%s", (loser_id,))
+            _advance_winner_single(tid, rround, pos, winner_id)
+        elif rround == semifinal_round:
+            # Semifinal: winner -> WB final; loser drops to LB R1 (still alive).
+            wbf = _find("winners", total_rounds, 1)
+            if wbf:
+                slot = "p1" if (pos % 2 == 1) else "p2"
+                _set_match_player(wbf["id"], slot, winner_id)
+            if loser_id:
+                lbr1 = _find("losers", 1, 1)
+                if lbr1:
+                    slot = "p1" if (pos % 2 == 1) else "p2"
+                    _set_match_player(lbr1["id"], slot, loser_id)
+                lp = _player_by_id(loser_id)
+                if lp:
+                    _insert_notification(
+                        tid, loser_id, lp.get("telegram_id"),
+                        f"🔄 {t['name']} — ဆီမီးဖိုင်နယ်မှာ ရှုံးပေမယ့် Losers Bracket မှာ ဆက်ကစားနိုင်ပါသေးတယ်! — PS VIBE",
+                        kind="match",
+                    )
+        else:
+            # WB final (round == total_rounds): winner -> GF p1; loser -> LB R2 p2.
+            gf = _find("final", 1, 1)
+            if gf:
+                _set_match_player(gf["id"], "p1", winner_id)
+            if loser_id:
+                lbr2 = _find("losers", 2, 1)
+                if lbr2:
+                    _set_match_player(lbr2["id"], "p2", loser_id)
+
+    elif mbracket == "losers":
+        if rround == 1:
+            # LB R1: winner -> LB R2 p1; loser = 4th place.
+            if loser_id:
+                _record_placement(tid, loser_id, 4)
+            nxt = _find("losers", 2, 1)
+            if nxt:
+                _set_match_player(nxt["id"], "p1", winner_id)
+        else:
+            # LB R2: winner -> GF p2; loser = 3rd place.
+            if loser_id:
+                _record_placement(tid, loser_id, 3)
+            gf = _find("final", 1, 1)
+            if gf:
+                _set_match_player(gf["id"], "p2", winner_id)
+
+    else:  # 'final' -> Grand Final
+        if loser_id:
+            _record_placement(tid, loser_id, 2)
+        _mysql_exec("UPDATE tournaments SET status='completed' WHERE id=%s", (tid,))
+        _crown_champion(tid, winner_id)
+        winner = _player_by_id(winner_id)
+        if winner:
+            _insert_notification(
+                tid, winner["id"], winner.get("telegram_id"),
+                f"🏆 ချန်ပီယံဖြစ်ပြီ! {t['name']} — ဆုကြေး: {t.get('prize') or '—'} — ဂုဏ်ယူပါတယ်!",
+                kind="champion",
+            )
+        logger.info("Hybrid tournament %s completed! Winner: player %s", tid, winner_id)
+        is_final = True
+
+    logger.info("Match %s scored (hybrid, %s): %s-%s, winner=%s", mid, mbracket, s1, s2, winner_id)
+    return ok({
+        "match_id": mid,
+        "score1": s1,
+        "score2": s2,
+        "winner_id": winner_id,
+        "bracket": mbracket,
+        "is_final": is_final,
+    })
+
+
 @router.post("/api/tournaments/{tid}/start")
 async def start_tournament(tid: int, auth=Depends(verify_api_key)):
     """Start the tournament: seed players, generate round-1 bracket.
@@ -1093,6 +1381,11 @@ async def start_tournament(tid: int, auth=Depends(verify_api_key)):
             total_rounds, match_count, shuffled = _generate_double_elim_bracket(tid, t, players)
             if total_rounds == 0:
                 return error_response(message="Need at least 4 players to start a double-elimination tournament")
+        elif t.get("format") == "hybrid":
+            total_rounds, r1_matches, shuffled = _generate_hybrid_bracket(tid, t, players)
+            match_count = r1_matches
+            if total_rounds == 0:
+                return error_response(message="Need at least 2 players to start")
         else:
             total_rounds, r1_matches, shuffled = _generate_seeded_bracket(tid, t, players)
             match_count = r1_matches
@@ -1151,6 +1444,8 @@ async def submit_match_score(tid: int, mid: int, body: dict, auth=Depends(verify
         )
 
         mbracket = match.get("bracket") or "winners"
+        if t.get("format") == "hybrid":
+            return _hybrid_advance(tid, t, match, winner_id, loser_id, s1, s2, mid)
         if t.get("format") == "double" or mbracket in ("losers", "final"):
             return _double_elim_advance(tid, t, match, winner_id, loser_id, s1, s2, mid)
 
@@ -1304,7 +1599,7 @@ async def get_standings(tid: int, auth=Depends(verify_api_key)):
             (tid, tid),
         )
         eliminated = _mysql_query(
-            "SELECT id, name, phone, seed, status FROM tournament_players WHERE tournament_id=%s AND status='eliminated'",
+            "SELECT id, name, phone, seed, status, placement FROM tournament_players WHERE tournament_id=%s AND status='eliminated'",
             (tid,),
         )
         registered = _mysql_query(
@@ -1315,6 +1610,7 @@ async def get_standings(tid: int, auth=Depends(verify_api_key)):
             "winners": [dict(r) for r in winners],
             "eliminated": [dict(r) for r in eliminated],
             "active": [dict(r) for r in registered],
+            "placements": _get_placements(tid),
         })
     except Exception as e:
         logger.error("get_standings error: %s", e)
@@ -1361,7 +1657,7 @@ async def registration_page(token: str, request: Request):
         tn_desc = _html.escape(description)
         tn_prize = _html.escape(prize_str)
         tn_rules = _html.escape(rules)
-        tn_format = "Single Elimination" if t.get("format") == "single" else "Double Elimination"
+        tn_format = {"single": "Single Elimination", "double": "Double Elimination", "hybrid": "Top 4 Double Elimination"}.get(t.get("format"), "Single Elimination")
         tn_id = int(t["id"])
 
         # Prize breakdown block (structured tiers)
@@ -2024,7 +2320,7 @@ async def view_bracket(tid: int, request: Request = None, view: str = Query(None
             "player_count": player_count,
             "rounds": rounds,
         }
-        if t.get("format") == "double":
+        if t.get("format") in ("double", "hybrid"):
             # Build per-bracket view: winners (round 1..k), losers (round 1..10), final.
             brackets = {"winners": {}, "losers": {}, "final": []}
             for m in matches:
@@ -2128,7 +2424,7 @@ async def list_players_public(tid: int, request: Request):
         _ensure_tournament(tid)
         show_full_phone = _is_authenticated(request)
         players = _mysql_query(
-            "SELECT id, name, phone, seed, status, paid, payment_method, ss_file, team1, team2, team3, rules_ack FROM tournament_players WHERE tournament_id=%s ORDER BY seed ASC, id ASC",
+            "SELECT id, name, phone, seed, status, paid, payment_method, ss_file, team1, team2, team3, rules_ack, placement FROM tournament_players WHERE tournament_id=%s ORDER BY seed ASC, id ASC",
             (tid,),
         )
         result = []
@@ -2375,6 +2671,11 @@ async def regenerate_bracket(tid: int, auth=Depends(verify_api_key)):
             if total_rounds == 0:
                 return error_response(message="Need at least 4 players to regenerate a double-elimination bracket")
             return ok({"regenerated": True, "format": "double", "players": len(shuffled), "matches_generated": match_count})
+        if t.get("format") == "hybrid":
+            total_rounds, r1_matches, shuffled = _generate_hybrid_bracket(tid, t, players)
+            if total_rounds == 0:
+                return error_response(message="Need at least 2 players to start")
+            return ok({"regenerated": True, "format": "hybrid", "players": len(shuffled), "r1_matches": r1_matches})
         total_rounds, r1_matches, shuffled = _generate_seeded_bracket(tid, t, players)
         if total_rounds == 0:
             return error_response(message="Need at least 2 players to start")
@@ -2463,6 +2764,7 @@ def _render_double_elim_html(t: dict, rounds: dict, player_count: int, champion,
     tn_game = _html.escape(t.get("game", ""))
     tid = int(t["id"])
     status = (t.get("status") or "").lower()
+    fmt_badge = "Top 4 Double Elimination" if t.get("format") == "hybrid" else "Double Elimination"
 
     winners = {}
     losers = {}
@@ -2568,7 +2870,7 @@ def _render_double_elim_html(t: dict, rounds: dict, player_count: int, champion,
     <div class="flex items-center justify-center flex-wrap gap-2 mt-2 text-xs text-gray-300">
       <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">🎮 {tn_game}</span>
       <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">👥 {player_count} players</span>
-      <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">🏆 Double Elimination</span>
+      <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">🏆 {fmt_badge}</span>
       {live_badge}
     </div>
   </div>
@@ -2616,7 +2918,7 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     champion = _get_champion(tid)
     prizes = _get_prizes(tid)
 
-    if t.get("format") == "double":
+    if t.get("format") in ("double", "hybrid"):
         return _render_double_elim_html(t, rounds, player_count, champion, prizes)
 
     # Total rounds = log2(next power of 2 >= player_count): 64→6, 32→5, 5→3, 4→2
