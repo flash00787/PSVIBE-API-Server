@@ -3031,6 +3031,76 @@ def _render_double_elim_html(t: dict, rounds: dict, player_count: int, champion,
     return HTMLResponse(content=html)
 
 
+def _match_card_html(m: dict, rnum=None, is_final_col: bool = False, status: str = "") -> str:
+    """Render one match card in the neon bracket style (shared by the hybrid Top-4 tail).
+
+    Mirrors the inline card markup used by the single-elimination tree so the
+    losers-bracket / grand-final cards look identical to winners-tree cards.
+    """
+    import html as _html
+    p1 = m.get("player1") or {}
+    p2 = m.get("player2") or {}
+    p1_id = p1.get("id")
+    p2_id = p2.get("id")
+    bracket = m.get("bracket") or "winners"
+    # Genuine bye = a round-1 winners match with exactly one real player.
+    is_bye = (bracket == "winners") and rnum == 1 and bool(p1_id) != bool(p2_id)
+    p1_n = p1.get("name") or ("BYE" if is_bye else "TBD")
+    p2_n = p2.get("name") or ("BYE" if is_bye else "TBD")
+    s1 = m.get("score1")
+    s2 = m.get("score2")
+    winner = m.get("winner")
+    p1_seed = p1.get("seed")
+    p2_seed = p2.get("seed")
+    p1_w = bool(winner and winner == p1_n)
+    p2_w = bool(winner and winner == p2_n)
+
+    def _score_badge(s, is_w):
+        if s is None:
+            return ""
+        cls = "win" if is_w else ""
+        return f'<span class="score-pill {cls}">{_html.escape(str(s))}</span>'
+
+    def _row(pn, seed, sc, is_w):
+        p_name = pn or "TBD"
+        if p_name in ("TBD", "BYE"):
+            ph_style = (' style="color:#9b8bff;font-style:italic;opacity:.8;text-shadow:0 0 8px rgba(109,94,255,0.5)"'
+                        if p_name == "TBD" else ' style="color:#8A8FA8;font-style:italic;opacity:.75"')
+            return f'<div class="bracket-row"><span class="seed"></span><span class="player-name"{ph_style}>{_html.escape(p_name)}</span></div>'
+        row_cls = "bracket-row bracket-row-winner" if is_w else "bracket-row"
+        if is_w:
+            name_cls = "win"
+        elif winner and p_name != "BYE":
+            name_cls = "loss"
+        else:
+            name_cls = ""
+        seed_cls = "win" if is_w else ("loss" if winner else "")
+        seed_chip = f'<span class="seed {seed_cls}">{_html.escape(str(seed))}</span>' if (seed is not None and str(seed) != "") else '<span class="seed"></span>'
+        trophy = '<span class="win-trophy">🏆</span>' if is_w else ""
+        return f'<div class="{row_cls}">{seed_chip}<span class="player-name {name_cls}">{_html.escape(p_name)}{trophy}</span>{_score_badge(sc, is_w)}</div>'
+
+    row1 = _row(p1_n, p1_seed, s1, p1_w)
+    row2 = _row(p2_n, p2_seed, s2, p2_w)
+
+    sched_line = ''
+    if m.get('console_id') or m.get('scheduled_at'):
+        parts = []
+        if m.get('console_id'):
+            parts.append(f'🎮 {_html.escape(str(m["console_id"]))}')
+        if m.get('scheduled_at'):
+            parts.append(f'🕐 {_html.escape(_fmt_sched(m["scheduled_at"]))}')
+        sched_line = f'<div class="sched-line">{" · ".join(parts)}</div>'
+
+    ring = ''
+    if status == "live":
+        ring = '<span class="live-dot"></span>'
+        card_cls = "bracket-card card-live-gold" if is_final_col else "bracket-card card-live"
+    else:
+        card_cls = "bracket-card"
+
+    return f'<div class="{card_cls}">{ring}{row1}{row2}{sched_line}</div>'
+
+
 def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLResponse:
     """Render a PREMIUM styled HTML bracket page (Tailwind CDN) with FULL bracket structure.
 
@@ -3060,8 +3130,34 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     champion = _get_champion(tid)
     prizes = _get_prizes(tid)
 
-    if t.get("format") in ("double", "hybrid"):
+    fmt = (t.get("format") or "single").lower()
+    if fmt == "double":
         return _render_double_elim_html(t, rounds, player_count, champion, prizes)
+
+    fmt_badge = {
+        "hybrid": "Top 4 Double Elimination",
+        "double": "Double Elimination",
+    }.get(fmt, "Single Elimination")
+
+    is_hybrid = (fmt == "hybrid")
+
+    # Hybrid: split the mixed `rounds` dict into a winners tree + Top-4 tail
+    # (losers R1/R2 + grand final). The winners side renders exactly like the
+    # single-elimination tree; the tail renders below in the same neon style.
+    losers_rounds = {}
+    final_matches = []
+    if is_hybrid:
+        winners_rounds = {}
+        for rnum, ms in rounds.items():
+            for m in ms:
+                b = m.get("bracket") or "winners"
+                if b == "final":
+                    final_matches.append(m)
+                elif b == "losers":
+                    losers_rounds.setdefault(int(rnum), []).append(m)
+                else:
+                    winners_rounds.setdefault(int(rnum), []).append(m)
+        rounds = winners_rounds
 
     # Total rounds = log2(next power of 2 >= player_count): 64→6, 32→5, 5→3, 4→2
     total_rounds = max(1, (player_count - 1).bit_length())
@@ -3200,6 +3296,48 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     <div class="text-5xl mb-3">⏳</div>
     <p class="text-gray-300 font-semibold text-lg">Bracket မစရသေးပါ</p>
     <p class="text-gray-500 text-xs mt-2">Tournament စတင်ပြီးမှ bracket ပေါ်ပါမယ် — မကြာမီ ပြန်ကြည့်ပါဦး 🙏</p>
+  </div>'''
+
+    # ── Hybrid Top-4 tail: losers bracket + grand final in the same tree style ──
+    tail_html = ""
+    if is_hybrid:
+        tail_matches = []  # list of (label, match, is_gf)
+        for rnum in sorted(losers_rounds.keys()):
+            for m in sorted(losers_rounds[rnum], key=lambda x: int(x.get("position") or 0)):
+                tail_matches.append((f"Losers R{rnum}", m, False))
+        for m in final_matches:
+            tail_matches.append(("Grand Final", m, True))
+
+        n_tail = len(tail_matches)
+        tail_cells = []
+        tail_cols = []
+        for i, (label, m, is_gf) in enumerate(tail_matches, start=1):
+            conns = ""
+            if i < n_tail:
+                conns += '<div class="conn conn-r"></div>'
+            if i > 1:
+                conns += '<div class="conn conn-l"></div>'
+            card = _match_card_html(m, rnum=None, is_final_col=is_gf, status=status)
+            final_cls = " final-col" if is_gf else ""
+            tail_cells.append(
+                f'<div class="match-cell{final_cls}" data-bracket="tail" data-pos="{i}" style="grid-column:{i};grid-row:1 / span 2">{conns}{card}</div>'
+            )
+            tail_cols.append(
+                f'<div class="col-head" style="grid-column:{i}"><div class="round-pill">{_html.escape(label)}</div></div>'
+            )
+
+        tail_html = f'''
+  <div class="mt-8 pt-6 border-t border-[#262742] fade-in">
+    <h2 class="text-center text-sm font-bold tracking-widest uppercase text-[#9b8bff] mb-1">🔄 Top 4 — Double Elimination</h2>
+    <p class="text-center text-[11px] text-[#8A8FA8] mb-3">Semi-final losers drop to the losers bracket · winners meet in the grand final</p>
+    <div class="bracket-scroll overflow-x-auto pb-2 pt-1">
+      <div class="bracket-heads" style="grid-template-columns:repeat({n_tail}, minmax(12rem, 1fr));">
+        {"".join(tail_cols)}
+      </div>
+      <div class="bracket-grid" style="grid-template-columns:repeat({n_tail}, minmax(12rem, 1fr));grid-template-rows:repeat(2, 1fr);">
+        {"".join(tail_cells)}
+      </div>
+    </div>
   </div>'''
 
     # ── LIVE badge ──
@@ -3430,7 +3568,7 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     <div class="flex items-center justify-center flex-wrap gap-2 mt-2 text-xs text-gray-300">
       <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">🎮 {tn_game}</span>
       <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">👥 {player_count} players</span>
-      <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">🏆 Single Elimination</span>
+      <span class="px-2 py-0.5 rounded-full bg-white/5 border border-white/10">🏆 {fmt_badge}</span>
       {live_badge}
     </div>
   </div>
@@ -3438,6 +3576,7 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
   {info_panels}
   <div id="bracketContainer">
   {bracket_body}
+  {tail_html}
   </div>
   <div class="text-center mt-8 space-y-1">
     <p class="text-gray-600 text-xs">PS VIBE Gaming Lounge &middot; Yangon</p>
