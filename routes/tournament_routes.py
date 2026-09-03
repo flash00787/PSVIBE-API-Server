@@ -3141,13 +3141,21 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
 
     is_hybrid = (fmt == "hybrid")
 
-    # Hybrid: split the mixed `rounds` dict into a winners tree + Top-4 tail
-    # (losers R1/R2 + grand final). The winners side renders exactly like the
-    # single-elimination tree; the tail renders below in the same neon style.
+    # Total rounds = log2(next power of 2 >= player_count): 64→6, 32→5, 5→3, 4→2
+    total_rounds = max(1, (player_count - 1).bit_length())
+
+    # Hybrid: split the mixed `rounds` dict into a winners tree (rounds
+    # 1..total_rounds-1) + a Top-4 double-elimination tail (WB final + losers
+    # R1/R2 + grand final). The champion is decided by the Grand Final in the
+    # tail, so the winners tree ends at the Semi-Final — the winners-bracket
+    # final (round=total_rounds) is NOT rendered as a standalone "Final" column;
+    # that card moves into the tail as "WB Final".
     losers_rounds = {}
     final_matches = []
+    wb_final_matches = []
     if is_hybrid:
         winners_rounds = {}
+        has_tail = any(m.get("bracket") == "final" for ms in rounds.values() for m in ms)
         for rnum, ms in rounds.items():
             for m in ms:
                 b = m.get("bracket") or "winners"
@@ -3155,12 +3163,16 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
                     final_matches.append(m)
                 elif b == "losers":
                     losers_rounds.setdefault(int(rnum), []).append(m)
+                elif has_tail and int(rnum) == total_rounds:
+                    wb_final_matches.append(m)
                 else:
                     winners_rounds.setdefault(int(rnum), []).append(m)
         rounds = winners_rounds
 
-    # Total rounds = log2(next power of 2 >= player_count): 64→6, 32→5, 5→3, 4→2
-    total_rounds = max(1, (player_count - 1).bit_length())
+    # Number of columns in the main winners tree. Single-elim (and hybrid with
+    # no Top-4 tail, N<4) renders the full tree; hybrid with a tail ends at the
+    # Semi-Final (the WB final card lives in the tail).
+    tree_cols = (total_rounds - 1) if (is_hybrid and final_matches) else total_rounds
 
     # Round → label (premium headers)
     def round_label(rnum: int) -> str:
@@ -3173,8 +3185,8 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
         return f"Round {rnum}"
 
     # Current/active round = earliest round with an undecided match; else the last.
-    active_rn = total_rounds
-    for rnum in range(1, total_rounds + 1):
+    active_rn = tree_cols
+    for rnum in range(1, tree_cols + 1):
         ms = rounds.get(rnum) or []
         if any((m.get("winner") is None) for m in ms):
             active_rn = rnum
@@ -3197,13 +3209,14 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
 
         cells_by_round = []
         headers = []
-        for rnum in range(1, total_rounds + 1):
+        for rnum in range(1, tree_cols + 1):
             pill_cls = "round-pill active" if rnum == active_rn else "round-pill"
             dot = '<span class="dot"></span>' if rnum == active_rn else ""
             headers.append(f'<div class="col-head" style="grid-column:{rnum}"><div class="{pill_cls}">{dot}{round_label(rnum)}</div></div>')
-        for rnum in range(1, total_rounds + 1):
+        for rnum in range(1, tree_cols + 1):
             matches = rounds.get(rnum) or []
             is_final_col = (rnum == total_rounds)
+            is_tree_end = (rnum == tree_cols)
             slot_count = 2 ** (total_rounds - rnum)
             span = 2 ** rnum
             by_pos = {int(m.get("position") or 0): m for m in matches}
@@ -3216,7 +3229,7 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
                 m = by_pos.get(pos)
                 # per-cell connector divs (plain HTML + CSS, NO SVG / NO filters)
                 conns = ''
-                if not is_final_col:
+                if not is_tree_end:
                     conns += '<div class="conn conn-r"></div>'
                 if rnum > 1:
                     conns += '<div class="conn conn-v"></div><div class="conn conn-l"></div>'
@@ -3284,10 +3297,10 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
             cells_by_round.append("".join(cells))
 
         bracket_body = f'''<div class="bracket-scroll overflow-x-auto pb-4 pt-1 pr-4" id="bracketScroll">
-    <div class="bracket-heads" style="grid-template-columns:repeat({total_rounds}, minmax(12rem, 1fr));">
+    <div class="bracket-heads" style="grid-template-columns:repeat({tree_cols}, minmax(12rem, 1fr));">
       {"".join(headers)}
     </div>
-    <div class="bracket-grid" id="bracketGrid" data-total-rounds="{total_rounds}" style="grid-template-columns:repeat({total_rounds}, minmax(12rem, 1fr));grid-template-rows:repeat({T}, 1fr);">
+    <div class="bracket-grid" id="bracketGrid" data-total-rounds="{total_rounds}" style="grid-template-columns:repeat({tree_cols}, minmax(12rem, 1fr));grid-template-rows:repeat({T}, 1fr);">
       {"".join(cells_by_round)}
     </div>
   </div>'''
@@ -3298,43 +3311,57 @@ def _render_bracket_html(t: dict, rounds: dict, player_count: int) -> HTMLRespon
     <p class="text-gray-500 text-xs mt-2">Tournament စတင်ပြီးမှ bracket ပေါ်ပါမယ် — မကြာမီ ပြန်ကြည့်ပါဦး 🙏</p>
   </div>'''
 
-    # ── Hybrid Top-4 tail: losers bracket + grand final in the same tree style ──
+    # ── Hybrid Top-4 tail: WB final + losers bracket + grand final (2 lanes × 3 cols) ──
+    #   lane 1 (winners):         WB Final  →  Grand Final   (semi-final winners)
+    #   lane 2 (losers):   Losers R1 → Losers R2  →  Grand Final   (semi-final losers)
     tail_html = ""
     if is_hybrid:
-        tail_matches = []  # list of (label, match, is_gf)
+        def _pill(label):
+            return f'<div class="round-pill">{_html.escape(label)}</div>'
+
+        loser_matches = []
+        loser_labels = []
         for rnum in sorted(losers_rounds.keys()):
             for m in sorted(losers_rounds[rnum], key=lambda x: int(x.get("position") or 0)):
-                tail_matches.append((f"Losers R{rnum}", m, False))
-        for m in final_matches:
-            tail_matches.append(("Grand Final", m, True))
+                loser_matches.append(m)
+                loser_labels.append(f"Losers R{rnum}")
+        lb_r1_m = loser_matches[0] if loser_matches else None
+        lb_r2_m = loser_matches[1] if len(loser_matches) > 1 else None
+        lb_r1_label = loser_labels[0] if loser_labels else "Losers R1"
+        lb_r2_label = loser_labels[1] if len(loser_labels) > 1 else "Losers R2"
+        wb_m = wb_final_matches[0] if wb_final_matches else None
+        gf_m = final_matches[0] if final_matches else None
 
-        n_tail = len(tail_matches)
-        tail_cells = []
-        tail_cols = []
-        for i, (label, m, is_gf) in enumerate(tail_matches, start=1):
-            conns = ""
-            if i < n_tail:
-                conns += '<div class="conn conn-r"></div>'
-            if i > 1:
-                conns += '<div class="conn conn-l"></div>'
-            card = _match_card_html(m, rnum=None, is_final_col=is_gf, status=status)
+        def _tail_card(m, col, row, is_gf=False, conns=""):
+            if m is None:
+                inner = '<div class="bracket-card dashed-card"><div class="py-1.5 text-center tbd"><span class="shimmer-dot inline-block w-1.5 h-1.5 rounded-full mr-1 animate-pulse"></span>TBD</div></div>'
+            else:
+                inner = _match_card_html(m, rnum=None, is_final_col=is_gf, status=status)
             final_cls = " final-col" if is_gf else ""
-            tail_cells.append(
-                f'<div class="match-cell{final_cls}" data-bracket="tail" data-pos="{i}" style="grid-column:{i};grid-row:1 / span 2">{conns}{card}</div>'
-            )
-            tail_cols.append(
-                f'<div class="col-head" style="grid-column:{i}"><div class="round-pill">{_html.escape(label)}</div></div>'
-            )
+            return f'<div class="match-cell{final_cls}" data-bracket="tail" style="grid-column:{col};grid-row:{row}">{conns}{inner}</div>'
+
+        tail_cells = [
+            _tail_card(lb_r1_m, 1, 2, conns='<div class="conn conn-r"></div>'),
+            _tail_card(lb_r2_m, 2, 2, conns='<div class="conn conn-r"></div>'),
+            _tail_card(wb_m, 2, 1, conns='<div class="conn conn-r"></div>'),
+            _tail_card(gf_m, 3, "1 / span 2", is_gf=True),
+        ]
+        tail_cols = [
+            f'<div class="col-head" style="grid-column:1;grid-row:2">{_pill(lb_r1_label)}</div>',
+            f'<div class="col-head" style="grid-column:2;grid-row:1">{_pill("WB Final")}</div>',
+            f'<div class="col-head" style="grid-column:2;grid-row:2">{_pill(lb_r2_label)}</div>',
+            f'<div class="col-head" style="grid-column:3;grid-row:1 / span 2">{_pill("Grand Final")}</div>',
+        ]
 
         tail_html = f'''
   <div class="mt-8 pt-6 border-t border-[#262742] fade-in">
     <h2 class="text-center text-sm font-bold tracking-widest uppercase text-[#9b8bff] mb-1">🔄 Top 4 — Double Elimination</h2>
-    <p class="text-center text-[11px] text-[#8A8FA8] mb-3">Semi-final losers drop to the losers bracket · winners meet in the grand final</p>
+    <p class="text-center text-[11px] text-[#8A8FA8] mb-3">Semi-final winners meet in the WB Final · losers drop to the losers bracket · Grand Final decides the champion</p>
     <div class="bracket-scroll overflow-x-auto pb-2 pt-1">
-      <div class="bracket-heads" style="grid-template-columns:repeat({n_tail}, minmax(12rem, 1fr));">
+      <div class="bracket-heads" style="grid-template-columns:repeat(3, minmax(12rem, 1fr));grid-template-rows:repeat(2, auto);">
         {"".join(tail_cols)}
       </div>
-      <div class="bracket-grid" style="grid-template-columns:repeat({n_tail}, minmax(12rem, 1fr));grid-template-rows:repeat(2, 1fr);">
+      <div class="bracket-grid" style="grid-template-columns:repeat(3, minmax(12rem, 1fr));grid-template-rows:repeat(2, minmax(9rem, auto));">
         {"".join(tail_cells)}
       </div>
     </div>
