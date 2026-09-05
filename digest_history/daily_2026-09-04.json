@@ -1,0 +1,113 @@
+{
+  "timestamp": "2026-09-04T22:41:19.913597Z",
+  "date": "2026-09-04",
+  "summary": {
+    "total_sales": {
+      "count": 10,
+      "gross": 175350.0,
+      "net": 175300.0
+    },
+    "total_topups": {
+      "count": 0,
+      "amount": 0.0,
+      "mins_added": 0
+    },
+    "active_sessions": 0,
+    "completed_sessions": 8,
+    "food_sales": {
+      "count": 9,
+      "total": 30500.0
+    },
+    "new_members": 0,
+    "top_consoles": [
+      {
+        "console_id": "C-03",
+        "hours": 5.0
+      },
+      {
+        "console_id": "C-02",
+        "hours": 3.2
+      },
+      {
+        "console_id": "C-10",
+        "hours": 2.0
+      },
+      {
+        "console_id": "C-07",
+        "hours": 2.0
+      },
+      {
+        "console_id": "C-04",
+        "hours": 0.0
+      }
+    ],
+    "top_games": [
+      {
+        "game": "Any",
+        "sessions": 6
+      },
+      {
+        "game": "FC 26",
+        "sessions": 2
+      },
+      {
+        "game": "OVERCOOKED! All You Eat",
+        "sessions": 1
+      }
+    ],
+    "revenue_by_payment": [
+      {
+        "method": "Cash:35500",
+        "count": 1,
+        "total": 35500.0
+      },
+      {
+        "method": "Cash:26000",
+        "count": 1,
+        "total": 26000.0
+      },
+      {
+        "method": "Cash:23500",
+        "count": 1,
+        "total": 23500.0
+      },
+      {
+        "method": "KPay:20000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "Cash:20000",
+        "count": 1,
+        "total": 20000.0
+      },
+      {
+        "method": "Cash:18300",
+        "count": 1,
+        "total": 18300.0
+      },
+      {
+        "method": "KPay:16000",
+        "count": 1,
+        "total": 16000.0
+      },
+      {
+        "method": "Cash:10000",
+        "count": 1,
+        "total": 10000.0
+      },
+      {
+        "method": "KPay:3000",
+        "count": 1,
+        "total": 3000.0
+      },
+      {
+        "method": "KPay:1000|Cash:2000",
+        "count": 1,
+        "total": 3000.0
+      }
+    ]
+  },
+  "alerts": [],
+  "recommendations": []
+}

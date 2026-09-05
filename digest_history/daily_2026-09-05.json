@@ -1,0 +1,73 @@
+{
+  "timestamp": "2026-09-05T04:28:50.061986Z",
+  "date": "2026-09-05",
+  "summary": {
+    "total_sales": {
+      "count": 6,
+      "gross": 15000.0,
+      "net": 15000.0
+    },
+    "total_topups": {
+      "count": 0,
+      "amount": 0.0,
+      "mins_added": 0
+    },
+    "active_sessions": 2,
+    "completed_sessions": 0,
+    "food_sales": {
+      "count": 6,
+      "total": 15000.0
+    },
+    "new_members": 0,
+    "top_consoles": [
+      {
+        "console_id": "C-10",
+        "hours": 2.0
+      },
+      {
+        "console_id": "C-09",
+        "hours": 1.0
+      }
+    ],
+    "top_games": [
+      {
+        "game": "FC 26",
+        "sessions": 10
+      },
+      {
+        "game": "It Takes Two",
+        "sessions": 1
+      },
+      {
+        "game": "Any",
+        "sessions": 1
+      }
+    ],
+    "revenue_by_payment": [
+      {
+        "method": "KPay:6000",
+        "count": 1,
+        "total": 6000.0
+      },
+      {
+        "method": "Cash:4000",
+        "count": 1,
+        "total": 4000.0
+      },
+      {
+        "method": "Cash:1000",
+        "count": 3,
+        "total": 3000.0
+      },
+      {
+        "method": "Cash:2000",
+        "count": 1,
+        "total": 2000.0
+      }
+    ]
+  },
+  "alerts": [
+    "🔴 2 active session(s) still running — check if any are stuck."
+  ],
+  "recommendations": []
+}
