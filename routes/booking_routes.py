@@ -1099,8 +1099,11 @@ async def api_bookings_broadcast_targets(auth=Depends(verify_api_key)):
 
 # ── GET /api/bookings/{booking_id} ──
 @router.get("/bookings/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="Get single booking by ID [MySQL]")
-async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
-    """Fetch a single booking's full details."""
+async def api_get_booking(booking_id: int, request: Request, auth=Depends(verify_api_key)):
+    """Fetch a single booking's full details.
+
+    ``deposit_ref`` (the payment proof) is only returned to trusted staff/service
+    callers (see ``staff_audit.can_view_payment_ref``)."""
     try:
         row = _mysql_query_one(
             "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, "
@@ -1108,7 +1111,8 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
             "COALESCE(cs.actual_end, cb.planned_end) AS end_time, "
             "cb.status, cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, "
             "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, "
-            "cb.phone, cb.game_name, cb.deposit_status, cb.deposit_amount "
+            "cb.phone, cb.game_name, cb.deposit_status, cb.deposit_amount, "
+            "cb.deposit_method, cb.deposit_ref, cb.deposit_ref_type "
             "FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE cb.id=%s",
             (booking_id,))
         if not row:
@@ -1136,6 +1140,7 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
         _customer_name = row.get("customer_name", "") or row.get("staff_name", "") or ""
         _phone = row.get("phone", "") or ""
         _member_id = row.get("member_id", "") or ""
+        _can_see_ref = staff_audit.can_view_payment_ref(request)
         # customerName priority: customer_name → member_id → staff_name → phone → 'Guest'
         if not _customer_name.strip():
             _customer_name = _member_id.strip() if _member_id and _member_id.strip() and _member_id.strip() != "Guest" else (_phone.strip() or "Guest")
@@ -1160,6 +1165,11 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
                 "depositStatus": row.get("deposit_status", ""),
                 "deposit_amount": row.get("deposit_amount", 0),
                 "deposit_status": row.get("deposit_status", ""),
+                "deposit_method": row.get("deposit_method", "") or "",
+                # Payment proof — staff/service only.
+                "deposit_ref": (row.get("deposit_ref") or "") if _can_see_ref else "",
+                "deposit_ref_type": (row.get("deposit_ref_type") or "") if _can_see_ref else "",
+                "can_view_proof": _can_see_ref,
             }
         })
     except HTTPException:
@@ -1171,16 +1181,21 @@ async def api_get_booking(booking_id: int, auth=Depends(verify_api_key)):
 #  GET /api/bookings - list bookings by status
 # ================================================================
 @router.get("/bookings", response_model=GenericResponse, tags=["Bookings"], summary="List bookings by status [MySQL]")
-async def api_get_bookings(status: str = "", member_id: str = Query(""), date: str = Query(""), auth=Depends(verify_api_key)):
-    """List bookings with optional status, member_id, and date filters."""
+async def api_get_bookings(request: Request, status: str = "", member_id: str = Query(""), date: str = Query(""), auth=Depends(verify_api_key)):
+    """List bookings with optional status, member_id, and date filters.
+
+    ``deposit_ref`` (payment proof) is only included for trusted staff/service callers.
+    """
     try:
+        _can_see_ref = staff_audit.can_view_payment_ref(request)
         sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, " \
               "DATE_FORMAT(COALESCE(cs.actual_start, cb.planned_start), '%%H:%%i') AS start_time, " \
               "DATE_FORMAT(COALESCE(cs.actual_end, cb.planned_end), '%%H:%%i') AS end_time, " \
               "cb.status, cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, " \
               "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, " \
               "cb.phone, cb.game_name, cb.created_at, cb.cancelled_at, " \
-              "cb.deposit_status, cb.deposit_method, cb.deposit_amount " \
+              "cb.deposit_status, cb.deposit_method, cb.deposit_amount, " \
+              "cb.deposit_ref, cb.deposit_ref_type " \
               "FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id = cb.id"
         where_clauses = []
         params = []
@@ -1320,6 +1335,10 @@ async def api_get_bookings(status: str = "", member_id: str = Query(""), date: s
                 "deposit_status": r.get("deposit_status","") or "",
                 "deposit_method": r.get("deposit_method","") or "",
                 "deposit_amount": int(r.get("deposit_amount",0) or 0),
+                "deposit_ref": (r.get("deposit_ref") or "") if _can_see_ref else "",
+                "depositRef": (r.get("deposit_ref") or "") if _can_see_ref else "",
+                "deposit_ref_type": (r.get("deposit_ref_type") or "") if _can_see_ref else "",
+                "can_view_proof": _can_see_ref,
                 "notes": r.get("notes","") or ""
             })
         return ok({"bookings": normalized})
@@ -1702,6 +1721,16 @@ async def api_booking_cancel(req: dict, request: Request, auth=Depends(verify_ap
         _pre_deposit_status = booking.get("deposit_status", "") or ""
         _pre_deposit_amount = int(booking.get("deposit_amount", 0) or 0)
         _pre_deposit_method = (booking.get("deposit_method", "") or "kpay").lower()
+
+        # Persist the cancel reason for the owner WITHOUT wiping existing booking notes:
+        # append "Cancel reason: <reason> (by <staff>)" so it stays visible on the dashboard.
+        _prev_notes = (booking.get("notes") or "").strip()
+        _cancel_note = ""
+        if _cancel_reason:
+            _cancel_note = f"Cancel reason: {_cancel_reason}"
+        if _cancel_staff:
+            _cancel_note = (_cancel_note + f" (by {_cancel_staff})") if _cancel_note else f"Cancelled by {_cancel_staff}"
+        _new_notes = ((_prev_notes + " | " + _cancel_note) if _prev_notes else _cancel_note) if _cancel_note else None
         
         # CI-2 & CI-3: Only cancel non-Active/non-Done bookings, with transaction
         _cancel_conn = _mc.connect(
@@ -1720,9 +1749,9 @@ async def api_booking_cancel(req: dict, request: Request, auth=Depends(verify_ap
             _cancel_cur.execute(
                 "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
                 "deposit_status=CASE WHEN deposit_status='verified' THEN 'forfeited' WHEN deposit_status='paid' THEN 'none' ELSE deposit_status END, "
-                "notes=COALESCE(NULLIF(%s, ''), notes), staff_name=COALESCE(NULLIF(%s, ''), staff_name) "
+                "notes=COALESCE(%s, notes), staff_name=COALESCE(NULLIF(%s, ''), staff_name) "
                 "WHERE id=%s AND status NOT IN ('Active','Done')",
-                (_cancel_reason, _cancel_staff, booking_id)
+                (_new_notes, _cancel_staff, booking_id)
             )
             affected = _cancel_cur.rowcount
             if affected == 0:

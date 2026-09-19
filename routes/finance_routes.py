@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, Query, Body
 
-from auth import get_current_user
+from auth import get_current_user, get_staff_or_dashboard_user
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
 
 # ── MMT time helpers ──
@@ -2061,7 +2061,7 @@ async def get_reconciliation(
 # ── Daily Stock Check ──
 
 @router.get("/dashboard/stock-check")
-async def dashboard_get_stock_check(date: str = None, user: dict = Depends(get_current_user)):
+async def dashboard_get_stock_check(date: str = None, user: dict = Depends(get_staff_or_dashboard_user)):
     """Get daily stock check — system qty vs actual count.
     If no date given, use today. Returns all inventory items with system qty
     and any previously saved actual counts for that date."""
@@ -2158,7 +2158,7 @@ async def dashboard_get_stock_check(date: str = None, user: dict = Depends(get_c
 
 
 @router.post("/dashboard/stock-check")
-async def dashboard_save_stock_check(req: dict, user: dict = Depends(get_current_user)):
+async def dashboard_save_stock_check(req: dict, user: dict = Depends(get_staff_or_dashboard_user)):
     """Save actual count for one or more items.
     Body: { date, items: [{ item_name, actual_qty, notes? }] }"""
     try:
@@ -2211,7 +2211,7 @@ async def dashboard_save_stock_check(req: dict, user: dict = Depends(get_current
 
 
 @router.get("/dashboard/stock-check/history")
-async def dashboard_stock_check_history(limit: int = 30, user: dict = Depends(get_current_user)):
+async def dashboard_stock_check_history(limit: int = 30, user: dict = Depends(get_staff_or_dashboard_user)):
     """Get list of past stock check dates with summary."""
     try:
         rows = _mysql_query(
@@ -2241,7 +2241,7 @@ async def dashboard_stock_check_history(limit: int = 30, user: dict = Depends(ge
 
 
 @router.post("/dashboard/stock-check/resolve")
-async def dashboard_stock_check_resolve(req: dict, user: dict = Depends(get_current_user)):
+async def dashboard_stock_check_resolve(req: dict, user: dict = Depends(get_staff_or_dashboard_user)):
     """Resolve stock check variances — adjust inventory to match actual counts.
     Creates stock_in (price 0) for surplus or stock_out (price 0) for shortage.
     Body: { date, items?: [{ item_name }] } — if items omitted, resolves ALL variances."""

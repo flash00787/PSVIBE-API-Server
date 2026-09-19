@@ -1,11 +1,19 @@
 """PS VIBE API — Admin, Sales & OPEX Routes."""
-from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, Request
 from fastapi.responses import JSONResponse
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
 from helpers import _mysql_get_setting, ok, error_response, _parse_pm_and_inject, insert_cash_movement_if_absent
 from deps import verify_api_key
 from auth import get_current_user, get_staff_or_dashboard_user
 from models import GenericResponse
+# Single money path (Staff App Wave 2): promo/coupon preview + deposit redeem commit.
+from sale_money import (
+    compute_totals as _compute_totals,
+    commit_deposit_redemption as _commit_deposit,
+    deposit_already_in_payment_method as _dep_in_pm,
+    get_verified_deposit as _get_verified_deposit,
+)
+import staff_audit
 import logging, json as _json, os
 from datetime import datetime, timezone, timedelta
 logger = logging.getLogger(__name__)
@@ -413,8 +421,17 @@ def _reverse_outstanding_forfeits(booking_id):
 
 
 @router.post("/sales/record", response_model=GenericResponse, tags=["Sales"], summary="Save sales record [MySQL]")
-async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
-    """Save a sales record to MySQL sales_daily table (replaces direct GSheets write)."""
+async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_key)):
+    """Save a sales record to MySQL sales_daily table (replaces direct GSheets write).
+
+    Money path (Staff App Wave 2):
+      * ``promo_id`` / ``coupon_code`` present -> discount + net are recomputed
+        server-side via :func:`sale_money.compute_totals` (same function as
+        ``/api/promotions/calc``), so the charged net matches the preview.
+      * a verified booking deposit is redeemed **exactly once** server-side and
+        deducted from the payable net unless the caller already folded it into
+        ``payment_method`` (the sale bot's ``(dep)`` marker).
+    """
     try:
         voucher_no = req.get("voucher_no", "")
         member_id = req.get("member_id", "")
@@ -449,41 +466,94 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
         if not voucher_no:
             return error_response(message="voucher_no required")
 
-        # ── Deposit Redemption: Deduct verified deposit from net ────────────────
+        # ── Audit identity: explicit staff field wins, else JWT identity ─────────
+        if not staff:
+            staff = staff_audit.identity_from_request(request, req)
+        # Stable per-sale ref for idempotent money side-effects (coupon/deposit).
+        sale_ref = client_ref or (voucher_no or None)
+
+        # ── Single money path: server recompute when a promo/coupon is attached ──
+        promo_id_in = str(req.get("promo_id") or "").strip()
+        coupon_in = str(req.get("coupon_code") or "").strip()
+        promo_breakdown = None
+        coupon_redeem = None
+        _calc = None
+        if promo_id_in or coupon_in:
+            try:
+                _calc = _compute_totals(dict(req))
+                discount = float(_calc["total_discount"])
+                net_total = float(_calc["net_total"])
+                if _calc.get("promo_title"):
+                    promotion_name = _calc["promo_title"]
+                if _calc.get("promo_id"):
+                    req["_promo_id"] = _calc["promo_id"]
+                promo_breakdown = _calc["breakdown"]
+            except Exception as _ce:
+                logger.warning("promo recompute failed voucher=%s: %s", voucher_no, _ce)
+
+            # Redeem the coupon in the SAME money path (idempotent on sale_ref) so the
+            # coupon balance actually charged matches the discount the client previewed.
+            if (coupon_in and _calc and _calc.get("coupon_valid")
+                    and _calc.get("coupon_minutes_used", 0) > 0):
+                try:
+                    from sale_money import redeem_coupon as _redeem_coupon
+                    coupon_redeem = _redeem_coupon(
+                        coupon_in, _calc["coupon_minutes_used"],
+                        sale_ref=sale_ref, staff_name=staff)
+                    logger.info("Coupon redeem in sale path: %s -> %s", coupon_in, coupon_redeem)
+                except Exception as _cpe:
+                    logger.warning("coupon redeem in sale path failed: %s", _cpe)
+
+            # Record promo usage for reporting (best-effort, additive).
+            if promo_id_in and _calc and _calc.get("promo_title"):
+                try:
+                    _mysql_exec(
+                        "INSERT INTO promotions_log (voucher_no, promo_id, promo_title, member_id, "
+                        "console_id, gross_total, discount_amt, net_total, staff_name, promo_date) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())",
+                        (voucher_no, promo_id_in, _calc["promo_title"], member_id,
+                         console_id, float(_calc["gross_total"]), float(_calc["total_discount"]),
+                         float(_calc["net_total"]), staff))
+                except Exception as _ple:
+                    logger.warning("promotions_log insert failed: %s", _ple)
+
+        # ── Deposit redemption (server-side, exactly once) ───────────────────────
         deposit_deducted = 0
+        deposit_info = None
         if booking_id:
             try:
-                dep_row = _mysql_query_one(
-                    "SELECT deposit_status, deposit_amount, deposit_method FROM console_bookings WHERE id=%s",
-                    (booking_id,)
-                )
-                if dep_row and dep_row.get("deposit_status") == "verified":
-                    deposit_deducted = int(dep_row["deposit_amount"] or 0)
-                    dep_method = dep_row.get("deposit_method", "kpay") or "kpay"
-                    if deposit_deducted > 0:
-                        # Deposit is part of the sale revenue — do NOT deduct from net
-                        # (fix 2026-07-31: net must reflect total collected incl. deposit)
-                        # Safety net: reverse any outstanding forfeit injects before redeeming
-                        _reverse_outstanding_forfeits(booking_id)
-                        # Mark deposit as redeemed
-                        _mysql_exec(
-                            "UPDATE console_bookings SET deposit_status='redeemed', deposit_redeemed_at=NOW() WHERE id=%s AND deposit_status='verified'",
-                            (booking_id,)
-                        )
-                        logger.info(
-                            "Deposit redeemed: BK#%s deposit=%s Ks part of sale revenue (food_amt=%s, game_amt=%s)",
-                            booking_id, deposit_deducted, food_total, game_amt
-                        )
-                        # Normalize payment string: ":X (dep)" (empty method) -> "{Label}:X (dep)"
-                        # so Balance Sheet / PNL parsers attribute the deposit to an account
-                        # (fix 2026-07-31: empty method dropped the deposit from income)
-                        import re as _re
-                        _dep_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(dep_method, "KPay")
-                        payment_method = _re.sub(
-                            r":\s*([\d.]+)\s*\(dep\)",
-                            f"{_dep_label}:\\1 (dep)",
-                            payment_method, count=1
-                        )
+                _client_handled_dep = _dep_in_pm(payment_method)
+                _dep = _get_verified_deposit(booking_id)
+                if _dep.get("status") == "verified" and _dep.get("amount", 0) > 0:
+                    # Safety net: reverse any outstanding forfeit injects before redeeming
+                    _reverse_outstanding_forfeits(booking_id)
+                    _commit = _commit_deposit(
+                        booking_id, sale_ref=sale_ref, voucher_no=voucher_no,
+                        staff_name=staff, source="sale")
+                    if _commit.get("redeemed"):
+                        deposit_deducted = int(_commit.get("amount") or 0)
+                        if not _client_handled_dep:
+                            # Staff App path: server is the source of truth -> deduct from net
+                            # (deposit was already recognised as income at verify time).
+                            net_total = max(0.0, float(net_total) - deposit_deducted)
+                            _dep_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(
+                                (_dep.get("method") or "kpay"), "KPay")
+                            _marker = f"{_dep_label}:{deposit_deducted} (dep)"
+                            payment_method = (payment_method + "|" + _marker) if payment_method else _marker
+                            logger.info(
+                                "Deposit redeemed server-side: BK#%s -%s Ks (sale_ref=%s, staff=%s, method=%s)",
+                                booking_id, deposit_deducted, sale_ref, staff, _dep.get("method"))
+                        else:
+                            logger.info(
+                                "Deposit redeem confirmed (client pre-deducted): BK#%s %s Ks",
+                                booking_id, deposit_deducted)
+                        deposit_info = {"booking_id": booking_id, "amount": deposit_deducted,
+                                        "method": _dep.get("method"), "already": False}
+                    else:
+                        deposit_info = {"booking_id": booking_id,
+                                        "amount": int(_commit.get("amount") or 0),
+                                        "already": True, "reason": _commit.get("reason")}
+                        logger.info("Deposit redeem no-op BK#%s: %s", booking_id, _commit.get("reason"))
             except Exception as dep_e:
                 logger.warning("Deposit redemption check failed for BK#%s: %s", booking_id, dep_e)
 
@@ -495,6 +565,8 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
             extra_notes.append(f"Coupon: {coupon_code}")
         if deposit_deducted:
             extra_notes.append(f"DepositRedeemed: {deposit_deducted}")
+        if sale_ref:
+            extra_notes.append(f"SaleRef: {sale_ref}")
         if mins:
             extra_notes.append(f"Mins: {mins}")
         if base_rate:
@@ -536,8 +608,21 @@ async def api_sales_record(req: dict, auth=Depends(verify_api_key)):
             )
             logger.info("Wallet deducted: %s mins for member %s (total_used +%s)", _wallet_deduct, member_id, _wallet_deduct)
 
-        logger.info("Sales record saved: voucher=%s member=%s console=%s net=%s deposit_deducted=%s", voucher_no, member_id, console_id, net_total, deposit_deducted)
-        return ok({"voucher_no": voucher_no, "success": True, "deposit_deducted": deposit_deducted})
+        logger.info("Sales record saved: voucher=%s member=%s console=%s net=%s deposit_deducted=%s staff=%s", voucher_no, member_id, console_id, net_total, deposit_deducted, staff)
+        return ok({
+            "voucher_no": voucher_no,
+            "success": True,
+            "net_total": net_total,            # payable after any deposit deduction
+            "payable_total": net_total,        # alias the Staff App can charge
+            "discount": discount,
+            "deposit_deducted": deposit_deducted,
+            "deposit": deposit_info,
+            "promotion_name": promotion_name or None,
+            "coupon_code": coupon_code or None,
+            "breakdown": promo_breakdown,
+            "coupon_redeem": coupon_redeem,
+            "sale_ref": sale_ref,
+        })
     except Exception as e:
         logger.error(f"api_sales_record: {e}")
         return error_response(str(e))

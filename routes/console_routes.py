@@ -1,5 +1,5 @@
 """PS VIBE API — Console & Settings Routes."""
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 import mysql.connector as _mc
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
@@ -7,6 +7,7 @@ from helpers import _mysql_get_setting, ok, error_response, insert_cash_movement
 from field_utils import normalize_list
 from deps import verify_api_key
 from models import GenericResponse
+import staff_audit
 from session_timer import schedule_session_timer, _active_timers
 from booking_reminder import add_booking_reminder
 import json
@@ -690,7 +691,7 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
 #  MUTATION — move active session to another console
 # ═══════════════════════════════════════
 @router.post("/sessions/move", response_model=GenericResponse, tags=["Sessions"], summary="Move a booking (Active/confirmed/checked_in) to another console [MySQL]")
-async def api_sessions_move(req: dict, auth=Depends(verify_api_key)):
+async def api_sessions_move(req: dict, request: Request, auth=Depends(verify_api_key)):
     """Move a booking to another console.
     
     Request: { "booking_id": int, "to_console_id": str }
@@ -706,6 +707,7 @@ async def api_sessions_move(req: dict, auth=Depends(verify_api_key)):
         if not booking_id or not to_console_id:
             return error_response(message="booking_id and to_console_id are required")
         
+        _actor = staff_audit.identity_from_request(request, req)
         _now = now_mmt()
         _conn = _mc.connect(host=os.environ.get("MYSQL_HOST","localhost"),user=os.environ.get("MYSQL_USER","root"),password=os.environ.get("MYSQL_PASSWORD","") or "PsVibe@User2024!",database=os.environ.get("MYSQL_DATABASE","psvibe"),port=int(os.environ.get("MYSQL_PORT","3306")),charset="utf8mb4")
         _conn.start_transaction()
@@ -713,7 +715,7 @@ async def api_sessions_move(req: dict, auth=Depends(verify_api_key)):
         try:
             # C1: Lock source booking row (Active, confirmed, or checked_in)
             _cur.execute(
-                "SELECT id, console_id, member_id, planned_start AS start_time, planned_duration_mins AS duration_mins, game_name, status FROM console_bookings WHERE id=%s AND status IN ('Active','confirmed','checked_in') FOR UPDATE",
+                "SELECT id, console_id, member_id, planned_start AS start_time, planned_end AS end_time, planned_duration_mins AS duration_mins, game_name, status FROM console_bookings WHERE id=%s AND status IN ('Active','confirmed','checked_in') FOR UPDATE",
                 (booking_id,)
             )
             _bk = _cur.fetchone()
@@ -778,7 +780,21 @@ async def api_sessions_move(req: dict, auth=Depends(verify_api_key)):
                     except Exception:
                         pass  # timer failure is non-critical
             else:
-                # Non-active (confirmed/checked_in): just update console_id — no console_status swap
+                # Non-active (confirmed/checked_in): update console_id — but first make sure the
+                # move never leaves two bookings overlapping on the target console.
+                if _bk.get("start_time") and _bk.get("end_time"):
+                    _cur.execute(
+                        "SELECT id FROM console_bookings WHERE console_id=%s AND id != %s "
+                        "AND (status IN ('confirmed','pending_check_in','checked_in','Active') "
+                        "OR (status='pending' AND (deposit_status='paid' OR (member_id IS NOT NULL AND member_id != '')))) "
+                        "AND NOT (planned_end <= %s OR planned_start >= %s) LIMIT 1 FOR UPDATE",
+                        (to_console_id, booking_id, _bk["start_time"], _bk["end_time"])
+                    )
+                    _conflict = _cur.fetchone()
+                    if _conflict:
+                        _conn.rollback()
+                        return error_response(
+                            message=f"Console {to_console_id} already has a booking (BK#{_conflict['id']}) overlapping this slot")
                 _cur.execute(
                     "UPDATE console_bookings SET console_id=%s WHERE id=%s",
                     (to_console_id, booking_id)
@@ -786,7 +802,7 @@ async def api_sessions_move(req: dict, auth=Depends(verify_api_key)):
             
             _conn.commit()
             
-            logger.info(f"Session moved: BK#{booking_id} {_from_cid} -> {to_console_id}")
+            logger.info(f"Session moved: BK#{booking_id} {_from_cid} -> {to_console_id} by {_actor or 'unknown'}")
             return ok({
                 "booking_id": booking_id,
                 "from_console": _from_cid,
@@ -808,7 +824,7 @@ async def api_sessions_move(req: dict, auth=Depends(verify_api_key)):
 
 
 @router.post("/sessions/swap", response_model=GenericResponse, tags=["Sessions"], summary="Swap two Active bookings between consoles")
-async def api_sessions_swap(req: dict, auth=Depends(verify_api_key)):
+async def api_sessions_swap(req: dict, request: Request, auth=Depends(verify_api_key)):
     """Swap two Active sessions between consoles.
     
     Request: { "booking_id_1": int, "booking_id_2": int }
@@ -901,7 +917,8 @@ async def api_sessions_swap(req: dict, auth=Depends(verify_api_key)):
             
             _conn.commit()
             
-            logger.info(f"Sessions swapped: BK#{_bid1} ({_cid1}→{_cid2}) ↔ BK#{_bid2} ({_cid2}→{_cid1})")
+            _actor2 = staff_audit.identity_from_request(request, req)
+            logger.info(f"Sessions swapped: BK#{_bid1} ({_cid1}→{_cid2}) ↔ BK#{_bid2} ({_cid2}→{_cid1}) by {_actor2 or 'unknown'}")
             return ok({
                 "swapped": True,
                 "booking_1": {"id": _bid1, "from_console": _cid1, "to_console": _cid2},

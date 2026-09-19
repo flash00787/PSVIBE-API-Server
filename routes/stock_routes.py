@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from auth import get_current_user, get_staff_or_dashboard_user
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
@@ -292,13 +292,21 @@ async def dashboard_update_stock_in(entry_id: int, req: dict, user: dict = Depen
 # ═══════════════════════════════════════
 
 @router.post("/dashboard/stock-out")
-async def dashboard_stock_out(req: dict, user: dict = Depends(get_current_user)):
-    """Record stock-out (deduction) for an inventory item."""
+async def dashboard_stock_out(req: dict, request: Request, user: dict = Depends(get_staff_or_dashboard_user)):
+    """Record stock-out (deduction) for an inventory item.
+
+    Staff-allowed (staff JWT or dashboard user). The acting staff name is recorded
+    on the stock_out row for the audit trail."""
     try:
         item_id = req.get("item_id")
         quantity = req.get("quantity", 0)
         unit_price = req.get("unit_price", 0)
         notes = req.get("notes", "")
+        try:
+            import staff_audit
+            _actor = staff_audit.identity_from_request(request, req)
+        except Exception:
+            _actor = ""
 
         if not item_id or quantity <= 0:
             return {"success": False, "error": "item_id and positive quantity are required"}
@@ -315,9 +323,9 @@ async def dashboard_stock_out(req: dict, user: dict = Depends(get_current_user))
         # Insert into stock_out
         total_amount = quantity * unit_price
         _mysql_execute(
-            """INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, notes)
-               VALUES (%s, %s, %s, %s, NOW(), %s)""",
-            (item["item_name"], quantity, unit_price, total_amount, notes)
+            """INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, notes, staff_name)
+               VALUES (%s, %s, %s, %s, NOW(), %s, %s)""",
+            (item["item_name"], quantity, unit_price, total_amount, notes, _actor or None)
         )
 
         # Update inventory quantity
@@ -425,9 +433,9 @@ async def dashboard_get_stock_out(
     search: str | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_staff_or_dashboard_user),
 ):
-    """List stock-out records."""
+    """List stock-out records (staff-allowed, read-only)."""
     try:
         where = ["1=1"]
         params = []

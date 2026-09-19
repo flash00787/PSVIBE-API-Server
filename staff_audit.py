@@ -50,3 +50,42 @@ def identity_from_request(
 def role_from_request(request=None) -> str:
     """Return the JWT role claim ('' when unknown / API-key auth)."""
     return str(_decode_bearer(request).get("role") or "").strip()
+
+
+_STAFF_ROLES = {"admin", "staff", "manager", "supervisor", "owner"}
+_BLOCKED_SCOPES = {"member", "customer", "public"}
+
+
+def can_view_payment_ref(request=None) -> bool:
+    """True when the caller is trusted staff/service and may see payment refs.
+
+    Allowed: service-to-service API key (bots), staff-webapp JWT
+    (``scope=staff-webapp``), or a dashboard JWT carrying a known staff role.
+    Denied: unknown/ordinary tokens and any customer/member scope — so a
+    deposit slip / payment reference never leaks to a non-staff caller.
+    """
+    if request is None:
+        return False
+    try:
+        from config import API_KEY
+        if API_KEY:
+            key = request.headers.get("X-API-Key") or ""
+            if key and key == API_KEY:
+                return True
+    except Exception:  # pragma: no cover - defensive
+        pass
+    data = _decode_bearer(request)
+    if not data:
+        return False
+    scope = str(data.get("scope") or "").strip().lower()
+    if scope == "staff-webapp":
+        return True
+    if scope in _BLOCKED_SCOPES:
+        return False
+    role = str(data.get("role") or "").strip().lower()
+    if role in _STAFF_ROLES:
+        return True
+    # Legacy dashboard JWT with no scope claim and no role -> treat as dashboard staff.
+    if data.get("sub") and not scope and not role:
+        return True
+    return False

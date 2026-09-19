@@ -6,6 +6,9 @@ from helpers import ok, error_response
 from models import GenericResponse
 import logging
 
+# Single source of truth for money maths — shared with POST /api/sales/record.
+from sale_money import compute_totals as _compute_totals
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Promotions"])
@@ -65,20 +68,29 @@ def _to_float(v, default=0.0):
 async def api_promotions_calc(req: dict, auth=Depends(verify_api_key)):
     """Server-side discount calculator — the source of truth for money maths.
 
-    The Staff App posts the cart and gets back the exact discount / net payable /
-    bonus minutes so the client never computes money itself. Pure function: reads
+    Delegates to :func:`sale_money.compute_totals`, the SAME function
+    ``POST /api/sales/record`` uses to commit, so the previewed discount / net is
+    exactly what gets charged (single source of truth). Pure function: reads
     promotions + coupon rows, performs NO writes. Mirrors the sale-bot promo engine
     (bot/handlers/discount.py).
 
     Body (all optional except an amount):
       game_amt, food_total, gross_total, is_member, wallet_mins,
       effective_cost_mins, base_rate, multiplier, promo_id, coupon_code,
-      manual_discount, food_items:[{name,qty,subtotal}], foc_item
+      manual_discount, food_items:[{name,qty,subtotal}], foc_item, coupon_minutes
     """
     try:
         if not isinstance(req, dict):
             return error_response(message="Invalid request body")
+        return ok(_compute_totals(req))
+    except Exception as e:
+        logger.error("POST /promotions/calc error: %s", e)
+        return error_response(message="Could not calculate discount. Please check the cart and retry.")
 
+
+def _api_promotions_calc_legacy(req: dict):
+    """Kept as documentation of the pre-Wave-2 inline maths (no longer called)."""
+    try:
         game_amt = _to_int(req.get("game_amt"))
         food_total = _to_int(req.get("food_total"))
         gross_total_in = _to_int(req.get("gross_total"))
