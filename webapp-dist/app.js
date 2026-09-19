@@ -185,6 +185,76 @@
     },
   };
 
+  // ── Reusable premium picker sheet (WAVE 5b) ─────────────
+  // Native (standalone) mode ONLY — call sites keep their original van-picker in
+  // Telegram mode, so the Mini App look never regresses. Markup/visual only:
+  // it renders whatever array it is given (same data flow / API calls).
+  const PSVPicker = {
+    props: {
+      show: Boolean,
+      title: { type: String, default: "Select" },
+      items: { type: Array, default: () => [] },   // [{value,label,sub,meta,avatar,icon,disabled}]
+      modelValue: { type: [String, Number], default: "" },
+      searchable: { type: Boolean, default: undefined },
+      confirmText: { type: String, default: "Done" },
+      emptyText: { type: String, default: "No matches" },
+    },
+    emits: ["update:show", "confirm", "cancel"],
+    template: `
+      <van-popup :show="show" position="bottom" round class="psv-pick" :style="{ maxHeight: '82vh' }"
+                 :close-on-click-overlay="true" @update:show="(v) => $emit('update:show', v)">
+        <div class="psv-pick__sheet">
+          <div class="psv-pick__head">
+            <div class="psv-pick__title">{{ title }}<span v-if="items.length" class="psv-pick__count">{{ items.length }}</span></div>
+            <div class="psv-pick__acts">
+              <button class="psv-pick__cancel" @click="close">Cancel</button>
+              <button class="psv-pick__done" :disabled="!hasSel" @click="confirm">{{ confirmText }}</button>
+            </div>
+          </div>
+          <div class="psv-pick__search" v-if="showSearch">
+            <input class="psv-pick__input" type="search" v-model="q" placeholder="Search…" autocomplete="off" />
+          </div>
+          <div class="psv-pick__list">
+            <div v-for="it in filtered" :key="it.value" class="psv-pick__row"
+                 :class="{ 'is-sel': it.value === sel, 'is-dim': it.disabled }" @click="choose(it)">
+              <span v-if="it.avatar" class="psv-pick__av">{{ it.avatar }}</span>
+              <span v-else class="psv-pick__ic">{{ it.icon || '•' }}</span>
+              <div class="psv-pick__main">
+                <div class="psv-pick__label">{{ it.label }}</div>
+                <div v-if="it.sub || it.meta" class="psv-pick__sub">
+                  <span v-if="it.sub">{{ it.sub }}</span>
+                  <span v-if="it.meta" class="psv-pick__meta">{{ it.meta }}</span>
+                </div>
+              </div>
+              <span v-if="it.value === sel" class="psv-pick__check">✓</span>
+              <van-icon v-else name="arrow" class="psv-pick__chev" />
+            </div>
+            <div v-if="!filtered.length" class="psv-pick__empty">
+              <div class="psv-pick__emptyico">🔍</div>{{ emptyText }}
+            </div>
+          </div>
+        </div>
+      </van-popup>
+    `,
+    setup(props, { emit }) {
+      const q = ref("");
+      const sel = ref(props.modelValue);
+      watch(() => props.modelValue, (v) => { sel.value = v; });
+      watch(() => props.show, (v) => { if (v) { q.value = ""; sel.value = props.modelValue; } });
+      const showSearch = computed(() => (props.searchable === undefined ? props.items.length > 8 : props.searchable));
+      const filtered = computed(() => {
+        const s = (q.value || "").trim().toLowerCase();
+        if (!s) return props.items;
+        return props.items.filter((it) => ((it.label || "") + " " + (it.sub || "") + " " + (it.value || "")).toLowerCase().includes(s));
+      });
+      const hasSel = computed(() => props.items.some((it) => it.value === sel.value && !it.disabled));
+      function choose(it) { if (!it || it.disabled) return; haptic("light"); sel.value = it.value; }
+      function confirm() { if (!hasSel.value) return; haptic("medium"); emit("confirm", sel.value); emit("update:show", false); }
+      function close() { emit("update:show", false); emit("cancel"); }
+      return { q, sel, showSearch, filtered, hasSel, choose, confirm, close };
+    },
+  };
+
   // ── VIEW: Home / Dashboard ──────────────────────────────
   const Home = {
     template: `
@@ -2429,7 +2499,9 @@
             <van-cell v-for="c in consoles" :key="c.console_id || c.id" :title="c.console_id || c.id" :label="'Status: ' + (c.status||'-')" @click="pickConsole(c)" />
           </div>
         </van-popup>
-        <van-popup v-model:show="memberPicker" position="bottom" round>
+        <PSVPicker v-if="nativeMode" v-model:show="memberPicker" title="Select Member"
+                   :items="memberPickItems" :model-value="form.member_id || ''" @confirm="pickMemberVal" />
+        <van-popup v-else v-model:show="memberPicker" position="bottom" round>
           <div style="max-height:70vh;display:flex;flex-direction:column">
             <van-search v-model="memberQuery" placeholder="Search name / phone / ID" />
             <div style="overflow:auto;padding:4px 0 16px">
@@ -2441,7 +2513,9 @@
         <van-popup v-model:show="depPicker" position="bottom" round>
           <van-picker :columns="depColumns" @confirm="pickDep" @cancel="depPicker=false" />
         </van-popup>
-        <van-popup v-model:show="gamePicker" position="bottom" round>
+        <PSVPicker v-if="nativeMode" v-model:show="gamePicker" title="Select Game"
+                   :items="gamePickItems" :model-value="form.game_name || ''" @confirm="pickGameVal" />
+        <van-popup v-else v-model:show="gamePicker" position="bottom" round>
           <van-picker :columns="gameColumns" title="Select Game" @confirm="pickGame" @cancel="gamePicker=false" />
         </van-popup>
         <van-popup v-model:show="timePicker" position="bottom" round>
@@ -2465,6 +2539,21 @@
       const depColumns = DEP_METHODS.map((p) => ({ text: p.toUpperCase(), value: p }));
       function fmtDepositMethod(m) { if (!m) return ""; const s = String(m); return s === "aya_pay" ? "AYA PAY" : s.toUpperCase(); }
       const gameColumns = computed(() => gamesList.value.map((g) => ({ text: g.game_title || g.title || g.name, value: g.game_title || g.title || g.name })));
+      // WAVE 5b — premium picker item lists (same members/games arrays; markup only).
+      const memberPickItems = computed(() => members.value.map((m) => ({
+        value: m.id || m.member_id,
+        label: m.name || m.id,
+        sub: "ID " + (m.id || "-") + (m.phone ? " · " + m.phone : ""),
+        meta: (m.wallet_balance != null || m.liability_mins != null) ? ("⏱ " + fKs(m.wallet_balance != null ? m.wallet_balance : (m.liability_mins != null ? m.liability_mins : 0)) + " min") : "",
+        avatar: String(m.name || m.id || "?").trim().slice(0, 2).toUpperCase(),
+      })));
+      const gamePickItems = computed(() => gamesList.value.map((g) => ({
+        value: g.game_title || g.title || g.name,
+        label: g.game_title || g.title || g.name,
+        sub: [g.genre, g.solo_multi].filter(Boolean).join(" · "),
+        meta: g.final_status || "",
+        icon: "🎮",
+      })));
       const TIME_HOURS = ["1","2","3","4","5","6","7","8","9","10","11","12"];
       const TIME_MINS = ["00","05","10","15","20","25","30","35","40","45","50","55"];
       const timeColumns = [
@@ -2483,6 +2572,13 @@
       }
       function openMember() { if (!members.value.length) loadMembers(); memberPicker.value = true; haptic("light"); }
       function pickMember(m) { form.member_id = m.id || m.member_id; if (!form.customer_name && m.name) form.customer_name = m.name; memberPicker.value = false; }
+      function pickMemberVal(val) {
+        const it = memberPickItems.value.find((x) => String(x.value) === String(val));
+        form.member_id = String(val == null ? "" : val);
+        if (!form.customer_name && it) form.customer_name = it.label;
+        memberPicker.value = false;
+      }
+      function pickGameVal(val) { form.game_name = String(val == null ? "" : val); gamePicker.value = false; }
       function clearMember() { form.member_id = ""; }
       async function loadConsoles() {
         try { const d = PSV.unwrap(await PSV.api("/api/fetch_console_status")); consoles.value = (d && d.consoles) || []; } catch (_e) {}
@@ -2520,7 +2616,7 @@
         } catch (e) { showToast("Error: " + e.message, "fail"); }
         finally { submitting.value = false; }
       }
-      return { form, consoles, consolePicker, depPicker, gamePicker, timePicker, memberPicker, members, memberQuery, filteredMembers, submitting, depColumns, gameColumns, timeColumns, fmt12h, fmtDepositMethod, openConsole, pickConsole, openMember, pickMember, clearMember, pickDep, openGame, pickGame, pickTime, submit };
+      return { form, consoles, consolePicker, depPicker, gamePicker, timePicker, memberPicker, members, memberQuery, filteredMembers, memberPickItems, gamePickItems, pickMemberVal, pickGameVal, nativeMode: NATIVE, submitting, depColumns, gameColumns, timeColumns, fmt12h, fmtDepositMethod, openConsole, pickConsole, openMember, pickMember, clearMember, pickDep, openGame, pickGame, pickTime, submit };
     },
   };
 
@@ -2591,6 +2687,10 @@
       { en: "Operating expenses (OPEX)", sub: "Owner only", icon: "💸", tag: "Owner only" },
       { en: "Account balance", sub: "Cash position (read-only)", icon: "🏦", path: "/balances" },
     ] },
+    { id: "accounts", emoji: "🏦", en: "Accounts", tone: "gold", items: [
+      { en: "Account Balances", sub: "ACM's Acc & KBZ Bank", icon: "🏦", path: "/account-balances", ownerOnly: true },
+      { en: "Transfer", sub: "Move money between accounts", icon: "🔄", path: "/transfer" },
+    ] },
     { id: "me", emoji: "🕒", en: "Me & staff", tone: "dim", items: [
       { en: "Attendance in / out", sub: "Shift check-in", icon: "🕐", path: "/attendance" },
       { en: "Salary advance", sub: "Owner-only request", icon: "💰", path: "/salary", tag: "Owner only" },
@@ -2625,6 +2725,7 @@
               </div>
               <span v-if="badge(it)" class="psv-menu-badge">{{ badge(it) > 99 ? '99+' : badge(it) }}</span>
               <span v-if="it.tag" class="psv-soon">{{ it.tag }}</span>
+              <span v-else-if="ownerBadge(it)" class="psv-soon">Owner only</span>
               <van-icon v-else name="arrow" />
             </div>
           </div>
@@ -2636,6 +2737,9 @@
     setup() {
       const staff = PSV.getStaff() || {};
       const initials = String(staff.name || "?").trim().slice(0, 2).toUpperCase();
+      // Admin/owner (role==='admin') sees owner-only rows without the lock badge.
+      const isAdmin = computed(() => String(staff.role || "").toLowerCase() === "admin");
+      function ownerBadge(it) { return !!(it && it.ownerOnly && !isAdmin.value); }
       // WAVE 3: live low-stock count drives the badge on the "Low-stock alerts" row.
       const lowStock = ref(0);
       async function loadBadges() {
@@ -2654,7 +2758,7 @@
         if (it.tag) { showToast("⏳ " + it.en + " — coming soon", "text"); return; }
       }
       function logout() { haptic("medium"); PSV.logout(); showToast("Signed out", "success"); }
-      return { groups: MENU_GROUPS, staff, initials, tap, logout, badge, lowStock };
+      return { groups: MENU_GROUPS, staff, initials, tap, logout, badge, lowStock, isAdmin, ownerBadge };
     },
   };
 
@@ -2724,10 +2828,14 @@
           </div>
         </van-dialog>
 
-        <van-popup v-model:show="startMemberPicker" position="bottom" round>
+        <PSVPicker v-if="nativeMode" v-model:show="startMemberPicker" title="Select Member"
+                   :items="startMemberPickItems" :model-value="startMemberSel" @confirm="pickStartMemberVal" />
+        <van-popup v-else v-model:show="startMemberPicker" position="bottom" round>
           <van-picker :columns="startMemberCols" title="Select Member" @confirm="pickStartMember" @cancel="startMemberPicker=false" />
         </van-popup>
-        <van-popup v-model:show="startGamePicker" position="bottom" round>
+        <PSVPicker v-if="nativeMode" v-model:show="startGamePicker" title="Select Game"
+                   :items="startGamePickItems" :model-value="startForm.game_name || ''" @confirm="pickStartGameVal" />
+        <van-popup v-else v-model:show="startGamePicker" position="bottom" round>
           <van-picker :columns="startGameCols" title="Select Game" @confirm="pickStartGame" @cancel="startGamePicker=false" />
         </van-popup>
 
@@ -2802,6 +2910,28 @@
       const startGamePicker = ref(false);
       const startMemberCols = ref([]);
       const startGameCols = ref([]);
+      // WAVE 5b: raw lists feeding the premium picker sheets (same fetch, markup only).
+      const startMembers = ref([]);
+      const startGames = ref([]);
+      const startMemberPickItems = computed(() => {
+        const guest = { value: "Guest", label: "Guest (Walk-in)", sub: "No membership", icon: "🚶" };
+        const arr = startMembers.value.map((m) => ({
+          value: m.id || m.name,
+          label: m.name || m.id,
+          sub: "ID " + (m.id || "-") + (m.phone ? " · " + m.phone : ""),
+          meta: (m.wallet_balance != null || m.liability_mins != null) ? ("⏱ " + fKs(m.wallet_balance != null ? m.wallet_balance : (m.liability_mins != null ? m.liability_mins : 0)) + " min") : "",
+          avatar: String(m.name || m.id || "?").trim().slice(0, 2).toUpperCase(),
+        }));
+        return [guest].concat(arr);
+      });
+      const startGamePickItems = computed(() => startGames.value.filter((g) => g.game_title).map((g) => ({
+        value: g.game_title,
+        label: g.game_title,
+        sub: [g.genre, g.solo_multi].filter(Boolean).join(" · "),
+        meta: g.final_status || "",
+        icon: "🎮",
+      })));
+      const startMemberSel = computed(() => (startForm.member_name === "Guest" ? "Guest" : (startForm.member_id || "")));
       // Bind candidates for the active console (today). `bookings` = every candidate
       // with its REAL status; `selId` = the staff-selected one.
       const startBind = reactive({ bookings: [], selId: null });
@@ -3069,6 +3199,7 @@
           try {
             const d = PSV.unwrap(await PSV.api("/api/fetch_members?limit=300"));
             const ms = (d && d.members) || [];
+            startMembers.value = ms;
             startMemberCols.value = [{ text: "Guest (Walk-in)", value: "Guest" }].concat(ms.map((m) => ({ text: (m.name || m.id) + (m.id && m.name && m.id !== m.name ? "  (" + m.id + ")" : ""), value: m.id || m.name })));
           } catch (e) { showToast("Member load failed", "fail"); }
         }
@@ -3077,6 +3208,7 @@
           try {
             const d = PSV.unwrap(await PSV.api("/api/fetch_games"));
             const gs = (d && d.games) || [];
+            startGames.value = gs;
             startGameCols.value = gs.filter((g) => g.game_title).map((g) => ({ text: g.game_title, value: g.game_title }));
           } catch (e) { /* optional */ }
         }
@@ -3114,6 +3246,22 @@
         const opt = selectedOptions && selectedOptions[0];
         if (!opt) return;
         startForm.game_name = String(opt.value || opt.text || "");
+        startGamePicker.value = false;
+      }
+
+      // WAVE 5b: premium picker handlers (same resulting form state; value in, no columns parsing).
+      function pickStartMemberVal(val) {
+        const v = String(val == null ? "" : val);
+        if (v === "Guest") { startForm.member_id = ""; startForm.member_name = "Guest"; }
+        else {
+          const it = startMemberPickItems.value.find((x) => String(x.value) === v);
+          startForm.member_id = v;
+          startForm.member_name = it ? it.label : v;
+        }
+        startMemberPicker.value = false;
+      }
+      function pickStartGameVal(val) {
+        startForm.game_name = String(val == null ? "" : val);
         startGamePicker.value = false;
       }
 
@@ -3186,7 +3334,7 @@
         } catch (e) { showToast("Start failed: " + e.message, "fail"); }
       }
 
-      return { list, loading, refreshing, dotClass, isActive, fmtTime, load, sheetShow, sheetActions, openActions, onAction, xsess, doMove, doSwap, startShow, startForm, startMemberPicker, startGamePicker, startMemberCols, startGameCols, startBind, endDlg, extendDlg, noop, submitStart, doEndSession, doExtend, loadStartOptions, pickStartMember, pickStartGame, selectBind, isCheckedIn, bindStatusLabel, startConfirmLabel, foodShow, foodConsole, foodNote, sessionFoodGroups, foodSel, sQty, sSetQty, foodSaving, saveSessionFood, openSessionFood, fKs };
+      return { list, loading, refreshing, dotClass, isActive, fmtTime, load, sheetShow, sheetActions, openActions, onAction, xsess, doMove, doSwap, startShow, startForm, startMemberPicker, startGamePicker, startMemberCols, startGameCols, startMemberPickItems, startGamePickItems, startMemberSel, pickStartMemberVal, pickStartGameVal, nativeMode: NATIVE, startBind, endDlg, extendDlg, noop, submitStart, doEndSession, doExtend, loadStartOptions, pickStartMember, pickStartGame, selectBind, isCheckedIn, bindStatusLabel, startConfirmLabel, foodShow, foodConsole, foodNote, sessionFoodGroups, foodSel, sQty, sSetQty, foodSaving, saveSessionFood, openSessionFood, fKs };
     },
   };
 
@@ -3337,8 +3485,12 @@
               </div>
               <van-field :model-value="form.payment_method" label="Payment" is-link readonly @click="payPicker=true" />
             </van-cell-group>
+            <div class="psv-stockin-total" v-if="validCount">
+              <span>Total cost · {{ validCount }} item{{ validCount === 1 ? '' : 's' }}</span>
+              <b class="psv-tabnum">{{ fKs(totalCost) }} Ks</b>
+            </div>
             <div style="padding:14px 16px">
-              <van-button type="primary" block :loading="submitting" @click="submit">Stock In ({{ rows.length }} item{{ rows.length === 1 ? '' : 's' }})</van-button>
+              <van-button type="primary" block :loading="submitting" :disabled="!validCount" @click="submit">Stock In ({{ validCount }} item{{ validCount === 1 ? '' : 's' }})</van-button>
             </div>
           </van-tab>
         </van-tabs>
@@ -3367,6 +3519,11 @@
         { text: "🆕 New Item…", value: "__new__" },
       ]);
       const rowItemPickerShow = computed(() => rowItemPicker.value !== null);
+      // WAVE 5 UI fixes: valid-line count (was rows.length, which counted empty rows),
+      // and a live total-cost line so staff can see the batch value before submitting.
+      function rowValid(r) { return !!((r.isNew ? (r.custom_name || "").trim() : r.item_name) && Number(r.quantity) > 0); }
+      const validCount = computed(() => rows.value.filter(rowValid).length);
+      const totalCost = computed(() => rows.value.reduce((s, r) => s + (rowValid(r) ? (Number(r.quantity) || 0) * (Number(r.unit_cost) || 0) : 0), 0));
       function addRow() { rows.value.push({ item_name: "", custom_name: "", quantity: 0, unit_cost: 0, isNew: false }); haptic("light"); }
       async function loadStock() {
         loading.value = true;
@@ -3382,7 +3539,15 @@
         const val = selectedOptions[0].value;
         const row = rows.value[ri]; if (!row) return;
         if (val === "__new__") { row.isNew = true; row.item_name = "🆕 New Item…"; }
-        else { row.isNew = false; row.item_name = val; }
+        else {
+          row.isNew = false; row.item_name = val;
+          // WAVE 5 UI fix: prefill unit cost from the item's last known price (only when blank).
+          if (!Number(row.unit_cost)) {
+            const hit = stock.value.find((s) => (s.item_name || "") === val);
+            const price = hit ? Number(hit.unit_price) : 0;
+            if (price > 0) row.unit_cost = price;
+          }
+        }
       }
       async function submit() {
         const items = [];
@@ -3401,7 +3566,7 @@
         } catch (e) { showToast("Error: " + e.message, "fail"); }
         finally { submitting.value = false; }
       }
-      return { tab, stock, loading, refreshing, payPicker, rowItemPicker, rowItemPickerShow, submitting, payColumns, itemColumns, rows, form, addRow, loadStock, pickPay, pickRowItem, submit, fKs };
+      return { tab, stock, loading, refreshing, payPicker, rowItemPicker, rowItemPickerShow, submitting, payColumns, itemColumns, rows, form, addRow, loadStock, pickPay, pickRowItem, submit, validCount, totalCost, fKs };
     },
   };
 
@@ -4069,14 +4234,364 @@
       const accounts = ref([]); const loading = ref(true); const err = ref("");
       async function load() {
         loading.value = true;
-        // Staff-accessible read-only endpoint. NOT /api/dashboard/finance/balances —
-        // that returns 401 for staff and PSV.api then force-logs-out the whole app.
-        try { const d = PSV.unwrap(await PSV.api("/api/finance/account-balances")); const arr = [].concat((d && d.operating) || [], (d && d.capital) || []); accounts.value = arr.map((x) => ({ key: x.name, label: x.name, type: x.type || x.notes || "", balance: Number(x.balance) || 0 })); err.value = ""; }
-        catch (e) { accounts.value = []; const m = String((e && e.message) || ""); err.value = (isOwnerBlock(e) || /401|unauthor|user not found/i.test(m)) ? "Account balances need a dashboard (owner/staff) login." : m; }
+        // Role-aware read-only balances: staff get the 4 shop accounts
+        // (Cash, WavePay, KPay, AYA Pay); admin/owner additionally see
+        // ACM's Acc + KBZ Bank, flagged owner_only in the response.
+        // (NOT /api/dashboard/finance/balances — that returns 401 for staff and
+        //  PSV.api then force-logs-out the whole app.)
+        try {
+          const d = PSV.unwrap(await PSV.api("/api/accounts/balances"));
+          let rows = (d && d.accounts) || [];
+          if (!rows.length) rows = [].concat((d && d.operating) || [], (d && d.capital) || []);
+          accounts.value = rows.map((r) => {
+            const label = r.label || r.name || r.account || "Account";
+            return { key: label, label: label + (r.owner_only ? " (owner)" : ""),
+                     type: r.owner_only ? "Owner-only" : (r.type || ""),
+                     balance: Number(r.balance) || 0 };
+          });
+          err.value = "";
+        } catch (e) {
+          // Fallback: legacy owner-only endpoint (admin / service key only).
+          try {
+            const d = PSV.unwrap(await PSV.api("/api/finance/account-balances"));
+            const arr = [].concat((d && d.operating) || [], (d && d.capital) || []);
+            accounts.value = arr.map((x) => ({ key: x.name, label: x.name, type: x.type || x.notes || "", balance: Number(x.balance) || 0 }));
+            err.value = "";
+          } catch (e2) {
+            accounts.value = [];
+            const m = String((e2 && e2.message) || (e && e.message) || "");
+            err.value = (isOwnerBlock(e2) || /401|unauthor|user not found/i.test(m)) ? "Account balances need a dashboard (owner/staff) login." : m;
+          }
+        }
         finally { loading.value = false; }
       }
       onMounted(load);
       return { accounts, loading, err, fKs };
+    },
+  };
+
+  // ══ WAVE 5 — payment-account helpers ═══════════════════════
+  const ACC_ICONS = { "Cash": "💰", "WavePay": "📱", "KPay": "💳", "AYA Pay": "💳", "ACM's Acc": "🏦", "KBZ Bank": "🏦" };
+  const accIcon = (name) => ACC_ICONS[String(name || "")] || "🏦";
+  function fmtWhen(iso) {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return String(iso);
+      return d.toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    } catch (_e) { return String(iso); }
+  }
+
+  // ── VIEW: Account Balances — owner-only, ACM's Acc + KBZ Bank (WAVE 5) ──
+  // Endpoint: GET /api/finance/account-balances  (403 for staff). Exactly two cards.
+  const AccountBalances = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page" style="min-height:72vh">
+        <PageHeader title="Account Balances" back="/more" />
+        <van-pull-refresh v-model="refreshing" @refresh="load">
+          <van-skeleton title :row="4" v-if="loading" style="margin:12px 16px" />
+          <template v-else>
+            <div v-if="blocked" class="psv-owner-card">
+              <div class="psv-owner-card__ico">🔒</div>
+              <div class="psv-owner-card__t">Owner-only</div>
+              <div class="psv-owner-card__s">Owner-only — ask the owner to view these account balances.</div>
+              <div class="psv-owner-card__m">ACM's Acc &amp; KBZ Bank are restricted to the owner / admin account.</div>
+            </div>
+            <van-empty v-else-if="err" image="error" :description="err" />
+            <template v-else>
+              <div class="psv-acc-grid">
+                <div v-for="a in accounts" :key="a.label" class="psv-acc-card">
+                  <div class="psv-acc-card__top">
+                    <span class="psv-acc-card__ico">{{ a.icon }}</span>
+                    <span class="psv-acc-card__label">{{ a.label }}</span>
+                    <span class="psv-acc-card__type">{{ a.type || 'Account' }}</span>
+                  </div>
+                  <div class="psv-acc-card__bal psv-tabnum">{{ fKs(a.balance) }} <span class="psv-acc-card__unit">Ks</span></div>
+                  <div class="psv-acc-card__meta">{{ a.last ? ('Updated ' + fmtWhen(a.last)) : 'Owner account' }}</div>
+                </div>
+              </div>
+              <div class="psv-readonly">🔒 Owner-only — restricted account balances</div>
+            </template>
+          </template>
+        </van-pull-refresh>
+      </div>
+    `,
+    setup() {
+      const accounts = ref([]); const loading = ref(true); const refreshing = ref(false);
+      const blocked = ref(false); const err = ref("");
+      async function load() {
+        loading.value = true; err.value = "";
+        try {
+          // Canonical owner-only endpoint. Falls back to the /api/accounts/balances alias.
+          let d = null;
+          try { d = PSV.unwrap(await PSV.api("/api/finance/account-balances")); }
+          catch (e1) {
+            if (isOwnerBlock(e1)) throw e1;
+            d = PSV.unwrap(await PSV.api("/api/accounts/balances"));
+          }
+          let rows = (d && d.accounts) || [];
+          if (!rows.length) rows = [].concat((d && d.operating) || [], (d && d.capital) || []);
+          // Contract: ONLY ACM's Acc + KBZ Bank — enforce even if the server ever widens.
+          rows = rows.filter((r) => /ACM|KBZ/i.test(String((r && (r.label || r.name || r.account)) || "")));
+          accounts.value = rows.map((r) => {
+            const label = r.label || r.name || r.account || "Account";
+            return { label: label, icon: accIcon(label), type: r.type || "", balance: Number(r.balance) || 0, last: r.last_movement || r.last_updated || null };
+          });
+          blocked.value = false;
+        } catch (e) {
+          accounts.value = [];
+          const m = String((e && e.message) || e || "");
+          if (isOwnerBlock(e) || /403|owner|admin|401|unauthor|not permitted|user not found/i.test(m)) blocked.value = true;
+          else err.value = m || "Could not load balances — pull to refresh";
+        } finally { loading.value = false; refreshing.value = false; }
+      }
+      onMounted(load);
+      return { accounts, loading, refreshing, blocked, err, load, fKs, fmtWhen };
+    },
+  };
+
+  // ── VIEW: Transfer — move money between payment accounts (WAVE 5) ──
+  // From/To are whatever /api/accounts/transferable returns (role-filtered server-side).
+  // The client NEVER hardcodes the role rules — it renders the returned list verbatim.
+  const TransferScreen = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Transfer" back="/more" />
+
+        <van-skeleton title :row="4" v-if="loading" style="margin:12px 16px" />
+
+        <template v-else-if="done">
+          <div class="psv-xfer-done">
+            <div class="psv-xfer-done__ico">✅</div>
+            <div class="psv-xfer-done__t">Transfer complete</div>
+            <div class="psv-xfer-done__ref">Ref {{ done.ref }}</div>
+            <div class="psv-card psv-rows psv-xfer-done__bal">
+              <div class="psv-row"><span>{{ done.from_account }}</span><b class="psv-tabnum">{{ fKs(done.from_balance) }} Ks</b></div>
+              <div class="psv-row"><span>{{ done.to_account }}</span><b class="psv-tabnum">{{ fKs(done.to_balance) }} Ks</b></div>
+            </div>
+            <div class="psv-note" style="text-align:center">{{ fKs(done.amount) }} Ks moved from {{ done.from_account }} to {{ done.to_account }}.</div>
+            <div class="psv-pad" style="padding-top:0">
+              <button class="psv-btn psv-btn--primary psv-btn--block" @click="transferAgain">Transfer again</button>
+              <button class="psv-btn psv-btn--ghost psv-btn--block" style="margin-top:10px" @click="goBack">Back to menu</button>
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="loadErr">
+          <div class="psv-pad">
+            <div class="psv-owner-card" style="margin:0">
+              <div class="psv-owner-card__ico">🔄</div>
+              <div class="psv-owner-card__t">Not available yet</div>
+              <div class="psv-owner-card__s">{{ loadErr }}</div>
+            </div>
+            <button class="psv-btn psv-btn--ghost psv-btn--block" style="margin-top:14px" @click="load">Retry</button>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="psv-pad">
+            <div v-if="errMsg" class="psv-err-banner">{{ errMsg }}</div>
+
+            <div class="psv-field-card">
+              <div class="psv-field-label">From account</div>
+              <div class="psv-xfer-acct">
+                <span class="psv-xfer-acct__ico">{{ iconOf(from) }}</span>
+                <span class="psv-xfer-acct__name">{{ from || 'Select account' }}</span>
+                <span class="psv-xfer-acct__bal psv-tabnum">{{ balOf(from) != null ? fKs(balOf(from)) + ' Ks' : '—' }}</span>
+              </div>
+              <div class="psv-xfer-actions">
+                <button class="psv-xfer-mini" @click="pick('from')">Change</button>
+                <button class="psv-xfer-swap" @click="swap" aria-label="Swap From and To">⇅ Swap</button>
+              </div>
+            </div>
+
+            <div class="psv-field-card">
+              <div class="psv-field-label">To account</div>
+              <div class="psv-xfer-acct">
+                <span class="psv-xfer-acct__ico">{{ iconOf(to) }}</span>
+                <span class="psv-xfer-acct__name">{{ to || 'Select account' }}</span>
+                <span class="psv-xfer-acct__bal psv-tabnum">{{ balOf(to) != null ? fKs(balOf(to)) + ' Ks' : '—' }}</span>
+              </div>
+              <div class="psv-xfer-actions">
+                <button class="psv-xfer-mini" @click="pick('to')">Change</button>
+              </div>
+            </div>
+
+            <div class="psv-field-card">
+              <div class="psv-field-label">Amount (Ks)</div>
+              <input class="psv-input psv-tabnum" type="tel" inputmode="numeric" v-model="amountStr" placeholder="0" />
+              <div class="psv-xfer-quick" v-if="quick.length">
+                <button v-for="q in quick" :key="q" class="psv-chip" @click="amountStr = String(q)">{{ fKs(q) }}</button>
+              </div>
+            </div>
+
+            <div class="psv-field-card">
+              <div class="psv-field-label">Note (optional)</div>
+              <input class="psv-input psv-input--text" type="text" v-model="note" placeholder="e.g. cash float top-up" />
+            </div>
+
+            <div class="psv-card psv-rows" v-if="from && to && amount > 0">
+              <div class="psv-section-title" style="margin:2px 2px 6px">After transfer</div>
+              <div class="psv-row"><span>{{ from }}</span><b class="psv-tabnum">{{ fKs(fromAfter) }} Ks</b></div>
+              <div class="psv-row"><span>{{ to }}</span><b class="psv-tabnum">{{ fKs(toAfter) }} Ks</b></div>
+            </div>
+
+            <button class="psv-btn psv-btn--primary psv-btn--block" :disabled="!canReview" @click="openConfirm">Review transfer</button>
+            <div class="psv-note">You can move money between: {{ allowedNames }}. Final balances are confirmed by the server.</div>
+          </div>
+        </template>
+
+        <van-popup v-model:show="pickShow" position="bottom" round>
+          <van-picker :columns="columns" :title="pickWhich === 'from' ? 'From account' : 'To account'" @confirm="onPick" @cancel="pickShow = false" />
+        </van-popup>
+
+        <van-popup v-model:show="confirmShow" position="bottom" round :close-on-click-overlay="!busy">
+          <div class="psv-sheet">
+            <div class="psv-sheet__handle"></div>
+            <div class="psv-sheet__body">
+              <div class="psv-sheet-title">Confirm transfer</div>
+              <div class="psv-xfer-confirm">
+                <div class="psv-xfer-flow">
+                  <span class="psv-xfer-flow__a">{{ from }}</span>
+                  <span class="psv-xfer-flow__arrow">→</span>
+                  <span class="psv-xfer-flow__b">{{ to }}</span>
+                </div>
+                <div class="psv-xfer-big psv-tabnum">{{ fKs(amount) }} <span>Ks</span></div>
+                <div class="psv-xfer-newbal">
+                  This moves <b>{{ fKs(amount) }} Ks</b> from <b>{{ from }}</b> to <b>{{ to }}</b>.
+                  <template v-if="note"><br>Note: {{ note }}</template>
+                  <br>New balances: <b>{{ from }}</b> {{ fKs(fromAfter) }} Ks · <b>{{ to }}</b> {{ fKs(toAfter) }} Ks
+                </div>
+              </div>
+              <div v-if="errMsg" class="psv-err-banner" style="margin-top:10px">{{ errMsg }}</div>
+              <button class="psv-btn psv-btn--primary psv-btn--block" :disabled="busy" @click="doTransfer">{{ busy ? 'Transferring…' : 'Confirm transfer' }}</button>
+              <button class="psv-btn psv-btn--ghost psv-btn--block" style="margin-top:10px" :disabled="busy" @click="confirmShow = false">Cancel</button>
+            </div>
+          </div>
+        </van-popup>
+      </div>
+    `,
+    setup() {
+      const loading = ref(true); const refreshing = ref(false);
+      const accounts = ref([]); const role = ref("staff");
+      const from = ref(""); const to = ref("");
+      const amountStr = ref(""); const note = ref("");
+      const pickShow = ref(false); const pickWhich = ref("from");
+      const confirmShow = ref(false); const busy = ref(false);
+      const errMsg = ref(""); const loadErr = ref(""); const done = ref(null);
+      // One idempotency key per attempt: a double-tap cannot double-post. A NEW key is
+      // minted on load, after success, and after any error (i.e. on every new attempt).
+      const clientRef = ref(PSV.genClientRef());
+
+      const amount = computed(() => { const n = Math.floor(Number(amountStr.value) || 0); return n > 0 ? n : 0; });
+      const balances = computed(() => { const m = {}; accounts.value.forEach((a) => { m[a.label] = Number(a.balance) || 0; }); return m; });
+      function balOf(name) { return (name && (name in balances.value)) ? balances.value[name] : null; }
+      function iconOf(name) { return accIcon(name); }
+      const fromAfter = computed(() => Math.max(0, (balOf(from.value) || 0) - amount.value));
+      const toAfter = computed(() => (balOf(to.value) || 0) + amount.value);
+      const columns = computed(() => accounts.value.map((a) => ({ text: a.label + (a.owner_only ? " (owner)" : ""), value: a.label })));
+      const quick = computed(() => {
+        const b = balOf(from.value) || 0;
+        return [5000, 10000, 20000, 50000, 100000, 200000].filter((x) => x <= b).slice(-4);
+      });
+      const allowedNames = computed(() => accounts.value.map((a) => a.label).join(", ") || "—");
+      // Review is allowed whenever the form is plausibly complete; the insufficient-balance
+      // check happens in openConfirm() so the user gets a clear message (not a dead button).
+      const canReview = computed(() => !!from.value && !!to.value && from.value !== to.value && amount.value > 0);
+
+      async function load() {
+        loading.value = true; loadErr.value = "";
+        try {
+          const raw = await PSV.api("/api/accounts/transferable");
+          const d = PSV.unwrap(raw) || {};
+          const list = Array.isArray(d) ? d : (d.accounts || []);
+          accounts.value = list.map((a) => {
+            const label = a.label || a.account || a.key || "Account";
+            return { label: label, balance: Number(a.balance) || 0, owner_only: !!(a.owner_only || a.ownerOnly || /ACM|KBZ/i.test(label)) };
+          });
+          role.value = d.role || ((PSV.getStaff() || {}).role) || "staff";
+          if (!from.value || !accounts.value.some((a) => a.label === from.value)) from.value = accounts.value[0] ? accounts.value[0].label : "";
+          if (!to.value || !accounts.value.some((a) => a.label === to.value) || to.value === from.value) {
+            const other = accounts.value.find((a) => a.label !== from.value);
+            to.value = other ? other.label : "";
+          }
+          errMsg.value = "";
+        } catch (e) {
+          const m = String((e && e.message) || e || "");
+          loadErr.value = /not found|404|not available|405/i.test(m) ? "This screen is not available yet — please try again shortly." : (m || "Could not load accounts");
+        } finally { loading.value = false; refreshing.value = false; }
+      }
+      onMounted(load);
+
+      function pick(which) { pickWhich.value = which; pickShow.value = true; haptic("light"); }
+      function onPick({ selectedOptions }) {
+        if (!selectedOptions || !selectedOptions[0]) { pickShow.value = false; return; }
+        const val = selectedOptions[0].value;
+        if (pickWhich.value === "from") {
+          if (val === to.value) to.value = from.value; // never allow from == to
+          from.value = val;
+        } else {
+          if (val === from.value) from.value = to.value;
+          to.value = val;
+        }
+        pickShow.value = false; errMsg.value = "";
+      }
+      function swap() { const t = from.value; from.value = to.value; to.value = t; errMsg.value = ""; haptic("light"); }
+
+      function openConfirm() {
+        errMsg.value = "";
+        if (from.value === to.value) { errMsg.value = "From and To must be different accounts."; return; }
+        if (amount.value <= 0) { errMsg.value = "Enter an amount greater than 0."; return; }
+        if (amount.value > (balOf(from.value) || 0)) { errMsg.value = "Insufficient balance in " + from.value + " — available " + fKs(balOf(from.value) || 0) + " Ks."; return; }
+        haptic("light"); confirmShow.value = true;
+      }
+
+      function friendlyTransferError(e) {
+        const m = String((e && e.message) || e || "Transfer failed");
+        if (/insufficient/i.test(m)) return m + " — reduce the amount or choose another account.";
+        if (/owner-only|not permitted|not allowed|403|owner only/i.test(m)) return "Not allowed — that account is owner-only for your role.";
+        if (/must be different|same account/i.test(m)) return "From and To must be different accounts.";
+        if (/duplicate|client_ref|409/i.test(m)) return "This transfer was already submitted — check history before retrying.";
+        if (/not found|404|not available|405/i.test(m)) return "Transfers are not available yet — please try again shortly.";
+        return m;
+      }
+
+      async function doTransfer() {
+        if (busy.value) return;
+        busy.value = true; errMsg.value = "";
+        const payload = {
+          from_account: from.value, to_account: to.value, amount: amount.value,
+          note: note.value || "", staff_name: (PSV.getStaff() || {}).name || "", client_ref: clientRef.value,
+        };
+        try {
+          const raw = await PSV.api("/api/accounts/transfer", { method: "POST", headers: HJSON, body: JSON.stringify(payload) });
+          const d = PSV.unwrap(raw) || {};
+          const bl = d.balances || {};
+          const fromBal = (bl[from.value] != null) ? bl[from.value] : (d.from_balance != null ? d.from_balance : fromAfter.value);
+          const toBal = (bl[to.value] != null) ? bl[to.value] : (d.to_balance != null ? d.to_balance : toAfter.value);
+          done.value = {
+            ref: d.ref || d.reference || "-", amount: Number(d.amount || amount.value),
+            from_account: d.from_account || from.value, to_account: d.to_account || to.value,
+            from_balance: Number(fromBal) || 0, to_balance: Number(toBal) || 0,
+          };
+          confirmShow.value = false;
+          try { PSV.invalidate("/api/accounts"); } catch (_e) {}
+        } catch (e) {
+          errMsg.value = friendlyTransferError(e);
+          clientRef.value = PSV.genClientRef(); // failed attempt done → fresh key next try
+        } finally { busy.value = false; }
+      }
+
+      function transferAgain() { done.value = null; amountStr.value = ""; note.value = ""; errMsg.value = ""; clientRef.value = PSV.genClientRef(); load(); haptic("light"); }
+      function goBack() { router.push("/more"); }
+
+      return {
+        loading, refreshing, accounts, role, from, to, amountStr, note, pickShow, pickWhich, confirmShow, busy,
+        errMsg, loadErr, done, amount, quick, columns, allowedNames, canReview, fromAfter, toAfter,
+        balOf, iconOf, pick, onPick, swap, openConfirm, doTransfer, transferAgain, goBack, load, fKs, fmtWhen,
+      };
     },
   };
 
@@ -4196,6 +4711,8 @@
     router.register("/stock-alerts", StockAlerts);
     router.register("/stock-check", StockCheck);
     router.register("/balances", Balances);
+    router.register("/account-balances", AccountBalances);
+    router.register("/transfer", TransferScreen);
     router.register("/gift-card", GiftCard);
     router.register("/rank-bonus", RankBonus);
   }
@@ -4834,6 +5351,7 @@
     const app = createApp(App);
     app.use(vant);
     app.component("PageHeader", PageHeader);
+    app.component("PSVPicker", PSVPicker);
     app.component("SaleForm", SaleForm);
     app.component("BookingForm", BookingForm);
     app.component("Home", Home);
@@ -4858,6 +5376,8 @@
     app.component("Promotions", Promotions);
     app.component("Salary", Salary);
     app.component("NotificationsScreen", NotificationsScreen);
+    app.component("AccountBalances", AccountBalances);
+    app.component("TransferScreen", TransferScreen);
 
     app.mount("#app");
     router.start();

@@ -394,11 +394,13 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                                 pass
                             break
 
-        cash_rows = _mq("SELECT movement_type, account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE created_at >= %s AND created_at < %s GROUP BY movement_type, account", (_start, _end))
+        cash_rows = _mq("SELECT movement_type, account, COALESCE(SUM(amount), 0) as total, COALESCE(SUM(ABS(amount)), 0) as abs_total FROM cash_movements WHERE created_at >= %s AND created_at < %s GROUP BY movement_type, account", (_start, _end))
         cash_map = {}
+        cash_abs_map = {}
         for row in cash_rows:
             key = f"{row['movement_type']}|{row['account']}"
             cash_map[key] = cash_map.get(key, 0) + float(row["total"] or 0)
+            cash_abs_map[key] = cash_abs_map.get(key, 0) + float(row["abs_total"] or 0)
         # Map account keys to DB account names for cash_movements lookup
         # Subtract inject entries that overlap with topup (notes start with Topup or New member)
         _bad_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
@@ -435,7 +437,10 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             income = income_by_account.get(key, 0)
             opex = opex_by_acct.get(key, 0)
             trans_in = sum(cash_map.get(f"transfer_in|{n}", 0) for n in _db_list)
-            trans_out = sum(cash_map.get(f"transfer_out|{n}", 0) for n in _db_list)
+            # "amount that left the account" == sum of magnitudes, so this is correct
+            # whether transfer_out rows are stored negative (canonical/legacy) or positive
+            # (old app bug). abs(SUM(amount)) was wrong for mixed-sign data.
+            trans_out = sum(cash_abs_map.get(f"transfer_out|{n}", 0) for n in _db_list)
             inject = sum(cash_map.get(f"inject|{n}", 0) for n in _db_list)
             eject = sum(cash_map.get(f"eject|{n}", 0) for n in _db_list)
             div = sum(cash_map.get(f"dividend|{n}", 0) for n in _db_list)
@@ -453,7 +458,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             # Note: stock_in purchases also create cash_movements eject entries,
             # so stock_in_payments may partially overlap with eject for non-split entries.
             # stock_in_payments tracked for info only; cash_movements eject entries already account for stock-in deductions
-            balance = income - opex + trans_in - abs(trans_out) + inject - eject - div
+            balance = income - opex + trans_in - trans_out + inject - eject - div
             # Capital expenditure adjustments (all from KBZ Bank)
             ded_assets = 0
             ded_advances = 0
@@ -466,7 +471,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                 ded_prepaid = float(_prepaid_total.get("total", 0) or 0)
                 add_proceeds = float(_disposal_proceeds.get("total", 0) or 0)
                 balance = balance - ded_assets - ded_advances - ded_prepaid + add_proceeds
-            result.append({"key": key, "label": acc["label"], "icon": acc["icon"], "type": acc["type"], "income": round(income, 0), "opex": round(opex, 0), "transfers_in": round(trans_in, 0), "transfers_out": round(abs(trans_out), 0), "injections": round(inject, 0), "ejections": round(eject, 0), "dividends": round(div, 0), "stock_in_payments": round(si_pay, 0), "capital_asset_purchases": round(ded_assets, 0), "capital_advances": round(ded_advances, 0), "capital_prepaid": round(ded_prepaid, 0), "capital_disposal_proceeds": round(add_proceeds, 0), "balance": round(balance, 0)})
+            result.append({"key": key, "label": acc["label"], "icon": acc["icon"], "type": acc["type"], "income": round(income, 0), "opex": round(opex, 0), "transfers_in": round(trans_in, 0), "transfers_out": round(trans_out, 0), "injections": round(inject, 0), "ejections": round(eject, 0), "dividends": round(div, 0), "stock_in_payments": round(si_pay, 0), "capital_asset_purchases": round(ded_assets, 0), "capital_advances": round(ded_advances, 0), "capital_prepaid": round(ded_prepaid, 0), "capital_disposal_proceeds": round(add_proceeds, 0), "balance": round(balance, 0)})
 
         # 🆕 Add back active deposits (paid/verified, not yet redeemed/forfeited)
         # Anti-double-count subtracts ALL "Deposit #" injects, but active deposits
@@ -762,7 +767,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             db_list = [db] + (["WavePay"] if db == "Wave" else [])
             _ph = ", ".join(["%s"] * len(db_list))
             t_in = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='transfer_in' AND created_at < %s", (*db_list, _end))["t"] or 0)
-            t_out = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='transfer_out' AND created_at < %s", (*db_list, _end))["t"] or 0)
+            # magnitude of money that LEFT each account (defensive to sign drift)
+            t_out = float(_mqo(f"SELECT COALESCE(SUM(ABS(amount)),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='transfer_out' AND created_at < %s", (*db_list, _end))["t"] or 0)
             inj = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
             ej = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='eject' AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
             dv = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='dividend' AND created_at < %s", (*db_list, _end))["t"] or 0)
@@ -777,8 +783,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             if _forfeit_redeemed > 0 and inj > 0:
                 inj -= min(inj, _forfeit_redeemed)
 
-            # t_out is stored as negative in DB, so + t_out works (= subtract)
-            bal = income - opex + t_in + t_out + inj - ej - dv
+            # t_out is now a magnitude (SUM(ABS)) — always subtract it from the account.
+            bal = income - opex + t_in - t_out + inj - ej - dv
 
             if key == "kbz_bank":
                 ded_assets = float(_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active' AND created_at < %s", (_end,))["t"] or 0)
@@ -1019,7 +1025,8 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                 db_list = [db] + (["WavePay"] if db == "Wave" else [])
                 ph = ", ".join(["%s"] * len(db_list))
                 t_in = float((_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='transfer_in' AND created_at < %s", (*db_list, cutoff)) or {}).get("t", 0) or 0)
-                t_out = float((_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='transfer_out' AND created_at < %s", (*db_list, cutoff)) or {}).get("t", 0) or 0)
+                # magnitude of money that LEFT each account (defensive to sign drift)
+                t_out = float((_mqo(f"SELECT COALESCE(SUM(ABS(amount)),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='transfer_out' AND created_at < %s", (*db_list, cutoff)) or {}).get("t", 0) or 0)
                 inj = float((_mqo(f"""SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='inject'
                         AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37))
                           AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)))) AND created_at < %s""", (*db_list, cutoff)) or {}).get("t", 0) or 0)
@@ -1032,7 +1039,7 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                           AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status='redeemed'""", (*db_list,)) or {}).get("t", 0) or 0)
                 if _fr > 0 and inj > 0:
                     inj -= min(inj, _fr)
-                bal = income[key] - opex[key] + t_in + t_out + inj - ej  # t_out stored negative
+                bal = income[key] - opex[key] + t_in - t_out + inj - ej  # t_out is a magnitude
                 if key == "kbz_bank":
                     ded_assets = float((_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active' AND created_at < %s", (cutoff,)) or {}).get("t", 0) or 0)
                     ded_prep = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid WHERE created_at < %s", (cutoff,)) or {}).get("t", 0) or 0)
@@ -1057,7 +1064,7 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
         t_out_m = sum(per_e[k]["t_out"] for k in acct_keys) - sum(per_s[k]["t_out"] for k in acct_keys)
         inj_m = sum(per_e[k]["inj"] for k in acct_keys) - sum(per_s[k]["inj"] for k in acct_keys)
         ej_m = sum(per_e[k]["ej"] for k in acct_keys) - sum(per_s[k]["ej"] for k in acct_keys)
-        transfers_m = t_in_m + t_out_m  # t_out stored negative
+        transfers_m = t_in_m - t_out_m  # t_out is a magnitude (SUM(ABS))
         ad_delta = ad_e - ad_s
 
         # Advance-settled injects are classified under Investing (recoveries), not Operating

@@ -595,3 +595,136 @@ html.psv-native .psv-rl__sub { color: var(--psv-text-dim); }
 /* WAVE 4 — active chip contrast on the dark premium canvas */
 html.psv-native .psv-chip--on { color: var(--psv-gold); background: rgba(240,180,41,.16); border-color: rgba(240,180,41,.5); }
 html.psv-native .psv-bk-hint { color: var(--psv-text-dim); }
+
+/* ══════════════════════════════════════════════════════════════
+ *  WAVE 5 — Accounts (owner-only balances + transfer), premium layer
+ *  Scoped to html.psv-native so the Telegram Mini App stays untouched.
+ * ══════════════════════════════════════════════════════════════ */
+html.psv-native .psv-acc-card { background: var(--psv-surface); border-color: var(--psv-border); border-radius: var(--psv-r-lg); box-shadow: var(--psv-shadow); position: relative; overflow: hidden; }
+html.psv-native .psv-acc-card::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(120% 120% at 0% 0%, rgba(240,180,41,.14), transparent 60%); }
+html.psv-native .psv-acc-card__ico { background: rgba(240,180,41,.14); box-shadow: inset 0 0 0 1px rgba(240,180,41,.2); }
+html.psv-native .psv-acc-card__label { color: var(--psv-text); }
+html.psv-native .psv-acc-card__type { color: var(--psv-text-dim); }
+html.psv-native .psv-acc-card__bal { color: var(--psv-gold); }
+html.psv-native .psv-acc-card__unit { color: var(--psv-text-dim); }
+html.psv-native .psv-acc-card__meta { color: var(--psv-text-dim); }
+
+html.psv-native .psv-input--text { color: var(--psv-text); }
+html.psv-native .psv-xfer-acct__ico { background: rgba(240,180,41,.14); box-shadow: inset 0 0 0 1px rgba(240,180,41,.2); }
+html.psv-native .psv-xfer-acct__name { color: var(--psv-text); }
+html.psv-native .psv-xfer-acct__bal { color: var(--psv-text-dim); }
+html.psv-native .psv-xfer-mini, html.psv-native .psv-xfer-swap { background: var(--psv-surface); border-color: var(--psv-border); color: var(--psv-text); }
+html.psv-native .psv-xfer-mini:active, html.psv-native .psv-xfer-swap:active { background: rgba(255,255,255,.07); }
+html.psv-native .psv-xfer-flow__a, html.psv-native .psv-xfer-flow__b { color: var(--psv-text); }
+html.psv-native .psv-xfer-big { color: var(--psv-gold); }
+html.psv-native .psv-xfer-newbal { color: var(--psv-text-dim); }
+html.psv-native .psv-xfer-done__t { color: var(--psv-text); }
+html.psv-native .psv-xfer-done__ref { color: var(--psv-gold-2); }
+html.psv-native .psv-err-banner { color: #fca5a5; background: rgba(248,113,113,.12); border-color: rgba(248,113,113,.42); }
+html.psv-native .psv-stockin-total { color: var(--psv-text); background: rgba(240,180,41,.12); border-color: rgba(240,180,41,.38); }
+html.psv-native .psv-stockin-total b { color: var(--psv-gold); }
+
+
+/* ══════════════════════════════════════════════════════════════════
+ *  WAVE 5b — (1) TOP SPACING / SAFE AREA
+ *  Real breathing room under the status bar / notch. The inset is read from
+ *  --psv-safe-top (= env(safe-area-inset-top)) so it can be simulated/tested.
+ * ══════════════════════════════════════════════════════════════════ */
+html.psv-native { --psv-safe-top: env(safe-area-inset-top, 0px); }
+
+/* PageHeader (van-nav-bar) — 12px below the notch/status bar */
+html.psv-native .van-nav-bar { padding-top: calc(var(--psv-safe-top) + 12px); background: transparent; }
+html.psv-native .van-nav-bar__left,
+html.psv-native .van-nav-bar__right { top: calc(var(--psv-safe-top) + 12px); }
+html.psv-native .van-nav-bar__title { font-weight: 800; }
+
+/* Screens without a PageHeader (Home, timeline, bookings) */
+html.psv-native .pv-header { padding-top: calc(var(--psv-safe-top) + 18px); }
+html.psv-native .psv-tl-datenav { padding-top: calc(var(--psv-safe-top) + 10px); }
+
+/* Sticky sub-headers / van-tabs sticky bars sit BELOW the safe area */
+html.psv-native .van-sticky { top: var(--psv-safe-top) !important; }
+html.psv-native .van-tabs__wrap { top: var(--psv-safe-top); }
+
+/* Bottom sheets / dialogs: first row must not touch the top edge */
+html.psv-native .van-popup--bottom { padding-top: 6px; }
+html.psv-native .van-picker__toolbar { padding-top: 10px; min-height: 54px; }
+html.psv-native .van-action-sheet__header { padding-top: 20px; min-height: 58px; }
+html.psv-native .psv-sheet__body { padding-top: 12px; }
+html.psv-native .psv-sheet-title { margin-top: 4px; }
+html.psv-native .van-dialog { padding-bottom: 4px; }
+
+/* ══════════════════════════════════════════════════════════════════
+ *  WAVE 5b — (2) PREMIUM PICKERS / SHEETS / COMPONENTS (navy + gold)
+ *  Telegram mode untouched (everything scoped to html.psv-native).
+ * ══════════════════════════════════════════════════════════════════ */
+html.psv-native .van-overlay { background: rgba(4, 8, 16, .62); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+html.psv-native .van-popup--bottom {
+  background: #0f172a;
+  border-top-left-radius: 18px; border-top-right-radius: 18px;
+  border-top: 1px solid var(--psv-border);
+  box-shadow: 0 -18px 40px -22px rgba(0, 0, 0, .75);
+  animation: psv-sheet-in .22s cubic-bezier(.4, 0, .2, 1);
+}
+
+/* van-picker (wheel) */
+html.psv-native .van-picker { background: #0f172a; }
+html.psv-native .van-picker__toolbar { background: #0f172a; border-bottom: 1px solid var(--psv-border); }
+html.psv-native .van-picker__toolbar::before { content: ""; display: block; width: 42px; height: 4px; border-radius: 999px; background: var(--psv-border); margin: 0 auto 8px; }
+html.psv-native .van-picker__cancel { color: var(--psv-text-dim); font-weight: 600; }
+html.psv-native .van-picker__confirm { color: var(--psv-gold); font-weight: 800; }
+html.psv-native .van-picker__title { color: var(--psv-text); font-weight: 800; }
+html.psv-native .van-picker-column__item { color: var(--psv-text); font-size: 15px; }
+html.psv-native .van-picker-column__item--selected { color: var(--psv-gold); font-weight: 800; }
+html.psv-native .van-picker__mask { background-image: linear-gradient(180deg, rgba(15,23,42,.92), rgba(15,23,42,.45)), linear-gradient(0deg, rgba(15,23,42,.92), rgba(15,23,42,.45)); }
+html.psv-native .van-picker__frame { border-top: 1px solid rgba(240,180,41,.55); border-bottom: 1px solid rgba(240,180,41,.55); }
+html.psv-native .van-picker__frame::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--psv-gold); border-radius: 999px; }
+
+/* Action sheet */
+html.psv-native .van-action-sheet { background: #0f172a; color: var(--psv-text); border-top-left-radius: 18px; border-top-right-radius: 18px; border-top: 1px solid var(--psv-border); }
+html.psv-native .van-action-sheet__header { color: var(--psv-text); font-weight: 800; border-bottom: 1px solid var(--psv-border); }
+html.psv-native .van-action-sheet__item, html.psv-native .van-action-sheet__cancel { background: #0f172a; color: var(--psv-text); min-height: 48px; font-size: 15px; }
+html.psv-native .van-action-sheet__item:active { background: rgba(255,255,255,.05); }
+html.psv-native .van-action-sheet__gap { background: rgba(255,255,255,.04); }
+html.psv-native .van-action-sheet__cancel { color: var(--psv-text-dim); }
+
+/* Stepper / switch / cells / empty / pull-refresh / dialog */
+html.psv-native .van-stepper__minus, html.psv-native .van-stepper__plus { background: rgba(255,255,255,.06); color: var(--psv-text); border-color: var(--psv-border); }
+html.psv-native .van-stepper__input { background: rgba(0,0,0,.28); color: var(--psv-text); }
+html.psv-native .van-switch { background: rgba(255,255,255,.18); }
+html.psv-native .van-switch--on { background: var(--psv-gold); }
+html.psv-native .van-empty__description { color: var(--psv-text-dim); }
+html.psv-native .van-pull-refresh__head { color: var(--psv-text-dim); }
+html.psv-native .van-dialog { background: #0f172a; border-radius: var(--psv-r-lg); }
+html.psv-native .van-dialog__header { color: var(--psv-text); font-weight: 800; }
+html.psv-native .van-dialog__content { color: var(--psv-text-dim); }
+html.psv-native .van-cell { color: var(--psv-text); }
+html.psv-native .van-cell__label { color: var(--psv-text-dim); }
+html.psv-native .van-cell-group { background: rgba(15,23,42,.72); }
+html.psv-native .van-field__label { color: var(--psv-text-dim); }
+html.psv-native .van-search { background: transparent; }
+html.psv-native .van-search__content { background: rgba(0,0,0,.28); color: var(--psv-text); }
+
+/* Premium picker sheet (PSVPicker) */
+html.psv-native .psv-pick { padding-top: 0; }
+html.psv-native .psv-pick__sheet { position: relative; padding-bottom: env(safe-area-inset-bottom, 0px); }
+html.psv-native .psv-pick__sheet::before { content: ""; display: block; width: 42px; height: 4px; border-radius: 999px; background: var(--psv-border); margin: 12px auto 6px; }
+html.psv-native .psv-pick__head { border-bottom-color: var(--psv-border); padding-top: 2px; }
+html.psv-native .psv-pick__title { color: var(--psv-text); }
+html.psv-native .psv-pick__count { color: var(--psv-text-dim); background: rgba(255,255,255,.06); border: 1px solid var(--psv-border); border-radius: 999px; padding: 2px 8px; }
+html.psv-native .psv-pick__cancel { color: var(--psv-text-dim); }
+html.psv-native .psv-pick__done { color: var(--psv-gold); }
+html.psv-native .psv-pick__done[disabled] { color: var(--psv-text-dim); opacity: .5; }
+html.psv-native .psv-pick__input { background: rgba(0,0,0,.28); border-color: var(--psv-border); color: var(--psv-text); }
+html.psv-native .psv-pick__input:focus { outline: none; border-color: var(--psv-gold); box-shadow: 0 0 0 3px rgba(240,180,41,.25); }
+html.psv-native .psv-pick__row { border-left-color: transparent; }
+html.psv-native .psv-pick__row:active { background: rgba(255,255,255,.04); }
+html.psv-native .psv-pick__row.is-sel { border-left-color: var(--psv-gold); background: rgba(240,180,41,.08); }
+html.psv-native .psv-pick__av { color: #1a1205; background: linear-gradient(135deg, var(--psv-gold-2), var(--psv-gold)); }
+html.psv-native .psv-pick__ic { background: rgba(255,255,255,.05); }
+html.psv-native .psv-pick__label { color: var(--psv-text); }
+html.psv-native .psv-pick__sub { color: var(--psv-text-dim); }
+html.psv-native .psv-pick__meta { color: var(--psv-gold-2); background: rgba(240,180,41,.12); border: 1px solid rgba(240,180,41,.3); }
+html.psv-native .psv-pick__check { color: var(--psv-gold); }
+html.psv-native .psv-pick__chev { color: var(--psv-text-dim); }
+html.psv-native .psv-pick__empty { color: var(--psv-text-dim); }

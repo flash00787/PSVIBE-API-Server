@@ -8,7 +8,7 @@ Owner requirements (Osmo 2026-09-19):
 
 Endpoints (mounted under /api/accounts):
   GET  /api/accounts/transferable   — accounts the caller may move money between (+ balances)
-  GET  /api/accounts/balances       — owner-only restricted balances (ACM's Acc + KBZ Bank)  [alias]
+  GET  /api/accounts/balances       — role-aware read-only balances (staff: 4 shop accts; admin: all 6, owner-only flagged)
   POST /api/accounts/transfer       — atomic 2-leg transfer (cash_movements transfer_out+transfer_in)
   GET  /api/accounts/transfers      — transfer history (admin: all, staff: own only)
 
@@ -21,6 +21,10 @@ Design notes
 * A dedicated `account_transfers` ledger row is written in the SAME transaction as the
   two cash_movements legs, giving (a) idempotency via UNIQUE(client_ref) and
   (b) clean per-transfer history with a stable shared reference "TRF-...".
+* CANONICAL SIGN CONVENTION (enforced here + in readers): `transfer_out` is stored
+  NEGATIVE on the source account, `transfer_in` POSITIVE on the destination. Readers
+  use SUM(ABS(amount)) for the "amount that left an account" semantics, so old and new
+  rows both compute correctly regardless of historical sign drift.
 """
 import logging
 import random
@@ -133,53 +137,85 @@ def _iso(v):
 # ── GET /api/accounts/transferable ───────────────────────────────────────────
 @router.get("/transferable")
 async def list_transferable(user: dict = Depends(get_staff_or_dashboard_user)):
-    """Accounts the caller may transfer from/to, each with its current balance."""
+    """Accounts the caller may transfer from/to, each with its current balance.
+
+    Staff  → the 4 shop accounts (Cash, WavePay, KPay, AYA Pay).
+    Admin  → all 6 accounts, with the two owner-only ones flagged (`owner_only`).
+    """
     _ensure_table()
     role = "admin" if _is_admin(user) else "staff"
     allowed = _allowed_accounts(user)
     bals = await _balances_by_name()
+    accounts_out = [
+        {
+            "account": name,
+            "label": name,
+            "balance": round(bals.get(name, 0)),
+            "owner_only": name in _OWNER_ONLY,
+        }
+        for name in allowed
+    ]
+    # Explicit per-account balances block (keyed by label) + list of owner-only ones.
+    balances_block = {
+        a["account"]: {"balance": a["balance"], "owner_only": a["owner_only"]}
+        for a in accounts_out
+    }
     return {
         "success": True,
         "role": role,
-        "accounts": [
-            {
-                "account": name,
-                "label": name,
-                "balance": round(bals.get(name, 0)),
-                "owner_only": name in _OWNER_ONLY,
-            }
-            for name in allowed
-        ],
+        "accounts": accounts_out,
+        "balances": balances_block,
+        "owner_only_accounts": [n for n in allowed if n in _OWNER_ONLY],
     }
 
 
-# ── GET /api/accounts/balances (owner-only alias) ────────────────────────────
+# ── GET /api/accounts/balances (role-aware read-only) ─────────────────────
 @router.get("/balances")
-async def owner_balances(user: dict = Depends(get_staff_or_dashboard_user)):
-    """Owner-only restricted balances: ACM's Acc + KBZ Bank only (403 for staff)."""
-    if not _is_admin(user):
-        raise HTTPException(status_code=403, detail="Owner-only — admin access required")
-    from routes.finance_routes import get_finance_balances
-    res = await get_finance_balances(year=None, month=None, user={"username": "accounts_api", "role": "admin"})
-    accounts = (res.get("accounts") or []) if isinstance(res, dict) else []
-    last = {r["account"]: _iso(r.get("last_movement")) for r in _q(
-        "SELECT account, MAX(created_at) AS last_movement FROM cash_movements "
-        "WHERE account IN (%s, %s) GROUP BY account",
-        tuple(_OWNER_ONLY),
-    )}
-    rows = []
-    for name in _OWNER_ONLY:
-        bal = 0.0
-        for a in accounts:
-            if str(a.get("label")) == name:
-                bal = float(a.get("balance") or 0)
-                break
-        rows.append({"account": name, "label": name, "balance": round(bal),
-                     "last_movement": last.get(name)})
-    operating = [r for r in rows if r["account"] == "ACM's Acc"]
-    capital = [r for r in rows if r["account"] == "KBZ Bank"]
-    return {"success": True, "owner_only": True, "accounts": rows,
-            "operating": operating, "capital": capital}
+async def list_balances(user: dict = Depends(get_staff_or_dashboard_user)):
+    """Role-aware read-only balances.
+
+    Staff  → the 4 shop accounts. Admin → all 6, with owner-only ones flagged.
+    (The strictly owner-only ACM's Acc + KBZ Bank view is unchanged and remains
+     available at GET /api/finance/account-balances.)
+    """
+    _ensure_table()
+    role = "admin" if _is_admin(user) else "staff"
+    allowed = _allowed_accounts(user)
+    bals = await _balances_by_name()
+    # Last movement for the owner-only accounts (informational).
+    last = {}
+    try:
+        for r in _q(
+            "SELECT account, MAX(created_at) AS last_movement FROM cash_movements "
+            "WHERE account IN (%s, %s) GROUP BY account",
+            tuple(_OWNER_ONLY),
+        ):
+            last[r["account"]] = _iso(r.get("last_movement"))
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"balances last_movement lookup failed: {e}")
+    rows = [
+        {
+            "account": name,
+            "label": name,
+            "balance": round(bals.get(name, 0)),
+            "owner_only": name in _OWNER_ONLY,
+            "last_movement": last.get(name) if name in _OWNER_ONLY else None,
+        }
+        for name in allowed
+    ]
+    return {
+        "success": True,
+        "role": role,
+        "owner_only_view": role == "admin",
+        "accounts": rows,
+        "balances": {
+            r["account"]: {"balance": r["balance"], "owner_only": r["owner_only"]}
+            for r in rows
+        },
+        # kept for backward-compat with the old owner-only alias consumers
+        "operating": [r for r in rows if r["account"] == "ACM's Acc"],
+        "capital": [r for r in rows if r["account"] == "KBZ Bank"],
+    }
 
 
 # ── POST /api/accounts/transfer ──────────────────────────────────────────────
@@ -261,10 +297,16 @@ async def create_transfer(body: dict = Body(...), user: dict = Depends(get_staff
                 (ref, client_ref, from_account, to_account, amount, note or None,
                  staff_name, _caller_identity(user)),
             )
+            # CANONICAL SIGN CONVENTION (legacy, enforced end-to-end):
+            #   transfer_out -> stored NEGATIVE on the source account (money leaves)
+            #   transfer_in  -> stored POSITIVE on the destination account (money arrives)
+            # This is what the finance engine (balance-sheet / cash-flow / balances)
+            # and all historical rows were built on. Readers additionally use
+            # SUM(ABS(amount)) so any legacy sign drift still computes correctly.
             cur.execute(
                 """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name)
                    VALUES ('transfer_out', %s, %s, %s, %s)""",
-                (from_account, amount, out_note, staff_name),
+                (from_account, -amount, out_note, staff_name),
             )
             cur.execute(
                 """INSERT INTO cash_movements (movement_type, account, amount, note, staff_name)
@@ -309,32 +351,42 @@ async def create_transfer(body: dict = Body(...), user: dict = Depends(get_staff
 @router.get("/transfers")
 async def list_transfers(limit: int = Query(20, ge=1, le=200),
                          user: dict = Depends(get_staff_or_dashboard_user)):
-    """Transfer history — admin sees all, staff sees only their own."""
+    """Transfer history — admin sees all (incl. created_by_user), staff sees only their own."""
     _ensure_table()
+    _admin = _is_admin(user)
     try:
-        if _is_admin(user):
+        if _admin:
             rows = _q(
-                "SELECT id, ref, from_account, to_account, amount, note, staff_name, created_at "
+                "SELECT id, ref, from_account, to_account, amount, note, staff_name, "
+                "created_by_user, created_at "
                 "FROM account_transfers ORDER BY id DESC LIMIT %s",
                 (limit,),
             )
+            total = int((_q("SELECT COUNT(*) AS c FROM account_transfers")[0] or {}).get("c") or 0)
         else:
             rows = _q(
                 "SELECT id, ref, from_account, to_account, amount, note, staff_name, created_at "
                 "FROM account_transfers WHERE created_by_user = %s ORDER BY id DESC LIMIT %s",
                 (_caller_identity(user), limit),
             )
-        out = [{
-            "id": r.get("id"),
-            "ref": r.get("ref"),
-            "from_account": r.get("from_account"),
-            "to_account": r.get("to_account"),
-            "amount": round(float(r.get("amount") or 0)),
-            "note": r.get("note"),
-            "staff_name": r.get("staff_name"),
-            "created_at": _iso(r.get("created_at")),
-        } for r in rows]
-        return {"success": True, "transfers": out, "count": len(out)}
+            total = int((_q("SELECT COUNT(*) AS c FROM account_transfers WHERE created_by_user = %s",
+                            (_caller_identity(user),))[0] or {}).get("c") or 0)
+        out = []
+        for r in rows:
+            item = {
+                "id": r.get("id"),
+                "ref": r.get("ref"),
+                "from_account": r.get("from_account"),
+                "to_account": r.get("to_account"),
+                "amount": round(float(r.get("amount") or 0)),
+                "note": r.get("note"),
+                "staff_name": r.get("staff_name"),
+                "created_at": _iso(r.get("created_at")),
+            }
+            if _admin:
+                item["created_by_user"] = r.get("created_by_user")
+            out.append(item)
+        return {"success": True, "transfers": out, "count": len(out), "total": total}
     except Exception as e:
         logger.error(f"GET /accounts/transfers error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

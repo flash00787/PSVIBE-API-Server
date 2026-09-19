@@ -449,3 +449,86 @@ html, body {
 .psv-bind__badge { flex: none; font-size: 10px; font-weight: 800; padding: 3px 7px; border-radius: 999px; white-space: nowrap; }
 .psv-bind__badge--ok { background: rgba(45, 212, 191, .18); color: #0f766e; border: 1px solid rgba(45, 212, 191, .55); }
 .psv-bind__badge--warn { background: rgba(251, 191, 36, .18); color: #92400e; border: 1px solid rgba(251, 191, 36, .6); }
+
+/* ══════════════════════════════════════════════════════════════
+ *  WAVE 5 — Accounts: owner-only balances + account→account transfer
+ *  Base styles (used by both modes; the premium navy+gold layer lives in
+ *  native-theme.css under html.psv-native). Class names are WAVE-5-unique
+ *  so Telegram-mode screens are untouched.
+ * ══════════════════════════════════════════════════════════════ */
+
+/* Account Balances — exactly two restricted cards */
+.psv-acc-grid { padding: 12px 16px 0; }
+.psv-acc-card { border: 1px solid var(--pv-card-border, rgba(148,163,184,.3)); border-radius: 16px; padding: 16px; margin-bottom: 14px; background: var(--pv-card-bg, #fff); box-shadow: 0 6px 18px -12px rgba(0,0,0,.5); }
+.psv-acc-card__top { display: flex; align-items: center; gap: 10px; }
+.psv-acc-card__ico { width: 38px; height: 38px; flex: none; display: flex; align-items: center; justify-content: center; font-size: 20px; border-radius: 12px; background: rgba(240,180,41,.14); }
+.psv-acc-card__label { font-size: 15px; font-weight: 800; }
+.psv-acc-card__type { margin-left: auto; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--pv-muted, #94a3b8); }
+.psv-acc-card__bal { margin-top: 12px; font-size: 30px; font-weight: 900; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
+.psv-acc-card__unit { font-size: 15px; font-weight: 700; opacity: .7; margin-left: 2px; }
+.psv-acc-card__meta { margin-top: 6px; font-size: 12px; color: var(--pv-muted, #94a3b8); }
+
+/* Transfer form */
+.psv-input--text { font-size: 16px; font-weight: 600; }
+.psv-xfer-quick { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.psv-xfer-acct { display: flex; align-items: center; gap: 10px; }
+.psv-xfer-acct__ico { width: 38px; height: 38px; flex: none; display: flex; align-items: center; justify-content: center; font-size: 19px; border-radius: 12px; background: rgba(240,180,41,.14); }
+.psv-xfer-acct__name { font-size: 15px; font-weight: 800; }
+.psv-xfer-acct__bal { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--pv-muted, #94a3b8); font-variant-numeric: tabular-nums; }
+.psv-xfer-actions { display: flex; gap: 8px; margin-top: 12px; }
+.psv-xfer-mini, .psv-xfer-swap { appearance: none; -webkit-appearance: none; min-height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--pv-card-border, rgba(148,163,184,.3)); background: var(--pv-card-bg, #fff); color: var(--van-text-color, #111); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+.psv-xfer-swap { margin-left: auto; }
+.psv-xfer-mini:active, .psv-xfer-swap:active { transform: scale(.96); }
+
+/* Confirm sheet */
+.psv-xfer-confirm { text-align: center; padding: 6px 4px 4px; }
+.psv-xfer-flow { display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 15px; font-weight: 800; }
+.psv-xfer-flow__arrow { color: #f0b429; }
+.psv-xfer-big { margin: 12px 0 4px; font-size: 34px; font-weight: 900; letter-spacing: -1px; color: #f0b429; font-variant-numeric: tabular-nums; }
+.psv-xfer-big span { font-size: 16px; font-weight: 700; }
+.psv-xfer-newbal { margin-top: 10px; font-size: 13px; line-height: 1.6; color: var(--pv-muted, #94a3b8); }
+
+/* Success state */
+.psv-xfer-done { text-align: center; padding: 26px 16px 10px; }
+.psv-xfer-done__ico { font-size: 50px; line-height: 1; }
+.psv-xfer-done__t { margin-top: 10px; font-size: 20px; font-weight: 900; letter-spacing: -.3px; }
+.psv-xfer-done__ref { margin-top: 4px; font-size: 13px; font-weight: 700; color: #f0b429; }
+.psv-xfer-done__bal { margin: 14px 16px 0; text-align: left; }
+
+/* Friendly error banner — never raw JSON/HTML */
+.psv-err-banner { margin: 0 0 14px; padding: 11px 13px; border-radius: 12px; font-size: 13px; line-height: 1.5; font-weight: 600; color: #b91c1c; background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.42); }
+
+/* Stock-in live total (Inventory) */
+.psv-stockin-total { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 12px 16px 0; padding: 11px 14px; border-radius: 12px; background: rgba(240,180,41,.12); border: 1px solid rgba(240,180,41,.38); font-size: 13px; font-weight: 700; }
+.psv-stockin-total b { font-size: 16px; font-variant-numeric: tabular-nums; }
+
+
+/* ══════════════════════════════════════════════════════════════
+ *  WAVE 5b — premium picker sheet (base; premium layer in native-theme.css)
+ *  Used only in native mode (call sites keep van-picker for Telegram).
+ * ══════════════════════════════════════════════════════════════ */
+.psv-pick__sheet { display: flex; flex-direction: column; max-height: 82vh; }
+.psv-pick__head { display: flex; align-items: center; gap: 10px; padding: 6px 16px 12px; border-bottom: 1px solid var(--pv-card-border); }
+.psv-pick__title { flex: 1; min-width: 0; font-size: 15px; font-weight: 800; display: flex; align-items: center; gap: 8px; }
+.psv-pick__count { font-size: 11.5px; font-weight: 700; color: var(--pv-muted); }
+.psv-pick__acts { display: flex; align-items: center; gap: 6px; flex: none; }
+.psv-pick__cancel, .psv-pick__done { appearance: none; -webkit-appearance: none; border: 0; background: transparent; font: inherit; min-height: 44px; padding: 0 12px; border-radius: 10px; cursor: pointer; font-weight: 800; }
+.psv-pick__cancel { color: var(--pv-muted); font-weight: 600; }
+.psv-pick__done { color: #b45309; }
+.psv-pick__done[disabled] { opacity: .45; }
+.psv-pick__search { padding: 10px 16px 4px; }
+.psv-pick__input { width: 100%; min-height: 44px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--pv-card-border); background: rgba(127,127,127,.06); color: inherit; font: inherit; font-size: 15px; }
+.psv-pick__list { overflow: auto; padding: 6px 0 14px; }
+.psv-pick__row { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 9px 16px; cursor: pointer; border-left: 3px solid transparent; }
+.psv-pick__row.is-sel { background: rgba(240,180,41,.10); border-left-color: #f0b429; }
+.psv-pick__row.is-dim { opacity: .45; }
+.psv-pick__av { width: 38px; height: 38px; flex: none; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; background: rgba(240,180,41,.2); }
+.psv-pick__ic { width: 38px; height: 38px; flex: none; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: rgba(127,127,127,.10); }
+.psv-pick__main { flex: 1; min-width: 0; }
+.psv-pick__label { font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+.psv-pick__sub { display: flex; align-items: center; gap: 8px; margin-top: 2px; font-size: 12px; color: var(--pv-muted); }
+.psv-pick__meta { font-size: 11.5px; font-weight: 700; border-radius: 999px; padding: 1px 7px; }
+.psv-pick__check { font-size: 18px; font-weight: 900; flex: none; }
+.psv-pick__chev { flex: none; }
+.psv-pick__empty { text-align: center; padding: 40px 16px; color: var(--pv-muted); font-size: 14px; }
+.psv-pick__emptyico { font-size: 26px; margin-bottom: 6px; opacity: .7; }
