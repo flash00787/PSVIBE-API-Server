@@ -11,7 +11,7 @@
 (function () {
   "use strict";
 
-  const { createApp, ref, reactive, computed, watch, onMounted, nextTick } = Vue;
+  const { createApp, ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
   const vant = window.vant;
   const PSV = window.PSV;
   const tg = PSV.getTg();
@@ -402,19 +402,34 @@
       }
       function topupRemoveSplit(i) { topup.splits.splice(i, 1); }
 
+      // WAVE 4 — notification poll hygiene: at most once per 60s, paused while
+      // the app is backgrounded (visibilitychange), and served through the
+      // shared 60s cache so a foreground/background flip never bursts.
       const unread = ref(0);
-      async function loadUnread() {
-        try { const d = PSV.unwrap(await PSV.api("/api/staff/notifications/unread-count")); unread.value = Number((d && (d.unread != null ? d.unread : d.count)) || 0) || 0; }
-        catch (_e) { unread.value = 0; }
+      const UNREAD_MIN_MS = 60000;
+      let _lastUnread = 0;
+      let _unreadTimer = null;
+      async function loadUnread(force) {
+        if (document.hidden && !force) return;
+        const now = Date.now();
+        if (!force && (now - _lastUnread) < UNREAD_MIN_MS) return;
+        _lastUnread = now;
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/staff/notifications/unread-count", {}, 60000));
+          unread.value = Number((d && (d.unread != null ? d.unread : d.count)) || 0) || 0;
+        } catch (_e) { /* keep the last known value */ }
       }
+      function _onVisibility() { if (!document.hidden) loadUnread(false); }
       function goNotifications() { haptic("light"); router.push("/notifications"); }
 
       async function load() {
         loading.value = true;
+        // Home ≤ 4 requests per load: members + consoles + sales (+ native bookings),
+        // all served from the 15s shared cache so quick returns are free.
         const [members, consoles, sales] = await Promise.allSettled([
-          PSV.api("/api/fetch_members?limit=1"),
-          PSV.api("/api/fetch_console_status"),
-          PSV.api("/api/sales/list-today").catch(() => null),
+          PSV.apiCached("/api/fetch_members?limit=1", {}, 15000),
+          PSV.apiCached("/api/fetch_console_status", {}, 15000),
+          PSV.apiCached("/api/sales/list-today", {}, 15000).catch(() => null),
         ]);
         if (members.status === "fulfilled") {
           const m = PSV.unwrap(members.value);
@@ -437,16 +452,29 @@
         }
         if (NATIVE) {
           try {
-            const bd = PSV.unwrap(await PSV.api("/api/bookings?status="));
+            const bd = PSV.unwrap(await PSV.apiCached("/api/bookings?status=", {}, 15000));
             const arr = Array.isArray(bd) ? bd : (bd && bd.bookings) || [];
             const today = PSV.todayMMT();
-            summary.bookings = arr.filter((b) => !(b.date || b.booking_date) || String(b.date || b.booking_date).slice(0, 10) === today).length;
-            summary.pendingDeposits = arr.filter((b) => ["paid", "pending"].includes(String(b.deposit_status || "").toLowerCase())).length;
+            const _liveSt = ["pending", "confirmed", "checked_in", "active", "pending_check_in"];
+            summary.bookings = arr.filter((b) => _liveSt.includes(String(b.status || "").toLowerCase()) && (!(b.date || b.booking_date) || String(b.date || b.booking_date).slice(0, 10) === today)).length;
+            const _openSt = ["pending", "confirmed", "checked_in", "active"];
+            summary.pendingDeposits = arr.filter((b) => _openSt.includes(String(b.status || "").toLowerCase()) && ["paid", "pending"].includes(String(b.deposit_status || "").toLowerCase())).length;
           } catch (_e) {}
         }
         loading.value = false;
       }
-      onMounted(() => { load(); loadUnread(); });
+      onMounted(() => {
+        load();
+        loadUnread(true);
+        _unreadTimer = setInterval(() => { loadUnread(false); }, UNREAD_MIN_MS);
+        document.addEventListener("visibilitychange", _onVisibility);
+        window.addEventListener("psv:retry", load);
+      });
+      onUnmounted(() => {
+        if (_unreadTimer) clearInterval(_unreadTimer);
+        document.removeEventListener("visibilitychange", _onVisibility);
+        window.removeEventListener("psv:retry", load);
+      });
       return { staffName, webLogin, staffRole, doLogout, loading, summary, nativeMode, initials, fKs, go, load, unread, goNotifications, topup, topupFiltered, topupTier, topupPaid, topupRemaining, topupPreview, calcTopupBonus, openTopup, openTopupEntry, pickTopup, confirmTopup, topupOpenPay, topupPickPay, topupConfirmSplit, topupRemoveSplit };
     },
   };
@@ -663,7 +691,7 @@
               </div>
               <button class="psv-chip" @click="clearPromo">Remove</button>
             </div>
-            <button v-else class="psv-btn psv-btn--ghost psv-btn--block" style="min-height:44px" @click="openPromo">🎁 Choose Promotion</button>
+            <button v-else-if="promos.length" class="psv-btn psv-btn--ghost psv-btn--block" style="min-height:44px" @click="openPromo">🎁 Choose Promotion</button>
 
             <div style="display:flex;gap:8px;margin-top:10px">
               <input v-model.trim="coupon.code" class="psv-input" style="flex:1" :disabled="coupon.applied" placeholder="Coupon code" @keyup.enter="applyCoupon" />
@@ -1681,12 +1709,274 @@
     });
   }
 
+  // ══════════════════════════════════════════════════════════
+  //  WAVE 4 — BOOKING TIMELINE (consoles × hours, mobile-first)
+  //  Modelled on the web dashboard's TimelineView.vue: console rows × time
+  //  axis, coloured status blocks, date navigation, a "now" indicator and a
+  //  stale-response guard. Layout is CSS grid (sticky console column + sticky
+  //  hour header); hour lines are static — there is NO per-minute DOM.
+  //  Tapping a block reuses the existing booking detail sheet (embedded mode
+  //  emits `pick`; standalone mode deep-links into /bookings).
+  // ══════════════════════════════════════════════════════════
+  const TL_OPEN_HOUR = 9, TL_CLOSE_HOUR = 23, TL_HOUR_W = 56;
+  const TL_GRID_HOURS = (function () { const a = []; for (let h = TL_OPEN_HOUR; h < TL_CLOSE_HOUR; h++) a.push(h); return a; })();
+  const TL_DEAD = ["cancelled", "canceled", "rejected", "no_show", "noshow", "no-show", "expired"];
+  function tlMin(t) {
+    const m = String(t == null ? "" : t).match(/(\d{1,2}):(\d{2})/);
+    if (!m) return null;
+    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  }
+  function tlFmt(mins) {
+    const h = Math.floor(mins / 60), m = mins % 60;
+    const mer = h < 12 ? "AM" : "PM";
+    return (h % 12 || 12) + ":" + String(m).padStart(2, "0") + " " + mer;
+  }
+  function tlHourLabel(h) {
+    const mer = h < 12 ? "AM" : "PM";
+    return (h % 12 || 12) + ":00 " + mer;
+  }
+  function tlStatusTone(s) {
+    const k = bkKey(s);
+    if (k === "pending") return "pending";
+    if (k === "pending_check_in" || k === "confirmed") return "confirmed";
+    if (k === "checked_in") return "checkedin";
+    if (k === "active") return "active";
+    return "done"; // done / completed / cancelled / rejected / no_show …
+  }
+  function tlMMT(offsetDays) {
+    const d = new Date(Date.now() + 6.5 * 3600000 + (offsetDays || 0) * 86400000);
+    return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+  }
+
+  const TimelineGrid = {
+    components: { PageHeader },
+    props: { embedded: { type: Boolean, default: false } },
+    emits: ["pick"],
+    template: `
+      <div class="pv-page psv-tl">
+        <PageHeader v-if="!embedded" title="Booking Timeline" back="/more" />
+        <van-pull-refresh v-model="refreshing" @refresh="load">
+          <div class="psv-tl-datenav">
+            <button class="psv-chip" :class="{ 'psv-chip--on': isToday }" @click="goToday">📅 Today</button>
+            <button class="psv-chip" :class="{ 'psv-chip--on': isTomorrow }" @click="goTomorrow">➡ Tomorrow</button>
+            <div class="psv-tl-datebar">
+              <button class="psv-tl-arrow" aria-label="Previous day" @click="step(-1)">‹</button>
+              <span class="psv-tl-datelbl">{{ dayLabel }}</span>
+              <button class="psv-tl-arrow" aria-label="Next day" @click="step(1)">›</button>
+            </div>
+          </div>
+
+          <div class="psv-tl-legend">
+            <span class="psv-tl-lg"><i class="psv-tl-sw is-pending"></i>Pending</span>
+            <span class="psv-tl-lg"><i class="psv-tl-sw is-confirmed"></i>Confirmed</span>
+            <span class="psv-tl-lg"><i class="psv-tl-sw is-checkedin"></i>Checked-in</span>
+            <span class="psv-tl-lg"><i class="psv-tl-sw is-active"></i>Active</span>
+            <span class="psv-tl-lg"><i class="psv-tl-sw is-done"></i>Done / cancelled</span>
+          </div>
+
+          <div v-if="loading" class="psv-tl-pad">
+            <div class="psv-skeleton" style="height:150px"></div>
+            <div class="psv-skeleton" style="height:150px;margin-top:12px"></div>
+          </div>
+          <div v-else-if="err" class="psv-empty">
+            <div style="font-size:30px">📡</div>
+            <div style="margin-top:8px">{{ err }}</div>
+            <button class="psv-btn psv-btn--ghost" style="margin-top:14px" @click="load">Retry</button>
+          </div>
+          <div v-else-if="!bookings.length" class="psv-empty">
+            <div style="font-size:34px">🗓</div>
+            <div style="margin-top:8px">No bookings on {{ dayLabel }}</div>
+            <div class="psv-tl-empty__sub">{{ consoles.length }} consoles · {{ openHourLabel }}–{{ closeHourLabel }}</div>
+          </div>
+          <div v-else class="psv-tl-wrap">
+            <div class="psv-tl-scroll" ref="scroller">
+              <div class="psv-tl-inner">
+                <div class="psv-tl-corner">Console</div>
+                <div class="psv-tl-head-hours">
+                  <div class="psv-tl-hour" v-for="h in gridHours" :key="h">{{ hourLabel(h) }}</div>
+                  <div class="psv-tl-hour psv-tl-hour--end">{{ closeHourLabel }}</div>
+                  <div v-if="showNow" class="psv-tl-now" :style="{ left: nowPx + 'px' }"><span class="psv-tl-now__tag">NOW</span></div>
+                </div>
+                <template v-for="c in consoles" :key="c.id">
+                  <div class="psv-tl-label">
+                    <span class="psv-tl-label__id">{{ c.id }}</span>
+                    <span v-if="utilOf(c.id) > 0" class="psv-tl-label__util" :class="utilTone(c.id)">{{ utilOf(c.id) }}%</span>
+                  </div>
+                  <div class="psv-tl-track">
+                    <div class="psv-tl-gl" v-for="h in gridLines" :key="h" :style="{ left: hourPx(h) + 'px' }"></div>
+                    <div v-if="showNow" class="psv-tl-now" :style="{ left: nowPx + 'px' }"></div>
+                    <button v-for="b in blocksOf(c.id)" :key="b.id" class="psv-tl-block" :class="'is-' + tone(b.status)" :style="blockStyle(b)" @click="pick(b)">
+                      <span class="psv-tl-block__name">{{ b.customerName || b.memberId || 'Guest' }}</span>
+                      <span class="psv-tl-block__time">{{ range(b) }}</span>
+                    </button>
+                  </div>
+                </template>
+              </div>
+            </div>
+            <div class="psv-tl-foot">{{ bookings.length }} booking(s) · {{ dayLabel }}</div>
+          </div>
+        </van-pull-refresh>
+      </div>
+    `,
+    setup(props, ctx) {
+      const emit = ctx.emit;
+      const day = ref(PSV.todayMMT());
+      const bookings = ref([]);
+      const consoles = ref([]);
+      const loading = ref(true);
+      const refreshing = ref(false);
+      const err = ref("");
+      const scroller = ref(null);
+      const clock = ref(Date.now());
+      const gridHours = TL_GRID_HOURS;
+      const gridLines = TL_GRID_HOURS.concat([TL_CLOSE_HOUR]);
+      const trackW = (TL_CLOSE_HOUR - TL_OPEN_HOUR + 1) * TL_HOUR_W;
+      const openHourLabel = tlHourLabel(TL_OPEN_HOUR);
+      const closeHourLabel = tlHourLabel(TL_CLOSE_HOUR);
+      let fetchId = 0;
+      let jumped = false;
+      let tick = null;
+      const _get = (p, ttl) => (PSV.apiCached ? PSV.apiCached(p, {}, ttl == null ? 15000 : ttl) : PSV.api(p));
+
+      const isToday = computed(() => day.value === PSV.todayMMT());
+      const isTomorrow = computed(() => day.value === tlMMT(1));
+      const dayLabel = computed(() => {
+        const p = day.value.split('-');
+        const d = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2])));
+        const wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getUTCDay()];
+        return wd + ", " + p[2] + "/" + p[1] + "/" + p[0];
+      });
+      const nowPx = computed(() => {
+        const d = new Date(clock.value + 6.5 * 3600000);
+        const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
+        return ((mins - TL_OPEN_HOUR * 60) / 60) * TL_HOUR_W;
+      });
+      const showNow = computed(() => isToday.value && nowPx.value >= 0 && nowPx.value <= trackW);
+
+      function hourPx(h) { return (h - TL_OPEN_HOUR) * TL_HOUR_W; }
+      function hourLabel(h) { return tlHourLabel(h); }
+      function tone(s) { return tlStatusTone(s); }
+      function cidOf(b) { return String(b.consoleId || b.console_id || b.consoleType || "").trim(); }
+      function blocksOf(cid) {
+        const key = String(cid).trim();
+        return bookings.value.filter((b) => cidOf(b) === key);
+      }
+      function minutesOf(b) {
+        const st = tlMin(b.timeSlot || b.startTime);
+        if (st == null) return null;
+        const dur = Number(b.durationMins) || 0;
+        const et = tlMin(b.endTime);
+        let end = dur > 0 ? (st + dur) : (et != null ? et : st + 60);
+        if (end <= st) end = st + 60;
+        return { st: st, end: end };
+      }
+      function blockStyle(b) {
+        const r = minutesOf(b);
+        if (!r) return { left: "0px", width: "34px" };
+        const left = ((r.st - TL_OPEN_HOUR * 60) / 60) * TL_HOUR_W;
+        const w = Math.max(((r.end - r.st) / 60) * TL_HOUR_W, 34);
+        return { left: Math.max(left, 0) + "px", width: w + "px" };
+      }
+      function range(b) {
+        const r = minutesOf(b);
+        if (!r) return "—";
+        const openEnd = !(Number(b.durationMins) > 0) && tlMin(b.endTime) == null;
+        return tlFmt(r.st) + "–" + (openEnd ? "Open" : tlFmt(r.end));
+      }
+      function utilOf(cid) {
+        const list = blocksOf(cid).filter((b) => TL_DEAD.indexOf(bkKey(b.status)) < 0);
+        const total = (TL_CLOSE_HOUR - TL_OPEN_HOUR) * 60;
+        let used = 0;
+        for (const b of list) {
+          const r = minutesOf(b);
+          if (!r) continue;
+          used += Math.max(Math.min(r.end, TL_CLOSE_HOUR * 60) - Math.max(r.st, TL_OPEN_HOUR * 60), 0);
+        }
+        return Math.round((used / total) * 100);
+      }
+      function utilTone(cid) { const u = utilOf(cid); return u > 70 ? "is-hi" : (u > 40 ? "is-mid" : "is-lo"); }
+      function pick(b) { haptic("light"); if (props.embedded) emit("pick", b); else openBooking(b.id); }
+      function goToday() { haptic("light"); day.value = PSV.todayMMT(); jumped = false; load(); }
+      function goTomorrow() { haptic("light"); day.value = tlMMT(1); jumped = false; load(); }
+      function step(d) {
+        haptic("light");
+        const p = day.value.split("-").map(Number);
+        const dt = new Date(Date.UTC(p[0], p[1] - 1, p[2] + d));
+        day.value = dt.toISOString().slice(0, 10);
+        jumped = false;
+        load();
+      }
+      function scrollToNow() {
+        if (jumped) return;
+        const el = scroller.value;
+        if (!el) return;
+        jumped = true;
+        const target = showNow.value ? Math.max(0, nowPx.value - el.clientWidth * 0.6) : 0;
+        try { el.scrollLeft = target; } catch (_e) {}
+      }
+      async function load() {
+        const _id = ++fetchId;
+        loading.value = true; err.value = "";
+        try {
+          // Two cached calls only (bookings for the day + console roster).
+          const [bk, cs] = await Promise.all([
+            _get("/api/bookings?date=" + encodeURIComponent(day.value), 15000),
+            _get("/api/fetch_console_status", 15000),
+          ]);
+          if (_id !== fetchId) return;   // stale-response guard
+          const bd = PSV.unwrap(bk);
+          const bArr = Array.isArray(bd) ? bd : (bd && bd.bookings) || [];
+          bookings.value = bArr.filter((b) => String(b.date || b.booking_date || "").slice(0, 10) === day.value);
+          const cd = PSV.unwrap(cs);
+          const cArr = Array.isArray(cd) ? cd : (cd && cd.consoles) || [];
+          const rows = cArr
+            .map((c) => ({ id: String(c.console_id || c.id || c.consoleId || "").trim() }))
+            .filter((x) => x.id);
+          rows.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+          if (rows.length) consoles.value = rows;
+          else if (!consoles.value.length) {
+            const def = [];
+            for (let i = 1; i <= 10; i++) def.push({ id: "C-" + String(i).padStart(2, "0") });
+            consoles.value = def;
+          }
+        } catch (e) {
+          if (_id !== fetchId) return;
+          err.value = (e && e.message) ? e.message : "Failed to load timeline";
+          bookings.value = [];
+        } finally {
+          if (_id === fetchId) {
+            loading.value = false;
+            refreshing.value = false;
+            nextTick(() => scrollToNow());
+          }
+        }
+      }
+      onMounted(() => {
+        load();
+        tick = setInterval(() => { clock.value = Date.now(); }, 60000);
+        window.addEventListener("psv:retry", load);
+      });
+      onUnmounted(() => {
+        if (tick) clearInterval(tick);
+        window.removeEventListener("psv:retry", load);
+      });
+      return { embedded: props.embedded, refreshing, day, bookings, consoles, loading, err, scroller, gridHours, gridLines,
+        isToday, isTomorrow, dayLabel, nowPx, showNow, openHourLabel, closeHourLabel,
+        hourPx, hourLabel, tone, blocksOf, blockStyle, range, utilOf, utilTone, pick, goToday, goTomorrow, step, load };
+    },
+  };
+
   // ── VIEW: Bookings (WAVE 1 — full staff ops + deposits) ─
   const Bookings = {
-    components: { PageHeader },
+    components: { PageHeader, TimelineGrid },
     template: `
       <div class="pv-page psv-bk">
         <PageHeader title="Bookings" />
+        <div class="psv-seg" role="tablist">
+          <button class="psv-seg__b" :class="{ 'is-on': view === 'list' }" role="tab" @click="setView('list')">☰ List</button>
+          <button class="psv-seg__b" :class="{ 'is-on': view === 'timeline' }" role="tab" @click="setView('timeline')">🕒 Timeline</button>
+        </div>
+        <template v-if="view === 'list'">
         <div class="psv-bk-chips">
           <button v-for="c in chips" :key="c.id" class="psv-chip" :class="{ 'psv-chip--on': chip === c.id }" @click="setChip(c.id)">{{ c.icon }} {{ c.label }}</button>
         </div>
@@ -1728,6 +2018,8 @@
             </div>
           </div>
         </van-pull-refresh>
+        </template>
+        <TimelineGrid v-else embedded @pick="onPickTimeline" />
 
         <!-- Booking detail + full action sheet -->
         <van-popup v-model:show="detailOpen" position="bottom" round class="psv-sheet" :style="{ maxHeight: '90vh' }">
@@ -1801,15 +2093,17 @@
     `,
     setup() {
       const CHIPS = [
-        { id: "today", icon: "📅", label: "Today", hint: "All bookings for today" },
+        { id: "today", icon: "📅", label: "Today", hint: "All bookings for today (cancelled & no-shows excluded)" },
         { id: "open", icon: "🔓", label: "Open", hint: "Pending · Confirmed · Checked-in · Active" },
         { id: "pending", icon: "⏳", label: "Pending", hint: "Waiting for approve / reject" },
         { id: "confirmed", icon: "✅", label: "Confirmed", hint: "Confirmed — check in when the customer arrives" },
         { id: "checked_in", icon: "🎟", label: "Checked-in", hint: "Arrived — start the console session" },
         { id: "active", icon: "▶️", label: "Active", hint: "Session in progress" },
         { id: "deposit", icon: "💰", label: "Deposit", hint: "Verify / redeem a deposit" },
+        { id: "cancelled", icon: "⛔", label: "Cancelled", hint: "Cancelled, rejected & no-show bookings" },
       ];
       const chip = ref("open");
+      const view = ref("list");
       const rows = ref([]);
       const loading = ref(true);
       const refreshing = ref(false);
@@ -1867,21 +2161,47 @@
         return out;
       }
 
-      async function fetchStatus(s) { const d = PSV.unwrap(await PSV.api("/api/bookings?status=" + encodeURIComponent(s))); return (d && d.bookings) || []; }
-      async function fetchDate(dt) { const d = PSV.unwrap(await PSV.api("/api/bookings?date=" + encodeURIComponent(dt))); return (d && d.bookings) || []; }
+      // WAVE 4 — request de-bursting.
+      // The "Open" chip used to fire FOUR parallel /api/bookings?status= calls —
+      // that burst is what tripped Cloudflare's rate-limit ban. We now prefer the
+      // single ?status=open endpoint; if it is missing or empty we fall back to
+      // ONE ?status= call filtered client-side. Never 4 parallel status requests.
+      const DEAD_ST = ["cancelled", "canceled", "rejected", "no_show", "noshow", "no-show", "expired"];
+      const OPEN_ST = ["pending", "pending_check_in", "confirmed", "checked_in", "active"];
+      const isDead = (b) => DEAD_ST.indexOf(bkKey(b.status)) >= 0;
+      const _get = (p, ttl) => (PSV.apiCached ? PSV.apiCached(p, {}, ttl == null ? 15000 : ttl) : PSV.api(p));
+      async function fetchStatus(s) { const d = PSV.unwrap(await _get("/api/bookings?status=" + encodeURIComponent(s))); return (d && d.bookings) || []; }
+      async function fetchAll() { const d = PSV.unwrap(await _get("/api/bookings?status=")); return (d && d.bookings) || []; }
+      async function loadOpen() {
+        try {
+          const arr = await fetchStatus("open");
+          if (arr.length) return arr.filter((b) => !isDead(b));
+          const all = await fetchAll();                 // ONE call, client-side filter
+          return all.filter((b) => OPEN_ST.indexOf(bkKey(b.status)) >= 0);
+        } catch (_e) {                                   // endpoint missing → fallback
+          const all = await fetchAll();
+          return all.filter((b) => OPEN_ST.indexOf(bkKey(b.status)) >= 0);
+        }
+      }
       async function load() {
         loading.value = true;
         try {
           let list = [];
-          if (chip.value === "today") list = await fetchDate(PSV.todayMMT());
-          else if (chip.value === "open") {
-            const arrs = await Promise.all([fetchStatus("pending"), fetchStatus("confirmed"), fetchStatus("checked_in"), fetchStatus("active")]);
-            list = arrs.reduce((a, x) => a.concat(x), []);
-          } else if (chip.value === "deposit") {
-            const arrs = await Promise.all([fetchStatus("pending"), fetchStatus("confirmed")]);
-            list = arrs.reduce((a, x) => a.concat(x), []).filter(hasDepositPending);
+          const c = chip.value;
+          if (c === "today") {
+            const all = await fetchAll();
+            const today = PSV.todayMMT();
+            list = all.filter((b) => String(b.date || b.booking_date || "").slice(0, 10) === today && !isDead(b));
+          } else if (c === "open") {
+            list = await loadOpen();
+          } else if (c === "deposit") {
+            const all = await fetchAll();
+            list = all.filter((b) => hasDepositPending(b) && !isDead(b));
+          } else if (c === "cancelled") {
+            const all = await fetchAll();
+            list = all.filter(isDead);
           } else {
-            list = await fetchStatus(chip.value);
+            list = (await fetchStatus(c)).filter((b) => !isDead(b));
           }
           const seen = {};
           list = list.filter((b) => { if (seen[b.id]) return false; seen[b.id] = 1; return true; });
@@ -1893,6 +2213,8 @@
         } finally { loading.value = false; refreshing.value = false; }
       }
       function setChip(id) { haptic("light"); chip.value = id; load(); }
+      function setView(id) { haptic("light"); view.value = id; }
+      function onPickTimeline(b) { haptic("light"); detail.value = b; detailOpen.value = true; }
       function goNew() { haptic("light"); newOpen.value = true; }
       function onSaved() { newOpen.value = false; chip.value = "open"; load(); }
 
@@ -2023,13 +2345,16 @@
       }
 
       onMounted(async () => {
+        window.addEventListener("psv:retry", load);
         await load();
         const pid = pendingBooking.value;
         if (pid) { pendingBooking.value = null; await openById(pid); }
       });
+      onUnmounted(() => window.removeEventListener("psv:retry", load));
       watch(pendingBooking, async (pid) => { if (pid) { pendingBooking.value = null; await openById(pid); } });
 
       return { chips: CHIPS, chip, chipHint, emptyText, rows, loading, refreshing, busy, detail, detailOpen, newOpen,
+        view, setView, onPickTimeline,
         reasonOpen, reasonMode, reasonPick, reasonNote, reasonList, proofOpen, proof,
         bkStatus, depositText, depRef, cardActions, detailActions, setChip, goNew, onSaved, load, openDetail, runAction, confirmReason, fmt12h };
     },
@@ -2198,6 +2523,7 @@
       { en: "Reminders", sub: "Booking reminders", icon: "🔔", path: "/notifications" },
     ] },
     { id: "sessions", emoji: "🖥", en: "Sessions & consoles", tone: "indigo", items: [
+      { en: "Booking timeline", sub: "Consoles × time, day view", icon: "🕒", path: "/timeline" },
       { en: "Live sessions", sub: "Consoles in use", icon: "🖥", path: "/consoles" },
       { en: "Extend session", sub: "Add more minutes", icon: "⏱", path: "/consoles" },
       { en: "End session", sub: "Close a session", icon: "⏹", path: "/consoles" },
@@ -3734,6 +4060,7 @@
     router.register("/members", Members);
     router.register("/members/register", MemberRegister);
     router.register("/bookings", Bookings);
+    router.register("/timeline", TimelineGrid);
     router.register("/more", More);
     router.register("/print", PrintScreen);
     router.register("/me", MeScreen);
@@ -4319,6 +4646,17 @@
           <van-tabbar-item name="/more" icon="apps-o">Menu</van-tabbar-item>
         </van-tabbar>
       </div>
+
+      <!-- WAVE 4 — friendly rate-limit state (429 / Cloudflare challenge).
+           Never renders raw HTML; auto-retries GETs 2s→4s→8s, then offers Retry. -->
+      <div v-if="rl.show" class="psv-rl" role="alert" aria-live="polite">
+        <div class="psv-rl__card">
+          <div class="psv-rl__spin" :class="{ 'is-off': rl.exhausted }"></div>
+          <div class="psv-rl__title">{{ rl.exhausted ? 'Server is busy' : 'Server is busy — retrying…' }}</div>
+          <div class="psv-rl__sub">{{ rl.sub }}</div>
+          <button class="psv-btn psv-btn--primary psv-btn--block" :disabled="rl.retrying" @click="retry">{{ rl.retrying ? 'Retrying…' : 'Retry' }}</button>
+        </div>
+      </div>
     `,
     setup() {
       const activeView = computed(() => router.routes[router.current.value] || Home);
@@ -4330,7 +4668,42 @@
       });
       const needLogin = computed(() => authGate.value);
       function onLoggedIn() { authGate.value = false; haptic("light"); }
-      return { activeView, tab, needLogin, onLoggedIn, nativeMode: NATIVE };
+
+      // ── Global rate-limit state (WAVE 4) ──────────────────
+      // api.js emits psv:rate-limit / psv:rate-limit-clear around the backoff
+      // and psv:retry when the user taps the Retry button.
+      const rl = reactive({ show: false, exhausted: false, attempt: 0, max: 1, retrying: false, sub: "" });
+      let _rlTimer = null;
+      function _onRateLimit(e) {
+        const d = (e && e.detail) || {};
+        rl.show = true;
+        rl.attempt = d.attempt || 1;
+        rl.max = d.max || 1;
+        rl.exhausted = !!d.exhausted;
+        rl.retrying = false;
+        rl.sub = rl.exhausted
+          ? "The server is rate-limited. Please wait a moment, then tap Retry."
+          : "Please wait — attempt " + rl.attempt + " of " + rl.max + ".";
+        if (_rlTimer) { clearTimeout(_rlTimer); _rlTimer = null; }
+        if (!rl.exhausted) {
+          _rlTimer = setTimeout(function () { rl.show = false; }, (d.delayMs || 2000) + 3000);
+        }
+      }
+      function _onRateLimitClear() {
+        if (_rlTimer) { clearTimeout(_rlTimer); _rlTimer = null; }
+        rl.show = false; rl.exhausted = false; rl.retrying = false;
+      }
+      function retry() {
+        haptic("light");
+        rl.retrying = true;
+        try { PSV.retryNow(); } catch (_e) {}
+        setTimeout(function () { rl.retrying = false; rl.show = false; }, 1200);
+      }
+      onMounted(() => {
+        window.addEventListener("psv:rate-limit", _onRateLimit);
+        window.addEventListener("psv:rate-limit-clear", _onRateLimitClear);
+      });
+      return { activeView, tab, needLogin, onLoggedIn, nativeMode: NATIVE, rl, retry };
     },
   };
 
@@ -4354,6 +4727,7 @@
     app.component("Members", Members);
     app.component("MemberRegister", MemberRegister);
     app.component("Bookings", Bookings);
+    app.component("TimelineGrid", TimelineGrid);
     app.component("More", More);
     app.component("Deposit", Deposit);
     app.component("PrintScreen", PrintScreen);

@@ -1178,6 +1178,192 @@ async def api_get_booking(booking_id: int, request: Request, auth=Depends(verify
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Shared booking-list helpers (Staff App Wave 4: status=open + /api/timeline) ──
+# console_sessions can hold >1 row per booking_id (re-opened / duplicated sessions),
+# so the list/timeline joins below resolve exactly ONE (latest) session per booking so a
+# booking can never appear twice in one response.
+_LATEST_SESSION_JOIN = (
+    " LEFT JOIN ("
+    "   SELECT s.booking_id, s.status, s.actual_start, s.actual_end, s.actual_duration_mins"
+    "   FROM console_sessions s"
+    "   INNER JOIN ("
+    "     SELECT booking_id, MAX(id) AS max_id FROM console_sessions"
+    "     WHERE booking_id IS NOT NULL GROUP BY booking_id"
+    "   ) latest ON latest.max_id = s.id"
+    " ) cs ON cs.booking_id = cb.id"
+)
+
+# Live booking statuses the Staff App "Open" filter must show in ONE request.
+_LIVE_BOOKING_STATUSES = ("pending", "confirmed", "pending_check_in", "checked_in", "active")
+
+# Single-query "open bookings" list (no status-filter fan-out, no N+1, no dup rows).
+_OPEN_BOOKINGS_SQL = (
+    "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, "
+    "DATE_FORMAT(COALESCE(cs.actual_start, cb.planned_start), '%%H:%%i') AS start_time, "
+    "DATE_FORMAT(COALESCE(cs.actual_end, cb.planned_end), '%%H:%%i') AS end_time, "
+    "CASE WHEN LOWER(COALESCE(cs.status, '')) IN ('active','checked_in') THEN LOWER(cs.status) "
+    "     ELSE LOWER(cb.status) END AS status, "
+    "cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, "
+    "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, "
+    "cb.phone, cb.game_name, cb.created_at, cb.cancelled_at, "
+    "cb.deposit_status, cb.deposit_method, cb.deposit_amount, cb.deposit_ref, cb.deposit_ref_type "
+    "FROM console_bookings cb" + _LATEST_SESSION_JOIN +
+    " WHERE (LOWER(cb.status) IN ('pending','confirmed','pending_check_in','checked_in','active')"
+    "        OR LOWER(COALESCE(cs.status, '')) IN ('active','checked_in'))"
+    " ORDER BY cb.booking_date ASC, COALESCE(cs.actual_start, cb.planned_start) ASC"
+)
+
+# One query for a single day's grid (cancelled included so the UI can dim them).
+_TIMELINE_SQL = (
+    "SELECT cb.id, cb.console_id, cb.member_id, cb.customer_name, "
+    "LOWER(cb.status) AS booking_status, LOWER(COALESCE(cs.status, '')) AS session_status, "
+    "COALESCE(cs.actual_start, cb.planned_start) AS start_dt, "
+    "COALESCE(cs.actual_end, cb.planned_end) AS end_dt, "
+    "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, "
+    "cb.deposit_status "
+    "FROM console_bookings cb" + _LATEST_SESSION_JOIN +
+    " WHERE cb.booking_date=%s ORDER BY start_dt ASC"
+)
+
+
+def _console_type_map(rows):
+    """Batch-resolve console_id -> console_type (N+1 fix, mirrors /api/bookings)."""
+    all_cids = set()
+    for r in rows:
+        _cid = r.get("console_id", "")
+        if _cid and not any(t in _cid.lower() for t in ("ps5", "ps4", "ps3", "xbox", "switch", "pc")):
+            all_cids.add(_cid)
+    ctype_map = {}
+    if all_cids:
+        cid_list = sorted(all_cids)
+        placeholders = ",".join("%s" for _ in cid_list)
+        try:
+            crows = _mysql_query(
+                f"SELECT console_id, console_type FROM console_status WHERE console_id IN ({placeholders})",
+                tuple(cid_list),
+            )
+            for cr in crows or []:
+                ctype_map[cr.get("console_id")] = cr.get("console_type", cr.get("console_id"))
+        except Exception:
+            pass
+    return ctype_map
+
+
+def _normalize_booking_rows(rows, can_see_ref):
+    """Normalise raw console_bookings rows into the Staff App booking shape.
+
+    Mirrors GET /api/bookings exactly (customerName, timeSlot, deposit_*, console_id,
+    durationMins, ...).  ``deposit_ref`` is only exposed when ``can_see_ref`` is True
+    (trusted staff / service caller) — never to a non-staff token.
+    """
+    ctype_map = _console_type_map(rows)
+    from datetime import datetime as _dt, timedelta
+    normalized = []
+    for r in rows:
+        _cid = r.get("console_id", "")
+        _ctype = ctype_map.get(_cid, _cid)
+        start = r.get("start_time")
+        time_slot = ""
+        end_time_str = ""
+        start_time_full = ""
+        if start:
+            try:
+                if isinstance(start, str) and len(start) <= 5 and ':' in start and '-' not in start:
+                    start_dt = _dt.strptime(start, "%H:%M")
+                else:
+                    start_dt = _dt.fromisoformat(start) if isinstance(start, str) else start
+                time_slot = start_dt.strftime("%H:%M")
+                start_time_full = start_dt.strftime("%H:%M")
+                dur = int(r.get("duration_mins", 0) or 0)  # 0 = No Timer
+                end_dt = start_dt + timedelta(minutes=dur)
+                end_time_str = end_dt.strftime("%H:%M")
+            except Exception:
+                time_slot = str(start)[:5] if start else ""
+        bd = r.get("booking_date")
+        bd_str = ""
+        if bd:
+            try:
+                bd_o = _dt.fromisoformat(bd) if isinstance(bd, str) else bd
+                bd_str = bd_o.strftime("%Y-%m-%d")
+            except Exception:
+                bd_str = str(bd)[:10]
+        _phone = r.get("phone", "") or ""
+        _customer_name = r.get("customer_name", "") or r.get("staff_name", "") or ""
+        _member_id = r.get("member_id", "") or ""
+        # customerName priority: customer_name -> member_id -> phone -> 'Guest'
+        if not _customer_name.strip():
+            _customer_name = _member_id.strip() if _member_id and _member_id.strip() and _member_id.strip() != "Guest" else (_phone.strip() or "Guest")
+        _created = r.get("created_at")
+        _created_str = ""
+        if _created:
+            try:
+                if hasattr(_created, 'isoformat'):
+                    if _created.tzinfo is None:
+                        _created_str = _created.replace(tzinfo=timezone.utc).isoformat()
+                    else:
+                        _created_str = _created.isoformat()
+                else:
+                    _created_str = str(_created)
+            except Exception:
+                _created_str = str(_created)
+        normalized.append({
+            "id": r.get("id", ""),
+            "customerName": _customer_name,
+            "phone": _phone,
+            "date": bd_str,
+            "timeSlot": time_slot,
+            "startTime": start_time_full,
+            "endTime": end_time_str,
+            "consoleType": _ctype,
+            "durationMins": r.get("duration_mins", 60),
+            "gameName": r.get("game_name", ""),
+            "console_id": r.get("console_id", ""),
+            "consoleId": r.get("console_id", ""),
+            "member_id": r.get("member_id", ""),
+            "telegram_chat_id": r.get("telegram_chat_id", ""),
+            "telegramChatId": r.get("telegram_chat_id", ""),
+            "status": r.get("status", ""),
+            "created_at": _created_str,
+            "end_time": str(r.get("end_time", "") or ""),
+            "cancelled_at": str(r.get("cancelled_at", "") or ""),
+            "cancelledAt": str(r.get("cancelled_at", "") or ""),
+            "deposit_status": r.get("deposit_status", "") or "",
+            "deposit_method": r.get("deposit_method", "") or "",
+            "deposit_amount": int(r.get("deposit_amount", 0) or 0),
+            "deposit_ref": (r.get("deposit_ref") or "") if can_see_ref else "",
+            "depositRef": (r.get("deposit_ref") or "") if can_see_ref else "",
+            "deposit_ref_type": (r.get("deposit_ref_type") or "") if can_see_ref else "",
+            "can_view_proof": can_see_ref,
+            "notes": r.get("notes", "") or ""
+        })
+    return normalized
+
+
+def _branch_hm(v):
+    """Format a branches.open_time/close_time (TIME or timedelta) as HH:MM."""
+    if v is None:
+        return None
+    try:
+        if hasattr(v, "total_seconds"):
+            s = int(v.total_seconds())
+            return f"{s // 3600:02d}:{(s % 3600) // 60:02d}"
+    except Exception:
+        pass
+    return str(v)[:5]
+
+
+def _hm(v):
+    """Format a datetime / TIME value as HH:MM ("" when empty)."""
+    if not v:
+        return ""
+    try:
+        return (v if hasattr(v, "strftime") else datetime.fromisoformat(str(v))).strftime("%H:%M")
+    except Exception:
+        s = str(v)
+        return s[11:16] if len(s) >= 16 else s[:5]
+
+
+# ================================================================
 #  GET /api/bookings - list bookings by status
 # ================================================================
 @router.get("/bookings", response_model=GenericResponse, tags=["Bookings"], summary="List bookings by status [MySQL]")
@@ -1188,6 +1374,11 @@ async def api_get_bookings(request: Request, status: str = "", member_id: str = 
     """
     try:
         _can_see_ref = staff_audit.can_view_payment_ref(request)
+        # Staff App Wave 4: ONE request for all live bookings (replaces the 4-call fan-out).
+        if (status or "").lower() == "open":
+            _rows = _mysql_query(_OPEN_BOOKINGS_SQL)
+            _bookings = _normalize_booking_rows(_rows, _can_see_ref)
+            return ok({"bookings": _bookings, "total": len(_bookings)})
         sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, " \
               "DATE_FORMAT(COALESCE(cs.actual_start, cb.planned_start), '%%H:%%i') AS start_time, " \
               "DATE_FORMAT(COALESCE(cs.actual_end, cb.planned_end), '%%H:%%i') AS end_time, " \
@@ -1196,7 +1387,7 @@ async def api_get_bookings(request: Request, status: str = "", member_id: str = 
               "cb.phone, cb.game_name, cb.created_at, cb.cancelled_at, " \
               "cb.deposit_status, cb.deposit_method, cb.deposit_amount, " \
               "cb.deposit_ref, cb.deposit_ref_type " \
-              "FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id = cb.id"
+              "FROM console_bookings cb" + _LATEST_SESSION_JOIN
         where_clauses = []
         params = []
         status_lower = status.lower() if status else ""
@@ -1243,7 +1434,7 @@ async def api_get_bookings(request: Request, status: str = "", member_id: str = 
         sql += " ORDER BY cb.booking_date DESC, COALESCE(cs.actual_start, cb.planned_start) DESC"
         rows = _mysql_query(sql, tuple(params)) if params else _mysql_query(sql)
         if not rows:
-            return ok({"bookings": []})
+            return ok({"bookings": [], "total": 0})
         # Batch resolve console_types (N+1 fix)
         all_cids = set()
         for r in rows:
@@ -1341,9 +1532,82 @@ async def api_get_bookings(request: Request, status: str = "", member_id: str = 
                 "can_view_proof": _can_see_ref,
                 "notes": r.get("notes","") or ""
             })
-        return ok({"bookings": normalized})
+        return ok({"bookings": normalized, "total": len(normalized)})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/timeline", response_model=GenericResponse, tags=["Bookings"], summary="Staff App day timeline: consoles + bookings [MySQL]")
+async def api_timeline(request: Request, date: str = Query("", description="YYYY-MM-DD (defaults to today)"),
+                      branch_id: int = Query(0), auth=Depends(verify_api_key)):
+    """Single-call grid for the Staff App timeline page.
+
+    Query: ``?date=YYYY-MM-DD`` (optional; defaults to today).
+    Returns ``{success, data:{date, consoles:[{id,name,type,status}],
+    bookings:[{id,console_id,start,end,status,customer,guest,member_id,
+    duration_mins,cancelled,deposit_status}], open_from, open_to}}``.
+
+    Cancelled bookings are returned with ``cancelled: true`` so the UI can dim them
+    instead of a second request.  One query for consoles + one for the day's bookings;
+    a booking can never appear twice (latest session per booking is selected).
+    """
+    from datetime import datetime as _dt
+    _clean = (date or "").strip()
+    if _clean:
+        for _fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y", "%m-%d-%Y"):
+            try:
+                _clean = _dt.strptime(_clean, _fmt).strftime("%Y-%m-%d")
+                break
+            except ValueError:
+                continue
+    else:
+        _clean = _dt.now().strftime("%Y-%m-%d")
+    bid = branch_id or 1
+    try:
+        consoles = _mysql_query(
+            "SELECT console_id, console_type, status FROM console_status "
+            "WHERE branch_id=%s ORDER BY console_id",
+            (bid,),
+        )
+        rows = _mysql_query(_TIMELINE_SQL, (_clean,))
+        bookings = []
+        for r in rows:
+            _bs = str(r.get("booking_status") or "").lower()
+            _ss = str(r.get("session_status") or "").lower()
+            _live = _ss in ("active", "checked_in")
+            _start = r.get("start_dt")
+            _end = r.get("end_dt")
+            _name = (r.get("customer_name") or "").strip()
+            _mid = (r.get("member_id") or "").strip()
+            _guest = (not _mid) or _mid.lower() == "guest" or _name.lower() == "guest"
+            bookings.append({
+                "id": r.get("id"),
+                "console_id": r.get("console_id"),
+                "start": _hm(_start),
+                "end": _hm(_end),
+                "status": _ss if _live else _bs,
+                "customer": _name or _mid or "Guest",
+                "guest": bool(_guest),
+                "member_id": _mid,
+                "duration_mins": int(r.get("duration_mins") or 0),
+                "cancelled": _bs == "cancelled",
+                "deposit_status": r.get("deposit_status") or "",
+            })
+        branch = _mysql_query_one("SELECT open_time, close_time FROM branches WHERE id=%s", (bid,)) or {}
+        return ok({
+            "date": _clean,
+            "consoles": [{
+                "id": c.get("console_id"),
+                "name": c.get("console_id"),
+                "type": c.get("console_type"),
+                "status": c.get("status"),
+            } for c in consoles],
+            "bookings": bookings,
+            "open_from": _branch_hm(branch.get("open_time")) or "09:00",
+            "open_to": _branch_hm(branch.get("close_time")) or "21:00",
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/search-bookings", response_model=GenericResponse, tags=["Bookings"], summary="Search bookings by telegram_chat_id [MySQL]")
 async def api_search_bookings(telegram_chat_id: str = Query("", description="Telegram chat ID of customer"), date: str = Query("", description="Filter by booking date (YYYY-MM-DD)"), auth=Depends(verify_api_key)):

@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from fastapi.responses import JSONResponse
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
-from helpers import _mysql_get_setting, ok, error_response, rate_limit_30pm, _parse_pm_and_inject
+from helpers import _mysql_get_setting, ok, error_response, rate_limit_30pm, rate_limit_120pm, _parse_pm_and_inject
 from deps import verify_api_key
 from models import GenericResponse
 import staff_audit
@@ -89,7 +89,7 @@ def _calc_member_liability_kyat(member_id):
         return 0  # non-critical: liability calc fallback
 
 @router.get("/fetch_members", response_model=GenericResponse, tags=["Members"], summary="Fetch all members [MySQL]")
-async def api_fetch_members(limit: int = 100, offset: int = 0, auth=Depends(verify_api_key), _rl=Depends(rate_limit_30pm)):
+async def api_fetch_members(limit: int = 100, offset: int = 0, auth=Depends(verify_api_key), _rl=Depends(rate_limit_120pm)):
     """Fetch all members with name, phone, tier, and wallet balance (liability).
     Supports pagination via limit/offset query params (Fix #28). Default: limit=100, offset=0."""
     try:

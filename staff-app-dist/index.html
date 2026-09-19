@@ -36,6 +36,15 @@
     a.btn:active { transform: scale(.99); }
     .hint { font-size: 12px; color: #7d8aa2; margin-top: 16px; line-height: 1.6; }
     .web { display: block; text-align: center; margin-top: 12px; color: #8b98b3; font-size: 13px; }
+    .versions { margin-top: 22px; border-top: 1px solid #1f2a45; padding-top: 16px; }
+    .versions__h { font-size: 13px; font-weight: 700; color: #c3cbdd; margin-bottom: 10px; letter-spacing: .2px; }
+    .vrow { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #1f2a45; border-radius: 12px; background: #0e1729; margin-bottom: 8px; text-decoration: none; color: inherit; }
+    .vrow:hover { border-color: #2c3a5e; }
+    .vrow__v { font-weight: 700; font-size: 14px; color: #fff; min-width: 52px; }
+    .vrow__m { flex: 1; font-size: 11.5px; color: #8b98b3; line-height: 1.45; }
+    .vrow__tag { font-size: 10px; padding: 2px 8px; border-radius: 999px; background: #16233c; border: 1px solid #26304d; color: #9fb0d0; white-space: nowrap; }
+    .vrow__tag--latest { background: #14322c; border-color: #1f5a4c; color: #6ee7b7; }
+    .vrow__dl { font-size: 12px; color: #7dd3fc; }
     code { background: #1b2740; padding: 1px 6px; border-radius: 6px; font-size: 12px; }
   </style>
 </head>
@@ -52,8 +61,13 @@
       <span class="pill" id="notes">—</span>
     </div>
 
-    <a class="btn" id="dl" href="psvibe-staff.apk" download>⬇ Download APK</a>
+    <a class="btn" id="dl" href="psvibe-staff.apk" download>⬇ Download latest APK</a>
     <a class="web" href="/webapp/">or open the web app in your browser →</a>
+
+    <div class="versions">
+      <div class="versions__h">Version history</div>
+      <div id="vlist"><div class="vrow"><div class="vrow__m">Loading…</div></div></div>
+    </div>
 
     <p class="hint">
       Install: open the downloaded file, allow <code>Install unknown apps</code> for your browser, then tap Install.
@@ -61,12 +75,27 @@
     </p>
   </div>
   <script>
+    function fmt(n) { return n ? (n / 1048576).toFixed(2) + " MB" : "-"; }
     fetch("version.json").then(function (r) { return r.json(); }).then(function (v) {
       if (!v) return;
       document.getElementById("ver").textContent = "v" + (v.version || "");
       document.getElementById("notes").textContent = v.notes || "";
       var dl = document.getElementById("dl");
       if (v.apk_url) dl.href = v.apk_url;
+      dl.setAttribute("download", "psvibe-staff-" + (v.version || "latest") + ".apk");
+    }).catch(function () {});
+    fetch("versions.json").then(function (r) { return r.json(); }).then(function (m) {
+      if (!m || !m.versions || !m.versions.length) return;
+      var html = m.versions.map(function (v) {
+        var isLatest = v.version === m.latest;
+        return '<a class="vrow" href="' + v.url + '" download>' +
+          '<div class="vrow__v">v' + v.version + '</div>' +
+          '<div class="vrow__m">' + (v.released_at || "") + ' · ' + (v.arch || "universal") + ' · ' + fmt(v.size) +
+            '<br><span style="opacity:.75">sha256 ' + String(v.sha256 || "").slice(0, 16) + '…</span></div>' +
+          '<div class="vrow__tag' + (isLatest ? ' vrow__tag--latest' : '') + '">' + (isLatest ? 'LATEST' : 'v' + v.version_code) + '</div>' +
+          '<div class="vrow__dl">⬇</div></a>';
+      }).join("");
+      document.getElementById("vlist").innerHTML = html;
     }).catch(function () {});
   </script>
 </body>

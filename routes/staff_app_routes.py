@@ -21,8 +21,9 @@ import json
 import logging
 import os
 import secrets
+import hashlib
 
-from fastapi import APIRouter, Depends, Body, Header, HTTPException
+from fastapi import APIRouter, Depends, Body, Header, HTTPException, Request, Response
 
 from auth import get_staff_or_dashboard_user, require_admin
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_rowcount
@@ -129,15 +130,27 @@ async def delete_device(device_id: int, user: dict = Depends(require_admin)):
 
 
 @router.get("/app/version")
-async def app_version():
-    """PUBLIC — current APK version manifest. Reads staff-app-dist/version.json."""
+async def app_version(request: Request, response: Response):
+    """PUBLIC — current APK version manifest. Reads staff-app-dist/version.json.
+
+    Rarely-changing and polled by every app launch, so it is safely cacheable at the
+    edge/browser: ``Cache-Control: public, max-age=60`` + a strong ``ETag`` (304 on
+    match).  This also cuts the request volume Cloudflare sees from the app.
+    """
+    payload = _DEFAULT_VERSION
     try:
         if os.path.isfile(_VERSION_FILE):
             with open(_VERSION_FILE, "r", encoding="utf-8") as fh:
-                return json.load(fh)
+                payload = json.load(fh)
     except Exception as e:
         logger.warning(f"version.json read failed: {e}")
-    return _DEFAULT_VERSION
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    etag = '"' + hashlib.sha256(body.encode("utf-8")).hexdigest()[:32] + '"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "public, max-age=60"})
+    response.headers["Cache-Control"] = "public, max-age=60"
+    response.headers["ETag"] = etag
+    return payload
 
 
 @router.post("/push/internal")
@@ -221,7 +234,7 @@ def _iso(v):
 
 
 @router.get("/notifications")
-async def list_notifications(limit: int = 50, unread_only: int = 0,
+async def list_notifications(response: Response, limit: int = 50, unread_only: int = 0,
                              user: dict = Depends(get_staff_or_dashboard_user)):
     """In-app notification history for the calling staff user (+ broadcast rows).
 
@@ -229,6 +242,7 @@ async def list_notifications(limit: int = 50, unread_only: int = 0,
     Returns: {items:[{id,type,title,body,booking_id,created_at,read_at}], unread:<int>}
     """
     _notif_init()
+    response.headers["Cache-Control"] = "no-store"
     username = _notif_username(user)
     try:
         lim = int(limit or 50)
@@ -287,9 +301,10 @@ async def read_all_notifications(user: dict = Depends(get_staff_or_dashboard_use
 
 
 @router.get("/notifications/unread-count")
-async def notifications_unread_count(user: dict = Depends(get_staff_or_dashboard_user)):
+async def notifications_unread_count(response: Response, user: dict = Depends(get_staff_or_dashboard_user)):
     """Unread badge counter for the calling staff user. Returns {unread:<int>}."""
     _notif_init()
+    response.headers["Cache-Control"] = "no-store"
     username = _notif_username(user)
     try:
         cnt = _mysql_query_one(

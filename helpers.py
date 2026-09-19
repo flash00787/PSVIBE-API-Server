@@ -34,6 +34,10 @@ class RateLimiter:
 rate_limit_10pm = RateLimiter(max_requests=10, window_seconds=60)
 rate_limit_5pm = RateLimiter(max_requests=5, window_seconds=60)
 rate_limit_30pm = RateLimiter(max_requests=30, window_seconds=60)
+# Staff App Wave 4: reads must never trip the limiter during normal app usage.
+# NOTE: behind the Cloudflare tunnel every request arrives from 127.0.0.1, so this
+# in-memory key is effectively GLOBAL.  Keep read limits generous; keep writes strict.
+rate_limit_120pm = RateLimiter(max_requests=120, window_seconds=60)  # generous reads: 120/min
 
 # ── Response helpers ──
 def ok(data=None, message=""):

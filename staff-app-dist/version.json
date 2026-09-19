@@ -1,6 +1,9 @@
 {
   "version": "1.1.0",
   "version_code": 2,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff.apk",
-  "notes": "PS VIBE Staff App v1.1.0 — bookings (approve/reject/check-in/cancel, deposit verify+redeem), sales with promo/coupon/deposit deduction, session move/swap, stock-out/stock-check/low-stock alerts, today report + balances, attendance check-out, gift card (owner PIN), rank/bonus, notification inbox, 80mm Bluetooth printing. English UI. Sideload: allow 'Install unknown apps'."
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.1.0.apk",
+  "size": 4712961,
+  "sha256": "9de12bbca602064bb99e6f16ee2b33bf3d6fda8573908e8ad45ddbb9101dc480",
+  "released_at": "2026-09-19",
+  "notes": "Bookings ops (approve/reject/check-in/cancel, deposit verify+redeem), promo/coupon, sessions move/swap, inventory stock-out/check/alerts, report+balances, attendance check-out, gift card, rank/bonus, notification centre, 80mm printing. English UI."
 }

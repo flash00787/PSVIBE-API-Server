@@ -1,0 +1,29 @@
+{
+  "latest": "1.1.0",
+  "latest_code": 2,
+  "updated_at": "2026-09-19T17:42:18Z",
+  "versions": [
+    {
+      "version": "1.1.0",
+      "version_code": 2,
+      "arch": "universal",
+      "file": "psvibe-staff-1.1.0.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.1.0.apk",
+      "size": 4712961,
+      "sha256": "9de12bbca602064bb99e6f16ee2b33bf3d6fda8573908e8ad45ddbb9101dc480",
+      "released_at": "2026-09-19",
+      "notes": "Bookings ops (approve/reject/check-in/cancel, deposit verify+redeem), promo/coupon, sessions move/swap, inventory stock-out/check/alerts, report+balances, attendance check-out, gift card, rank/bonus, notification centre, 80mm printing. English UI."
+    },
+    {
+      "version": "1.0.0",
+      "version_code": 1,
+      "arch": "arm64-v8a",
+      "file": "psvibe-staff-1.0.0-arm64-v8a.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.0.0-arm64-v8a.apk",
+      "size": 4664442,
+      "sha256": "d80823037eafbc1bf1999d8532088fe5287802b63b1d3a2c7423ab91c81416ee",
+      "released_at": "2026-09-19",
+      "notes": "First staff build \u2014 login, sales, voucher printing, FCM push, notification inbox"
+    }
+  ]
+}

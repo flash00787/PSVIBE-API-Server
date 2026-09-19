@@ -559,3 +559,35 @@ html.psv-native .psv-table th, html.psv-native .psv-table td { border-bottom-col
 html.psv-native .psv-table thead th { color: var(--psv-text-dim); }
 html.psv-native .psv-check__sys { color: var(--psv-text-dim); }
 html.psv-native .psv-check__in { background: rgba(255,255,255,.05); border-color: var(--psv-border); color: var(--psv-text); }
+
+/* ══════════════════════════════════════════════════════════════════
+ *  WAVE 4 — premium layer: timeline, segmented control, rate-limit card
+ *  Scoped to html.psv-native so the Telegram Mini App stays untouched.
+ * ══════════════════════════════════════════════════════════════════ */
+html.psv-native .psv-seg { background: var(--psv-surface); border-color: var(--psv-border); border-radius: var(--psv-r-pill); }
+html.psv-native .psv-seg__b { color: var(--psv-text-dim); }
+html.psv-native .psv-seg__b.is-on { background: linear-gradient(135deg, rgba(240,180,41,.22), rgba(240,180,41,.10)); color: var(--psv-gold); box-shadow: inset 0 0 0 1px rgba(240,180,41,.5); }
+
+html.psv-native .psv-tl-datebar .psv-tl-arrow { background: var(--psv-surface); border-color: var(--psv-border); color: var(--psv-text); }
+html.psv-native .psv-tl-datelbl { color: var(--psv-text); letter-spacing: .2px; }
+html.psv-native .psv-tl-legend { color: var(--psv-text-dim); }
+html.psv-native .psv-tl-scroll { background: rgba(15,23,42,.55); border-color: var(--psv-border); border-radius: var(--psv-r); }
+html.psv-native .psv-tl-corner { background: var(--pv-navy-800); border-color: var(--psv-border); color: var(--psv-text-dim); }
+html.psv-native .psv-tl-head-hours { background: var(--pv-navy-800); border-color: var(--psv-border); }
+html.psv-native .psv-tl-hour { border-color: var(--psv-border); color: var(--psv-text-dim); }
+html.psv-native .psv-tl-label { background: rgba(15,23,42,.92); border-color: var(--psv-border); }
+html.psv-native .psv-tl-label__id { color: var(--psv-text); }
+html.psv-native .psv-tl-track { border-color: var(--psv-border); }
+html.psv-native .psv-tl-gl { background: var(--psv-border); }
+html.psv-native .psv-tl-foot { color: var(--psv-text-dim); }
+html.psv-native .psv-tl-empty__sub { color: var(--psv-text-dim); }
+html.psv-native .psv-tl-block { border-radius: 10px; }
+html.psv-native .psv-tl-block.is-pending { background: rgba(251,191,36,.26); color: #ffe9b8; border-color: rgba(251,191,36,.55); }
+html.psv-native .psv-tl-block.is-confirmed { background: rgba(96,165,250,.26); color: #dbeafe; border-color: rgba(96,165,250,.55); }
+html.psv-native .psv-tl-block.is-checkedin { background: rgba(45,212,191,.26); color: #ccfbf1; border-color: rgba(45,212,191,.55); }
+html.psv-native .psv-tl-block.is-active { background: rgba(52,211,153,.30); color: #d1fae5; border-color: rgba(52,211,153,.6); }
+html.psv-native .psv-tl-block.is-done { background: rgba(148,163,184,.18); color: #b6c2d6; border-color: rgba(148,163,184,.35); opacity: .7; }
+
+html.psv-native .psv-rl__card { background: var(--pv-glass-2); border-color: var(--psv-border); box-shadow: var(--pv-shadow); backdrop-filter: blur(16px) saturate(120%); -webkit-backdrop-filter: blur(16px) saturate(120%); }
+html.psv-native .psv-rl__title { color: var(--psv-text); }
+html.psv-native .psv-rl__sub { color: var(--psv-text-dim); }

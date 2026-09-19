@@ -63,9 +63,82 @@
     try { window.dispatchEvent(new Event("psv-auth-expired")); } catch (_e) {}
   }
 
+  // ── Rate-limit / Cloudflare-challenge detection (WAVE 4) ─
+  // The owner's phone once hit a Cloudflare "You are being rate limited /
+  // banned temporarily" HTML page; the old code surfaced that raw HTML as the
+  // error message. We now: detect challenges, NEVER render raw HTML, and
+  // auto-retry GETs with exponential backoff (2s → 4s → 8s, max 3 retries).
+  const RATE_RE = /(rate limit|too many requests|attention required|you are being rate limited|banned temporarily|cloudflare|__cf_chl|cf-error-details)/i;
+  const RATE_MSG = "Server is busy — retrying…";
+  const BACKOFF_MS = [2000, 4000, 8000];
+
+  function _looksHtml(s) {
+    return typeof s === "string" && /<\s*(!doctype|html|head|body|title|div|script|p|span)\b/i.test(s.slice(0, 400));
+  }
+  function _cleanText(s, status) {
+    if (typeof s !== "string" || !s) return "HTTP " + status;
+    if (_looksHtml(s)) return "Server error (HTTP " + status + ") — please try again";
+    return s.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) || ("HTTP " + status);
+  }
+  function _isChallenge(status, ctype, body) {
+    if (status === 429) return true;
+    const isHtml = ctype.indexOf("html") >= 0;
+    if (typeof body === "string" && body && RATE_RE.test(body)) return true;
+    if ((status === 403 || status === 503) && (isHtml || !ctype)) return true;
+    return false;
+  }
+  function _rateError() {
+    const e = new Error(RATE_MSG);
+    e.code = "RATE_LIMITED"; e.rateLimited = true; e.retryable = true;
+    return e;
+  }
+  function _emit(name, detail) {
+    try { window.dispatchEvent(new CustomEvent(name, { detail: detail || {} })); } catch (_e) {}
+  }
+  let _rlActive = false;
+  function _rlStart(info) { _rlActive = true; _emit("psv:rate-limit", info || {}); }
+  function _rlClear() { if (_rlActive) { _rlActive = false; _emit("psv:rate-limit-clear", {}); } }
+
+  // ── Request de-bursting: TTL cache + in-flight dedupe (WAVE 4) ──
+  // Tabs/screens used to refetch instantly (and the "Open" chip fired 4
+  // parallel status calls). Identical concurrent GETs now share ONE promise;
+  // results are cached for CACHE_TTL so quick tab switches cost zero requests.
+  const CACHE_TTL = 15000;
+  const _cache = Object.create(null);   // key → { ts, data }
+  const _inflight = Object.create(null); // key → Promise
+
+  function _cacheKey(path, options) {
+    const m = String((options && options.method) || "GET").toUpperCase();
+    return m + " " + path;
+  }
+  function invalidate(prefix) {
+    const p = prefix || "";
+    for (const k in _cache) { if (!p || k.indexOf(p) >= 0) delete _cache[k]; }
+  }
+  function apiCached(path, options, ttlMs) {
+    const opts = options || {};
+    const m = String(opts.method || "GET").toUpperCase();
+    if (m !== "GET" && m !== "HEAD") return api(path, options);
+    const key = _cacheKey(path, opts);
+    const ttl = ttlMs == null ? CACHE_TTL : ttlMs;
+    const hit = _cache[key];
+    if (hit && (Date.now() - hit.ts) < ttl) return Promise.resolve(hit.data);
+    if (_inflight[key]) return _inflight[key];
+    const pr = api(path, options).then(function (data) {
+      _cache[key] = { ts: Date.now(), data: data };
+      delete _inflight[key];
+      return data;
+    }, function (err) {
+      delete _inflight[key];
+      throw err;
+    });
+    _inflight[key] = pr;
+    return pr;
+  }
+  function retryNow() { invalidate(); _emit("psv:retry", {}); }
+
   // ── Low-level API call ──────────────────────────────────
-  async function api(path, options) {
-    options = options || {};
+  async function _raw(path, options) {
     const headers = Object.assign({}, options.headers || {});
     if (jwt) headers["Authorization"] = "Bearer " + jwt;
 
@@ -89,8 +162,8 @@
       }
     }
 
+    const ctype = (resp.headers.get("content-type") || "").toLowerCase();
     let body = null;
-    const ctype = resp.headers.get("content-type") || "";
     try {
       body = ctype.includes("json") ? await resp.json() : await resp.text();
     } catch (_e) {
@@ -98,15 +171,47 @@
     }
 
     if (!resp.ok) {
+      // 429 / Cloudflare challenge / HTML error page → friendly, never raw HTML.
+      if (_isChallenge(resp.status, ctype, body)) throw _rateError();
       let msg = "HTTP " + resp.status;
       if (body && typeof body === "object") {
-        msg = body.detail || body.error || body.detail?.error || msg;
+        msg = body.detail || body.error || (body.detail && body.detail.error) || msg;
+        if (msg && typeof msg === "object") msg = msg.error || JSON.stringify(msg);
       } else if (typeof body === "string" && body) {
-        msg = body;
+        msg = _cleanText(body, resp.status);
       }
       throw new Error(msg);
     }
+    _rlClear();
     return body;
+  }
+
+  // Public call: adds bounded exponential backoff for idempotent (GET/HEAD)
+  // requests. Mutations are NOT auto-retried (avoids double writes) — they
+  // surface the friendly rate-limit state so the UI can offer a manual Retry.
+  async function api(path, options) {
+    const opts = options || {};
+    const method = String(opts.method || "GET").toUpperCase();
+    const canRetry = method === "GET" || method === "HEAD";
+    let attempt = 0;
+    for (;;) {
+      try {
+        return await _raw(path, opts);
+      } catch (err) {
+        if (err && err.rateLimited) {
+          if (canRetry && attempt < BACKOFF_MS.length) {
+            const wait = BACKOFF_MS[attempt];
+            attempt++;
+            _rlStart({ path: path, attempt: attempt, max: BACKOFF_MS.length + 1, delayMs: wait, exhausted: false });
+            await new Promise(function (r) { setTimeout(r, wait); });
+            continue;
+          }
+          _rlStart({ path: path, attempt: attempt + 1, max: BACKOFF_MS.length + 1, delayMs: 0, exhausted: true });
+          throw err;
+        }
+        throw err;
+      }
+    }
   }
 
   // Unwrap the {success, data} envelope; returns data if present else the whole object.
@@ -398,7 +503,7 @@
   }
 
   window.PSV = {
-    api, unwrap, authenticate, isAuthed, getStaff, getTg,
+    api, apiCached, invalidate, retryNow, unwrap, authenticate, isAuthed, getStaff, getTg,
     login, logout, loadStoredAuth, usesWebLogin,
     renderVoucherPng, printVoucher,
     genClientRef, genVoucherNo, fmtKs, todayMMT, monthMMT, toast, haptic,
