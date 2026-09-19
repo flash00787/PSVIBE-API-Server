@@ -5,7 +5,8 @@ from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execu
 from helpers import _mysql_get_setting, ok, error_response, rate_limit_30pm, _parse_pm_and_inject
 from deps import verify_api_key
 from models import GenericResponse
-import logging, random, string
+import staff_audit
+import logging, random, string, os
 from datetime import datetime
 logger = logging.getLogger(__name__)
 
@@ -464,8 +465,14 @@ async def api_topup_log(req: dict, auth=Depends(verify_api_key)) -> JSONResponse
 # ================================================================
 
 @router.post("/members/register", response_model=GenericResponse, tags=["Members"], summary="Register a new member into MySQL")
-async def api_member_register(req: dict, auth=Depends(verify_api_key)):
-    """Register a new member. Writes to member_wallets and topup_log."""
+async def api_member_register(req: dict, request: Request, auth=Depends(verify_api_key)):
+    """Register a new member. Writes to member_wallets and topup_log.
+
+    Gift / free card is PIN-gated: an authenticated staff/dashboard user must also
+    present the owner PIN (``STOCK_PIN``, the same secret the sale bot uses for
+    ``BTN_NM_GIFT``). Without the correct PIN the request is rejected with 403.
+    The acting staff (JWT) is recorded for audit.
+    """
     try:
         member_id = req.get("member_id", "")
         name = req.get("name", "")
@@ -477,8 +484,15 @@ async def api_member_register(req: dict, auth=Depends(verify_api_key)):
         kpay = req.get("kpay", 0)
         cash = req.get("cash", 0)
         mins_added = req.get("mins_added", initial_mins)
-        is_gift = req.get("is_gift", False)
         referral_code = req.get("referral_code", "")
+        # Gift / free card request (PIN-gated).
+        _is_gift_req = bool(req.get("is_gift") or req.get("gift") or req.get("free_card"))
+
+        if not staff:
+            try:
+                staff = staff_audit.identity_from_request(request, req)
+            except Exception:
+                staff = ""
 
         # Input validation — never create an empty/garbage member row (Staff App Wave 1).
         if not str(member_id or "").strip():
@@ -486,14 +500,30 @@ async def api_member_register(req: dict, auth=Depends(verify_api_key)):
         if not str(name or "").strip():
             return error_response(message="member name is required")
 
-        logger.info("Registering member: %s (%s) mins=%s", member_id, name, initial_mins)
+        # ── Gift / free card PIN gate ─────────────────────────────────────
+        # Decision (Wave 2): the owner PIN is the authorisation — any authenticated
+        # staff OR dashboard user who presents the correct STOCK_PIN may issue a gift
+        # card (mirrors the sale-bot behaviour). Missing/wrong PIN -> 403.
+        if _is_gift_req:
+            _pin_expected = (os.environ.get("STOCK_PIN") or "").strip()
+            _pin_given = str(req.get("pin") or req.get("gift_pin") or "").strip()
+            if not _pin_expected:
+                return error_response(message="Gift card PIN is not configured on the server", code=500)
+            if not _pin_given or _pin_given != _pin_expected:
+                raise HTTPException(status_code=403, detail="Invalid owner PIN — gift/free card not allowed")
+            # A gift card has no cash amount; minutes are granted free.
+            amount = 0
+            kpay = 0
+            cash = 0
+
+        logger.info("Registering member: %s (%s) mins=%s gift=%s staff=%s", member_id, name, initial_mins, _is_gift_req, staff)
 
         # Upsert into member_wallets
         _mysql_exec(
-            "INSERT INTO member_wallets (member_id, member_name, phone, balance_mins, total_bought_mins, tier, total_spend) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s) "
-            "ON DUPLICATE KEY UPDATE member_name=VALUES(member_name), phone=VALUES(phone)",
-            (member_id, name, phone, initial_mins, mins_added, "Warrior", 0))
+            "INSERT INTO member_wallets (member_id, member_name, phone, email, balance_mins, total_bought_mins, tier, total_spend, reg_staff) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE member_name=VALUES(member_name), phone=VALUES(phone), email=COALESCE(VALUES(email), email)",
+            (member_id, name, phone, (email or None), initial_mins, mins_added, "Warrior", 0, (staff or None)))
 
         # 🆕 Record cash_movements for member registration income
         if float(amount) > 0:
@@ -513,13 +543,17 @@ async def api_member_register(req: dict, auth=Depends(verify_api_key)):
 
         # Log into topup_log
         if mins_added > 0:
+            _pm = "Gift" if _is_gift_req else f"KPay:{kpay}/Cash:{cash}"
+            _notes = f"Gift/Free card issued by {staff}" if _is_gift_req else None
             _mysql_exec(
-                "INSERT INTO topup_log (member_id, amount, mins_added, topup_date, staff_name, payment_method, balance_mins_before, balance_mins_after) "
-                "VALUES (%s,%s,%s,NOW(),%s,%s,0,%s)",
-                (member_id, amount, mins_added, staff, f"KPay:{kpay}/Cash:{cash}", initial_mins))
+                "INSERT INTO topup_log (member_id, amount, mins_added, topup_date, staff_name, payment_method, balance_mins_before, balance_mins_after, notes) "
+                "VALUES (%s,%s,%s,NOW(),%s,%s,0,%s,%s)",
+                (member_id, amount, mins_added, staff, _pm, initial_mins, _notes))
 
-        logger.info("Member registered: %s", member_id)
+        logger.info("Member registered: %s gift=%s", member_id, _is_gift_req)
         return ok({"status": "ok", "member_id": member_id})
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

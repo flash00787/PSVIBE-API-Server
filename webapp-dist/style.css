@@ -316,3 +316,28 @@ html, body {
 .psv-menu-item__my { font-size: 14.5px; font-weight: 700; }
 .psv-menu-item__en { font-size: 12px; color: var(--pv-muted); margin-top: 2px; }
 .psv-menu-item.is-soon { opacity: .55; }
+
+/* WAVE 2 — menu hygiene: never clip section headers / long labels (390px) */
+.psv-menu-head { flex-wrap: wrap; row-gap: 2px; }
+.psv-menu-head__en { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.psv-menu-item__my { overflow-wrap: anywhere; word-break: break-word; }
+.psv-menu-item__en { overflow-wrap: anywhere; word-break: break-word; }
+.psv-menu-item .psv-soon { flex: none; }
+
+/* WAVE 2 — sale discounting / coupon / deposit / in-session guard (shared base) */
+.psv-disc-card { padding: 10px 12px; }
+.psv-pick-row { display: flex; align-items: center; gap: 10px; }
+.psv-pick-row__main { flex: 1; min-width: 0; }
+.psv-pick-row__t { font-size: 14px; font-weight: 700; }
+.psv-pick-row__s { font-size: 12px; color: var(--pv-muted); margin-top: 2px; overflow-wrap: anywhere; }
+.psv-verified { font-size: 11px; font-weight: 700; color: #047857; background: rgba(52, 211, 153, .14); border: 1px solid rgba(52, 211, 153, .4); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+.psv-coupon-msg { margin-top: 8px; font-size: 12px; line-height: 1.45; border-radius: 8px; padding: 8px 10px; }
+.psv-coupon-msg.is-ok { color: #047857; background: rgba(52, 211, 153, .12); border: 1px solid rgba(52, 211, 153, .35); }
+.psv-coupon-msg.is-fail { color: #b91c1c; background: rgba(248, 113, 113, .12); border: 1px solid rgba(248, 113, 113, .35); }
+.psv-sess-warn { margin: 0 0 10px; padding: 10px 12px; font-size: 12.5px; line-height: 1.45; font-weight: 600; color: #92400e; background: rgba(251, 191, 36, .16); border: 1px solid rgba(251, 191, 36, .45); border-radius: 10px; }
+.psv-redeem-banner.is-applied { background: rgba(52, 211, 153, .12); border-color: rgba(52, 211, 153, .4); }
+.psv-mini-x { appearance: none; border: 0; background: transparent; color: var(--pv-muted); font-size: 12px; cursor: pointer; padding: 0 4px; }
+
+/* WAVE 2 — receipt paper base (native theme overrides for the premium look) */
+.psv-paper { background: #fff; border-radius: 12px; padding: 12px; margin-bottom: 14px; }
+.psv-paper__img { display: block; width: 100%; max-width: 100%; height: auto; }

@@ -42,20 +42,59 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
         total_members = _mysql_query_one("SELECT COUNT(*) as cnt FROM member_wallets WHERE member_id IS NOT NULL AND member_id != ''")
         total_members = total_members["cnt"] if total_members else 0
 
+        # ── Staff App Wave 2: richer today summary (additive — old keys unchanged) ──
+        sales_by_staff = []
+        food_sales = 0.0
+        sales_count = 0
+        try:
+            sales_by_staff = list(_mysql_query(
+                "SELECT COALESCE(NULLIF(staff_name, ''), '-') AS staff_name, COUNT(*) AS count, "
+                "COALESCE(SUM(net), 0) AS net, COALESCE(SUM(gross - amount), 0) AS food "
+                "FROM sales_daily WHERE sale_date >= %s "
+                "GROUP BY COALESCE(NULLIF(staff_name, ''), '-') ORDER BY net DESC",
+                (today + " 00:00:00",)))
+        except Exception as _e:
+            logger.warning(f"stats sales_by_staff failed: {_e}")
+            sales_by_staff = []
+        try:
+            _fs = _mysql_query_one(
+                "SELECT COUNT(*) AS cnt, COALESCE(SUM(gross - amount), 0) AS food "
+                "FROM sales_daily WHERE sale_date >= %s", (today + " 00:00:00",))
+            food_sales = float((_fs or {}).get("food") or 0)
+            sales_count = int((_fs or {}).get("cnt") or 0)
+        except Exception as _e:
+            logger.warning(f"stats food failed: {_e}")
+        low_stock = []
+        try:
+            low_stock = list(_mysql_query(
+                "SELECT item_name, quantity, COALESCE(reorder_level, 0) AS reorder_level "
+                "FROM inventory WHERE COALESCE(reorder_level, 0) > 0 AND quantity <= reorder_level "
+                "ORDER BY quantity ASC LIMIT 50"))
+        except Exception as _e:
+            logger.warning(f"stats low_stock failed: {_e}")
+            low_stock = []
+
         return {
             "success": True,
             "data": {
                 "today_bookings": today_bookings,
                 "active_players": active_players,
                 "today_revenue": today_revenue,
-                "total_members": total_members
+                "total_members": total_members,
+                "sales_count": sales_count,
+                "sales_by_staff": sales_by_staff,
+                "food_sales": food_sales,
+                "low_stock": low_stock,
+                "low_stock_count": len(low_stock),
             }
         }
     except Exception as e:
         logger.error(f"Dashboard stats error: {e}")
         return {"success": True, "data": {
             "today_bookings": 0, "active_players": 0,
-            "today_revenue": 0, "total_members": 0
+            "today_revenue": 0, "total_members": 0,
+            "sales_count": 0, "sales_by_staff": [], "food_sales": 0,
+            "low_stock": [], "low_stock_count": 0,
         }}
 
 

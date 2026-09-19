@@ -191,31 +191,102 @@ async def api_fetch_attendance(month_str: str, auth=Depends(verify_api_key)):
 
 @router.post("/save_attendance", response_model=GenericResponse, tags=["Staff"], summary="Save attendance [MySQL]")
 async def api_save_attendance(req: dict, auth=Depends(verify_api_key)):
-    """Save attendance record to MySQL."""
+    """Save attendance for a staff member (Staff App + bot).
+
+    * check-in  — ``status`` in Present/Late (default Present) or ``action=check_in``
+    * check-out — ``status`` in Check-Out/Checked Out/Done/Out or ``action=check_out``
+
+    Returns the resulting today row so the app can render status without a second call.
+    """
     try:
         staff_name = req.get("staff_name") or req.get("staff", "")
         status_val = req.get("status", "Present")
-        # Resolve staff_id from staff_name (bot sends name string).
+        action = str(req.get("action") or "").strip().lower()
+        _status_lc = str(status_val or "").strip().lower()
+        _is_checkout = action in ("check_out", "checkout", "out") or _status_lc in (
+            "check-out", "checkout", "check_out", "checked out", "checked_out", "done", "out")
+        # Resolve staff_id from staff_name (bot/app send the name string).
         staff_id = req.get("staff_id")
         if not staff_id and staff_name:
             rec = _mysql_query_one("SELECT staff_id FROM staff_records WHERE staff_name = %s", (staff_name,))
             staff_id = rec["staff_id"] if rec else None
         if not staff_id:
             raise HTTPException(status_code=400, detail=f"Unknown staff: {staff_name!r}")
-        # Upsert: update today's row for this staff if present, else insert.
+
+        if _is_checkout:
+            record = _mysql_query_one(
+                "SELECT * FROM attendance_log WHERE staff_id = %s AND date = CURDATE() "
+                "AND status IN ('checked_in','Present','Late') ORDER BY id DESC LIMIT 1", (staff_id,))
+            if not record:
+                return error_response(message="No open check-in found for today")
+            hours_worked = 0.0
+            daily_pay = 0.0
+            try:
+                _ci = record.get("check_in")
+                if _ci:
+                    _nowu = datetime.now(timezone.utc)
+                    _ci_dt = _ci if hasattr(_ci, "timestamp") else datetime.fromisoformat(str(_ci).replace("Z", "+00:00"))
+                    if _ci_dt.tzinfo is not None:
+                        _ci_dt = _ci_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    hours_worked = round((_nowu - _ci_dt).total_seconds() / 3600.0, 2)
+                    daily_pay = round(hours_worked * float(record.get("hourly_rate") or 0), 2)
+            except Exception as _ce:
+                logger.warning("attendance check-out hours calc fallback: %s", _ce)
+            _mysql_exec(
+                "UPDATE attendance_log SET check_out = NOW(), hours_worked = %s, daily_pay = %s, "
+                "status = 'checked_out' WHERE id = %s",
+                (hours_worked, daily_pay, record["id"]))
+            _row = _mysql_query_one("SELECT * FROM attendance_log WHERE id = %s", (record["id"],))
+            return ok({"saved": True, "staff_id": staff_id, "action": "check_out",
+                       "today": _safe_attendance_row(_row)})
+
+        # Check-in / status update (upsert today's row).
         existing = _mysql_query_one(
             "SELECT id FROM attendance_log WHERE staff_id = %s AND date = CURDATE()", (staff_id,))
         if existing:
             _mysql_exec(
                 "UPDATE attendance_log SET status = %s, check_in = COALESCE(check_in, NOW()) WHERE id = %s",
                 (status_val, existing["id"]))
+            _rid = existing["id"]
         else:
-            _mysql_exec(
+            _rid = _mysql_exec(
                 "INSERT INTO attendance_log (staff_id, check_in, date, status) VALUES (%s, NOW(), CURDATE(), %s)",
                 (staff_id, status_val))
-        return ok({"saved": True, "staff_id": staff_id})
+        _row = _mysql_query_one("SELECT * FROM attendance_log WHERE id = %s", (_rid,))
+        return ok({"saved": True, "staff_id": staff_id, "action": "check_in",
+                   "today": _safe_attendance_row(_row)})
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _safe_attendance_row(row):
+    """JSON-safe projection of an attendance_log row."""
+    if not row:
+        return None
+    out = {}
+    for k, v in row.items():
+        out[k] = v.isoformat() if hasattr(v, "isoformat") else (str(v) if v is not None and not isinstance(v, (int, float, str, bool)) else v)
+    return out
+
+
+@router.get("/attendance/today", response_model=GenericResponse, tags=["Staff"], summary="Today's attendance row [MySQL]")
+async def api_attendance_today(staff_name: str = "", staff_id: int = 0, auth=Depends(verify_api_key)):
+    """Return today's attendance row for a staff member (by name or id), or null."""
+    try:
+        _sid = int(staff_id) if staff_id else None
+        if not _sid and staff_name.strip():
+            rec = _mysql_query_one("SELECT staff_id FROM staff_records WHERE staff_name = %s", (staff_name.strip(),))
+            _sid = rec["staff_id"] if rec else None
+        row = None
+        if _sid:
+            row = _mysql_query_one(
+                "SELECT * FROM attendance_log WHERE staff_id = %s AND date = CURDATE() "
+                "ORDER BY id DESC LIMIT 1", (_sid,))
+        return ok({"today": _safe_attendance_row(row), "staff_id": _sid, "staff_name": staff_name.strip()})
+    except Exception as e:
+        return error_response(message=str(e))
 
 
 # ═══════════════════════════════════════
@@ -510,7 +581,7 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                     _mysql_exec(
                         "INSERT INTO promotions_log (voucher_no, promo_id, promo_title, member_id, "
                         "console_id, gross_total, discount_amt, net_total, staff_name, promo_date) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())",
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,CURDATE())",
                         (voucher_no, promo_id_in, _calc["promo_title"], member_id,
                          console_id, float(_calc["gross_total"]), float(_calc["total_discount"]),
                          float(_calc["net_total"]), staff))

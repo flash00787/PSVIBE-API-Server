@@ -610,8 +610,10 @@
     emits: ["saved"],
     template: `
       <div style="padding:8px 14px 16px">
-        <div v-if="depositRedeem" class="psv-redeem-banner">
-          <span class="psv-redeem-banner__txt">↩️ Deposit {{ fKs(depositRedeem.amount) }} Ks (BK#{{ depositRedeem.booking_id }}) — ဤအရောင်းနှင့် ချိတ်ဆက်ထားပြီ</span>
+        <div v-if="sessionWarn" class="psv-sess-warn">⚠️ {{ sessionWarn }} — သေချာစစ်ပါ</div>
+        <div v-if="depositRedeem" class="psv-redeem-banner" :class="{ 'is-applied': depositApplied }">
+          <span class="psv-redeem-banner__txt"><template v-if="depositApplied">✅ Deposit {{ fKs(depositRedeem.amount) }} Ks (BK#{{ depositRedeem.booking_id }}) — နုတ်ပြီးပါပြီ</template><template v-else>↩️ Verified deposit {{ fKs(depositRedeem.amount) }} Ks (BK#{{ depositRedeem.booking_id }}) ရှိသည်</template></span>
+          <button v-if="!depositApplied" class="psv-abtn psv-abtn--gold" style="min-height:36px;padding:0 10px" @click="applyDeposit">💰 Deposit {{ fKs(depositRedeem.amount) }} နုတ်မယ်</button>
           <button class="psv-redeem-banner__x" @click="clearRedeem">✕</button>
         </div>
         <van-cell-group inset>
@@ -632,6 +634,34 @@
           <van-field v-model.number="form.discount" type="number" label="Discount" placeholder="0" />
         </van-cell-group>
 
+        <!-- 🏷️ Promotion + 🎟️ Coupon (WAVE 2 — discounting parity with the sale bot).
+             MONEY RULE: the discounted total is ALWAYS computed by the server
+             (POST /api/promotions/calc); the client only displays what it returns. -->
+        <div style="margin:10px 16px 0">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 10px">
+            <span style="font-weight:600">🏷️ Promotion / 🎟️ Coupon</span>
+            <span v-if="calcStatus === 'ok' && totalDiscountKs > 0" class="psv-verified">🛡 server အတည်ပြု</span>
+            <span v-else-if="calcStatus === 'loading'" style="color:var(--pv-muted);font-size:11px">တွက်ချက်နေသည်…</span>
+          </div>
+          <div class="psv-card psv-disc-card">
+            <div v-if="promo.id" class="psv-pick-row">
+              <div class="psv-pick-row__main">
+                <div class="psv-pick-row__t">🎁 {{ promo.title }}</div>
+                <div class="psv-pick-row__s">{{ promoText(promo) }}</div>
+              </div>
+              <button class="psv-chip" @click="clearPromo">ဖြုတ်</button>
+            </div>
+            <button v-else class="psv-btn psv-btn--ghost psv-btn--block" style="min-height:44px" @click="openPromo">🎁 Promotion ရွေးရန်</button>
+
+            <div style="display:flex;gap:8px;margin-top:10px">
+              <input v-model.trim="coupon.code" class="psv-input" style="flex:1" :disabled="coupon.applied" placeholder="Coupon code (CB…)" @keyup.enter="applyCoupon" />
+              <button class="psv-chip" :disabled="coupon.applied || coupon.checking || !coupon.code" @click="applyCoupon">{{ coupon.applied ? '✓ applied' : (coupon.checking ? '…' : 'စစ်ရန်') }}</button>
+            </div>
+            <div v-if="coupon.message" class="psv-coupon-msg" :class="coupon.applied ? 'is-ok' : 'is-fail'">{{ coupon.message }}</div>
+            <div v-if="focItem" style="margin-top:8px;font-size:12px;color:var(--pv-muted)">🍜 FOC: <b>{{ focItem }}</b> <button class="psv-mini-x" @click="focItem=''; scheduleCalc()">✕</button></div>
+          </div>
+        </div>
+
         <!-- Food line items (session food orders / picked items) -->
         <div style="margin:10px 16px 0">
           <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 10px">
@@ -650,13 +680,24 @@
           <van-button size="small" plain type="primary" icon="cart-o" style="width:100%;margin-top:4px" @click="openFoodPicker">+ Add Food</van-button>
         </div>
 
-        <!-- Sub-total breakdown -->
-        <van-cell-group inset style="margin-top:10px">
+        <!-- Sub-total breakdown (server-authoritative discount lines) -->
+        <van-cell-group inset style="margin-top:10px" title="ငွေစာရင်း / Amounts">
           <van-cell title="Game" :value="fKs(form.game_amt) + ' Ks'" />
           <van-cell title="Food" :value="fKs(form.food_total) + ' Ks'" />
-          <van-cell title="Discount" :value="'-' + fKs(form.discount) + ' Ks'" />
-          <van-cell title="Net Total" style="font-weight:700">
-            <template #value><span class="pv-amount" style="font-size:16px">{{ fKs(cashNetTotal) }} Ks</span></template>
+          <van-cell title="Subtotal" :value="fKs(subtotalKs) + ' Ks'" />
+          <van-cell v-for="(b, i) in discountLines" :key="'d' + i" :title="b.label">
+            <template #value><span style="color:var(--pv-success)">{{ b.amount < 0 ? '-' + fKs(-b.amount) : fKs(b.amount) }}</span></template>
+          </van-cell>
+          <van-cell v-if="!discountLines.length && Number(form.discount) > 0" title="Discount" :value="'-' + fKs(form.discount) + ' Ks'" />
+          <van-cell title="Discount စုစုပေါင်း" :value="'-' + fKs(totalDiscountKs) + ' Ks'" />
+          <van-cell title="Total" style="font-weight:700">
+            <template #value><span class="pv-amount" style="font-size:16px">{{ fKs(payableBeforeDeposit) }} Ks</span></template>
+          </van-cell>
+          <van-cell v-if="depositApplied" title="Deposit နုတ်">
+            <template #value><span style="color:var(--pv-success);font-weight:600">-{{ fKs(depositRedeem.amount) }} Ks</span></template>
+          </van-cell>
+          <van-cell title="ကျသင့်ငွေ (Cash due)" style="font-weight:800">
+            <template #value><span class="pv-amount" style="font-size:17px">{{ fKs(cashNetTotal) }} Ks</span></template>
           </van-cell>
         </van-cell-group>
 
@@ -776,8 +817,18 @@
               <van-empty v-if="!lastVoucher.items.length" image-size="40" description="No items" style="padding:6px 0" />
             </van-cell-group>
             <van-cell-group inset style="margin-top:10px">
+              <van-cell v-if="lastVoucher.subtotal != null" title="Subtotal" :value="fKs(lastVoucher.subtotal) + ' Ks'" />
+              <van-cell v-if="Number(lastVoucher.discount) > 0" title="Discount">
+                <template #value><span style="color:var(--pv-success)">-{{ fKs(lastVoucher.discount) }} Ks</span></template>
+              </van-cell>
               <van-cell title="Total" style="font-weight:700">
                 <template #value><span class="pv-amount" style="font-size:16px">{{ fKs(lastVoucher.total) }} Ks</span></template>
+              </van-cell>
+              <van-cell v-if="Number(lastVoucher.deposit) > 0" title="Deposit နုတ်">
+                <template #value><span style="color:var(--pv-success)">-{{ fKs(lastVoucher.deposit) }} Ks</span></template>
+              </van-cell>
+              <van-cell v-if="Number(lastVoucher.cashDue) != null && Number(lastVoucher.cashDue) !== Number(lastVoucher.total)" title="ကျသင့်ငွေ" style="font-weight:800">
+                <template #value><span class="pv-amount">{{ fKs(lastVoucher.cashDue) }} Ks</span></template>
               </van-cell>
               <van-cell v-if="lastVoucher.payment" title="Payment" :value="lastVoucher.payment" />
               <van-cell v-if="lastVoucher.balance" title="Wallet" :value="lastVoucher.balance" />
@@ -787,6 +838,33 @@
               <van-button block type="primary" :loading="printing" @click="doPrintVoucher">Print voucher</van-button>
             </div>
             <div style="text-align:center;color:var(--pv-muted);font-size:11px;margin-top:10px">80mm thermal via Bluetooth — or share / download the PNG</div>
+          </div>
+        </van-popup>
+
+        <!-- 🎁 Promotion picker (active promos) -->
+        <van-popup v-model:show="promoOpen" position="bottom" round style="max-height:72vh">
+          <div style="max-height:72vh;overflow:auto;padding:12px 0 20px">
+            <div class="psv-sheet-title" style="padding:0 16px">🎁 Promotion ရွေးရန်</div>
+            <div class="psv-bk-hint" style="padding:4px 16px 8px">ရွေးလိုက်ရင် ဆာဗာက discount ကို တွက်ပေးမယ်</div>
+            <van-empty v-if="!promos.length" description="Active promotion မရှိပါ" />
+            <div v-for="p in promos" :key="p.id" class="psv-list-row" style="padding:12px 16px" @click="pickPromo(p)">
+              <div class="psv-list-row__main">
+                <div class="psv-list-row__title">{{ p.title }}</div>
+                <div class="psv-list-row__sub">{{ promoText(p) }}</div>
+              </div>
+              <van-icon name="arrow" />
+            </div>
+          </div>
+        </van-popup>
+
+        <!-- 🍜 FOC item picker (bundle / free_item promo) -->
+        <van-popup v-model:show="focOpen" position="bottom" round>
+          <div style="padding:12px 0 20px">
+            <div class="psv-sheet-title" style="padding:0 16px">🍜 FOC (အခမဲ့) item ရွေးရန်</div>
+            <van-empty v-if="!foodLines.length" description="Food item မရှိပါ" />
+            <div v-for="(ln, i) in foodLines" :key="'foc' + i" class="psv-list-row" style="padding:12px 16px" @click="pickFoc(ln)">
+              <div class="psv-list-row__main"><div class="psv-list-row__title">{{ ln.name }}</div><div class="psv-list-row__sub">{{ fKs(ln.price) }} Ks × {{ ln.qty }}</div></div>
+            </div>
           </div>
         </van-popup>
       </div>
@@ -800,9 +878,156 @@
         payment_splits: [],
         adjust: 0,  // session voucher: bounded −10..+10 adjustment on actual mins
       });
-      // ↩️ Deposit redeem (WAVE 1): a booking flagged from the Booking detail view
+      // ↩️ Deposit redeem (WAVE 1 → completed in WAVE 2): a booking flagged from the
+      // Booking detail view. WAVE 2 adds the explicit "Deposit {amount} နုတ်မယ်"
+      // confirm + a lookup for verified deposits on the picked member/console.
       const depositRedeem = ref(PSV.pendingDepositRedeem || null);
-      function clearRedeem() { try { PSV.pendingDepositRedeem = null; } catch (_e) {} depositRedeem.value = null; }
+      const depositApplied = ref(false);
+      function clearRedeem() { try { PSV.pendingDepositRedeem = null; } catch (_e) {} depositRedeem.value = null; depositApplied.value = false; }
+      const depositAppliedAmt = computed(() => (depositApplied.value && depositRedeem.value) ? (Number(depositRedeem.value.amount) || 0) : 0);
+      async function applyDeposit() {
+        if (!depositRedeem.value) return;
+        const amt = Number(depositRedeem.value.amount) || 0;
+        const okc = await confirmBox("Deposit နုတ်မလား?", "BK#" + depositRedeem.value.booking_id + " verified deposit " + fKs(amt) + " Ks ကို ဒီအရောင်း ကျသင့်ငွေကနေ နုတ်မယ်။", "နုတ်မယ်", "မလုပ်");
+        if (!okc) return;
+        depositApplied.value = true; haptic("medium");
+        showToast("Deposit " + fKs(amt) + " Ks နုတ်ပြီး", "success");
+      }
+
+      // ── 🏷️ WAVE 2: Promotion / Coupon / server-side discount calc ─────────────
+      // MONEY RULE: never compute the discounted total on the client. We post the
+      // cart to POST /api/promotions/calc and display the returned subtotal /
+      // breakdown / net_total — the server is the single source of truth.
+      const promos = ref([]);
+      const promoOpen = ref(false);
+      const focOpen = ref(false);
+      const focItem = ref("");
+      const promo = reactive({ id: "", title: "", type: "", target: "overall", pct: 0, notes: "" });
+      const coupon = reactive({ code: "", applied: false, checking: false, minutes: 0, discount: 0, message: "" });
+      const serverCalc = ref(null);
+      const calcStatus = ref("idle");        // idle | loading | ok | error
+      let _calcTimer = null;
+
+      function promoText(p) {
+        if (!p) return "";
+        const t = String(p.type || "").toLowerCase();
+        const pct = Number(p.discount_percent) || 0;
+        const tgt = String(p.discount_target || "overall");
+        const tgtMy = tgt === "game_only" ? "ဂိမ်းကြေး" : tgt === "food_only" ? "အစားအသောက်" : "စုစုပေါင်း";
+        if (t === "bonus_mins") return "ကစားချိန် +" + (pct || "") + "% bonus mins";
+        if (t === "bundle" || t === "free_item") return "Bundle / FOC — အစားအသောက် ၁ မျိုး အခမဲ့" + (p.notes ? " · " + p.notes : "");
+        if (pct) return tgtMy + " " + pct + "% လျှော့" + (p.notes ? " · " + p.notes : "");
+        return p.notes || "Promotion";
+      }
+      function loadPromos() {
+        PSV.api("/api/promotions/active-list").then((r) => {
+          if (r && r.success === false) { promos.value = []; return; }
+          const d = PSV.unwrap(r); promos.value = (d && d.promotions) || [];
+        }).catch(() => {});
+      }
+      function openPromo() { haptic("light"); if (!promos.value.length) loadPromos(); promoOpen.value = true; }
+      function pickPromo(p) {
+        promoOpen.value = false; focItem.value = "";
+        promo.id = p.id; promo.title = p.title || ("Promo #" + p.id);
+        promo.type = String(p.type || "").toLowerCase(); promo.target = p.discount_target || "overall";
+        promo.pct = Number(p.discount_percent) || 0; promo.notes = p.notes || "";
+        if (promo.type === "bundle" || promo.type === "free_item") focOpen.value = true;
+        scheduleCalc();
+      }
+      function clearPromo() { promo.id = ""; promo.title = ""; promo.type = ""; promo.notes = ""; focItem.value = ""; scheduleCalc(); }
+      function pickFoc(ln) { focItem.value = ln.name; focOpen.value = false; scheduleCalc(); }
+
+      async function applyCoupon() {
+        const code = String(coupon.code || "").trim().toUpperCase();
+        if (!code || coupon.applied) return;
+        coupon.checking = true; coupon.message = "";
+        try {
+          const r = await PSV.api("/api/coupons/validate", { method: "POST", headers: HJSON, body: JSON.stringify({ code: code }) });
+          if (r && r.success === false) throw new Error(r.error || "Coupon မမှန်ပါ");
+          const d = PSV.unwrap(r); const c = (d && d.coupon) || {};
+          if (!c.code) throw new Error("Coupon မတွေ့ပါ");
+          coupon.code = c.code;
+          coupon.minutes = Number(c.balance_minutes) || 0;
+          coupon.discount = Math.round(coupon.minutes * (Number(form.base_rate) || 0) / 60);
+          coupon.applied = true;
+          coupon.message = "✓ သက်တမ်းရှိ — " + coupon.minutes + " mins (~" + fKs(coupon.discount) + " Ks). Save နှိပ်ချိန် redeem ဖြစ်မယ်။";
+          haptic("light"); scheduleCalc();
+        } catch (e) {
+          coupon.applied = false; coupon.minutes = 0; coupon.discount = 0;
+          coupon.message = "✗ " + (e && e.message ? e.message : "Coupon မမှန်ပါ");
+          haptic("medium");
+        } finally { coupon.checking = false; }
+      }
+      function clearCoupon() { coupon.code = ""; coupon.applied = false; coupon.minutes = 0; coupon.discount = 0; coupon.message = ""; scheduleCalc(); }
+
+      // Cart exactly as the server expects — mirrors the sale-bot promo engine.
+      function cartForCalc() {
+        const ecost = effectiveCostMins.value;
+        const base = Number(form.base_rate) || 0;
+        const foodTotal = Number(form.food_total) || 0;
+        const gameAmt = Number(form.game_amt) || 0;
+        const body = {
+          food_total: foodTotal, base_rate: base, multiplier: Number(form.multiplier) || 1,
+          manual_discount: Number(form.discount) || 0,
+          promo_id: promo.id || "",
+          coupon_code: coupon.applied ? coupon.code : "",
+          foc_item: focItem.value || "",
+          food_items: foodLines.value.map((l) => ({ name: l.name, qty: Number(l.qty) || 0, subtotal: (Number(l.qty) || 0) * (Number(l.price) || 0) })),
+          is_member: false, game_amt: gameAmt, gross_total: gameAmt + foodTotal,
+        };
+        const walletCovers = isMember.value && wallet.balance > 0 && ecost > 0 && wallet.balance >= ecost;
+        const shortfall = isMember.value && wallet.balance > 0 && ecost > 0 && wallet.balance < ecost;
+        if (walletCovers) {
+          body.is_member = true; body.wallet_mins = wallet.balance; body.effective_cost_mins = ecost;
+          body.game_amt = 0; body.gross_total = foodTotal;
+        } else if (shortfall) {
+          body.game_amt = Math.round((ecost - wallet.balance) * base / 60);
+          body.gross_total = body.game_amt + foodTotal;
+        }
+        return body;
+      }
+      function scheduleCalc() { if (_calcTimer) clearTimeout(_calcTimer); _calcTimer = setTimeout(runCalc, 400); }
+      async function runCalc() {
+        calcStatus.value = "loading";
+        try {
+          const r = await PSV.api("/api/promotions/calc", { method: "POST", headers: HJSON, body: JSON.stringify(cartForCalc()) });
+          if (r && r.success === false) { serverCalc.value = null; calcStatus.value = "error"; return; }
+          const d = PSV.unwrap(r);
+          serverCalc.value = d || null;
+          calcStatus.value = d ? "ok" : "error";
+        } catch (e) { serverCalc.value = null; calcStatus.value = "error"; }
+      }
+
+      // ── In-session guard (staff mistake prevention) ─────────────────────
+      const activeBookings = ref([]);
+      async function loadActiveBookings() {
+        try { const d = PSV.unwrap(await PSV.api("/api/bookings?status=Active")); activeBookings.value = (d && d.bookings) || []; }
+        catch (_e) { activeBookings.value = []; }
+      }
+      const sessionWarn = computed(() => {
+        const cid = String(form.console_id || "").trim().toLowerCase();
+        const mid = String(form.member_id || "").trim().toLowerCase();
+        if ((!cid) && (!mid || mid === "0 (guest)")) return "";
+        const hit = activeBookings.value.find((b) => (cid && String(b.console_id || "").trim().toLowerCase() === cid) || (mid && mid !== "0 (guest)" && String(b.member_id || "").trim().toLowerCase() === mid));
+        if (!hit) return "";
+        return "ဒီ " + (cid && String(hit.console_id || "").trim().toLowerCase() === cid ? "Console" : "Member") + " က အခု BK#" + hit.id + " session လုပ်နေတယ် (" + (hit.status || "Active") + ")";
+      });
+      async function ensureNoActiveSession() {
+        try {
+          const d = PSV.unwrap(await PSV.api("/api/bookings?status=Active"));
+          const list = (d && d.bookings) || [];
+          const cid = String(form.console_id || "").trim().toLowerCase();
+          const mid = String(form.member_id || "").trim().toLowerCase();
+          const hitConsole = cid && list.find((b) => String(b.console_id || "").trim().toLowerCase() === cid);
+          const hitMember = (mid && mid !== "0 (guest)") && list.find((b) => String(b.member_id || "").trim().toLowerCase() === mid);
+          if (!hitConsole && !hitMember) return "ok";
+          const bk = hitConsole || hitMember;
+          const who = hitConsole ? ("Console " + form.console_id) : ("Member " + form.member_id);
+          const okc = await confirmBox("⚠️ Session လုပ်နေတယ်", who + " က အခု BK#" + bk.id + " session လုပ်နေတယ် — သေချာလား? ထပ်ကောက်ရင် double-charge ဖြစ်နိုင်တယ်။", "ဆက်လုပ်", "မလုပ်", false);
+          return okc ? "ok" : "cancel";
+        } catch (_e) { return "ok"; } // never hard-block
+      }
+
       // 🪙 Member wallet settle (mirror sale bot: wallet covers game cost → no cash)
       const wallet = reactive({ balance: 0, effective_cost_mins: 0, shortfall_mins: 0, shortfall_ks: 0, is_member: false, settle: false });
       const walletLoading = ref(false);
@@ -824,13 +1049,22 @@
       const walletSufficient = computed(() => wallet.is_member && wallet.effective_cost_mins > 0 && wallet.balance >= wallet.effective_cost_mins);
       // shortfall (cash-down) in Ks when wallet insufficient
       const shortfallKs = computed(() => (wallet.is_member && wallet.shortfall_ks > 0) ? wallet.shortfall_ks : 0);
-      // cash net_total: when wallet covers game, game is NOT charged as cash
-      // cash net_total = actual cash due after wallet settle (Boss: Net Total = the money to pay)
-      const cashNetTotal = computed(() => {
-        if (walletSufficient.value) return Math.max(0, (Number(form.food_total)||0) - (Number(form.discount)||0));
-        if (wallet.is_member && wallet.shortfall_ks > 0) return Math.max(0, Number(wallet.shortfall_ks) + (Number(form.food_total)||0) - (Number(form.discount)||0));
-        return netTotal.value;
+      // rawCash = pre-discount cash payable (client mirror of the server's cash_payable)
+      const rawCash = computed(() => {
+        const foodTotal = Number(form.food_total) || 0;
+        const gameAmt = Number(form.game_amt) || 0;
+        const ecost = effectiveCostMins.value;
+        if (isMember.value && wallet.balance > 0 && ecost > 0 && wallet.balance >= ecost) return foodTotal;
+        if (isMember.value && wallet.balance > 0 && ecost > 0 && wallet.balance < ecost) return Math.round((ecost - wallet.balance) * (Number(form.base_rate) || 0) / 60) + foodTotal;
+        return gameAmt + foodTotal;
       });
+      // ── Server-authoritative money lines (fall back to the local mirror until calc lands) ──
+      const subtotalKs = computed(() => serverCalc.value ? (Number(serverCalc.value.cash_payable) || 0) : rawCash.value);
+      const totalDiscountKs = computed(() => serverCalc.value ? (Number(serverCalc.value.total_discount) || 0) : (Number(form.discount) || 0));
+      const discountLines = computed(() => (serverCalc.value && Array.isArray(serverCalc.value.breakdown)) ? serverCalc.value.breakdown : []);
+      const payableBeforeDeposit = computed(() => serverCalc.value ? (Number(serverCalc.value.net_total) || 0) : Math.max(0, rawCash.value - (Number(form.discount) || 0)));
+      // Cash due = server total − applied deposit (Boss: Net Total = the money to pay)
+      const cashNetTotal = computed(() => Math.max(0, payableBeforeDeposit.value - depositAppliedAmt.value));
       // Auto-calc game amount instantly whenever mins/adjust/base_rate/multiplier change (no Auto button needed)
       watch(
         [() => form.mins, () => form.adjust, () => form.base_rate, () => form.multiplier],
@@ -957,11 +1191,33 @@
           }
         }
       }
-      onMounted(loadRefs);
+      onMounted(() => { loadRefs().then(() => scheduleCalc()); loadPromos(); loadActiveBookings(); });
+      // 🚩 WAVE 2: proactive in-session detection + verified-deposit lookup on picks
+      async function probeDeposits() {
+        try {
+          if (depositRedeem.value) return; // already flagged from the Booking screen
+          const arrs = await Promise.all([
+            PSV.api("/api/bookings?status=confirmed"),
+            PSV.api("/api/bookings?status=checked_in"),
+          ]);
+          let list = [];
+          arrs.forEach((r) => { const d = PSV.unwrap(r); list = list.concat((d && d.bookings) || []); });
+          const cid = String(form.console_id || "").trim().toLowerCase();
+          const mid = String(form.member_id || "").trim().toLowerCase();
+          const cand = list.find((b) => String(b.deposit_status || "").toLowerCase() === "verified" &&
+            ((cid && String(b.console_id || "").trim().toLowerCase() === cid) ||
+             (mid && mid !== "0 (guest)" && String(b.member_id || "").trim().toLowerCase() === mid)));
+          if (cand) {
+            try { PSV.pendingDepositRedeem = { booking_id: cand.id, amount: Number(cand.deposit_amount) || 0, method: cand.deposit_method || "", ts: Date.now() }; } catch (_e) {}
+            depositRedeem.value = PSV.pendingDepositRedeem;
+            depositApplied.value = false;
+          }
+        } catch (_e) {}
+      }
 
       function openConsole() { if (!consolesList.value.length) loadRefs(); consolePicker.value = true; haptic("light"); }
-      function pickMember(m) { form.member_id = m.id; form.member_search = m.name || m.id; memberPicker.value = false; setWalletMember(m.id, m.wallet_balance ?? m.liability_mins); }
-      function pickGuest() { form.member_id = "0 (Guest)"; form.member_search = "Guest"; memberPicker.value = false; clearWalletMember(); }
+      function pickMember(m) { form.member_id = m.id; form.member_search = m.name || m.id; memberPicker.value = false; setWalletMember(m.id, m.wallet_balance ?? m.liability_mins); probeDeposits(); scheduleCalc(); }
+      function pickGuest() { form.member_id = "0 (Guest)"; form.member_search = "Guest"; memberPicker.value = false; clearWalletMember(); depositRedeem.value = null; depositApplied.value = false; scheduleCalc(); }
       // 🪙 Set member wallet state (auto-settle) + fetch live balance
       function setWalletMember(member_id, fallback) {
         wallet.is_member = true;
@@ -988,8 +1244,17 @@
       }
       // Recompute wallet settle whenever mins/multiplier/base_rate change
       watch([() => effectiveMins.value, () => form.multiplier, () => form.base_rate], () => { computeWalletSettle(); });
+      // 🏷️ WAVE 2: re-run the server-side discount calc whenever the cart changes (debounced)
+      watch(
+        [() => form.game_amt, () => form.food_total, () => form.discount, () => effectiveMins.value,
+         () => form.base_rate, () => form.multiplier, () => wallet.balance, () => isMember.value,
+         () => promo.id, () => coupon.applied, () => focItem.value,
+         () => foodLines.value.map((l) => l.name + ':' + l.qty).join(',')],
+        () => scheduleCalc()
+      );
       function pickConsole(c) {
         form.console_id = c.console_id || c.id; consolePicker.value = false;
+        probeDeposits(); loadActiveBookings();
         const cid = form.console_id;
         // 📥 Prefill existing session food cart when an active console is picked mid-session
         const cstatus = String(c.status || "").toLowerCase();
@@ -1041,55 +1306,74 @@
       function pickPay({ selectedOptions }) { form.payment_method = selectedOptions[0].value; payPicker.value = false; }
 
       async function submit() {
-        submitting.value = true;
+        if (submitting.value) return;
         haptic("medium");
+        // 🚨 In-session guard (WAVE 2): warn (amber) if the member/console is mid-session.
+        // Never hard-blocks — staff can override with awareness.
+        const guard = await ensureNoActiveSession();
+        if (guard === "cancel") return;
+        submitting.value = true;
         try {
           const member_id = form.member_id || form.member_search || "0 (Guest)";
           const isMemberSale = isMember.value;
+
+          // ── 🏷️ MONEY RULE: ask the server for the discounted total (fresh calc) ──
+          await runCalc();
+          const sc = serverCalc.value;
+          const netAfterDiscount = sc ? (Number(sc.net_total) || 0) : Math.max(0, rawCash.value - (Number(form.discount) || 0));
+          const discTotal = sc ? (Number(sc.total_discount) || 0) : (Number(form.discount) || 0);
+          const depAmt = depositAppliedAmt.value;
+          const payableNow = Math.max(0, netAfterDiscount - depAmt);
+
           // 🪙 Wallet settle (mirror sale bot launch_session_sale / confirm_summary):
-          //    effective_cost_mins = round(effectiveMins × multiplier);
           //    sufficient → wallet covers game (NO cash for game); insufficient → cash-down shortfall.
           let wallet_deduct = 0;
           let final_game_amt = Number(form.game_amt) || 0;
-          let final_net_total = Number(netTotal.value) || 0;
           let final_pm = paymentMethodComputed.value;
           if (isMemberSale && effectiveMins.value > 0) {
             computeWalletSettle();
             const ecost = wallet.effective_cost_mins || effectiveCostMins.value;
             const bal = Number(wallet.balance) || 0;
-            const shortKs = Math.round(Math.max(0, ecost - bal) * (Number(form.base_rate)||0) / 60);
             if (bal >= ecost) {
-              // Wallet sufficient — game covered by wallet, cash only for food (+deposit handled by backend)
               wallet_deduct = ecost;
-              final_net_total = Math.max(0, (Number(form.food_total)||0) - (Number(form.discount)||0));
             } else {
-              // Insufficient — deduct all available wallet mins, cash-down = shortfall
               wallet_deduct = bal;
-              final_game_amt = shortKs;
-              final_net_total = Math.max(0, shortKs + (Number(form.food_total)||0) - (Number(form.discount)||0));
-              final_pm = form.payment_splits.length ? paymentMethodComputed.value : "Cash:" + final_net_total;
+              final_game_amt = Math.round(Math.max(0, ecost - bal) * (Number(form.base_rate) || 0) / 60);
             }
           }
           if (form.payment_splits.length) {
             // Validate split only against the CASH portion actually payable
-            if (isMemberSale && wallet_deduct > 0 && wallet.balance >= wallet.effective_cost_mins) {
-              if (Number(paidTotal.value) < Number(final_net_total) - 0.001) {
-                showToast("Payments total " + Number(paidTotal.value) + " < Cash due " + Number(final_net_total), "warning");
-                return;
-              }
-            } else if (Number(paidTotal.value) < Number(final_net_total) - 0.001) {
-              showToast("Payments total " + Number(paidTotal.value) + " < Net " + Number(final_net_total), "warning");
-              return;
+            if (Number(paidTotal.value) < payableNow - 0.001) {
+              showToast("Payments total " + fKs(paidTotal.value) + " < Cash due " + fKs(payableNow), "warning");
+              submitting.value = false; return;
             }
             final_pm = paymentMethodComputed.value;
           }
+
+          // ── 🎟️ Coupon redeem (idempotent per sale_ref = voucher) ──
+          if (coupon.applied) {
+            try {
+              const cr = await PSV.api("/api/coupons/redeem", { method: "POST", headers: HJSON, body: JSON.stringify({ code: coupon.code, minutes: coupon.minutes, sale_ref: form.voucher_no, staff_name: PSV.getStaff().name }) });
+              if (cr && cr.success === false) throw new Error(cr.error || "Coupon redeem မအောင်မြင်");
+              const cd = PSV.unwrap(cr) || {};
+              coupon.message = "✓ Redeem ပြီး — " + (cd.deducted_minutes != null ? cd.deducted_minutes : coupon.minutes) + " mins" + (cd.remaining_minutes != null ? " (ကျန် " + cd.remaining_minutes + ")" : "");
+              showToast("Coupon " + coupon.code + " · -" + (cd.deducted_minutes != null ? cd.deducted_minutes : coupon.minutes) + " mins", "success");
+            } catch (ce) {
+              showToast("Coupon redeem မအောင်မြင်: " + ce.message, "fail");
+              submitting.value = false; return;
+            }
+          }
+
           const payload = {
             voucher_no: form.voucher_no, member_id: member_id,
             console_id: form.console_id, mins: form.mins, base_rate: form.base_rate,
             multiplier: form.multiplier, game_amt: final_game_amt, food_items: form.food_items,
-            food_total: form.food_total, discount: form.discount, net_total: final_net_total,
+            food_total: form.food_total, discount: discTotal, net_total: netAfterDiscount,
             payment_method: final_pm, staff: PSV.getStaff().name,
             wallet_deduct: wallet_deduct,
+            promotion_name: promo.title || "",
+            coupon_code: coupon.applied ? coupon.code : "",
+            booking_id: (depositApplied.value && depositRedeem.value) ? depositRedeem.value.booking_id : "",
             client_ref: PSV.genClientRef(),
           };
           const res = PSV.unwrap(await PSV.api("/api/sales/record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }));
@@ -1116,6 +1400,8 @@
               const nm = (fl.name || "").trim(); const q = Number(fl.qty) || 0; const p = Number(fl.price) || 0;
               if (nm && q > 0) vItems.push({ name: "🍜 " + nm, qty: q, price: p });
             }
+            const vSubtotal = sc ? (Number(sc.cash_payable) || 0) : rawCash.value;
+            const vPay = final_pm + (depAmt > 0 ? (" + Deposit " + fKs(depAmt) + " Ks") : "");
             lastVoucher.value = {
               voucher_no: vno,
               date: PSV.todayMMT(),
@@ -1123,26 +1409,40 @@
               staff: PSV.getStaff().name,
               member: isMemberSale ? (form.member_search || form.member_id) : "Guest",
               items: vItems,
-              total: final_net_total,
-              payment: final_pm,
+              subtotal: vSubtotal,
+              discount: discTotal,
+              total: netAfterDiscount,
+              deposit: depAmt,
+              cashDue: payableNow,
+              payment: vPay,
               balance: wallet_deduct > 0 ? ("Wallet −" + wallet_deduct + " mins") : "",
+              notes: "Subtotal: " + fKs(vSubtotal) + " Ks" + (discTotal > 0 ? (" | Discount: -" + fKs(discTotal) + " Ks") : "") + (depAmt > 0 ? (" | Deposit: -" + fKs(depAmt) + " Ks") : "") + (promo.title ? (" | Promo: " + promo.title) : "") + (coupon.applied ? (" | Coupon: " + coupon.code) : ""),
             };
             voucherOpen.value = true;
             try { window.PSVLastVoucher = { raw: lastVoucher.value }; } catch (_e) {}
-            showToast("Saved ✓ " + vno + (wallet_deduct > 0 ? (" · Wallet −" + wallet_deduct + "m") : ""), "success");
+            showToast("Saved ✓ " + vno + (discTotal > 0 ? (" · Discount −" + fKs(discTotal)) : "") + (wallet_deduct > 0 ? (" · Wallet −" + wallet_deduct + "m") : ""), "success");
             form.voucher_no = PSV.genVoucherNo(); form.member_id = ""; form.member_search = ""; form.console_id = "";
             form.game_name = ""; form.mins = 0; form.base_rate = 0; form.multiplier = 1; form.game_amt = 0;
             form.food_items = ""; form.food_total = 0; form.discount = 0;
             form.payment_splits = [];
             foodLines.value = [];
             clearWalletMember();
+            // WAVE 2: reset discount + deposit state for the next sale
+            promo.id = ""; promo.title = ""; promo.type = ""; promo.notes = ""; focItem.value = "";
+            coupon.code = ""; coupon.applied = false; coupon.minutes = 0; coupon.discount = 0; coupon.message = "";
+            depositRedeem.value = null; depositApplied.value = false;
+            try { PSV.pendingDepositRedeem = null; } catch (_e2) {}
+            serverCalc.value = null;
+            loadActiveBookings();
             emit("saved");
           }
         } catch (e) { showToast("Error: " + e.message, "fail"); }
         finally { submitting.value = false; }
       }
 
-      return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs, depositRedeem, clearRedeem };
+      return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs, depositRedeem, clearRedeem,
+               // ── WAVE 2: promo / coupon / discount / deposit / in-session guard ──
+               sessionWarn, depositApplied, depositAppliedAmt, applyDeposit, promos, promoOpen, promo, promoText, openPromo, pickPromo, clearPromo, focOpen, focItem, pickFoc, coupon, applyCoupon, clearCoupon, calcStatus, discountLines, subtotalKs, totalDiscountKs, payableBeforeDeposit, rawCash, scheduleCalc };
     },
   };
 
@@ -1837,7 +2137,7 @@
       { my: "အစားအသောက် အရောင်း", en: "Food & drink sale", icon: "🍔", path: "/food-orders" },
       { my: "အစားအသောက် စာရင်း", en: "Food menu list", icon: "🍜", path: "/food" },
       { my: "Discount / Promo", en: "View promotions", icon: "🏷️", path: "/promotions" },
-      { my: "Coupon", en: "Validate & redeem coupon", icon: "🎟️", tag: "နောက် pass" },
+      { my: "Coupon", en: "Validate & redeem coupon", icon: "🎟️", path: "/sales" },
     ] },
     { id: "booking", emoji: "📅", my: "Booking", en: "Bookings", tone: "warn", items: [
       { my: "ဒီနေ့ Booking စာရင်း", en: "Today's bookings", icon: "📋", path: "/bookings" },
@@ -1872,7 +2172,7 @@
     { id: "print", emoji: "🖨", my: "Print", en: "Printing", tone: "indigo", items: [
       { my: "ဘောက်ချာ ရိုက်ရန်", en: "Print voucher", icon: "🧾", path: "/print" },
       { my: "စမ်းသပ် Print", en: "Test print", icon: "🖨", path: "/print" },
-      { my: "Top-up ပြေစာ", en: "Top-up receipt", icon: "📃", tag: "နောက် pass" },
+      { my: "Top-up ပြေစာ", en: "Top-up receipt", icon: "📃", path: "/deposit" },
     ] },
     { id: "report", emoji: "📊", my: "Report", en: "Reports", tone: "teal", items: [
       { my: "ဒီနေ့ အနှစ်ချုပ်", en: "Today's summary", icon: "📊", path: "/reports" },
@@ -2923,6 +3223,32 @@
           </button>
         </div>
 
+        <!-- 🧾 Top-up receipt (WAVE 2) — same PSV.printVoucher / 576px pipeline -->
+        <van-popup v-model:show="receiptOpen" position="bottom" round class="psv-sheet" :style="{ maxHeight: '90vh' }">
+          <div class="psv-sheet__handle"></div>
+          <div class="psv-sheet__body">
+            <div class="psv-sheet-title">🧾 Top-up ပြေစာ</div>
+            <div class="psv-paper">
+              <img v-if="receiptPng" :src="receiptPng" alt="top-up receipt" class="psv-paper__img" />
+              <div v-else class="psv-skeleton" style="height:300px"></div>
+            </div>
+            <div class="psv-card psv-receipt">
+              <div class="psv-row"><span>Member</span><b>{{ receipt.member }}</b></div>
+              <div class="psv-row"><span>Amount</span><b class="psv-tabnum">{{ fKs(receipt.amount) }} Ks</b></div>
+              <div class="psv-row"><span>Method</span><b>{{ receipt.method }}</b></div>
+              <div class="psv-row" v-if="Number(receipt.bonus) > 0"><span>Bonus</span><b class="psv-tabnum">+{{ receipt.bonus }} mins</b></div>
+              <div class="psv-row"><span>Credit</span><b class="psv-tabnum">{{ receipt.total_mins }} mins</b></div>
+              <div class="psv-row"><span>New balance</span><b class="psv-tabnum">{{ receipt.new_balance }} mins</b></div>
+              <div class="psv-row"><span>Staff</span><b>{{ receipt.staff }}</b></div>
+              <div class="psv-row"><span>Time</span><b>{{ receipt.time }}</b></div>
+            </div>
+            <div class="psv-btn-row">
+              <button class="psv-btn psv-btn--ghost" @click="receiptOpen = false">ပိတ်</button>
+              <button class="psv-btn psv-btn--primary" :disabled="printingReceipt" @click="printReceipt">{{ printingReceipt ? 'Printing…' : '🖨 ပြေစာ ရိုက်' }}</button>
+            </div>
+          </div>
+        </van-popup>
+
         <van-popup v-model:show="picker" position="bottom" round style="max-height:70vh">
           <div class="psv-sheet">
             <div class="psv-sheet__handle"></div>
@@ -2962,19 +3288,63 @@
         }
       }
       function pick(m) { member.id = m.id; member.name = m.name || m.id; picker.value = false; haptic("light"); }
+      // 🧾 WAVE 2 top-up receipt (reuses the PrintScreen / printVoucher 576px pipeline)
+      const receiptOpen = ref(false);
+      const receiptPng = ref("");
+      const printingReceipt = ref(false);
+      const receipt = reactive({ voucher_no: "", member: "", amount: 0, method: "Cash", bonus: 0, total_mins: 0, new_balance: 0, staff: "", time: "" });
+      function currentTopupVoucher() {
+        const items = [{ name: "Top-up Credit", qty: 1, price: Number(receipt.amount) || 0 }];
+        if (Number(receipt.bonus) > 0) items.push({ name: "Rank Bonus", qty: 1, price: 0 });
+        return {
+          voucher_no: receipt.voucher_no || ("TOP-" + Date.now()),
+          date: PSV.todayMMT(),
+          time: receipt.time || new Date().toTimeString().slice(0, 5),
+          staff: receipt.staff,
+          member: receipt.member,
+          items: items,
+          total: Number(receipt.amount) || 0,
+          payment: receipt.method,
+          balance: "New balance: " + (Number(receipt.total_mins) || 0) + " mins",
+          notes: "TOP-UP RECEIPT" + (Number(receipt.bonus) > 0 ? (" | Bonus: +" + receipt.bonus + " mins") : ""),
+        };
+      }
+      async function openReceipt(v) {
+        receipt.voucher_no = v.voucher_no || "";
+        receipt.member = v.member || "";
+        receipt.amount = Number(v.amount) || 0;
+        receipt.method = v.method || "Cash";
+        receipt.bonus = Number(v.bonus) || 0;
+        receipt.total_mins = Number(v.total_mins) || 0;
+        receipt.new_balance = Number(v.new_balance) || 0;
+        receipt.staff = v.staff || "";
+        receipt.time = v.time || new Date().toTimeString().slice(0, 5);
+        receiptOpen.value = true;
+        try { receiptPng.value = await PSV.renderVoucherPng(currentTopupVoucher()); } catch (_e) { receiptPng.value = ""; }
+      }
+      async function printReceipt() {
+        printingReceipt.value = true;
+        try { await PSV.printVoucher(currentTopupVoucher()); } finally { printingReceipt.value = false; }
+      }
       async function submit() {
         const amt = Number(amount.value) || 0;
         if (!member.id || amt <= 0 || busy.value) return;
         busy.value = true; haptic("medium");
+        const _mName = member.name || member.id; const _mId = member.id; const _mMethod = method.value;
         try {
-          const res = PSV.unwrap(await PSV.api("/api/topup/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: member.id, amount: amt, payment_method: method.value, staff_name: PSV.getStaff().name, client_ref: PSV.genClientRef() }) }));
+          const res = PSV.unwrap(await PSV.api("/api/topup/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: _mId, amount: amt, payment_method: _mMethod, staff_name: PSV.getStaff().name, client_ref: PSV.genClientRef() }) }));
           if (res && res.duplicate) showToast("Already applied — " + (res.balance_mins ?? "?") + " mins", "warning");
           else showToast("Deposit done ✓ balance " + (res.balance_mins ?? "?"), "success");
+          // 🧾 Auto-offer the top-up receipt
+          const bonus = (res && res.bonus_mins != null) ? res.bonus_mins : 0;
+          const totalMins = (res && res.mins_added != null) ? res.mins_added : ((res && res.base_mins != null ? res.base_mins : 0) + Number(bonus || 0));
+          const newBal = (res && res.balance_mins != null) ? res.balance_mins : totalMins;
+          openReceipt({ voucher_no: (res && res.voucher_no) || ("TOP-" + Date.now()), member: _mName + " (" + _mId + ")", amount: amt, method: _mMethod, bonus: bonus, total_mins: totalMins, new_balance: newBal, staff: PSV.getStaff().name });
           amount.value = 0; member.id = ""; member.name = "";
         } catch (e) { showToast("Error: " + e.message, "fail"); }
         finally { busy.value = false; }
       }
-      return { picker, q, members, member, amount, method, busy, quick, filtered, methods: DEPOSIT_METHODS, initials, openPicker, pick, submit, fKs };
+      return { picker, q, members, member, amount, method, busy, quick, filtered, methods: DEPOSIT_METHODS, initials, openPicker, pick, submit, fKs, receiptOpen, receiptPng, printingReceipt, receipt, printReceipt };
     },
   };
 

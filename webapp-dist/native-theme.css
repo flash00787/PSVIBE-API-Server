@@ -535,3 +535,16 @@ html.psv-native .psv-tone-warn .psv-menu-head__my { color: var(--psv-warn); }
 html.psv-native .psv-tone-indigo .psv-menu-head__my { color: #a5b4fc; }
 html.psv-native .psv-tone-teal .psv-menu-head__my { color: #5eead4; }
 html.psv-native .psv-tone-dim .psv-menu-head__my { color: var(--psv-text-dim); }
+
+/* ══════════════════════════════════════════════════════════════
+ *  WAVE 2 — sale discounting / coupon / deposit / in-session guard
+ *  Premium dark+gold accents (app mode only; Telegram mode untouched).
+ * ══════════════════════════════════════════════════════════════ */
+html.psv-native .psv-disc-card { background: var(--psv-surface); }
+html.psv-native .psv-pick-row__t { color: var(--psv-text); }
+html.psv-native .psv-verified { color: var(--psv-ok); background: rgba(52,211,153,.14); border-color: rgba(52,211,153,.4); }
+html.psv-native .psv-coupon-msg.is-ok { color: var(--psv-ok); background: rgba(52,211,153,.12); border-color: rgba(52,211,153,.3); }
+html.psv-native .psv-coupon-msg.is-fail { color: var(--psv-danger); background: rgba(248,113,113,.12); border-color: rgba(248,113,113,.3); }
+html.psv-native .psv-sess-warn { color: var(--psv-warn); background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.4); }
+html.psv-native .psv-redeem-banner.is-applied { background: rgba(52,211,153,.10); border-color: rgba(52,211,153,.4); }
+html.psv-native .psv-mini-x { color: var(--psv-text-dim); }

@@ -2,9 +2,20 @@
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 
-from auth import get_current_user, require_admin
+from auth import get_current_user, require_admin, get_staff_or_dashboard_user
+
+
+async def require_admin_clean(user: dict = Depends(get_staff_or_dashboard_user)) -> dict:
+    """Admin gate that accepts both dashboard + staff JWTs and returns a clean 403.
+
+    Used for payroll-adjacent endpoints so the Staff App can show an
+    'owner-only' message instead of a confusing 401.
+    """
+    if str((user or {}).get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Owner-only action — ask an admin to do this")
+    return user
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
 
 logger = logging.getLogger(__name__)
@@ -442,9 +453,9 @@ async def dashboard_get_attendance(
     staff_id: int | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_staff_or_dashboard_user),
 ):
-    """List attendance records with optional filters."""
+    """List attendance records with optional filters (staff-allowed, read-only)."""
     try:
         where = ["1=1"]
         params = []
@@ -500,7 +511,7 @@ async def dashboard_get_attendance(
 
 
 @router.post("/dashboard/attendance/check-in")
-async def dashboard_attendance_check_in(req: dict, user: dict = Depends(get_current_user)):
+async def dashboard_attendance_check_in(req: dict, user: dict = Depends(get_staff_or_dashboard_user)):
     """Check in a staff member — create attendance log entry."""
     try:
         staff_id = req.get("staff_id")
@@ -553,7 +564,7 @@ async def dashboard_attendance_check_in(req: dict, user: dict = Depends(get_curr
 
 
 @router.post("/dashboard/attendance/check-out")
-async def dashboard_attendance_check_out(req: dict, user: dict = Depends(get_current_user)):
+async def dashboard_attendance_check_out(req: dict, user: dict = Depends(get_staff_or_dashboard_user)):
     """Check out a staff member — update attendance log with hours and pay."""
     try:
         staff_id = req.get("staff_id")
@@ -969,9 +980,9 @@ async def dashboard_get_salary_advances(
     repayment_status: str | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_admin_clean),
 ):
-    """List salary advances with optional filters."""
+    """List salary advances (owner-only — clean 403 for staff)."""
     try:
         where = ["1=1"]
         params = []
@@ -1016,7 +1027,7 @@ async def dashboard_get_salary_advances(
 
 
 @router.post("/dashboard/salary/advances")
-async def dashboard_create_salary_advance(req: dict, user: dict = Depends(require_admin)):
+async def dashboard_create_salary_advance(req: dict, user: dict = Depends(require_admin_clean)):
     """Record a salary advance. Creates OPEX entry automatically.
 
     ADMIN-ONLY (Staff App Wave 1): payroll-adjacent money movement stays with the
@@ -1066,7 +1077,7 @@ async def dashboard_create_salary_advance(req: dict, user: dict = Depends(requir
 
 
 @router.delete("/dashboard/salary/advances/{advance_id}")
-async def dashboard_delete_salary_advance(advance_id: int, user: dict = Depends(get_current_user)):
+async def dashboard_delete_salary_advance(advance_id: int, user: dict = Depends(require_admin_clean)):
     """Delete a salary advance record."""
     try:
         _mysql_execute("DELETE FROM salary_advance WHERE id = %s", (advance_id,))
