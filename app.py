@@ -59,6 +59,7 @@ from routes.promotions import router as promotions_router
 from routes.tournament_routes import router as tournament_router
 from routes.telegram_webapp import router as telegram_webapp_router
 from routes.staff_app_routes import router as staff_app_router
+from routes.account_routes import router as account_router
 from dashboard_routes import router as dashboard_router
 from kora_cmds import router as kora_cmds_router
 from digest_routes import router as digest_router
@@ -322,6 +323,7 @@ app.include_router(promotions_router)
 app.include_router(tournament_router)
 app.include_router(telegram_webapp_router)
 app.include_router(staff_app_router)
+app.include_router(account_router)
 
 
 @app.get("/firebase-service-account.json", include_in_schema=False)

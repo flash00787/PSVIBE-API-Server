@@ -368,51 +368,87 @@ async def api_finance_balance_sheet(auth=Depends(verify_api_key)):
         logging.getLogger('patch_routes').exception(f"BS endpoint error: {e}")
         return {"success": False, "error": str(e), "trace": _tb}
 
+async def _require_owner_or_service(request: Request):
+    """Gate for owner-only endpoints.
+
+    Allowed: the service X-API-Key (dashboard pages/bots) OR a Bearer JWT whose
+    user role == admin. A Staff App JWT (role=staff) is REJECTED with 403.
+    """
+    from config import API_KEY as _API_KEY
+    from auth import decode_token as _decode, get_user as _get_user
+    key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    if _API_KEY and key and key == _API_KEY:
+        return {"username": "api_service", "role": "admin", "name": "Service"}
+    authz = request.headers.get("Authorization", "")
+    if not authz.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    payload = _decode(authz[7:])
+    if payload.get("type") != "access":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+    if payload.get("scope") == "staff-webapp":
+        role = payload.get("role", "staff")
+    else:
+        u = _get_user(payload.get("sub"))
+        if u is None:
+            raise HTTPException(status_code=401, detail="User not found")
+        role = u.get("role")
+    if str(role or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Owner-only — admin access required")
+    return {"username": payload.get("sub"), "role": "admin"}
+
+
 @app.get("/api/finance/account-balances", tags=["Finance"])
-async def api_finance_account_balances(auth=Depends(verify_api_key)):
-    """Account balances using same calculation as web finance."""
+async def api_finance_account_balances(auth=Depends(_require_owner_or_service)):
+    """Owner-only Account Balances — restricted to **ACM's Acc** + **KBZ Bank** (WAVE 5).
+
+    Staff App JWTs (role=staff) receive HTTP 403 "Owner-only — admin access required".
+    Dashboard pages/bots authenticating with the service X-API-Key keep working.
+    The 'Wave'/'WavePay' merge happens inside the finance calculator and only ever
+    affects the WavePay account, so it cannot leak into these two accounts.
+    """
     try:
         from routes.finance_routes import get_finance_balances
-        mock_user = {"username": "api_transfer", "role": "admin", "display_name": "Transfer Page"}
-        result = await get_finance_balances(year=None, month=None, user=mock_user)
-        
-        if not result.get("success"):
-            return ok({"operating": [], "capital": [], "store_total": 0, "acm_total": 0, "total_capital": 0, "grand_total": 0})
-        
-        accounts = result.get("accounts", [])
-        key_map = {"cash": "Cash", "kpay": "KPay", "wave": "Wave", "aya_pay": "AYA Pay", "acm_acc": "ACM's Acc", "kbz_bank": "KBZ Bank"}
-        
-        operating = []
-        capital = []
-        store_total = 0.0
-        acm_balance = 0.0
-        
-        for acc in accounts:
-            key = acc.get("key", "")
-            display = key_map.get(key, acc.get("label", key))
-            bal = float(acc.get("balance", 0))
-            if key == "kbz_bank":
-                capital.append({"name": display, "type": "Capital", "balance": bal, "notes": ""})
-            elif key == "acm_acc":
-                acm_balance = bal
-                operating.append({"name": display, "type": "Digital", "balance": bal, "notes": ""})
-            else:
-                store_total += bal
-                operating.append({"name": display, "type": acc.get("type", "operating"), "balance": bal, "notes": acc.get("label", "")})
-        
-        total_cap = sum(c["balance"] for c in capital)
-        
+        result = await get_finance_balances(
+            year=None, month=None,
+            user={"username": "account_balances", "role": "admin"},
+        )
+        accounts = (result.get("accounts") or []) if isinstance(result, dict) else []
+        bal_by_label = {str(a.get("label")): float(a.get("balance") or 0) for a in accounts}
+
+        last = {}
+        try:
+            for r in _mysql_query(
+                "SELECT account, MAX(created_at) AS last_movement FROM cash_movements "
+                "WHERE account IN (%s, %s) GROUP BY account",
+                ("ACM's Acc", "KBZ Bank"),
+            ):
+                lm = r.get("last_movement")
+                last[r.get("account")] = lm.isoformat() if hasattr(lm, "isoformat") else lm
+        except Exception as _le:
+            logger.warning(f"account-balances last_movement lookup failed: {_le}")
+
+        rows = []
+        for name in ("ACM's Acc", "KBZ Bank"):
+            rows.append({
+                "name": name,
+                "type": "Digital" if name == "ACM's Acc" else "Capital",
+                "balance": round(bal_by_label.get(name, 0.0)),
+                "last_movement": last.get(name),
+            })
+
+        acm = [r for r in rows if r["name"] == "ACM's Acc"]
+        kbz = [r for r in rows if r["name"] == "KBZ Bank"]
         return ok({
-            "operating": operating,
-            "capital": capital,
-            "store_total": round(store_total, 0),
-            "acm_total": round(acm_balance, 0),
-            "total_capital": total_cap,
-            "grand_total": round(store_total + acm_balance + total_cap, 0),
+            "operating": acm,
+            "capital": kbz,
+            "accounts": rows,
+            "owner_only": True,
+            "acm_total": acm[0]["balance"] if acm else 0,
+            "total_capital": kbz[0]["balance"] if kbz else 0,
         })
     except Exception as e:
         logger.error(f"api_finance_account_balances: {e}")
-        return ok({"operating": [], "capital": [], "store_total": 0, "acm_total": 0, "total_capital": 0, "grand_total": 0})
+        return error_response(str(e))
 
 
 @app.get("/api/finance/depreciation", tags=["Finance"])
