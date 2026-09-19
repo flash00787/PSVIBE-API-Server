@@ -7,6 +7,12 @@ Adds:
   GET    /api/staff/app/version      — PUBLIC — APK version manifest (served from staff-app-dist/version.json)
   POST   /api/staff/push/test        — send a test FCM push to all registered devices (admin only)
   POST   /api/staff/push/internal    — service-to-service push for the sales bot (X-Internal-Key)
+  GET    /api/staff/notifications             — in-app history for the calling staff user (+ broadcast)
+  POST   /api/staff/notifications/{id}/read   — mark one notification read
+  POST   /api/staff/notifications/read-all    — mark all of the user's notifications read
+  GET    /api/staff/notifications/unread-count — unread badge counter
+
+The staff_notifications table is created idempotently by fcm.ensure_notifications_table().
 
 The staff_devices table is created idempotently on first use.
 Static APK + download page are mounted separately in app.py at /staff-app/.
@@ -19,7 +25,7 @@ import secrets
 from fastapi import APIRouter, Depends, Body, Header, HTTPException
 
 from auth import get_staff_or_dashboard_user, require_admin
-from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute
+from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_rowcount
 
 logger = logging.getLogger(__name__)
 
@@ -191,4 +197,124 @@ async def push_test(body: dict = Body(...), user: dict = Depends(require_admin))
         return {"success": True, "data": result}
     except Exception as e:
         logger.error(f"POST /staff/push/test error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ── In-app notification center (history) ────────────────────────────────────
+# staff_notifications: username NULL = broadcast (all staff), else targeted.
+# A staff user only ever sees their own rows + broadcast rows.
+
+def _notif_username(user: dict) -> str:
+    return str((user or {}).get("username") or "").strip()
+
+
+def _notif_init() -> None:
+    try:
+        import fcm
+        fcm.ensure_notifications_table()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"notifications table init skipped: {e}")
+
+
+def _iso(v):
+    return v.isoformat() if hasattr(v, "isoformat") else v
+
+
+@router.get("/notifications")
+async def list_notifications(limit: int = 50, unread_only: int = 0,
+                             user: dict = Depends(get_staff_or_dashboard_user)):
+    """In-app notification history for the calling staff user (+ broadcast rows).
+
+    Query: ?limit=50&unread_only=0
+    Returns: {items:[{id,type,title,body,booking_id,created_at,read_at}], unread:<int>}
+    """
+    _notif_init()
+    username = _notif_username(user)
+    try:
+        lim = int(limit or 50)
+    except Exception:
+        lim = 50
+    lim = max(1, min(lim, 200))
+    try:
+        unread_only = int(unread_only or 0)
+    except Exception:
+        unread_only = 0
+    try:
+        where = "(username = %s OR username IS NULL)"
+        args = [username]
+        if unread_only:
+            where += " AND read_at IS NULL"
+        rows = _mysql_query(
+            "SELECT id, type, title, body, booking_id, created_at, read_at FROM staff_notifications "
+            f"WHERE {where} ORDER BY created_at DESC, id DESC LIMIT %s",
+            tuple(args + [lim]),
+        )
+        cnt = _mysql_query_one(
+            "SELECT COUNT(*) AS c FROM staff_notifications "
+            "WHERE (username = %s OR username IS NULL) AND read_at IS NULL",
+            (username,),
+        )
+        items = [{
+            "id": r.get("id"),
+            "type": r.get("type"),
+            "title": r.get("title"),
+            "body": r.get("body"),
+            "booking_id": r.get("booking_id"),
+            "created_at": _iso(r.get("created_at")),
+            "read_at": _iso(r.get("read_at")),
+        } for r in rows]
+        return {"items": items, "unread": int((cnt or {}).get("c") or 0)}
+    except Exception as e:
+        logger.error(f"GET /staff/notifications error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/notifications/read-all")
+async def read_all_notifications(user: dict = Depends(get_staff_or_dashboard_user)):
+    """Mark every notification visible to the caller as read."""
+    _notif_init()
+    username = _notif_username(user)
+    try:
+        updated = _mysql_rowcount(
+            "UPDATE staff_notifications SET read_at = NOW() "
+            "WHERE (username = %s OR username IS NULL) AND read_at IS NULL",
+            (username,),
+        )
+        return {"success": True, "data": {"updated": int(updated or 0)}}
+    except Exception as e:
+        logger.error(f"POST /staff/notifications/read-all error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/notifications/unread-count")
+async def notifications_unread_count(user: dict = Depends(get_staff_or_dashboard_user)):
+    """Unread badge counter for the calling staff user. Returns {unread:<int>}."""
+    _notif_init()
+    username = _notif_username(user)
+    try:
+        cnt = _mysql_query_one(
+            "SELECT COUNT(*) AS c FROM staff_notifications "
+            "WHERE (username = %s OR username IS NULL) AND read_at IS NULL",
+            (username,),
+        )
+        return {"unread": int((cnt or {}).get("c") or 0)}
+    except Exception as e:
+        logger.error(f"GET /staff/notifications/unread-count error: {e}")
+        return {"unread": 0}
+
+
+@router.post("/notifications/{notification_id}/read")
+async def read_notification(notification_id: int, user: dict = Depends(get_staff_or_dashboard_user)):
+    """Mark one notification read (must belong to the caller or be a broadcast row)."""
+    _notif_init()
+    username = _notif_username(user)
+    try:
+        _mysql_rowcount(
+            "UPDATE staff_notifications SET read_at = NOW() "
+            "WHERE id = %s AND (username = %s OR username IS NULL) AND read_at IS NULL",
+            (notification_id, username),
+        )
+        return {"success": True, "data": {"id": notification_id, "read": True}}
+    except Exception as e:
+        logger.error(f"POST /staff/notifications/{notification_id}/read error: {e}")
         return {"success": False, "error": str(e)}

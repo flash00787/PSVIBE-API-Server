@@ -448,3 +448,31 @@ html.psv-native .psv-profile__name { font-size: 20px; font-weight: 800; letter-s
 
 /* Vant field text colour inside native */
 html.psv-native .van-field__control { color: var(--psv-text); }
+
+/* ── §4 Notification center (standalone premium) ─────── */
+html.psv-native .psv-bell .van-icon { color: var(--psv-text-dim); }
+html.psv-native .psv-bell__badge {
+  background: linear-gradient(135deg, var(--psv-gold), var(--psv-gold-2));
+  color: #0b1220; box-shadow: 0 0 0 2px var(--psv-bg);
+}
+html.psv-native .psv-notif-bar__count { color: var(--psv-text-dim); }
+html.psv-native .psv-notif-group { color: var(--psv-text-dim); letter-spacing: .8px; }
+html.psv-native .psv-notif-list {
+  background: var(--psv-surface); border-color: var(--psv-border);
+  border-radius: var(--psv-r-lg); box-shadow: var(--psv-shadow);
+  backdrop-filter: blur(6px);
+}
+html.psv-native .psv-notif-item { border-bottom-color: var(--psv-border); }
+html.psv-native .psv-notif-item.is-unread { background: linear-gradient(90deg, rgba(240,180,41,.07), transparent 70%); }
+html.psv-native .psv-notif-title { color: var(--psv-text); }
+html.psv-native .psv-notif-body,
+html.psv-native .psv-notif-time { color: var(--psv-text-dim); }
+html.psv-native .psv-notif-ico {
+  background: rgba(240,180,41,.14); color: var(--psv-gold);
+  box-shadow: inset 0 0 0 1px rgba(240,180,41,.18);
+}
+html.psv-native .psv-notif-ico--booking { background: rgba(99,102,241,.18); color: #a5b4fc; box-shadow: inset 0 0 0 1px rgba(99,102,241,.22); }
+html.psv-native .psv-notif-ico--generic { background: rgba(148,163,184,.16); color: var(--psv-text-dim); box-shadow: inset 0 0 0 1px var(--psv-border); }
+html.psv-native .psv-notif-dot { background: var(--psv-gold); box-shadow: 0 0 8px rgba(240,180,41,.85); }
+html.psv-native .psv-notif-empty__txt { color: var(--psv-text); }
+html.psv-native .psv-notif-empty__sub { color: var(--psv-text-dim); }

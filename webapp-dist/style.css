@@ -192,7 +192,6 @@ html, body {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
 }
-
 /* ── Standalone staff login ─────────────────────────── */
 .pv-login { min-height: 100vh; padding: 56px 18px 24px; display: flex; flex-direction: column; }
 .pv-login__brand { font-size: 30px; font-weight: 800; letter-spacing: -.4px; text-align: center; }
@@ -201,3 +200,50 @@ html, body {
 .pv-login__title { text-align: center; font-size: 18px; font-weight: 700; margin: 28px 0 16px; }
 .pv-login__hint { text-align: center; color: var(--pv-muted); font-size: 12px; margin: 18px 22px 0; line-height: 1.6; }
 .pv-account-role { font-size: 12px; color: var(--pv-muted); margin-top: 2px; text-transform: capitalize; }
+
+/* ── Notification center (bell badge + history list) ───
+ * Base styles apply in BOTH app and Telegram modes; the standalone premium
+ * look is layered on top in native-theme.css under html.psv-native. */
+.psv-bell { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+.psv-bell .van-icon { color: var(--pv-muted); }
+.psv-bell__badge {
+  position: absolute; top: -6px; right: -8px;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 8px; background: var(--pv-danger); color: #fff;
+  font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+  box-shadow: 0 0 0 2px var(--van-background-2, #111a2e);
+}
+.psv-notif-pad { padding: 12px 14px; }
+.psv-notif-bar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 2px; }
+.psv-notif-bar__count { font-size: 13px; color: var(--pv-muted); font-weight: 600; }
+.psv-notif-group {
+  font-size: 13px; font-weight: 600; color: var(--pv-muted);
+  text-transform: uppercase; letter-spacing: .4px; margin: 16px 16px 8px;
+}
+.psv-notif-list {
+  background: var(--pv-card-bg); border: 1px solid var(--pv-card-border);
+  border-radius: 14px; margin: 0 14px; overflow: hidden;
+}
+.psv-notif-item {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px; border-bottom: 1px solid var(--pv-card-border); cursor: pointer;
+  transition: background .12s ease;
+}
+.psv-notif-item:last-child { border-bottom: none; }
+.psv-notif-item:active { background: rgba(127, 127, 127, .08); }
+.psv-notif-ico {
+  width: 38px; height: 38px; flex: 0 0 38px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; background: rgba(99, 102, 241, .14);
+}
+.psv-notif-ico--booking { background: rgba(20, 184, 166, .16); }
+.psv-notif-ico--generic { background: rgba(100, 116, 139, .18); }
+.psv-notif-main { flex: 1; min-width: 0; }
+.psv-notif-title { font-size: 15px; font-weight: 700; }
+.psv-notif-body { font-size: 13px; color: var(--pv-muted); margin-top: 2px; line-height: 1.5; word-break: break-word; }
+.psv-notif-time { font-size: 11px; color: var(--pv-muted); margin-top: 6px; opacity: .85; }
+.psv-notif-dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: var(--brand-indigo); margin-top: 6px; }
+.psv-notif-empty { text-align: center; padding: 56px 20px; }
+.psv-notif-empty__ico { font-size: 40px; opacity: .5; }
+.psv-notif-empty__txt { font-size: 16px; font-weight: 700; margin-top: 10px; }
+.psv-notif-empty__sub { font-size: 13px; color: var(--pv-muted); margin-top: 6px; }

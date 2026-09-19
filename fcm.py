@@ -8,8 +8,16 @@ warning — **the API must never crash because push is unavailable**.
 Public API
 ----------
 send_to_staff(title, body, data=None, usernames=None) -> dict
-    Send a notification to all registered ``staff_devices`` rows (or only the
-    given usernames). Prunes invalid / unregistered tokens. Never raises.
+    Persist a ``staff_notifications`` history row (broadcast -> username NULL,
+    targeted -> one row per username) BEFORE sending, then push to all
+    registered ``staff_devices`` rows (or only the given usernames). Each push
+    carries the history row id in ``data['notification_id']`` so the Staff App
+    can deep-link a tapped push into its notification center (the native shell
+    calls ``window.PSVOpenNotification(id)`` — see webapp app.js). Prunes invalid
+    / unregistered tokens. Never raises.
+
+record_notification(type, title, body, booking_id=None, usernames=None) -> dict
+    Standalone history writer for non-push events. Returns {username|None: id}.
 
 push_session_reminder(console_id, minutes_left=None, member_id=None, ...) -> dict
 push_booking_reminder(booking_id, when=None, ...) -> dict
@@ -56,6 +64,83 @@ _INVALID_TOKEN_HINTS = (
     "registration token is not valid",
     "unregistered",
 )
+
+# ── Notification history (Staff App in-app notification center) ─────────────
+# staff_notifications mirrors every push (and any other recorded event) so the
+# Staff App can show a scrollable history with unread state.
+#   username  NULL  -> broadcast (visible to every staff user)
+#   username  'x'   -> targeted (visible only to that staff user)
+# read_at NULL means unread. See routes/staff_app_routes.py for the read APIs.
+_notif_table_ready = False
+
+
+def ensure_notifications_table() -> None:
+    """Idempotent CREATE TABLE IF NOT EXISTS for staff_notifications."""
+    global _notif_table_ready
+    if _notif_table_ready:
+        return
+    try:
+        from mysql_db import execute as _e
+        _e(
+            """
+            CREATE TABLE IF NOT EXISTS staff_notifications (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(50) DEFAULT NULL,
+                type VARCHAR(32) NOT NULL DEFAULT 'generic',
+                title VARCHAR(255) DEFAULT NULL,
+                body TEXT,
+                booking_id VARCHAR(64) DEFAULT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                read_at TIMESTAMP NULL DEFAULT NULL,
+                KEY idx_notif_username (username),
+                KEY idx_notif_created (created_at),
+                KEY idx_notif_read (read_at)
+            )
+            """
+        )
+        _notif_table_ready = True
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("staff_notifications table init failed: %s", e)
+
+
+def record_notification(ntype: str = "generic", title: Optional[str] = None,
+                       body: Optional[str] = None, booking_id: Any = None,
+                       usernames: Optional[Iterable[Any]] = None) -> Dict[Any, Any]:
+    """Write notification history row(s) BEFORE any push is attempted.
+
+    Broadcast (``usernames`` empty/None) -> ONE row with username NULL.
+    Targeted -> ONE row per username.
+    Returns ``{username_or_None: id}`` (None key = broadcast row). Never raises.
+    """
+    ensure_notifications_table()
+    ids: Dict[Any, Any] = {}
+    try:
+        from mysql_db import execute as _e
+        _type = (str(ntype or "generic").strip() or "generic")[:32]
+        _title = None if title is None else str(title)[:255]
+        _body = None if body is None else str(body)
+        _bid = None if booking_id in (None, "", "None", "null") else str(booking_id)[:64]
+        if usernames:
+            names: List[str] = []
+            for u in usernames:
+                u = str(u).strip()
+                if u and u not in names:
+                    names.append(u)
+            for u in names:
+                ids[u] = _e(
+                    "INSERT INTO staff_notifications (username, type, title, body, booking_id, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, NOW())",
+                    (u, _type, _title, _body, _bid),
+                )
+        else:
+            ids[None] = _e(
+                "INSERT INTO staff_notifications (username, type, title, body, booking_id, created_at) "
+                "VALUES (NULL, %s, %s, %s, %s, NOW())",
+                (_type, _title, _body, _bid),
+            )
+    except Exception as e:
+        logger.warning("record_notification failed: %s", e)
+    return ids
 
 
 def _get_app():
@@ -130,7 +215,16 @@ def send_to_staff(title: str, body: str, data: Optional[Dict[str, Any]] = None,
     Returns ``{"enabled": bool, "sent": n, "failed": n, "pruned": n,
     "results": [{id, username, ok, error}]}``. Never raises.
     """
+    data = data or {}
     result: Dict[str, Any] = {"enabled": False, "sent": 0, "failed": 0, "pruned": 0, "results": []}
+
+    # ── Persist history FIRST (even if push is disabled/unavailable) ──
+    nid_map = record_notification(
+        ntype=str(data.get("type") or "generic"),
+        title=title, body=body, booking_id=data.get("booking_id"), usernames=usernames,
+    )
+    result["notification_ids"] = {str(k): v for k, v in nid_map.items()}
+
     app = _get_app()
     if app is None:
         result["error"] = "fcm_disabled"
@@ -143,37 +237,46 @@ def send_to_staff(title: str, body: str, data: Optional[Dict[str, Any]] = None,
 
     try:
         from firebase_admin import messaging
-        tokens = [r["fcm_token"] for r in rows]
-        norm_data = {k: ("" if v is None else str(v)) for k, v in (data or {}).items()}
-        msg = messaging.MulticastMessage(
-            tokens=tokens,
-            notification=messaging.Notification(title=title or "", body=body or ""),
-            data=norm_data,
-            android=messaging.AndroidConfig(
-                priority="high",
-                notification=messaging.AndroidNotification(channel_id="psvibe_sessions", default_sound=True),
-            ),
-        )
-        resp = messaging.send_each_for_multicast(msg, app=app)
+        norm_data = {k: ("" if v is None else str(v)) for k, v in data.items()}
+        # Group tokens by username so each push carries that user's own
+        # notification_id for deep-linking (broadcast rows use the None key).
+        groups: Dict[Any, List[Dict[str, Any]]] = {}
+        for r in rows:
+            groups.setdefault(r.get("username"), []).append(r)
         invalid: List[str] = []
-        for row, sr in zip(rows, resp.responses):
-            ok = bool(getattr(sr, "success", False))
-            err = None if ok else str(getattr(sr, "exception", "unknown error"))
-            if ok:
-                result["sent"] += 1
-            else:
-                result["failed"] += 1
-                low = err.lower()
-                if isinstance(getattr(sr, "exception", None), messaging.UnregisteredError) or \
-                        any(h in low for h in _INVALID_TOKEN_HINTS):
-                    if row.get("fcm_token"):
-                        invalid.append(row["fcm_token"])
-            result["results"].append({
-                "id": row.get("id"),
-                "username": row.get("username"),
-                "ok": ok,
-                "error": err,
-            })
+        for uname, grows in groups.items():
+            nid = nid_map.get(uname, nid_map.get(None))
+            gdata = dict(norm_data)
+            if nid is not None:
+                gdata["notification_id"] = str(nid)
+            msg = messaging.MulticastMessage(
+                tokens=[r["fcm_token"] for r in grows],
+                notification=messaging.Notification(title=title or "", body=body or ""),
+                data=gdata,
+                android=messaging.AndroidConfig(
+                    priority="high",
+                    notification=messaging.AndroidNotification(channel_id="psvibe_sessions", default_sound=True),
+                ),
+            )
+            resp = messaging.send_each_for_multicast(msg, app=app)
+            for row, sr in zip(grows, resp.responses):
+                ok = bool(getattr(sr, "success", False))
+                err = None if ok else str(getattr(sr, "exception", "unknown error"))
+                if ok:
+                    result["sent"] += 1
+                else:
+                    result["failed"] += 1
+                    low = err.lower()
+                    if isinstance(getattr(sr, "exception", None), messaging.UnregisteredError) or \
+                            any(h in low for h in _INVALID_TOKEN_HINTS):
+                        if row.get("fcm_token"):
+                            invalid.append(row["fcm_token"])
+                result["results"].append({
+                    "id": row.get("id"),
+                    "username": row.get("username"),
+                    "ok": ok,
+                    "error": err,
+                })
         if invalid:
             result["pruned"] = _prune_tokens(invalid)
     except Exception as e:  # pragma: no cover - defensive
@@ -200,6 +303,7 @@ def push_session_reminder(console_id: Any = None, minutes_left: Any = None,
         "title": t,
         "body": b,
     }
+    # NOTE: send_to_staff() adds "notification_id" (the staff_notifications row id)
     if minutes_left is not None:
         data["minutes_left"] = str(minutes_left)
     if member_id is not None:
@@ -224,6 +328,7 @@ def push_booking_reminder(booking_id: Any = None, when: Any = None,
         "title": t,
         "body": b,
     }
+    # NOTE: send_to_staff() adds "notification_id" (the staff_notifications row id)
     if when:
         data["when"] = str(when)
     return send_to_staff(t, b, data=data, usernames=usernames)

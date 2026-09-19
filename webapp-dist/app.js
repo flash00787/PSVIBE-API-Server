@@ -96,6 +96,20 @@
     },
   };
 
+  // ── Native-shell push deep-link hook ────────────────────
+  // The distributed Android shell (psv-native-bridge.js) can call
+  // window.PSVOpenNotification("<id>") when the user taps an FCM notification.
+  // The FCM data payload carries `notification_id` (set in api/fcm.py). We mark
+  // the row read (best effort) and open the in-app notification center.
+  window.PSVOpenNotification = function (id) {
+    try {
+      if (id != null && id !== "") {
+        PSV.api("/api/staff/notifications/" + encodeURIComponent(String(id)) + "/read", { method: "POST" }).catch(function () {});
+      }
+    } catch (_e) {}
+    try { haptic("light"); router.push("/notifications"); } catch (_e2) {}
+  };
+
   // ── Reusable components ─────────────────────────────────
   const PageHeader = {
     props: { title: String, back: String, fixedBack: String },
@@ -139,6 +153,10 @@
             <div v-if="webLogin" class="pv-account-role">{{ staffRole }}</div>
           </div>
           <div style="display:flex;align-items:center;gap:14px">
+            <div class="psv-bell" @click="goNotifications" aria-label="Notifications">
+              <van-icon name="bell" size="22" />
+              <span v-if="unread > 0" class="psv-bell__badge">{{ unread > 99 ? '99+' : unread }}</span>
+            </div>
             <van-icon v-if="webLogin" name="revoke" size="20" @click="doLogout" style="color:var(--pv-danger);cursor:pointer" />
             <van-icon name="replay" size="22" @click="load" style="color:var(--pv-muted);cursor:pointer" />
           </div>
@@ -342,6 +360,13 @@
       }
       function topupRemoveSplit(i) { topup.splits.splice(i, 1); }
 
+      const unread = ref(0);
+      async function loadUnread() {
+        try { const d = PSV.unwrap(await PSV.api("/api/staff/notifications/unread-count")); unread.value = Number((d && (d.unread != null ? d.unread : d.count)) || 0) || 0; }
+        catch (_e) { unread.value = 0; }
+      }
+      function goNotifications() { haptic("light"); router.push("/notifications"); }
+
       async function load() {
         loading.value = true;
         const [members, consoles, sales] = await Promise.allSettled([
@@ -379,8 +404,8 @@
         }
         loading.value = false;
       }
-      onMounted(load);
-      return { staffName, webLogin, staffRole, doLogout, loading, summary, nativeMode, initials, fKs, go, load, topup, topupFiltered, topupTier, topupPaid, topupRemaining, topupPreview, calcTopupBonus, openTopup, openTopupEntry, pickTopup, confirmTopup, topupOpenPay, topupPickPay, topupConfirmSplit, topupRemoveSplit };
+      onMounted(() => { load(); loadUnread(); });
+      return { staffName, webLogin, staffRole, doLogout, loading, summary, nativeMode, initials, fKs, go, load, unread, goNotifications, topup, topupFiltered, topupTier, topupPaid, topupRemaining, topupPreview, calcTopupBonus, openTopup, openTopupEntry, pickTopup, confirmTopup, topupOpenPay, topupPickPay, topupConfirmSplit, topupRemoveSplit };
     },
   };
 
@@ -1439,6 +1464,7 @@
     { path: "/food", icon: "🍜", label: "Food" },
     { path: "/promotions", icon: "🎁", label: "Promo" },
     { path: "/salary", icon: "💰", label: "Salary" },
+    { path: "/notifications", icon: "🔔", label: "Alerts" },
   ];
 
   const More = {
@@ -2321,6 +2347,7 @@
     router.register("/food", Food);
     router.register("/promotions", Promotions);
     router.register("/salary", Salary);
+    router.register("/notifications", NotificationsScreen);
   }
 
   // ── VIEW: Standalone staff login (no Telegram context) ──
@@ -2577,8 +2604,12 @@
 
           <div class="psv-section-title">Settings</div>
           <div class="psv-card psv-list">
+            <div class="psv-list-row" @click="goNotifications">
+              <div class="psv-list-row__main"><div class="psv-list-row__title">Notifications</div><div class="psv-list-row__sub">View session & booking alerts</div></div>
+              <van-icon name="arrow" />
+            </div>
             <div class="psv-list-row">
-              <div class="psv-list-row__main"><div class="psv-list-row__title">Notifications</div><div class="psv-list-row__sub">Session & booking reminders</div></div>
+              <div class="psv-list-row__main"><div class="psv-list-row__title">Push alerts</div><div class="psv-list-row__sub">Device notifications</div></div>
               <van-switch v-model="notify" size="22" @change="onNotify" />
             </div>
             <div class="psv-list-row" @click="goPrint">
@@ -2610,6 +2641,7 @@
       const summary = reactive({ minsToday: 0, salesToday: 0 });
       const attendance = reactive({ status: "Not checked in" });
       function goPrint() { haptic("light"); router.push("/print"); }
+      function goNotifications() { haptic("light"); router.push("/notifications"); }
       function load() {
         try {
           const info = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.PSVShell;
@@ -2628,7 +2660,120 @@
       function onNotify() { haptic("light"); showToast(notify.value ? "Notifications on" : "Notifications off", "success"); }
       function logout() { haptic("medium"); PSV.logout(); showToast("Logged out", "success"); }
       onMounted(load);
-      return { staff, initials, notify, appVersion, updateText, summary, attendance, goPrint, checkUpdate, onNotify, logout, fKs };
+      return { staff, initials, notify, appVersion, updateText, summary, attendance, goPrint, goNotifications, checkUpdate, onNotify, logout, fKs };
+    },
+  };
+
+  // ── VIEW: Notification Center (app + Telegram modes) ──
+  const NotificationsScreen = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Notifications" back="/" />
+        <van-pull-refresh v-model="refreshing" @refresh="load">
+          <div v-if="loading" class="psv-notif-pad"><van-skeleton title :row="4" /></div>
+          <template v-else>
+            <div v-if="!items.length" class="psv-notif-empty">
+              <div class="psv-notif-empty__ico">🔔</div>
+              <div class="psv-notif-empty__txt">No notifications yet</div>
+              <div class="psv-notif-empty__sub">Session and booking reminders will appear here.</div>
+            </div>
+            <template v-else>
+              <div class="psv-notif-bar">
+                <span class="psv-notif-bar__count">{{ unread }} unread</span>
+                <van-button size="small" :disabled="!unread" @click="readAll">Mark all read</van-button>
+              </div>
+              <div v-for="grp in groups" :key="grp.label">
+                <div class="psv-notif-group">{{ grp.label }}</div>
+                <div class="psv-notif-list">
+                  <div v-for="n in grp.items" :key="n.id" class="psv-notif-item" :class="{ 'is-unread': !n.read_at }" @click="openNotif(n)">
+                    <div class="psv-notif-ico" :class="'psv-notif-ico--' + icoType(n.type)">{{ icoEmoji(n.type) }}</div>
+                    <div class="psv-notif-main">
+                      <div class="psv-notif-title">{{ n.title || 'Notification' }}</div>
+                      <div v-if="n.body" class="psv-notif-body">{{ n.body }}</div>
+                      <div class="psv-notif-time">{{ rel(n.created_at) }}</div>
+                    </div>
+                    <span v-if="!n.read_at" class="psv-notif-dot"></span>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </template>
+        </van-pull-refresh>
+      </div>
+    `,
+    setup() {
+      const items = ref([]);
+      const unread = ref(0);
+      const loading = ref(true);
+      const refreshing = ref(false);
+
+      function icoType(t) {
+        t = String(t || "").toLowerCase();
+        if (t === "session_reminder") return "session";
+        if (t === "booking_reminder") return "booking";
+        return "generic";
+      }
+      function icoEmoji(t) {
+        const k = icoType(t);
+        return k === "session" ? "\u23f1\ufe0f" : (k === "booking" ? "\ud83d\udcc5" : "\ud83d\udd14");
+      }
+      function rel(ts) {
+        if (!ts) return "";
+        const d = new Date(String(ts).replace(" ", "T"));
+        if (isNaN(d.getTime())) return String(ts);
+        const s = Math.floor((Date.now() - d.getTime()) / 1000);
+        if (s < 60) return "just now";
+        if (s < 3600) return Math.floor(s / 60) + "m ago";
+        if (s < 86400) return Math.floor(s / 3600) + "h ago";
+        if (s < 172800) return "yesterday";
+        return Math.floor(s / 86400) + "d ago";
+      }
+      const groups = computed(() => {
+        const today = PSV.todayMMT();
+        const yd = new Date(Date.now() + (6 * 60 + 30) * 60000 - 86400000).toISOString().slice(0, 10);
+        const g = { Today: [], Yesterday: [], Earlier: [] };
+        for (const n of items.value) {
+          const d = new Date(String(n.created_at || "").replace(" ", "T"));
+          let key = "Earlier";
+          if (!isNaN(d.getTime())) {
+            const mmt = new Date(d.getTime() + (6 * 60 + 30) * 60000).toISOString().slice(0, 10);
+            if (mmt === today) key = "Today";
+            else if (mmt === yd) key = "Yesterday";
+          }
+          g[key].push(n);
+        }
+        return ["Today", "Yesterday", "Earlier"].filter((k) => g[k].length).map((k) => ({ label: k, items: g[k] }));
+      });
+      async function load() {
+        loading.value = true;
+        try {
+          const d = PSV.unwrap(await PSV.api("/api/staff/notifications?limit=50"));
+          items.value = (d && d.items) || [];
+          unread.value = Number((d && d.unread) || 0) || 0;
+        } catch (_e) { items.value = []; unread.value = 0; }
+        finally { loading.value = false; refreshing.value = false; }
+      }
+      async function markRead(n) {
+        if (!n || n.read_at) return;
+        n.read_at = new Date().toISOString();
+        unread.value = Math.max(0, unread.value - 1);
+        try { await PSV.api("/api/staff/notifications/" + n.id + "/read", { method: "POST" }); } catch (_e) {}
+      }
+      function openNotif(n) {
+        haptic("light");
+        markRead(n);
+        if (n && n.booking_id) { showToast("Booking #" + n.booking_id, "info"); router.push("/bookings"); }
+      }
+      async function readAll() {
+        haptic("light");
+        try { await PSV.api("/api/staff/notifications/read-all", { method: "POST" }); } catch (_e) {}
+        items.value.forEach((n) => { if (!n.read_at) n.read_at = new Date().toISOString(); });
+        unread.value = 0;
+        showToast("All marked read", "success");
+      }
+      onMounted(load);
+      return { items, unread, loading, refreshing, groups, load, openNotif, readAll, rel, icoType, icoEmoji };
     },
   };
 
@@ -2705,6 +2850,7 @@
     app.component("Food", Food);
     app.component("Promotions", Promotions);
     app.component("Salary", Salary);
+    app.component("NotificationsScreen", NotificationsScreen);
 
     app.mount("#app");
     router.start();

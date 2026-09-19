@@ -1864,6 +1864,17 @@ def _notify_booking_received(name, date, time_slot, console_type, duration, game
     except Exception as e:
         logger.warning("[NOTIFY] Failed to send booking notification for #%s: %s", bk_id, e)
 
+    # ── Staff app push (FCM) — additive; must never break the booking flow ──
+    try:
+        import fcm as _fcm
+        _fcm.send_to_staff(
+            title="🎮 Booking အသစ် #" + str(bk_id),
+            body=f"{name} · {date} {time_slot} · {console_label.strip()} · {duration} min",
+            data={"type": "new_booking", "booking_id": str(bk_id)},
+        )
+    except Exception as _pne:
+        logger.warning("[NOTIFY] staff push failed for #%s: %s", bk_id, _pne)
+
 
 # ================================================================
 
@@ -2720,6 +2731,17 @@ async def api_deposit_submit(booking_id: int, req: dict, auth=Depends(verify_api
                             logger.warning(f"Deposit photo forward bk#{booking_id}: {_photo_e}")
             except Exception as _nte:
                 logger.warning(f"Deposit staff notify failed: {_nte}")
+
+            # ── Staff app push (FCM) — deposit needs staff verification ──
+            try:
+                import fcm as _fcm2
+                _fcm2.send_to_staff(
+                    title=f"💳 Deposit Submitted — BK#{booking_id}",
+                    body=f"{member} · {bk_date} {bk_time} · {deposit_amt:,} Ks ({method_label})",
+                    data={"type": "deposit_submitted", "booking_id": str(booking_id)},
+                )
+            except Exception as _pfe:
+                logger.warning(f"Deposit push bk#{booking_id}: {_pfe}")
         
         return ok({"booking_id": booking_id, "deposit_status": "paid"})
     except Exception as e:
