@@ -2224,7 +2224,15 @@
           showToast("Load failed: " + e.message, "fail");
         } finally { loading.value = false; refreshing.value = false; }
       }
-      function setChip(id) { haptic("light"); chip.value = id; load(); }
+      function setChip(id) { haptic("light"); chip.value = id; load(); nextTick(scrollChipIntoView); }
+      // Keep the active chip visible when the row is wider than the screen
+      // (e.g. the new "Cancelled" chip sits at the far right).
+      function scrollChipIntoView() {
+        try {
+          const el = document.querySelector(".psv-bk-chips .psv-chip--on");
+          if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest", inline: "center" });
+        } catch (_e) {}
+      }
       function setView(id) { haptic("light"); view.value = id; }
       function onPickTimeline(b) { haptic("light"); detail.value = b; detailOpen.value = true; }
       function goNew() { haptic("light"); newOpen.value = true; }
@@ -2359,6 +2367,7 @@
       onMounted(async () => {
         window.addEventListener("psv:retry", load);
         await load();
+        nextTick(scrollChipIntoView);
         const pid = pendingBooking.value;
         if (pid) { pendingBooking.value = null; await openById(pid); }
       });
