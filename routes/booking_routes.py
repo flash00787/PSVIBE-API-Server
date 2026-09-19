@@ -1863,31 +1863,49 @@ async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
 
 
 
-@router.get("/get-confirmed-booking", response_model=GenericResponse, tags=["Bookings"], summary="Get confirmed bookings for a console [MySQL]")
+@router.get("/get-confirmed-booking", response_model=GenericResponse, tags=["Bookings"], summary="Get bind-candidate bookings for a console [MySQL]")
 async def api_confirmed_bookings_for_console(console_id: str, auth=Depends(verify_api_key)):
-    """Get today's Confirmed booking for a console (for auto-checkin)."""
+    """Return today's bind candidates for a console (Staff App "Start Session" sheet).
+
+    Backward compatible: `booking` still returns the single best candidate (same
+    shape/keys as before) so existing callers keep working.
+
+    ADDED (2026-09-19): `bookings` lists EVERY candidate for that console today with
+    its REAL status verbatim (confirmed / checked_in / pending_check_in) so the app can
+    render an honest per-row label instead of hardcoding "Checked-in". Rows are ordered
+    checked-in-first, then newest created.
+
+    NOTE: this endpoint is READ-ONLY. To bind a merely-'confirmed' booking the app calls
+    the EXISTING `POST /api/bookings/checkin` first, then `POST /api/sessions/start`
+    (which still REQUIRES the linked booking to have a checked_in session row — unchanged).
+    """
     try:
         today = (datetime.now(timezone.utc) + timedelta(hours=6, minutes=30)).strftime('%Y-%m-%d')
-        row = _mysql_query_one(
-            "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, "
+        rows = _mysql_query(
+            "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, cb.customer_name, "
             "COALESCE(cs.actual_start, cb.planned_start) AS start_time, "
             "COALESCE(cs.actual_end, cb.planned_end) AS end_time, "
-            "cb.status, cb.staff_name, cb.notes, cb.telegram_chat_id, "
+            "COALESCE(cs.status, '') AS session_status, "
+            "cb.status AS status, cb.staff_name, cb.notes, cb.telegram_chat_id, "
             "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, "
-            "cb.phone, cb.game_name FROM console_bookings cb "
-            "LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
-            "WHERE cb.console_id=%s AND cb.status IN ('confirmed','checked_in') AND DATE(cb.booking_date)=%s ORDER BY cb.created_at DESC LIMIT 1",
+            "cb.phone, cb.game_name "
+            "FROM console_bookings cb" + _LATEST_SESSION_JOIN +
+            " WHERE cb.console_id=%s "
+            "AND (cb.status IN ('confirmed','checked_in','pending_check_in') OR cs.status='checked_in') "
+            "AND DATE(cb.booking_date)=%s "
+            "ORDER BY (cb.status='checked_in' OR cs.status='checked_in') DESC, cb.created_at DESC",
             (console_id, today)
-        )
-        if not row:
-            return ok({"booking": None})
-        for k in ("start_time", "end_time", "created_at"):
-            if k in row and row[k] is not None:
-                row[k] = row[k].isoformat() if hasattr(row[k], "isoformat") else str(row[k])
-        return ok({"booking": row})
+        ) or []
+        candidates = []
+        for row in rows:
+            for k in ("start_time", "end_time", "booking_date", "created_at"):
+                if k in row and row[k] is not None:
+                    row[k] = row[k].isoformat() if hasattr(row[k], "isoformat") else str(row[k])
+            candidates.append(row)
+        return ok({"booking": (candidates[0] if candidates else None), "bookings": candidates})
     except Exception as e:
         logger.exception(f"confirmed-by-console error: {e}")
-        return ok({"booking": None})
+        return ok({"booking": None, "bookings": []})
 
 # ================================================================
 #  WAITLIST AUTO-NOTIFY

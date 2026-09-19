@@ -76,14 +76,29 @@
   const router = {
     routes: {},
     current: ref("/"),
+    query: ref({}),
     register(path, component, title) { this.routes[path] = component; this.routes[path + "__title"] = title; },
     title(path) { return this.routes[path + "__title"] || "PS VIBE"; },
     push(path) {
-      if (window.location.hash === "#" + path) this.current.value = path;
+      if (window.location.hash === "#" + path) this.current.value = this.resolve();
       else window.location.hash = "#" + path;
     },
     resolve() {
       let h = window.location.hash.replace(/^#/, "");
+      // Split an optional query string (e.g. #/consoles?bind=3458). It is exposed via
+      // router.query so a view can deep-link (Consoles auto-selects a booking to bind).
+      let qs = "";
+      const qi = h.indexOf("?");
+      if (qi >= 0) { qs = h.slice(qi + 1); h = h.slice(0, qi); }
+      const q = {};
+      if (qs) qs.split("&").forEach((pair) => {
+        if (!pair) return;
+        const eq = pair.indexOf("=");
+        const k = eq >= 0 ? pair.slice(0, eq) : pair;
+        const v = eq >= 0 ? pair.slice(eq + 1) : "";
+        try { q[decodeURIComponent(k)] = decodeURIComponent(v); } catch (_e) { q[k] = v; }
+      });
+      this.query.value = q;
       if (!h || h === "/") return "/";
       // try exact match, else fall back to closest (e.g. /sales/new → /sales)
       if (this.routes[h]) return h;
@@ -2361,7 +2376,7 @@
         if (a.kind === "proof") return showProof(b);
         if (a.kind === "reject") return openReason("reject", b);
         if (a.kind === "cancel") return openReason("cancel", b);
-        if (a.kind === "consoles") { haptic("light"); detailOpen.value = false; router.push("/consoles"); return; }
+        if (a.kind === "consoles") { haptic("light"); detailOpen.value = false; router.push("/consoles?bind=" + encodeURIComponent(b.id)); return; }
       }
 
       onMounted(async () => {
@@ -2690,9 +2705,19 @@
 
         <van-action-sheet v-model:show="sheetShow" :actions="sheetActions" cancel-text="Cancel" @select="onAction" />
 
-        <van-dialog v-model:show="startShow" title="Start Session" show-cancel-button @confirm="submitStart" :before-close="noop">
+        <van-dialog v-model:show="startShow" title="Start Session" show-cancel-button @confirm="submitStart" :before-close="noop" :confirm-button-text="startConfirmLabel">
           <div style="padding:14px 16px 6px">
-            <van-cell v-if="startBind.booking" :title="'📌 Checked-in: ' + (startBind.booking.member_id || startBind.booking.customer_name || 'BK#' + startBind.booking.id)" :label="'BK#' + startBind.booking.id + (startBind.booking.game_name ? ' · ' + startBind.booking.game_name : '') + (startBind.booking.start_time ? ' · ' + fmtTime(startBind.booking.start_time) : '')" is-link @click="bindCheckin()" />
+            <div v-if="startBind.bookings.length" class="psv-bind">
+              <div class="psv-bind__head">🧩 {{ startBind.bookings.length > 1 ? startBind.bookings.length + ' bookings for this console — pick one' : 'Booking found for this console' }}</div>
+              <div v-for="b in startBind.bookings" :key="b.id" class="psv-bind__row" :class="{ 'psv-bind__row--sel': startBind.selId === b.id }" @click="selectBind(b)">
+                <span class="psv-bind__radio">{{ startBind.selId === b.id ? '◉' : '○' }}</span>
+                <div class="psv-bind__main">
+                  <div class="psv-bind__title">BK#{{ b.id }} · {{ b.member_id || b.customer_name || 'Guest' }}</div>
+                  <div class="psv-bind__meta"><template v-if="b.game_name">{{ b.game_name }}</template><template v-if="b.start_time"> · {{ fmtTime(b.start_time) }}</template><template v-if="b.duration_mins"> · {{ b.duration_mins }}m</template></div>
+                </div>
+                <span class="psv-bind__badge" :class="isCheckedIn(b) ? 'psv-bind__badge--ok' : 'psv-bind__badge--warn'">{{ bindStatusLabel(b) }}</span>
+              </div>
+            </div>
             <van-field :model-value="startForm.member_name || 'Select member…'" label="Member Name" readonly is-link @click="startMemberPicker = true" />
             <van-field v-model.number="startForm.duration_mins" type="number" label="Minutes" placeholder="60" />
             <van-field :model-value="startForm.game_name || 'Select game…'" label="Game" readonly is-link @click="startGamePicker = true" />
@@ -2777,12 +2802,33 @@
       const startGamePicker = ref(false);
       const startMemberCols = ref([]);
       const startGameCols = ref([]);
-      const startBind = ref({ booking: null });
+      // Bind candidates for the active console (today). `bookings` = every candidate
+      // with its REAL status; `selId` = the staff-selected one.
+      const startBind = reactive({ bookings: [], selId: null });
+      // Deep-link stash: /consoles?bind=<id> → preselect that booking once loaded.
+      const pendingBindId = ref(null);
       const endDlg = reactive({ show: false, title: "", booking_id: null, console_id: "", member_name: "", mins: 0 });
       const extendDlg = reactive({ show: false, console_id: "", extra: 60 });
       const noop = () => true;
 
       function dotClass(s) { return ({ Active: "active", Free: "free", Reserved: "reserved", Busy: "busy", Maintenance: "maintenance" })[s] || "idle"; }
+      // A candidate is REALLY checked-in only when the API says so (session row or
+      // booking status), never guessed client-side.
+      function isCheckedIn(b) {
+        if (!b) return false;
+        return String(b.session_status || "").toLowerCase() === "checked_in" || String(b.status || "").toLowerCase() === "checked_in";
+      }
+      function bindStatusLabel(b) {
+        if (isCheckedIn(b)) return "Checked-in";
+        const s = String(b.status || "").toLowerCase();
+        if (s === "pending_check_in" || s === "pending") return "Pending check-in";
+        return "Confirmed — not checked in yet";
+      }
+      const startConfirmLabel = computed(() => {
+        const b = startBind.bookings.find((x) => x.id === startBind.selId);
+        if (!b) return "Start";
+        return isCheckedIn(b) ? "Start with this booking" : "Check in & start";
+      });
       function isActive(c) { const s = String(c.status || "").toLowerCase(); return s === "active" || s === "checked_in"; }
       function fmtTime(v) {
         if (!v) return "--:--";
@@ -2798,7 +2844,34 @@
         catch (e) { showToast("Load failed: " + e.message, "fail"); list.value = []; }
         finally { loading.value = false; refreshing.value = false; }
       }
-      onMounted(load);
+      onMounted(async () => {
+        await load();
+        const bindId = (router.query.value || {}).bind;
+        if (bindId) await openBindFromQuery(bindId);
+      });
+
+      // Deep-link from Booking detail "Start session" → /consoles?bind=<id>:
+      // resolve the booking's console, open its Start Session sheet and preselect it.
+      async function openBindFromQuery(bindId) {
+        try {
+          const d = PSV.unwrap(await PSV.api("/api/bookings/" + encodeURIComponent(bindId)));
+          const bk = (d && d.booking) || null;
+          if (!bk) { showToast("Booking #" + bindId + " not found", "fail"); return; }
+          const cid = bk.console_id || "";
+          const c = list.value.find((x) => (x.console_id || x.id) === cid);
+          if (!c) { showToast("Console " + (cid || "?") + " not found", "warning"); return; }
+          activeConsole.value = c;
+          pendingBindId.value = bk.id;
+          if (String(c.status || "").toLowerCase() === "free") {
+            startForm.member_id = ""; startForm.member_name = ""; startForm.duration_mins = 60; startForm.game_name = ""; startForm.linked_booking_id = null;
+            startBind.bookings = []; startBind.selId = null;
+            startShow.value = true;
+            loadStartOptions();
+          } else {
+            openActions(c);
+          }
+        } catch (e) { showToast("Bind failed: " + e.message, "fail"); }
+      }
 
       function openActions(c) {
         activeConsole.value = c;
@@ -3007,13 +3080,20 @@
             startGameCols.value = gs.filter((g) => g.game_title).map((g) => ({ text: g.game_title, value: g.game_title }));
           } catch (e) { /* optional */ }
         }
-        // checked-in booking for this console (bind candidate)
+        // bind candidates for this console (today) — REAL status per row, no guessing
         const c = activeConsole.value;
         if (!c) return;
         try {
           const d = PSV.unwrap(await PSV.api("/api/get-confirmed-booking?console_id=" + encodeURIComponent(c.console_id || c.id)));
-          if (d && d.booking) startBind.value = { booking: d.booking };
-        } catch (e) { /* none */ }
+          const cands = (d && (d.bookings || (d.booking ? [d.booking] : []))) || [];
+          startBind.bookings = cands;
+          startBind.selId = null;
+          startForm.linked_booking_id = null;
+          const want = pendingBindId.value;
+          const target = (want != null && cands.find((x) => String(x.id) === String(want))) || (cands.length === 1 ? cands[0] : null);
+          if (target) selectBind(target);
+          pendingBindId.value = null;
+        } catch (e) { startBind.bookings = []; startBind.selId = null; }
       }
 
       function pickStartMember({ selectedOptions }) {
@@ -3037,16 +3117,17 @@
         startGamePicker.value = false;
       }
 
-      function bindCheckin() {
-        const b = startBind.value.booking;
-        if (!b) { showToast("No checked-in booking to bind", "warning"); return; }
+      // Staff taps a candidate row → select it (radio) AND bind it to this session.
+      function selectBind(b) {
+        if (!b) return;
+        startBind.selId = b.id;
         startForm.member_id = b.member_id || b.customer_name || "";
         startForm.member_name = b.member_id || b.customer_name || ("BK#" + b.id);
         if (b.game_name) startForm.game_name = b.game_name;
         if (b.duration_mins && Number(b.duration_mins) > 0) startForm.duration_mins = Number(b.duration_mins);
         startForm.linked_booking_id = b.id;
         haptic("medium");
-        showToast("Bound to BK#" + b.id + " ✓", "success");
+        showToast("Bound to BK#" + b.id + (isCheckedIn(b) ? " ✓" : " — not checked in yet"), isCheckedIn(b) ? "success" : "warning");
       }
 
       async function doExtend() {
@@ -3073,7 +3154,19 @@
         const dur = Number(startForm.duration_mins);
         if (!name) { showToast("Member name required", "warning"); return; }
         haptic("medium");
+        const bid = startForm.linked_booking_id;
+        const cand = bid ? startBind.bookings.find((x) => x.id === bid) : null;
         try {
+          // Bind flow: sessions/start REQUIRES a checked_in session row for the linked
+          // booking, so if the chosen candidate is still 'confirmed' we check it in
+          // first (POST /api/bookings/checkin creates the checked_in row) then start.
+          if (bid && cand && !isCheckedIn(cand)) {
+            await PSV.api("/api/bookings/checkin", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id: bid, staff_name: PSV.getStaff().name }),
+            });
+          }
           await PSV.api("/api/sessions/start", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -3083,7 +3176,7 @@
               member_name: name,
               duration_mins: isNaN(dur) ? 0 : dur,
               game_name: (startForm.game_name || "").trim(),
-              linked_booking_id: startForm.linked_booking_id || undefined,
+              linked_booking_id: bid || undefined,
               staff_name: PSV.getStaff().name,
             }),
           });
@@ -3093,7 +3186,7 @@
         } catch (e) { showToast("Start failed: " + e.message, "fail"); }
       }
 
-      return { list, loading, refreshing, dotClass, isActive, fmtTime, load, sheetShow, sheetActions, openActions, onAction, xsess, doMove, doSwap, startShow, startForm, startMemberPicker, startGamePicker, startMemberCols, startGameCols, startBind, endDlg, extendDlg, noop, submitStart, doEndSession, doExtend, loadStartOptions, pickStartMember, pickStartGame, bindCheckin, foodShow, foodConsole, foodNote, sessionFoodGroups, foodSel, sQty, sSetQty, foodSaving, saveSessionFood, openSessionFood, fKs };
+      return { list, loading, refreshing, dotClass, isActive, fmtTime, load, sheetShow, sheetActions, openActions, onAction, xsess, doMove, doSwap, startShow, startForm, startMemberPicker, startGamePicker, startMemberCols, startGameCols, startBind, endDlg, extendDlg, noop, submitStart, doEndSession, doExtend, loadStartOptions, pickStartMember, pickStartGame, selectBind, isCheckedIn, bindStatusLabel, startConfirmLabel, foodShow, foodConsole, foodNote, sessionFoodGroups, foodSel, sQty, sSetQty, foodSaving, saveSessionFood, openSessionFood, fKs };
     },
   };
 

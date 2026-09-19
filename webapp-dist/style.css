@@ -435,3 +435,17 @@ html, body {
 /* WAVE 4 — narrow timeline blocks: keep the customer name, compact the time */
 .psv-tl-block.is-narrow { padding: 0 4px; }
 .psv-tl-block.is-narrow .psv-tl-block__time { font-size: 8.5px; }
+
+/* WAVE bind-fix — "Start Session" booking candidate list (real status per row) */
+.psv-bind { margin: 0 0 10px; border: 1px solid var(--pv-card-border); border-radius: 12px; overflow: hidden; background: var(--pv-card-bg); }
+.psv-bind__head { padding: 8px 12px; font-size: 11.5px; font-weight: 700; letter-spacing: .2px; color: var(--pv-muted); background: rgba(148, 163, 184, .10); border-bottom: 1px solid var(--pv-card-border); }
+.psv-bind__row { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--pv-card-border); cursor: pointer; }
+.psv-bind__row:last-child { border-bottom: 0; }
+.psv-bind__row--sel { background: rgba(45, 212, 191, .12); box-shadow: inset 3px 0 0 #2dd4bf; }
+.psv-bind__radio { font-size: 15px; color: #2dd4bf; line-height: 1; }
+.psv-bind__main { flex: 1; min-width: 0; }
+.psv-bind__title { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.psv-bind__meta { font-size: 11px; color: var(--pv-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.psv-bind__badge { flex: none; font-size: 10px; font-weight: 800; padding: 3px 7px; border-radius: 999px; white-space: nowrap; }
+.psv-bind__badge--ok { background: rgba(45, 212, 191, .18); color: #0f766e; border: 1px solid rgba(45, 212, 191, .55); }
+.psv-bind__badge--warn { background: rgba(251, 191, 36, .18); color: #92400e; border: 1px solid rgba(251, 191, 36, .6); }
