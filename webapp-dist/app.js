@@ -22,7 +22,7 @@
   // html.psv-native, so the Telegram Mini App look is untouched.
   const NATIVE = !(tg && tg.initData);
   const TABS_TG = ["/", "/sales", "/members", "/bookings", "/more"];
-  const TABS_NATIVE = ["/", "/sales", "/bookings", "/print", "/me"];
+  const TABS_NATIVE = ["/", "/sales", "/bookings", "/print", "/more"];
 
   // ── Theme sync ──────────────────────────────────────────
   function applyTheme() {
@@ -109,6 +109,36 @@
     } catch (_e) {}
     try { haptic("light"); router.push("/notifications"); } catch (_e2) {}
   };
+
+  // ── Booking deep-link (push tap-through + notification items) ──
+  // WAVE 1: a native push (`psv:push` DOM event) or a Notification Center row
+  // carries `booking_id`. We stash it here and route to /bookings, whose view
+  // opens the matching booking detail (fetching it if it's not in the list).
+  const pendingBooking = ref(null);
+  function openBooking(id) {
+    const bid = (id === 0 || id) ? String(id) : "";
+    if (!bid) { try { router.push("/bookings"); } catch (_e) {} return; }
+    try { haptic("light"); } catch (_e) {}
+    pendingBooking.value = bid;
+    try { router.push("/bookings"); } catch (_e) {}
+  }
+  window.PSVOpenBooking = openBooking;
+
+  // ── Native shell push tap-through (FCM) ─────────────────
+  // psv-native-bridge.js dispatches window event `psv:push` with detail
+  // { source, type, title, body, booking_id }. Route to the referenced booking
+  // (or the live consoles board for session reminders).
+  function handleNativePush(ev) {
+    try {
+      const d = (ev && ev.detail) || {};
+      haptic("light");
+      if (d.booking_id) { openBooking(d.booking_id); return; }
+      const t = String(d.type || "");
+      if (t.indexOf("session") >= 0) { router.push("/consoles"); return; }
+      router.push("/notifications");
+    } catch (_e) {}
+  }
+  window.addEventListener("psv:push", handleNativePush);
 
   // ── Reusable components ─────────────────────────────────
   const PageHeader = {
@@ -580,6 +610,10 @@
     emits: ["saved"],
     template: `
       <div style="padding:8px 14px 16px">
+        <div v-if="depositRedeem" class="psv-redeem-banner">
+          <span class="psv-redeem-banner__txt">↩️ Deposit {{ fKs(depositRedeem.amount) }} Ks (BK#{{ depositRedeem.booking_id }}) — ဤအရောင်းနှင့် ချိတ်ဆက်ထားပြီ</span>
+          <button class="psv-redeem-banner__x" @click="clearRedeem">✕</button>
+        </div>
         <van-cell-group inset>
           <van-field v-model="form.voucher_no" label="Voucher" readonly />
           <van-field v-model="form.member_search" label="Member" placeholder="Search / Guest" is-link readonly @click="memberPicker=true" />
@@ -766,6 +800,9 @@
         payment_splits: [],
         adjust: 0,  // session voucher: bounded −10..+10 adjustment on actual mins
       });
+      // ↩️ Deposit redeem (WAVE 1): a booking flagged from the Booking detail view
+      const depositRedeem = ref(PSV.pendingDepositRedeem || null);
+      function clearRedeem() { try { PSV.pendingDepositRedeem = null; } catch (_e) {} depositRedeem.value = null; }
       // 🪙 Member wallet settle (mirror sale bot: wallet covers game cost → no cash)
       const wallet = reactive({ balance: 0, effective_cost_mins: 0, shortfall_mins: 0, shortfall_ks: 0, is_member: false, settle: false });
       const walletLoading = ref(false);
@@ -1105,7 +1142,7 @@
         finally { submitting.value = false; }
       }
 
-      return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs };
+      return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs, depositRedeem, clearRedeem };
     },
   };
 
@@ -1254,72 +1291,397 @@
     },
   };
 
-  // ── VIEW: Bookings ──────────────────────────────────────
+  // ── WAVE 1: booking ops + deposit helpers ───────────────
+  const BK_REJECT_REASONS = [
+    { text: "အချိန်မရ (slot မအား)", note: "Slot unavailable", value: "slot_unavailable" },
+    { text: "ငွေမဆပ် (deposit မရ)", note: "Deposit not received", value: "payment_not_received" },
+    { text: "အခြား", note: "Other", value: "other" },
+  ];
+  const BK_CANCEL_REASONS = [
+    { text: "ဖောက်သည် ကိုယ်တိုင် ဖျက်", note: "Customer cancelled", value: "customer_cancelled" },
+    { text: "Console မအား / ပြောင်း", note: "Console unavailable", value: "console_unavailable" },
+    { text: "ဖောက်သည် မလာ (no-show)", note: "No-show", value: "no_show" },
+    { text: "အခြား", note: "Other", value: "other" },
+  ];
+  const BK_STATUS = {
+    pending:          { en: "Pending",    my: "စောင့်ဆိုင်",     tone: "warn" },
+    pending_check_in: { en: "Confirmed",  my: "Check-in စောင့်", tone: "warn" },
+    confirmed:        { en: "Confirmed",  my: "အတည်ပြု",       tone: "ok" },
+    checked_in:       { en: "Checked-in", my: "ရောက်ရှိ",       tone: "ok" },
+    active:           { en: "Active",     my: "ကစားနေ",         tone: "gold" },
+    done:             { en: "Completed",  my: "ပြီးဆုံး",        tone: "dim" },
+    completed:        { en: "Completed",  my: "ပြီးဆုံး",        tone: "dim" },
+    cancelled:        { en: "Cancelled",  my: "ဖျက်ပြီး",        tone: "danger" },
+    rejected:         { en: "Rejected",   my: "ငြင်းပယ်",        tone: "danger" },
+  };
+  function bkKey(s) { return String(s == null ? "" : s).toLowerCase().trim(); }
+  function bkStatus(s) { return BK_STATUS[bkKey(s)] || { en: (s || "-"), my: "", tone: "dim" }; }
+  const HJSON = { "Content-Type": "application/json" };
+  function psvStaffName() { try { return (PSV.getStaff() || {}).name || "staff"; } catch (_e) { return "staff"; } }
+  function confirmBox(title, message, okText, cancelText, danger) {
+    return new Promise(function (resolve) {
+      try {
+        if (window.vant && vant.showConfirmDialog) {
+          vant.showConfirmDialog({
+            title: title,
+            message: message,
+            confirmButtonText: okText || "OK",
+            cancelButtonText: cancelText || "မလုပ်",
+            confirmButtonColor: danger ? "#f87171" : "#f0b429",
+            messageAlign: "left",
+          }).then(function () { resolve(true); }).catch(function () { resolve(false); });
+          return;
+        }
+      } catch (_e) {}
+      try { resolve(window.confirm(title + " — " + message)); } catch (_e2) { resolve(false); }
+    });
+  }
+
+  // ── VIEW: Bookings (WAVE 1 — full staff ops + deposits) ─
   const Bookings = {
     components: { PageHeader },
     template: `
-      <div class="pv-page">
-        <PageHeader title="Bookings" />
-        <van-tabs v-model:active="tab" sticky>
-          <van-tab title="List">
-            <van-pull-refresh v-model="refreshing" @refresh="load">
-              <van-empty v-if="!bookings.length && !loading" description="No bookings" />
-              <van-cell-group v-else inset style="margin-top:8px">
-                <van-cell v-for="b in bookings" :key="b.id" :title="b.customerName || b.member_id || 'Guest'">
-                  <template #value>
-                    <van-tag v-if="b.deposit_status" :type="depositTagType(b)">{{ depositBadgeText(b) }}</van-tag>
-                    <van-tag v-else :type="statusType(b.status)">{{ b.status || '-' }}</van-tag>
-                  </template>
-                  <template #label>
-                    <div style="line-height:1.5">{{ rowLabel(b) }}</div>
-                    <div v-if="b.notes" style="color:var(--pv-muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ b.notes }}</div>
-                  </template>
-                </van-cell>
-              </van-cell-group>
-            </van-pull-refresh>
-          </van-tab>
-          <van-tab title="New"><BookingForm @saved="onSaved" /></van-tab>
-        </van-tabs>
+      <div class="pv-page psv-bk">
+        <PageHeader title="Booking စာရင်း" />
+        <div class="psv-bk-chips">
+          <button v-for="c in chips" :key="c.id" class="psv-chip" :class="{ 'psv-chip--on': chip === c.id }" @click="setChip(c.id)">{{ c.icon }} {{ c.my }}</button>
+        </div>
+        <div class="psv-bk-hint">{{ chipHint }}</div>
+
+        <van-pull-refresh v-model="refreshing" @refresh="load">
+          <div v-if="loading" class="psv-pad">
+            <div class="psv-skeleton psv-sk-card" v-for="n in 3" :key="n"></div>
+          </div>
+          <div v-else-if="!rows.length" class="psv-empty">
+            <div style="font-size:34px">📭</div>
+            <div style="margin-top:8px">{{ emptyText }}</div>
+            <button class="psv-btn psv-btn--ghost" style="margin-top:14px" @click="goNew">➕ Booking အသစ်</button>
+          </div>
+          <div v-else class="psv-bk-list">
+            <div v-for="b in rows" :key="b.id" class="psv-bk-card" :class="'is-' + bkStatus(b.status).tone">
+              <div class="psv-bk-card__top" @click="openDetail(b)">
+                <div class="psv-bk-card__who">
+                  <div class="psv-bk-card__name">{{ b.customerName || b.member_id || 'Guest' }}</div>
+                  <div class="psv-bk-card__sub">BK#{{ b.id }} · {{ b.console_id || b.consoleType || '-' }}</div>
+                </div>
+                <span class="psv-pill" :class="'psv-pill--' + bkStatus(b.status).tone">{{ bkStatus(b.status).my }}<i>{{ bkStatus(b.status).en }}</i></span>
+              </div>
+              <div class="psv-bk-card__meta">
+                <span>📅 {{ b.date }}</span>
+                <span>⏰ {{ fmt12h(b.timeSlot || b.startTime) }}<template v-if="b.durationMins"> · {{ b.durationMins }}m</template></span>
+                <span v-if="b.gameName && b.gameName !== 'Any'">🎮 {{ b.gameName }}</span>
+              </div>
+              <div v-if="b.deposit_status && b.deposit_status !== 'none'" class="psv-bk-card__dep">
+                <span class="psv-pill psv-pill--gold">💰 {{ depositText(b) }}</span>
+                <span v-if="depRef(b)" class="psv-bk-card__ref">Ref: {{ depRef(b) }}</span>
+              </div>
+              <div class="psv-bk-actions">
+                <button v-for="a in cardActions(b)" :key="a.id" class="psv-abtn" :class="'psv-abtn--' + a.tone" :disabled="busy === b.id" @click.stop="runAction(a, b)">
+                  <span class="psv-abtn__ico">{{ a.icon }}</span>{{ a.my }}
+                </button>
+                <button class="psv-abtn psv-abtn--ghost" :disabled="busy === b.id" @click.stop="openDetail(b)">⋯ အသေးစိတ်</button>
+              </div>
+            </div>
+          </div>
+        </van-pull-refresh>
+
+        <!-- Booking detail + full action sheet -->
+        <van-popup v-model:show="detailOpen" position="bottom" round class="psv-sheet" :style="{ maxHeight: '90vh' }">
+          <div class="psv-sheet__handle"></div>
+          <div class="psv-sheet__body" v-if="detail">
+            <div class="psv-bk-detail__head">
+              <div>
+                <div class="psv-bk-detail__name">{{ detail.customerName || detail.member_id || 'Guest' }}</div>
+                <div class="psv-bk-detail__id">BK#{{ detail.id }}</div>
+              </div>
+              <span class="psv-pill" :class="'psv-pill--' + bkStatus(detail.status).tone">{{ bkStatus(detail.status).my }}<i>{{ bkStatus(detail.status).en }}</i></span>
+            </div>
+            <div class="psv-card psv-rows">
+              <div class="psv-row"><span>Console</span><b>{{ detail.console_id || detail.consoleType || '-' }}</b></div>
+              <div class="psv-row"><span>ရက် / အချိန်</span><b>{{ detail.date }} · {{ fmt12h(detail.timeSlot || detail.startTime) }}</b></div>
+              <div class="psv-row"><span>ကြာချိန်</span><b>{{ detail.durationMins || '-' }} မိနစ်</b></div>
+              <div class="psv-row" v-if="detail.gameName"><span>ဂိမ်း</span><b>{{ detail.gameName }}</b></div>
+              <div class="psv-row" v-if="detail.phone"><span>ဖုန်း</span><b>{{ detail.phone }}</b></div>
+              <div class="psv-row" v-if="detail.member_id"><span>Member</span><b>{{ detail.member_id }}</b></div>
+              <div class="psv-row" v-if="detail.deposit_status && detail.deposit_status !== 'none'"><span>Deposit</span><b>{{ depositText(detail) }}</b></div>
+            </div>
+            <div v-if="detail.notes" class="psv-card">
+              <div class="psv-field-label">မှတ်ချက်</div>
+              <div style="font-size:13px;line-height:1.6">{{ detail.notes }}</div>
+            </div>
+            <div class="psv-section-title">လုပ်ဆောင်ချက်များ</div>
+            <div class="psv-bk-detail__grid">
+              <button v-for="a in detailActions(detail)" :key="a.id" class="psv-abtn psv-abtn--block" :class="'psv-abtn--' + a.tone" :disabled="busy === detail.id" @click="runAction(a, detail)">
+                <span class="psv-abtn__ico">{{ a.icon }}</span>{{ a.my }}<i v-if="a.en">{{ a.en }}</i>
+              </button>
+              <div v-if="!detailActions(detail).length" class="psv-empty" style="padding:16px">လုပ်ဆောင်စရာ မရှိတော့ပါ</div>
+            </div>
+          </div>
+        </van-popup>
+
+        <!-- Reject / cancel reason picker -->
+        <van-popup v-model:show="reasonOpen" position="bottom" round class="psv-sheet">
+          <div class="psv-sheet__handle"></div>
+          <div class="psv-sheet__body">
+            <div class="psv-sheet-title">{{ reasonMode === 'reject' ? '❌ ငြင်းပယ်ရသည့် အကြောင်းရင်း' : '⛔ ဖျက်ရသည့် အကြောင်းရင်း' }}</div>
+            <div class="psv-reason" v-for="r in reasonList" :key="r.value" :class="{ 'is-on': reasonPick === r.value }" @click="reasonPick = r.value">
+              <div class="psv-reason__radio"></div>
+              <div class="psv-reason__main"><div class="psv-reason__t">{{ r.text }}</div><div class="psv-reason__s">{{ r.note }}</div></div>
+            </div>
+            <van-field v-if="reasonPick === 'other'" v-model="reasonNote" rows="2" autosize type="textarea" placeholder="အကြောင်းရင်း ရေးပါ…" />
+            <div class="psv-btn-row" style="margin-top:12px">
+              <button class="psv-btn psv-btn--ghost psv-btn--block" @click="reasonOpen = false">မလုပ်တော့</button>
+              <button class="psv-btn psv-btn--danger psv-btn--block" :disabled="!reasonPick" @click="confirmReason">အတည်ပြု</button>
+            </div>
+          </div>
+        </van-popup>
+
+        <!-- Deposit proof -->
+        <van-popup v-model:show="proofOpen" position="bottom" round class="psv-sheet">
+          <div class="psv-sheet__handle"></div>
+          <div class="psv-sheet__body">
+            <div class="psv-sheet-title">👁 Deposit Proof — BK#{{ proof.booking_id }}</div>
+            <img v-if="proof.isImg" :src="proof.ref" class="psv-proof-img" />
+            <div v-else class="psv-card"><div class="psv-field-label">Ref / အချက်အလက်</div><div style="font-size:14px;word-break:break-all">{{ proof.ref }}</div></div>
+            <button class="psv-btn psv-btn--primary psv-btn--block" style="margin-top:12px" @click="proofOpen = false">ပိတ်</button>
+          </div>
+        </van-popup>
+
+        <!-- New booking (kept from previous pass) -->
+        <van-popup v-model:show="newOpen" position="bottom" round class="psv-sheet" :style="{ height: '92vh' }">
+          <div class="psv-sheet__handle"></div>
+          <div style="overflow:auto;height:calc(92vh - 20px)"><BookingForm @saved="onSaved" /></div>
+        </van-popup>
       </div>
     `,
     setup() {
-      const tab = ref(0);
-      const bookings = ref([]);
+      const CHIPS = [
+        { id: "today", icon: "📅", my: "ဒီနေ့", hint: "ဒီနေ့ Booking အားလုံး" },
+        { id: "open", icon: "🔓", my: "ပွင့်", hint: "Pending · Confirmed · Checked-in · Active" },
+        { id: "pending", icon: "⏳", my: "စောင့်ဆိုင်", hint: "Approve / Reject လုပ်ရန် စောင့်နေသည်" },
+        { id: "confirmed", icon: "✅", my: "အတည်ပြု", hint: "အတည်ပြုပြီး — ဖောက်သည် လာရင် Check-in လုပ်ပါ" },
+        { id: "checked_in", icon: "🎟", my: "ရောက်ရှိ", hint: "ရောက်ရှိပြီး — Console မှာ Session စရန်" },
+        { id: "active", icon: "▶️", my: "ကစားနေ", hint: "Session လည်ပတ်နေသည်" },
+        { id: "deposit", icon: "💰", my: "Deposit", hint: "Deposit စစ်ဆေး / လဲလှယ်ရန်" },
+      ];
+      const chip = ref("open");
+      const rows = ref([]);
       const loading = ref(true);
       const refreshing = ref(false);
-      function statusType(s) { return ({ confirmed: "success", active: "primary", checked_in: "primary", pending: "warning", cancelled: "danger" })[s] || "default"; }
-      function rowLabel(b) {
-        const parts = [];
-        parts.push(b.console_id || b.consoleType || '-');
-        const dt = (b.date || b.booking_date || '');
-        const tm = (b.timeSlot || b.startTime || b.start_time || '');
-        if (dt || tm) parts.push((dt + ' ' + fmt12h(tm)).trim());
-        if (b.gameName || b.game_name) parts.push(b.gameName || b.game_name);
-        const dur = b.durationMins ?? b.duration_mins;
-        if (dur) parts.push(dur + 'm');
-        return parts.join(' · ');
+      const busy = ref(null);
+      const detail = ref(null);
+      const detailOpen = ref(false);
+      const newOpen = ref(false);
+      const reasonOpen = ref(false);
+      const reasonMode = ref("reject");
+      const reasonPick = ref("");
+      const reasonNote = ref("");
+      const reasonTarget = ref(null);
+      const proofOpen = ref(false);
+      const proof = reactive({ ref: "", isImg: false, booking_id: "" });
+
+      const chipMeta = computed(() => CHIPS.find((c) => c.id === chip.value) || CHIPS[1]);
+      const chipHint = computed(() => chipMeta.value.hint);
+      const emptyText = computed(() => (chip.value === "deposit" ? "Deposit စစ်ဆေးရန် မရှိပါ" : "Booking မရှိပါ"));
+      const reasonList = computed(() => (reasonMode.value === "reject" ? BK_REJECT_REASONS : BK_CANCEL_REASONS));
+
+      function hasDepositPending(b) { return ["paid", "pending"].includes(bkKey(b.deposit_status)); }
+      function isVerified(b) { return bkKey(b.deposit_status) === "verified"; }
+      function depRef(b) { return b.deposit_ref || b.depositRef || b.deposit_slip || ""; }
+      function depositText(b) {
+        const s = bkKey(b.deposit_status);
+        const amount = b.deposit_amount ? Number(b.deposit_amount).toLocaleString() : "";
+        const method = (b.deposit_method || "").toUpperCase();
+        const lbl = amount ? amount + (method ? " " + method : "") : "-";
+        const map = { paid: "ရရှိ (စစ်ရန်) " + lbl, pending: "စောင့်ဆိုင် " + lbl, verified: "စစ်ပြီး " + lbl, redeemed: "သုံးပြီး " + lbl, forfeited: "ပြန်မအမ်း " + lbl, refunded: "ပြန်အမ်း " + lbl };
+        return map[s] || ("Deposit " + lbl);
       }
-      function depositTagType(b) {
-        const s = (b.deposit_status || 'none').toLowerCase();
-        return ({ none: 'default', paid: 'warning', verified: 'primary', redeemed: 'success', cancelled: 'default', forfeited: 'danger', refunded: 'default' })[s] || 'default';
+      function cardActions(b) {
+        const k = bkKey(b.status);
+        const out = [];
+        if (k === "pending") {
+          out.push({ id: "approve", my: "အတည်ပြု", en: "Approve", icon: "✅", tone: "ok", kind: "approve" });
+          out.push({ id: "reject", my: "ငြင်းပယ်", en: "Reject", icon: "❌", tone: "danger", kind: "reject" });
+          if (hasDepositPending(b)) out.push({ id: "verify", my: "Deposit စစ်", en: "Verify", icon: "💰", tone: "gold", kind: "verify" });
+          out.push({ id: "cancel", my: "ဖျက်", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
+        } else if (k === "confirmed" || k === "pending_check_in") {
+          out.push({ id: "checkin", my: "Check-in", en: "Arrived", icon: "🎟", tone: "ok", kind: "checkin" });
+          if (hasDepositPending(b)) out.push({ id: "verify", my: "Deposit စစ်", en: "Verify", icon: "💰", tone: "gold", kind: "verify" });
+          out.push({ id: "cancel", my: "ဖျက်", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
+        } else if (k === "checked_in") {
+          out.push({ id: "consoles", my: "Session စ", en: "Start", icon: "▶️", tone: "gold", kind: "consoles" });
+          out.push({ id: "cancel", my: "ဖျက်", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
+        }
+        return out;
       }
-      function depositBadgeText(b) {
-        const s = (b.deposit_status || 'none').toLowerCase();
-        const amount = b.deposit_amount ? Number(b.deposit_amount).toLocaleString() : '';
-        const method = (b.deposit_method || '').toUpperCase();
-        const label = amount ? (amount + (method ? ' ' + method : '')) : '';
-        const map = { paid: 'Deposit: ' + (label || '-'), verified: 'Verified' + (label ? ' ' + label : ''), redeemed: 'Redeemed' + (label ? ' ' + label : ''), none: 'No deposit', cancelled: 'Cancelled', forfeited: 'Forfeited', refunded: 'Refunded' };
-        return map[s] || ('Deposit' + (label ? ' ' + label : ''));
+      function detailActions(b) {
+        const out = cardActions(b);
+        if (isVerified(b)) out.push({ id: "redeem", my: "Sale မှာ နုတ်", en: "Redeem at sale", icon: "↩️", tone: "gold", kind: "redeem" });
+        if (depRef(b)) out.push({ id: "proof", my: "ငွေလွှဲ အထောက်အထား", en: "View proof", icon: "👁", tone: "ghost", kind: "proof" });
+        if (bkKey(b.status) === "active") out.push({ id: "consoles", my: "Session ကြည့်", en: "View session", icon: "🖥", tone: "ghost", kind: "consoles" });
+        return out;
       }
+
+      async function fetchStatus(s) { const d = PSV.unwrap(await PSV.api("/api/bookings?status=" + encodeURIComponent(s))); return (d && d.bookings) || []; }
+      async function fetchDate(dt) { const d = PSV.unwrap(await PSV.api("/api/bookings?date=" + encodeURIComponent(dt))); return (d && d.bookings) || []; }
       async function load() {
         loading.value = true;
-        try { const d = PSV.unwrap(await PSV.api("/api/bookings?status=")); bookings.value = Array.isArray(d) ? d : (d && d.bookings) || []; }
-        catch (e) { bookings.value = []; }
-        finally { loading.value = false; refreshing.value = false; }
+        try {
+          let list = [];
+          if (chip.value === "today") list = await fetchDate(PSV.todayMMT());
+          else if (chip.value === "open") {
+            const arrs = await Promise.all([fetchStatus("pending"), fetchStatus("confirmed"), fetchStatus("checked_in"), fetchStatus("active")]);
+            list = arrs.reduce((a, x) => a.concat(x), []);
+          } else if (chip.value === "deposit") {
+            const arrs = await Promise.all([fetchStatus("pending"), fetchStatus("confirmed")]);
+            list = arrs.reduce((a, x) => a.concat(x), []).filter(hasDepositPending);
+          } else {
+            list = await fetchStatus(chip.value);
+          }
+          const seen = {};
+          list = list.filter((b) => { if (seen[b.id]) return false; seen[b.id] = 1; return true; });
+          list.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.timeSlot || "").localeCompare(String(a.timeSlot || "")));
+          rows.value = list;
+        } catch (e) {
+          rows.value = [];
+          showToast("Load မရ: " + e.message, "fail");
+        } finally { loading.value = false; refreshing.value = false; }
       }
-      onMounted(load);
-      function onSaved() { tab.value = 0; load(); }
-      return { tab, bookings, loading, refreshing, statusType, rowLabel, depositTagType, depositBadgeText, load, onSaved };
+      function setChip(id) { haptic("light"); chip.value = id; load(); }
+      function goNew() { haptic("light"); newOpen.value = true; }
+      function onSaved() { newOpen.value = false; chip.value = "open"; load(); }
+
+      async function fetchOne(id) {
+        try {
+          const d = PSV.unwrap(await PSV.api("/api/bookings/" + encodeURIComponent(id)));
+          return (d && d.booking) || null;
+        } catch (_e) { return null; }
+      }
+      async function openById(id) {
+        const found = rows.value.find((b) => String(b.id) === String(id));
+        if (found) { detail.value = found; detailOpen.value = true; return; }
+        const one = await fetchOne(id);
+        if (one) { detail.value = one; detailOpen.value = true; }
+        else showToast("BK#" + id + " မတွေ့ပါ", "fail");
+      }
+      function openDetail(b) { haptic("light"); detail.value = b; detailOpen.value = true; }
+
+      async function refreshDetail() {
+        if (!detailOpen.value || !detail.value) return;
+        const fresh = await fetchOne(detail.value.id);
+        if (fresh) detail.value = fresh;
+      }
+      async function afterMutation(id, patch) {
+        rows.value = rows.value.map((b) => (String(b.id) === String(id) ? Object.assign({}, b, patch || {}) : b));
+        if (detail.value && String(detail.value.id) === String(id)) detail.value = Object.assign({}, detail.value, patch || {});
+        await load();
+        await refreshDetail();
+      }
+
+      async function doApprove(b) {
+        const okc = await confirmBox("အတည်ပြုမလား?", "BK#" + b.id + " (" + (b.customerName || "Guest") + ") ကို Confirmed လုပ်မယ်။ ဖောက်သည်ကို Telegram မှ အသိပေးမယ်။", "အတည်ပြု", "မလုပ်");
+        if (!okc) return;
+        busy.value = b.id;
+        try {
+          await PSV.api("/api/bookings/" + b.id + "/status", { method: "PATCH", headers: HJSON, body: JSON.stringify({ status: "confirmed", staffName: psvStaffName() }) });
+          haptic("medium"); showToast("အတည်ပြုပြီး ✓", "success");
+          await afterMutation(b.id, { status: "confirmed" });
+        } catch (e) { showToast("မအောင်မြင်: " + e.message, "fail"); }
+        finally { busy.value = null; }
+      }
+      async function doCheckin(b) {
+        const okc = await confirmBox("Check-in လုပ်မလား?", "BK#" + b.id + " ဖောက်သည် ရောက်ရှိကြောင်း မှတ်မယ် (ကစားချိန် မစသေးပါ)။", "Check-in", "မလုပ်");
+        if (!okc) return;
+        busy.value = b.id;
+        try {
+          await PSV.api("/api/bookings/checkin", { method: "POST", headers: HJSON, body: JSON.stringify({ id: b.id, staff_name: psvStaffName() }) });
+          haptic("medium"); showToast("Check-in ပြီး 🎟", "success");
+          await afterMutation(b.id, { status: "checked_in" });
+        } catch (e) { showToast("မအောင်မြင်: " + e.message, "fail"); }
+        finally { busy.value = null; }
+      }
+      async function doVerify(b) {
+        const amt = Number(b.deposit_amount) || 0;
+        const okc = await confirmBox("Deposit စစ်ဆေးမလား?", "BK#" + b.id + " · " + amt.toLocaleString() + " Ks (" + (b.deposit_method || "").toUpperCase() + ")။ Verified လုပ်ပြီး Booking ကို Confirmed လုပ်မယ်။ ငွေဝင်စာရင်း (cash inject) ဖြစ်မယ်။", "Verified", "မလုပ်");
+        if (!okc) return;
+        busy.value = b.id;
+        try {
+          await PSV.api("/api/bookings/" + b.id + "/deposit/verify", { method: "PATCH", headers: HJSON, body: JSON.stringify({ verified_by: psvStaffName() }) });
+          haptic("medium"); showToast("Deposit စစ်ပြီး 💰", "success");
+          await afterMutation(b.id, { deposit_status: "verified", status: "confirmed" });
+        } catch (e) { showToast("မအောင်မြင်: " + e.message, "fail"); }
+        finally { busy.value = null; }
+      }
+      async function doRedeem(b) {
+        try {
+          const d = PSV.unwrap(await PSV.api("/api/bookings/" + b.id + "/deposit/pre-redeem", { method: "POST" }));
+          const amt = Number((d && d.deposit_amount) || 0);
+          if (!amt) { showToast("Verified deposit မရှိပါ", "warning"); return; }
+          try { PSV.pendingDepositRedeem = { booking_id: b.id, amount: amt, method: (d && d.deposit_method) || "", ts: Date.now() }; } catch (_e) {}
+          haptic("light");
+          showToast("Deposit " + amt.toLocaleString() + " Ks — Sale မှာ ချိတ်ဆက်ထားပြီ", "success");
+          detailOpen.value = false;
+          router.push("/sales");
+        } catch (e) { showToast("မအောင်မြင်: " + e.message, "fail"); }
+      }
+      function showProof(b) {
+        const ref = depRef(b);
+        if (!ref) { showToast("Proof ref မရှိသေးပါ — API မှ deposit_ref မပေးသေး", "warning"); return; }
+        proof.ref = ref;
+        proof.isImg = /^https?:\/\//i.test(ref) || /\.(png|jpe?g|webp|gif)$/i.test(ref);
+        proof.booking_id = b.id;
+        proofOpen.value = true;
+      }
+
+      function openReason(mode, b) { reasonMode.value = mode; reasonPick.value = ""; reasonNote.value = ""; reasonTarget.value = b; reasonOpen.value = true; haptic("light"); }
+      async function confirmReason() {
+        const b = reasonTarget.value;
+        if (!b || !reasonPick.value) return;
+        const r = reasonList.value.find((x) => x.value === reasonPick.value) || { note: reasonPick.value };
+        const label = reasonPick.value === "other" && reasonNote.value.trim() ? reasonNote.value.trim() : r.note;
+        reasonOpen.value = false;
+        const isReject = reasonMode.value === "reject";
+        const conseq = isReject
+          ? "BK#" + b.id + " ကို ငြင်းပယ်မယ် · ဖောက်သည်ကို အသိပေးမယ် · Paid deposit ရှိရင် ပြန်အမ်းရန် လိုအပ်နိုင်တယ်။"
+          : "BK#" + b.id + " ကို ဖျက်မယ် · ဖောက်သည်ကို အသိပေးမယ် · Verified deposit ရှိရင် ပြန်မအမ်းဘဲ forfeit ဖြစ်မယ် (ဘောက်ချာ မရ)။";
+        const okc = await confirmBox(isReject ? "ငြင်းပယ်မလား?" : "Booking ဖျက်မလား?", conseq + " အကြောင်းရင်း: " + label, isReject ? "ငြင်းပယ်" : "ဖျက်", "မလုပ်", true);
+        if (!okc) return;
+        busy.value = b.id;
+        try {
+          if (isReject) {
+            await PSV.api("/api/bookings/" + b.id + "/status", { method: "PATCH", headers: HJSON, body: JSON.stringify({ status: "rejected", staffNote: label, staffName: psvStaffName() }) });
+            showToast("ငြင်းပယ်ပြီး ❌", "success");
+            await afterMutation(b.id, { status: "rejected" });
+          } else {
+            await PSV.api("/api/bookings/cancel", { method: "POST", headers: HJSON, body: JSON.stringify({ id: b.id, reason: label }) });
+            showToast("ဖျက်ပြီး ⛔", "success");
+            await afterMutation(b.id, { status: "cancelled" });
+          }
+        } catch (e) { showToast("မအောင်မြင်: " + e.message, "fail"); }
+        finally { busy.value = null; }
+      }
+
+      async function runAction(a, b) {
+        if (a.kind === "approve") return doApprove(b);
+        if (a.kind === "checkin") return doCheckin(b);
+        if (a.kind === "verify") return doVerify(b);
+        if (a.kind === "redeem") return doRedeem(b);
+        if (a.kind === "proof") return showProof(b);
+        if (a.kind === "reject") return openReason("reject", b);
+        if (a.kind === "cancel") return openReason("cancel", b);
+        if (a.kind === "consoles") { haptic("light"); detailOpen.value = false; router.push("/consoles"); return; }
+      }
+
+      onMounted(async () => {
+        await load();
+        const pid = pendingBooking.value;
+        if (pid) { pendingBooking.value = null; await openById(pid); }
+      });
+      watch(pendingBooking, async (pid) => { if (pid) { pendingBooking.value = null; await openById(pid); } });
+
+      return { chips: CHIPS, chip, chipHint, emptyText, rows, loading, refreshing, busy, detail, detailOpen, newOpen,
+        reasonOpen, reasonMode, reasonPick, reasonNote, reasonList, proofOpen, proof,
+        bkStatus, depositText, depRef, cardActions, detailActions, setChip, goNew, onSaved, load, openDetail, runAction, confirmReason, fmt12h };
     },
   };
 
@@ -1451,7 +1813,9 @@
     },
   };
 
-  // ── VIEW: More (secondary grid) ─────────────────────────
+  // ── VIEW: More — category-organized staff menu (WAVE 1) ──
+  // App mode: bilingual, category sections, roadmap items greyed "နောက် pass".
+  // Telegram mode: unchanged legacy grid (MORE_ITEMS) — no visual regression.
   const MORE_ITEMS = [
     { path: "/consoles", icon: "🕹️", label: "Consoles" },
     { path: "/food-orders", icon: "🍔", label: "Food Orders" },
@@ -1466,13 +1830,118 @@
     { path: "/salary", icon: "💰", label: "Salary" },
     { path: "/notifications", icon: "🔔", label: "Alerts" },
   ];
+  const MENU_GROUPS = [
+    { id: "sales", emoji: "🎮", my: "အရောင်း", en: "Sales", tone: "gold", items: [
+      { my: "အရောင်းတင်ရန်", en: "New walk-in sale", icon: "🛒", path: "/sales" },
+      { my: "Session ပြီးအရောင်း", en: "End-of-session sale", icon: "🎫", path: "/sales" },
+      { my: "အစားအသောက် အရောင်း", en: "Food & drink sale", icon: "🍔", path: "/food-orders" },
+      { my: "အစားအသောက် စာရင်း", en: "Food menu list", icon: "🍜", path: "/food" },
+      { my: "Discount / Promo", en: "View promotions", icon: "🏷️", path: "/promotions" },
+      { my: "Coupon", en: "Validate & redeem coupon", icon: "🎟️", tag: "နောက် pass" },
+    ] },
+    { id: "booking", emoji: "📅", my: "Booking", en: "Bookings", tone: "warn", items: [
+      { my: "ဒီနေ့ Booking စာရင်း", en: "Today's bookings", icon: "📋", path: "/bookings" },
+      { my: "အတည်ပြု / ငြင်းပယ်", en: "Approve or reject", icon: "✅", path: "/bookings" },
+      { my: "Check-in", en: "Customer arrived", icon: "🎟️", path: "/bookings" },
+      { my: "Booking ဖျက်", en: "Cancel a booking", icon: "⛔", path: "/bookings" },
+      { my: "Deposit စစ်ရန်", en: "Verify deposit", icon: "💰", path: "/bookings" },
+      { my: "Reminder", en: "Booking reminders", icon: "🔔", path: "/notifications" },
+    ] },
+    { id: "sessions", emoji: "🖥", my: "Session / Console", en: "Sessions & consoles", tone: "indigo", items: [
+      { my: "အလုပ်လုပ်နေတဲ့ Session များ", en: "Live sessions", icon: "🖥", path: "/consoles" },
+      { my: "အချိန်တိုး", en: "Extend session", icon: "⏱", path: "/consoles" },
+      { my: "Session ပိတ်", en: "End session", icon: "⏹", path: "/consoles" },
+      { my: "ဂိမ်းစာရင်း", en: "Game library", icon: "🎮", path: "/games" },
+      { my: "Console ပြောင်း (Move)", en: "Move session to another console", icon: "🔀", tag: "နောက် pass" },
+      { my: "Session လဲ (Swap)", en: "Swap two sessions", icon: "🔁", tag: "နောက် pass" },
+    ] },
+    { id: "member", emoji: "👥", my: "အဖွဲ့ဝင်", en: "Members", tone: "teal", items: [
+      { my: "အဖွဲ့ဝင် ရှာရန်", en: "Find a member", icon: "🔍", path: "/members" },
+      { my: "အဖွဲ့ဝင် အသစ်ဖွင့်", en: "Register new member", icon: "➕", path: "/members/register" },
+      { my: "ငွေဖြည့် (Top-up)", en: "Wallet top-up", icon: "💳", path: "/deposit" },
+      { my: "Gift / Free card", en: "PIN-gated free card", icon: "🎁", tag: "နောက် pass" },
+      { my: "Rank / Bonus", en: "Rank & bonus table", icon: "🏅", tag: "နောက် pass" },
+      { my: "ဖုန်းဆက်ရန်", en: "Call member", icon: "📞", tag: "နောက် pass" },
+    ] },
+    { id: "inventory", emoji: "📦", my: "Inventory", en: "Stock", tone: "gold", items: [
+      { my: "Stock-in (ပစ္စည်းဝင်)", en: "Receive stock", icon: "📥", path: "/inventory" },
+      { my: "Stock-out (ပစ္စည်းထုတ်)", en: "Manual stock-out", icon: "📤", tag: "နောက် pass" },
+      { my: "ကုန်နီးပါး Alert", en: "Low-stock alerts", icon: "⚠️", tag: "နောက် pass" },
+      { my: "Stock check", en: "Stock reconcile", icon: "🧮", tag: "နောက် pass" },
+    ] },
+    { id: "print", emoji: "🖨", my: "Print", en: "Printing", tone: "indigo", items: [
+      { my: "ဘောက်ချာ ရိုက်ရန်", en: "Print voucher", icon: "🧾", path: "/print" },
+      { my: "စမ်းသပ် Print", en: "Test print", icon: "🖨", path: "/print" },
+      { my: "Top-up ပြေစာ", en: "Top-up receipt", icon: "📃", tag: "နောက် pass" },
+    ] },
+    { id: "report", emoji: "📊", my: "Report", en: "Reports", tone: "teal", items: [
+      { my: "ဒီနေ့ အနှစ်ချုပ်", en: "Today's summary", icon: "📊", path: "/reports" },
+      { my: "အသုံးစရိတ် (OPEX)", en: "Operating expenses", icon: "💸", path: "/opex" },
+      { my: "ငွေလက်ကျန်", en: "Account balance", icon: "🏦", tag: "နောက် pass" },
+    ] },
+    { id: "me", emoji: "🕒", my: "Me / Staff", en: "Me & staff", tone: "dim", items: [
+      { my: "အလုပ်ချိန် (Attendance)", en: "Attendance in / out", icon: "🕐", path: "/attendance" },
+      { my: "လစာ ကြိုယူ", en: "Salary advance", icon: "💰", path: "/salary" },
+      { my: "ဝန်ထမ်းများ", en: "Staff list", icon: "👥", path: "/staff" },
+      { my: "သတိပေးချက်", en: "Notifications", icon: "🔔", path: "/notifications" },
+      { my: "ဆက်တင်", en: "Settings & profile", icon: "⚙️", path: "/me" },
+      { my: "ထွက်ရန် (Logout)", en: "Sign out", icon: "🚪", action: "logout" },
+    ] },
+  ];
+
+  const MoreMenu = {
+    template: `
+      <div class="psv-pad psv-menu-body">
+        <div class="psv-card psv-profile">
+          <div class="psv-avatar psv-avatar--lg">{{ initials }}</div>
+          <div class="psv-list-row__main">
+            <div class="psv-profile__name">{{ staff.name || 'Staff' }}</div>
+            <span class="psv-account-role">{{ staff.role || 'staff' }}</span>
+          </div>
+        </div>
+        <div v-for="g in groups" :key="g.id" class="psv-menu-group" :class="'psv-tone-' + g.tone">
+          <div class="psv-menu-head">
+            <span class="psv-menu-head__ico">{{ g.emoji }}</span>
+            <span class="psv-menu-head__my">{{ g.my }}</span>
+            <span class="psv-menu-head__en">{{ g.en }}</span>
+          </div>
+          <div class="psv-card psv-list psv-menu-list">
+            <div v-for="it in g.items" :key="it.my" class="psv-menu-item" :class="{ 'is-soon': it.tag }" @click="tap(it)">
+              <span class="psv-menu-item__ico">{{ it.icon }}</span>
+              <div class="psv-menu-item__main">
+                <div class="psv-menu-item__my">{{ it.my }}</div>
+                <div class="psv-menu-item__en">{{ it.en }}</div>
+              </div>
+              <span v-if="it.tag" class="psv-soon">{{ it.tag }}</span>
+              <van-icon v-else name="arrow" />
+            </div>
+          </div>
+        </div>
+        <button class="psv-btn psv-btn--danger psv-btn--block" @click="logout">🚪 ထွက်ရန် (Logout)</button>
+        <div class="psv-foot">PS VIBE Staff · Play The Game. Share The VIBE!</div>
+      </div>
+    `,
+    setup() {
+      const staff = PSV.getStaff() || {};
+      const initials = String(staff.name || "?").trim().slice(0, 2).toUpperCase();
+      function tap(it) {
+        haptic("light");
+        if (it.tag) { showToast("⏳ " + it.my + " — နောက် pass မှာ လာမယ်", "text"); return; }
+        if (it.action === "logout") { logout(); return; }
+        if (it.path) router.push(it.path);
+      }
+      function logout() { haptic("medium"); PSV.logout(); showToast("ထွက်ပြီးပါပြီ", "success"); }
+      return { groups: MENU_GROUPS, staff, initials, tap, logout };
+    },
+  };
 
   const More = {
-    components: { PageHeader },
+    components: { PageHeader, MoreMenu },
     template: `
-      <div class="pv-page">
-        <PageHeader title="More" />
-        <div class="pv-more">
+      <div class="pv-page psv-menu">
+        <PageHeader :title="nativeMode ? 'မီနူး' : 'More'" />
+        <MoreMenu v-if="nativeMode" />
+        <div v-else class="pv-more">
           <div class="pv-action" v-for="it in items" :key="it.path" @click="go(it.path)">
             <div class="pv-action__icon">{{ it.icon }}</div>
             <div class="pv-action__label">{{ it.label }}</div>
@@ -1482,7 +1951,7 @@
     `,
     setup() {
       function go(p) { haptic("light"); router.push(p); }
-      return { items: MORE_ITEMS, go };
+      return { items: MORE_ITEMS, go, nativeMode: NATIVE };
     },
   };
 
@@ -2763,7 +3232,11 @@
       function openNotif(n) {
         haptic("light");
         markRead(n);
-        if (n && n.booking_id) { showToast("Booking #" + n.booking_id, "info"); router.push("/bookings"); }
+        const bid = n && (n.booking_id || n.bookingId);
+        if (bid) { showToast("Booking #" + bid, "text"); openBooking(bid); return; }
+        const t = String((n && n.type) || "");
+        if (t.indexOf("session") >= 0) { router.push("/consoles"); return; }
+        router.push("/bookings");
       }
       async function readAll() {
         haptic("light");
@@ -2797,14 +3270,14 @@
           <van-tabbar-item name="/sales" icon="shopping-cart-o">Sale</van-tabbar-item>
           <van-tabbar-item name="/bookings" icon="calendar-o">Booking</van-tabbar-item>
           <van-tabbar-item name="/print" icon="printer">Print</van-tabbar-item>
-          <van-tabbar-item name="/me" icon="user-o">Me</van-tabbar-item>
+          <van-tabbar-item name="/more" icon="apps-o">မီနူး</van-tabbar-item>
         </van-tabbar>
       </div>
     `,
     setup() {
       const activeView = computed(() => router.routes[router.current.value] || Home);
       const validTabs = NATIVE ? TABS_NATIVE : TABS_TG;
-      const fallbackTab = NATIVE ? "/me" : "/more";
+      const fallbackTab = NATIVE ? "/more" : "/more";
       const tab = computed({
         get: () => (validTabs.includes(router.current.value) ? router.current.value : fallbackTab),
         set: (v) => { if (v && v !== router.current.value) { haptic("light"); router.push(v); } },

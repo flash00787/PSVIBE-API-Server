@@ -480,6 +480,12 @@ async def api_member_register(req: dict, auth=Depends(verify_api_key)):
         is_gift = req.get("is_gift", False)
         referral_code = req.get("referral_code", "")
 
+        # Input validation — never create an empty/garbage member row (Staff App Wave 1).
+        if not str(member_id or "").strip():
+            return error_response(message="member_id is required — call /api/next_member_id first")
+        if not str(name or "").strip():
+            return error_response(message="member name is required")
+
         logger.info("Registering member: %s (%s) mins=%s", member_id, name, initial_mins)
 
         # Upsert into member_wallets

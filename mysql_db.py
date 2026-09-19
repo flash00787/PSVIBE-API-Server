@@ -21,17 +21,34 @@ DB_CONFIG = {
 _pool: Optional[PooledDB] = None
 
 def _get_pool() -> PooledDB:
-    """Lazy-init the connection pool."""
+    """Lazy-init the connection pool.
+
+    ``ping=1`` checks (and transparently reconnects) a pooled connection before each
+    use, so a stale/idle or server-dropped connection never surfaces as
+    'MySQL server has gone away' (a 500 the Staff App must never hit).
+    """
     global _pool
     if _pool is None:
-        _pool = PooledDB(
-            creator=pymysql,
-            maxconnections=10,
-            mincached=2,
-            maxcached=5,
-            blocking=True,
-            **DB_CONFIG
-        )
+        try:
+            _pool = PooledDB(
+                creator=pymysql,
+                maxconnections=10,
+                mincached=2,
+                maxcached=5,
+                blocking=True,
+                ping=1,
+                **DB_CONFIG
+            )
+        except TypeError:
+            # Older DBUtils without ping kwarg — fall back to the plain pool.
+            _pool = PooledDB(
+                creator=pymysql,
+                maxconnections=10,
+                mincached=2,
+                maxcached=5,
+                blocking=True,
+                **DB_CONFIG
+            )
     return _pool
 
 def get_connection() -> pymysql.Connection:

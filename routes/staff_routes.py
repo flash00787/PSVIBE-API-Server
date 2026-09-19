@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 
-from auth import get_current_user
+from auth import get_current_user, require_admin
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
 
 logger = logging.getLogger(__name__)
@@ -1016,8 +1016,12 @@ async def dashboard_get_salary_advances(
 
 
 @router.post("/dashboard/salary/advances")
-async def dashboard_create_salary_advance(req: dict, user: dict = Depends(get_current_user)):
-    """Record a salary advance. Creates OPEX entry automatically."""
+async def dashboard_create_salary_advance(req: dict, user: dict = Depends(require_admin)):
+    """Record a salary advance. Creates OPEX entry automatically.
+
+    ADMIN-ONLY (Staff App Wave 1): payroll-adjacent money movement stays with the
+    owner/dashboard. The acting admin is stored as OPEX ``recorded_by`` for audit.
+    """
     try:
         staff_name = req.get("staff_name", "").strip()
         amount = req.get("amount", 0)
@@ -1037,11 +1041,12 @@ async def dashboard_create_salary_advance(req: dict, user: dict = Depends(get_cu
             (staff_name, amount, advance_date, repayment_status, notes, payment_method),
         )
 
-        # Auto-create OPEX entry for staff salary advance
+        # Auto-create OPEX entry for staff salary advance (record acting admin for audit)
+        _recorded_by = user.get("username") or user.get("name") or "admin"
         _mysql_execute(
-            """INSERT INTO opex (category, description, amount, expense_date, payment_method, staff_name, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s, NOW())""",
-            ("Staff Salary", f"Advance: {staff_name}", amount, advance_date, payment_method, staff_name),
+            """INSERT INTO opex (category, description, amount, expense_date, payment_method, staff_name, recorded_by, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())""",
+            ("Staff Salary", f"Advance: {staff_name}", amount, advance_date, payment_method, staff_name, _recorded_by),
         )
 
         return {

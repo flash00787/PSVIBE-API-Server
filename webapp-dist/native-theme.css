@@ -476,3 +476,62 @@ html.psv-native .psv-notif-ico--generic { background: rgba(148,163,184,.16); col
 html.psv-native .psv-notif-dot { background: var(--psv-gold); box-shadow: 0 0 8px rgba(240,180,41,.85); }
 html.psv-native .psv-notif-empty__txt { color: var(--psv-text); }
 html.psv-native .psv-notif-empty__sub { color: var(--psv-text-dim); }
+
+/* ══════════════════════════════════════════════════════════════════
+ *  WAVE 1 — booking ops + category menu (app-mode premium overrides)
+ *  Tokens: --psv-* from §1. Telegram mode is untouched (base lives in style.css).
+ * ══════════════════════════════════════════════════════════════════ */
+html.psv-native .psv-chip { background: var(--psv-surface); border-color: var(--psv-border); color: var(--psv-text); }
+html.psv-native .psv-chip--on { background: rgba(240,180,41,.16); border-color: rgba(240,180,41,.5); color: var(--psv-gold-2); }
+
+html.psv-native .psv-bk-card { background: var(--psv-surface); border-color: var(--psv-border); box-shadow: var(--psv-shadow); border-left: 3px solid var(--psv-border); }
+html.psv-native .psv-bk-card.is-gold { border-left-color: var(--psv-gold); }
+html.psv-native .psv-bk-card.is-warn { border-left-color: var(--psv-warn); }
+html.psv-native .psv-bk-card.is-ok { border-left-color: var(--psv-ok); }
+html.psv-native .psv-bk-card.is-danger { border-left-color: var(--psv-danger); }
+html.psv-native .psv-bk-card__name { color: var(--psv-text); }
+html.psv-native .psv-bk-card__sub,
+html.psv-native .psv-bk-card__meta,
+html.psv-native .psv-bk-card__ref,
+html.psv-native .psv-bk-hint,
+html.psv-native .psv-menu-item__en { color: var(--psv-text-dim); }
+
+html.psv-native .psv-pill--warn { background: rgba(251,191,36,.16); color: #fcd34d; border-color: rgba(251,191,36,.42); }
+html.psv-native .psv-pill--ok { background: rgba(52,211,153,.16); color: #6ee7b7; border-color: rgba(52,211,153,.42); }
+html.psv-native .psv-pill--gold { background: rgba(240,180,41,.16); color: var(--psv-gold-2); border-color: rgba(240,180,41,.45); }
+html.psv-native .psv-pill--danger { background: rgba(248,113,113,.16); color: #fca5a5; border-color: rgba(248,113,113,.45); }
+html.psv-native .psv-pill--dim { background: rgba(148,163,184,.16); color: var(--psv-text-dim); border-color: var(--psv-border); }
+
+html.psv-native .psv-abtn { background: var(--psv-surface); border-color: var(--psv-border); color: var(--psv-text); }
+html.psv-native .psv-abtn--ok { background: rgba(52,211,153,.14); border-color: rgba(52,211,153,.4); color: #6ee7b7; }
+html.psv-native .psv-abtn--gold { background: rgba(240,180,41,.14); border-color: rgba(240,180,41,.42); color: var(--psv-gold-2); }
+html.psv-native .psv-abtn--danger { background: rgba(248,113,113,.13); border-color: rgba(248,113,113,.42); color: #fca5a5; }
+html.psv-native .psv-abtn--ghost { background: transparent; }
+
+html.psv-native .psv-bk-detail__name { color: var(--psv-text); }
+html.psv-native .psv-bk-detail__id { color: var(--psv-text-dim); }
+html.psv-native .psv-sheet-title { color: var(--psv-text); }
+html.psv-native .psv-reason { background: var(--psv-surface); border-color: var(--psv-border); }
+html.psv-native .psv-reason.is-on { border-color: rgba(240,180,41,.55); background: rgba(240,180,41,.12); }
+html.psv-native .psv-reason__radio { border-color: var(--psv-border); }
+html.psv-native .psv-reason.is-on .psv-reason__radio { border-color: var(--psv-gold); box-shadow: inset 0 0 0 4px var(--psv-gold); }
+html.psv-native .psv-reason__t { color: var(--psv-text); }
+html.psv-native .psv-reason__s { color: var(--psv-text-dim); }
+html.psv-native .psv-proof-img { border: 1px solid var(--psv-border); }
+html.psv-native .psv-redeem-banner { background: rgba(240,180,41,.12); border-color: rgba(240,180,41,.4); color: var(--psv-text); }
+html.psv-native .psv-redeem-banner__x { color: var(--psv-text-dim); }
+html.psv-native .psv-soon { color: var(--psv-gold-2); background: rgba(240,180,41,.14); border-color: rgba(240,180,41,.35); }
+html.psv-native .psv-empty { color: var(--psv-text-dim); }
+
+/* menu */
+html.psv-native .psv-menu-head__my { color: var(--psv-text); }
+html.psv-native .psv-menu-head__en { color: var(--psv-text-dim); }
+html.psv-native .psv-menu-item { border-bottom-color: var(--psv-border); }
+html.psv-native .psv-menu-item:active { background: rgba(255,255,255,.03); }
+html.psv-native .psv-menu-item__ico { background: rgba(255,255,255,.05); }
+html.psv-native .psv-menu-item__my { color: var(--psv-text); }
+html.psv-native .psv-tone-gold .psv-menu-head__my { color: var(--psv-gold); }
+html.psv-native .psv-tone-warn .psv-menu-head__my { color: var(--psv-warn); }
+html.psv-native .psv-tone-indigo .psv-menu-head__my { color: #a5b4fc; }
+html.psv-native .psv-tone-teal .psv-menu-head__my { color: #5eead4; }
+html.psv-native .psv-tone-dim .psv-menu-head__my { color: var(--psv-text-dim); }

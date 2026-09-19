@@ -7,6 +7,7 @@ import mysql.connector as _mc
 from helpers import _mysql_get_setting, _mysql_get_settings_dict, ok, error_response, success_response, _parse_pm_and_inject, rate_limit_10pm, rate_limit_5pm, rate_limit_30pm, insert_cash_movement_if_absent
 from field_utils import normalize_list
 from deps import verify_api_key, verify_webhook_secret
+import staff_audit
 from models import GenericResponse
 from session_timer import schedule_session_timer, _active_timers
 from booking_reminder import add_booking_reminder, restore_reminders, cancel_booking_reminder
@@ -288,9 +289,10 @@ async def api_next_voucher(auth=Depends(verify_api_key)):
 
 
 @router.post("/bookings/checkin", response_model=GenericResponse, tags=["Bookings"], summary="Check in a customer [MySQL]")
-async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
+async def api_booking_checkin(req: dict, request: Request, auth=Depends(verify_api_key)):
     """Mark a confirmed booking as checked in (Active). Updates booking status and console.
-    Accepts optional consoleId to assign/override the console at checkin time."""
+    Accepts optional consoleId to assign/override the console at checkin time.
+    Staff App: check-in staff is taken from the JWT when staff_name is omitted."""
     try:
         booking_id = req.get("id") or req.get("booking_id")
         if not booking_id:
@@ -318,8 +320,10 @@ async def api_booking_checkin(req: dict, auth=Depends(verify_api_key)):
             _mysql_exec("UPDATE console_bookings SET console_id=%s WHERE id=%s", (override_console, booking_id))
         telegram_chat_id = booking.get("telegram_chat_id", "")
         
-        # Read the actual staff who is performing the check-in (optional, from bot/API caller)
-        _checkin_staff = req.get("staff_name", "") or req.get("staff", "")
+        # Read the actual staff who is performing the check-in (optional, from bot/API caller);
+        # Staff App sends no name — fall back to the JWT identity for the audit trail.
+        _checkin_staff = (req.get("staff_name", "") or req.get("staff", "")
+                          or staff_audit.identity_from_request(request, req))
         
         # CI-3: Wrap status update in transaction (checked_in only marks arrival, NO timer start)
         _now_ref = now_mmt()
@@ -857,10 +861,13 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
 
 
 @router.patch("/bookings/{booking_id}/status", response_model=GenericResponse, tags=["Bookings"], summary="Update booking status (approve/reject) [MySQL]")
-async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(verify_api_key)):
-    """Update a booking's status and optionally assign a console."""
+async def api_update_booking_status(booking_id: int, req: dict, request: Request, auth=Depends(verify_api_key)):
+    """Update a booking's status and optionally assign a console (approve/reject/cancel).
+    Staff App: the acting staff is taken from the JWT when staffName is omitted."""
     try:
         status = req.get("status", "")
+        # Audit: explicit staffName wins, else JWT name/sub (Staff App never sends a name).
+        _actor = staff_audit.identity_from_request(request, req, keys=("staffName", "staff_name", "staff"))
         if status not in ("pending", "confirmed", "rejected", "pending_check_in", "checked_in", "Active", "cancelled", "Done"):
             return error_response(message=f"Invalid status: {status}")
         # HI-1: Optimistic lock — only approve pending bookings
@@ -897,11 +904,11 @@ async def api_update_booking_status(booking_id: int, req: dict, auth=Depends(ver
                     f"deposit_status=CASE WHEN %s='verified' THEN 'forfeited' WHEN %s='paid' THEN 'none' ELSE deposit_status END, "
                     f"staff_name=COALESCE(NULLIF(%s, ''), staff_name), notes=COALESCE(NULLIF(%s, ''), notes) "
                     f"WHERE id=%s AND status IN {_allowed_from}",
-                    (status, _dep_status, _dep_status, req.get("staffName", ""), req.get("staffNote", ""), booking_id))
+                    (status, _dep_status, _dep_status, _actor or req.get("staffName", ""), req.get("staffNote", ""), booking_id))
             else:
                 _app_cur.execute(
                     f"UPDATE console_bookings SET status=%s, staff_name=COALESCE(NULLIF(%s, ''), staff_name), notes=COALESCE(NULLIF(%s, ''), notes) WHERE id=%s AND status IN {_allowed_from}",
-                    (status, req.get("staffName", ""), req.get("staffNote", ""), booking_id))
+                    (status, _actor or req.get("staffName", ""), req.get("staffNote", ""), booking_id))
             affected = _app_cur.rowcount
             if affected == 0:
                 _app_conn.rollback()
@@ -1664,8 +1671,10 @@ async def _auto_notify_waitlist(booking_date, start_time, console_id, cancelled_
         return False
 
 @router.post("/bookings/cancel", response_model=GenericResponse, tags=["Bookings"], summary="Cancel a booking by ID [MySQL]")
-async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
-    """Cancel a booking. Frees console if reserved."""
+async def api_booking_cancel(req: dict, request: Request, auth=Depends(verify_api_key)):
+    """Cancel a booking. Frees console if reserved.
+    Staff App: accepts ``reason``/``cancel_reason`` (stored in notes) and records
+    the acting staff (JWT name) on the booking for the audit trail."""
     try:
         booking_id = req.get("id") or req.get("booking_id")
         if not booking_id:
@@ -1683,6 +1692,9 @@ async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
         )
         if not booking:
             return error_response(message="Booking not found")
+        # Staff App audit: cancel reason (Staff App sends reason/cancel_reason) + acting staff.
+        _cancel_reason = (str(req.get("reason") or req.get("cancel_reason") or req.get("staffNote") or "")).strip()
+        _cancel_staff = staff_audit.identity_from_request(request, req)
         console_id = booking.get("console_id", "")
         telegram_chat_id = booking.get("telegram_chat_id", "")
         
@@ -1707,9 +1719,10 @@ async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
             # unverified ('paid') -> void to 'none' (NOT revenue, no cash movement)
             _cancel_cur.execute(
                 "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
-                "deposit_status=CASE WHEN deposit_status='verified' THEN 'forfeited' WHEN deposit_status='paid' THEN 'none' ELSE deposit_status END "
+                "deposit_status=CASE WHEN deposit_status='verified' THEN 'forfeited' WHEN deposit_status='paid' THEN 'none' ELSE deposit_status END, "
+                "notes=COALESCE(NULLIF(%s, ''), notes), staff_name=COALESCE(NULLIF(%s, ''), staff_name) "
                 "WHERE id=%s AND status NOT IN ('Active','Done')",
-                (booking_id,)
+                (_cancel_reason, _cancel_staff, booking_id)
             )
             affected = _cancel_cur.rowcount
             if affected == 0:
@@ -1792,7 +1805,7 @@ async def api_booking_cancel(req: dict, auth=Depends(verify_api_key)):
                     "inject", _method_label, _pre_deposit_amount,
                     f"Forfeit BK#{booking_id}%",
                     f"Forfeit BK#{booking_id} via {_method_label}",
-                    booking.get("staff_name", "") or "system")
+                    booking.get("staff_name", "") or _cancel_staff or "system")
                 logger.info(f"Forfeit deposit recorded: BK#{booking_id} {_pre_deposit_amount}Ks {_method_label}")
             except Exception as _fe:
                 logger.warning(f"Forfeit cash_movements BK#{booking_id} failed: {_fe}")
@@ -1933,6 +1946,12 @@ async def api_receipt_save(req: dict, auth=Depends(verify_api_key)):
         items = req.get("food_items", req.get("items", ""))
         receipt_date = req.get("date", req.get("receipt_date", ""))
         staff_name = req.get("staff_name", "")
+        # Guard: never persist an empty receipt row (Staff App / bad callers).
+        # A real receipt always carries at least a voucher/receipt no, a member or an amount.
+        if (not any(str(x).strip() for x in (voucher_id, receipt_no, member_id))
+                and not any(str(x).strip() for x in (items, receipt_date, payment_method))
+                and not float(amount or 0)):
+            return error_response(message="Empty receipt payload — voucher_id or receipt_no required")
         receipt_data = _sjson.dumps(req, ensure_ascii=False)
 
         logger.info("Saving receipt to DB: voucher_id=%s", voucher_id)
