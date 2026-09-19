@@ -60,12 +60,13 @@
     // Auto-recover once on 401 (refresh for web login, re-validate for Telegram)
     const _noRecover = /^\/auth\//.test(path) || path === "/api/telegram/validate";
     if (resp.status === 401 && !_noRecover) {
+      const wasWeb = isWebLogin;
       const ok = await _recoverAuth();
       if (ok) {
         headers["Authorization"] = "Bearer " + jwt;
         resp = await fetch(path, Object.assign({}, options, { headers }));
       } else {
-        throw new Error(isWebLogin ? "Session expired — login ပြန်လုပ်ပါ" : "Session expired — bot ကနေ ပြန်ဖွင့်ပါ");
+        throw new Error(wasWeb ? "Session expired — login ပြန်လုပ်ပါ" : "Session expired — bot ကနေ ပြန်ဖွင့်ပါ");
       }
     }
 

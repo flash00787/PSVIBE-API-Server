@@ -2359,6 +2359,14 @@
 
   function boot() {
     registerApp();
+
+    // Auth gate decision BEFORE first render (avoids firing API calls behind the login screen).
+    // The Telegram path is UNCHANGED — it is never gated.
+    if (!(tg && tg.initData)) {
+      if (!PSV.isAuthed() && !PSV.loadStoredAuth()) authGate.value = true;
+      window.addEventListener("psv-auth-expired", () => { authGate.value = true; });
+    }
+
     const app = createApp(App);
     app.use(vant);
     app.component("PageHeader", PageHeader);
@@ -2386,13 +2394,6 @@
     router.start();
 
     if (tg) { tg.ready(); tg.expand(); }
-
-    // Standalone (no Telegram initData): restore a stored session, else gate to login.
-    // The Telegram path below is UNCHANGED.
-    if (!(tg && tg.initData)) {
-      if (!PSV.isAuthed() && !PSV.loadStoredAuth()) authGate.value = true;
-      window.addEventListener("psv-auth-expired", () => { authGate.value = true; });
-    }
 
     (async () => {
       if (!(tg && tg.initData)) return; // standalone handled above
