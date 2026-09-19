@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0",
-  "version_code": 1,
+  "version": "1.1.0",
+  "version_code": 2,
   "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff.apk",
-  "notes": "PS VIBE Staff App — standalone staff login, sales/voucher, 80mm Bluetooth voucher printing. Sideload: enable 'Install unknown apps' for your browser/file manager."
+  "notes": "PS VIBE Staff App v1.1.0 — bookings (approve/reject/check-in/cancel, deposit verify+redeem), sales with promo/coupon/deposit deduction, session move/swap, stock-out/stock-check/low-stock alerts, today report + balances, attendance check-out, gift card (owner PIN), rank/bonus, notification inbox, 80mm Bluetooth printing. English UI. Sideload: allow 'Install unknown apps'."
 }

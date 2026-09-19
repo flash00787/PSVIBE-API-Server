@@ -548,3 +548,14 @@ html.psv-native .psv-coupon-msg.is-fail { color: var(--psv-danger); background: 
 html.psv-native .psv-sess-warn { color: var(--psv-warn); background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.4); }
 html.psv-native .psv-redeem-banner.is-applied { background: rgba(52,211,153,.10); border-color: rgba(52,211,153,.4); }
 html.psv-native .psv-mini-x { color: var(--psv-text-dim); }
+
+/* ═══ WAVE 3 — native (navy+gold) overrides ═══ */
+html.psv-native .psv-menu-badge { box-shadow: 0 0 0 2px rgba(239,68,68,.22); }
+html.psv-native .psv-note { color: var(--psv-text-dim); }
+html.psv-native .psv-readonly { color: var(--psv-gold-2); background: rgba(240,180,41,.12); border-color: rgba(240,180,41,.4); }
+html.psv-native .psv-owner-card { border-color: var(--psv-border); background: rgba(148,163,184,.06); }
+html.psv-native .psv-owner-card__s { color: var(--psv-text-dim); }
+html.psv-native .psv-table th, html.psv-native .psv-table td { border-bottom-color: var(--psv-border); }
+html.psv-native .psv-table thead th { color: var(--psv-text-dim); }
+html.psv-native .psv-check__sys { color: var(--psv-text-dim); }
+html.psv-native .psv-check__in { background: rgba(255,255,255,.05); border-color: var(--psv-border); color: var(--psv-text); }

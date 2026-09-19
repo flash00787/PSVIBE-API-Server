@@ -341,3 +341,23 @@ html, body {
 /* WAVE 2 — receipt paper base (native theme overrides for the premium look) */
 .psv-paper { background: #fff; border-radius: 12px; padding: 12px; margin-bottom: 14px; }
 .psv-paper__img { display: block; width: 100%; max-width: 100%; height: auto; }
+
+/* ═══ WAVE 3 — badge, notes, owner-only card, read-only, stock-check, rank table ═══ */
+.psv-menu-badge { flex: none; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: #ef4444; color: #fff; font-size: 11px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px rgba(239,68,68,.15); }
+.psv-note { margin: 10px 16px; font-size: 12px; line-height: 1.5; color: var(--pv-muted, #94a3b8); }
+.psv-readonly { margin: 12px 16px 0; padding: 10px 12px; border-radius: 10px; font-size: 12.5px; font-weight: 600; color: #92400e; background: rgba(251,191,36,.14); border: 1px solid rgba(251,191,36,.4); }
+.psv-owner-card { margin: 18px 16px; padding: 22px 18px; text-align: center; border-radius: 14px; border: 1px dashed rgba(148,163,184,.45); background: rgba(148,163,184,.08); }
+.psv-owner-card__ico { font-size: 30px; margin-bottom: 8px; opacity: .85; }
+.psv-owner-card__t { font-size: 16px; font-weight: 800; letter-spacing: .2px; }
+.psv-owner-card__s { margin-top: 6px; font-size: 12.5px; line-height: 1.5; color: var(--pv-muted, #94a3b8); }
+.psv-owner-card__m { margin-top: 10px; font-size: 12px; color: #b45309; background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.35); border-radius: 8px; padding: 8px 10px; }
+.psv-table-wrap { margin: 12px 16px 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.psv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.psv-table th, .psv-table td { padding: 10px 8px; text-align: right; border-bottom: 1px solid var(--pv-card-border, rgba(148,163,184,.2)); white-space: nowrap; }
+.psv-table th:first-child, .psv-table td:first-child { text-align: left; }
+.psv-table thead th { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--pv-muted, #94a3b8); font-weight: 700; }
+.psv-check__sys { margin-left: 8px; font-size: 11.5px; color: var(--pv-muted, #94a3b8); }
+.psv-check__var { margin-left: 8px; font-size: 11px; font-weight: 700; }
+.psv-check__var.is-ok { color: #10b981; }
+.psv-check__var.is-bad { color: #ef4444; }
+.psv-check__in { width: 62px; height: 34px; text-align: center; border-radius: 8px; border: 1px solid var(--pv-card-border, rgba(148,163,184,.3)); background: rgba(127,127,127,.06); color: inherit; font-size: 14px; font-weight: 700; padding: 0 6px; }

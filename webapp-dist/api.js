@@ -73,7 +73,7 @@
     try {
       resp = await fetch(path, Object.assign({}, options, { headers }));
     } catch (e) {
-      throw new Error("Network error — အင်တာနက် ချိတ်ဆက်မှု စစ်ပါ");
+      throw new Error("Network error — check your internet connection");
     }
 
     // Auto-recover once on 401 (refresh for web login, re-validate for Telegram)
@@ -85,7 +85,7 @@
         headers["Authorization"] = "Bearer " + jwt;
         resp = await fetch(path, Object.assign({}, options, { headers }));
       } else {
-        throw new Error(wasWeb ? "Session expired — login ပြန်လုပ်ပါ" : "Session expired — bot ကနေ ပြန်ဖွင့်ပါ");
+        throw new Error(wasWeb ? "Session expired — please sign in again" : "Session expired — please reopen from the Telegram bot");
       }
     }
 

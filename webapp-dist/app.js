@@ -42,6 +42,18 @@
   const showToast = (msg, type) => PSV.toast(msg, type);
   const haptic = (t) => PSV.haptic(t);
   const fKs = (n) => PSV.fmtKs(n);
+  // WAVE 3: several staff endpoints answer HTTP 200 with {success:false, error}
+  // (the session move/swap guards do this). PSV.api only throws on non-2xx, so
+  // unwrap those refusals into a real Error and surface the message verbatim.
+  const asOk = (body) => {
+    if (body && typeof body === "object" && body.success === false) {
+      const e = new Error(body.error || body.message || "Request failed");
+      if (body.code != null) e.code = body.code;
+      throw e;
+    }
+    return body;
+  };
+  const isOwnerBlock = (e) => /owner|admin|not allowed|pin|403|manage/i.test(String((e && e.message) || e || ""));
 
   // ── Auth gate (standalone staff login) ──────────────────
   // Telegram path is NEVER gated (initData drives auth). Only the standalone
@@ -610,10 +622,10 @@
     emits: ["saved"],
     template: `
       <div style="padding:8px 14px 16px">
-        <div v-if="sessionWarn" class="psv-sess-warn">⚠️ {{ sessionWarn }} — သေချာစစ်ပါ</div>
+        <div v-if="sessionWarn" class="psv-sess-warn">⚠️ {{ sessionWarn }} — please double-check</div>
         <div v-if="depositRedeem" class="psv-redeem-banner" :class="{ 'is-applied': depositApplied }">
-          <span class="psv-redeem-banner__txt"><template v-if="depositApplied">✅ Deposit {{ fKs(depositRedeem.amount) }} Ks (BK#{{ depositRedeem.booking_id }}) — နုတ်ပြီးပါပြီ</template><template v-else>↩️ Verified deposit {{ fKs(depositRedeem.amount) }} Ks (BK#{{ depositRedeem.booking_id }}) ရှိသည်</template></span>
-          <button v-if="!depositApplied" class="psv-abtn psv-abtn--gold" style="min-height:36px;padding:0 10px" @click="applyDeposit">💰 Deposit {{ fKs(depositRedeem.amount) }} နုတ်မယ်</button>
+          <span class="psv-redeem-banner__txt"><template v-if="depositApplied">✅ Deposit {{ fKs(depositRedeem.amount) }} Ks (BK#{{ depositRedeem.booking_id }}) — deducted</template><template v-else>↩️ Verified deposit {{ fKs(depositRedeem.amount) }} Ks (BK#{{ depositRedeem.booking_id }}) available</template></span>
+          <button v-if="!depositApplied" class="psv-abtn psv-abtn--gold" style="min-height:36px;padding:0 10px" @click="applyDeposit">💰 Deduct {{ fKs(depositRedeem.amount) }} deposit</button>
           <button class="psv-redeem-banner__x" @click="clearRedeem">✕</button>
         </div>
         <van-cell-group inset>
@@ -640,8 +652,8 @@
         <div style="margin:10px 16px 0">
           <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 10px">
             <span style="font-weight:600">🏷️ Promotion / 🎟️ Coupon</span>
-            <span v-if="calcStatus === 'ok' && totalDiscountKs > 0" class="psv-verified">🛡 server အတည်ပြု</span>
-            <span v-else-if="calcStatus === 'loading'" style="color:var(--pv-muted);font-size:11px">တွက်ချက်နေသည်…</span>
+            <span v-if="calcStatus === 'ok' && totalDiscountKs > 0" class="psv-verified">🛡 server verified</span>
+            <span v-else-if="calcStatus === 'loading'" style="color:var(--pv-muted);font-size:11px">Calculating…</span>
           </div>
           <div class="psv-card psv-disc-card">
             <div v-if="promo.id" class="psv-pick-row">
@@ -649,13 +661,13 @@
                 <div class="psv-pick-row__t">🎁 {{ promo.title }}</div>
                 <div class="psv-pick-row__s">{{ promoText(promo) }}</div>
               </div>
-              <button class="psv-chip" @click="clearPromo">ဖြုတ်</button>
+              <button class="psv-chip" @click="clearPromo">Remove</button>
             </div>
-            <button v-else class="psv-btn psv-btn--ghost psv-btn--block" style="min-height:44px" @click="openPromo">🎁 Promotion ရွေးရန်</button>
+            <button v-else class="psv-btn psv-btn--ghost psv-btn--block" style="min-height:44px" @click="openPromo">🎁 Choose Promotion</button>
 
             <div style="display:flex;gap:8px;margin-top:10px">
-              <input v-model.trim="coupon.code" class="psv-input" style="flex:1" :disabled="coupon.applied" placeholder="Coupon code (CB…)" @keyup.enter="applyCoupon" />
-              <button class="psv-chip" :disabled="coupon.applied || coupon.checking || !coupon.code" @click="applyCoupon">{{ coupon.applied ? '✓ applied' : (coupon.checking ? '…' : 'စစ်ရန်') }}</button>
+              <input v-model.trim="coupon.code" class="psv-input" style="flex:1" :disabled="coupon.applied" placeholder="Coupon code" @keyup.enter="applyCoupon" />
+              <button class="psv-chip" :disabled="coupon.applied || coupon.checking || !coupon.code" @click="applyCoupon">{{ coupon.applied ? '✓ applied' : (coupon.checking ? '…' : 'Check') }}</button>
             </div>
             <div v-if="coupon.message" class="psv-coupon-msg" :class="coupon.applied ? 'is-ok' : 'is-fail'">{{ coupon.message }}</div>
             <div v-if="focItem" style="margin-top:8px;font-size:12px;color:var(--pv-muted)">🍜 FOC: <b>{{ focItem }}</b> <button class="psv-mini-x" @click="focItem=''; scheduleCalc()">✕</button></div>
@@ -681,7 +693,7 @@
         </div>
 
         <!-- Sub-total breakdown (server-authoritative discount lines) -->
-        <van-cell-group inset style="margin-top:10px" title="ငွေစာရင်း / Amounts">
+        <van-cell-group inset style="margin-top:10px" title="Amounts">
           <van-cell title="Game" :value="fKs(form.game_amt) + ' Ks'" />
           <van-cell title="Food" :value="fKs(form.food_total) + ' Ks'" />
           <van-cell title="Subtotal" :value="fKs(subtotalKs) + ' Ks'" />
@@ -689,14 +701,14 @@
             <template #value><span style="color:var(--pv-success)">{{ b.amount < 0 ? '-' + fKs(-b.amount) : fKs(b.amount) }}</span></template>
           </van-cell>
           <van-cell v-if="!discountLines.length && Number(form.discount) > 0" title="Discount" :value="'-' + fKs(form.discount) + ' Ks'" />
-          <van-cell title="Discount စုစုပေါင်း" :value="'-' + fKs(totalDiscountKs) + ' Ks'" />
+          <van-cell title="Total Discount" :value="'-' + fKs(totalDiscountKs) + ' Ks'" />
           <van-cell title="Total" style="font-weight:700">
             <template #value><span class="pv-amount" style="font-size:16px">{{ fKs(payableBeforeDeposit) }} Ks</span></template>
           </van-cell>
-          <van-cell v-if="depositApplied" title="Deposit နုတ်">
+          <van-cell v-if="depositApplied" title="Less Deposit">
             <template #value><span style="color:var(--pv-success);font-weight:600">-{{ fKs(depositRedeem.amount) }} Ks</span></template>
           </van-cell>
-          <van-cell title="ကျသင့်ငွေ (Cash due)" style="font-weight:800">
+          <van-cell title="Cash due" style="font-weight:800">
             <template #value><span class="pv-amount" style="font-size:17px">{{ fKs(cashNetTotal) }} Ks</span></template>
           </van-cell>
         </van-cell-group>
@@ -824,10 +836,10 @@
               <van-cell title="Total" style="font-weight:700">
                 <template #value><span class="pv-amount" style="font-size:16px">{{ fKs(lastVoucher.total) }} Ks</span></template>
               </van-cell>
-              <van-cell v-if="Number(lastVoucher.deposit) > 0" title="Deposit နုတ်">
+              <van-cell v-if="Number(lastVoucher.deposit) > 0" title="Less Deposit">
                 <template #value><span style="color:var(--pv-success)">-{{ fKs(lastVoucher.deposit) }} Ks</span></template>
               </van-cell>
-              <van-cell v-if="Number(lastVoucher.cashDue) != null && Number(lastVoucher.cashDue) !== Number(lastVoucher.total)" title="ကျသင့်ငွေ" style="font-weight:800">
+              <van-cell v-if="Number(lastVoucher.cashDue) != null && Number(lastVoucher.cashDue) !== Number(lastVoucher.total)" title="Cash due" style="font-weight:800">
                 <template #value><span class="pv-amount">{{ fKs(lastVoucher.cashDue) }} Ks</span></template>
               </van-cell>
               <van-cell v-if="lastVoucher.payment" title="Payment" :value="lastVoucher.payment" />
@@ -844,9 +856,9 @@
         <!-- 🎁 Promotion picker (active promos) -->
         <van-popup v-model:show="promoOpen" position="bottom" round style="max-height:72vh">
           <div style="max-height:72vh;overflow:auto;padding:12px 0 20px">
-            <div class="psv-sheet-title" style="padding:0 16px">🎁 Promotion ရွေးရန်</div>
-            <div class="psv-bk-hint" style="padding:4px 16px 8px">ရွေးလိုက်ရင် ဆာဗာက discount ကို တွက်ပေးမယ်</div>
-            <van-empty v-if="!promos.length" description="Active promotion မရှိပါ" />
+            <div class="psv-sheet-title" style="padding:0 16px">🎁 Choose Promotion</div>
+            <div class="psv-bk-hint" style="padding:4px 16px 8px">The server calculates the discount once you pick a promotion</div>
+            <van-empty v-if="!promos.length" description="No active promotions" />
             <div v-for="p in promos" :key="p.id" class="psv-list-row" style="padding:12px 16px" @click="pickPromo(p)">
               <div class="psv-list-row__main">
                 <div class="psv-list-row__title">{{ p.title }}</div>
@@ -860,8 +872,8 @@
         <!-- 🍜 FOC item picker (bundle / free_item promo) -->
         <van-popup v-model:show="focOpen" position="bottom" round>
           <div style="padding:12px 0 20px">
-            <div class="psv-sheet-title" style="padding:0 16px">🍜 FOC (အခမဲ့) item ရွေးရန်</div>
-            <van-empty v-if="!foodLines.length" description="Food item မရှိပါ" />
+            <div class="psv-sheet-title" style="padding:0 16px">🍜 Choose FOC (free) item</div>
+            <van-empty v-if="!foodLines.length" description="No food items" />
             <div v-for="(ln, i) in foodLines" :key="'foc' + i" class="psv-list-row" style="padding:12px 16px" @click="pickFoc(ln)">
               <div class="psv-list-row__main"><div class="psv-list-row__title">{{ ln.name }}</div><div class="psv-list-row__sub">{{ fKs(ln.price) }} Ks × {{ ln.qty }}</div></div>
             </div>
@@ -879,7 +891,7 @@
         adjust: 0,  // session voucher: bounded −10..+10 adjustment on actual mins
       });
       // ↩️ Deposit redeem (WAVE 1 → completed in WAVE 2): a booking flagged from the
-      // Booking detail view. WAVE 2 adds the explicit "Deposit {amount} နုတ်မယ်"
+      // Booking detail view. WAVE 2 adds the explicit "Deduct deposit"
       // confirm + a lookup for verified deposits on the picked member/console.
       const depositRedeem = ref(PSV.pendingDepositRedeem || null);
       const depositApplied = ref(false);
@@ -888,10 +900,10 @@
       async function applyDeposit() {
         if (!depositRedeem.value) return;
         const amt = Number(depositRedeem.value.amount) || 0;
-        const okc = await confirmBox("Deposit နုတ်မလား?", "BK#" + depositRedeem.value.booking_id + " verified deposit " + fKs(amt) + " Ks ကို ဒီအရောင်း ကျသင့်ငွေကနေ နုတ်မယ်။", "နုတ်မယ်", "မလုပ်");
+        const okc = await confirmBox("Deduct deposit?", "Deduct the verified deposit of " + fKs(amt) + " Ks (BK#" + depositRedeem.value.booking_id + ") from this sale payable total.", "Deduct", "Cancel");
         if (!okc) return;
         depositApplied.value = true; haptic("medium");
-        showToast("Deposit " + fKs(amt) + " Ks နုတ်ပြီး", "success");
+        showToast("Deposit " + fKs(amt) + " Ks deducted", "success");
       }
 
       // ── 🏷️ WAVE 2: Promotion / Coupon / server-side discount calc ─────────────
@@ -913,10 +925,10 @@
         const t = String(p.type || "").toLowerCase();
         const pct = Number(p.discount_percent) || 0;
         const tgt = String(p.discount_target || "overall");
-        const tgtMy = tgt === "game_only" ? "ဂိမ်းကြေး" : tgt === "food_only" ? "အစားအသောက်" : "စုစုပေါင်း";
-        if (t === "bonus_mins") return "ကစားချိန် +" + (pct || "") + "% bonus mins";
-        if (t === "bundle" || t === "free_item") return "Bundle / FOC — အစားအသောက် ၁ မျိုး အခမဲ့" + (p.notes ? " · " + p.notes : "");
-        if (pct) return tgtMy + " " + pct + "% လျှော့" + (p.notes ? " · " + p.notes : "");
+        const tgtEn = tgt === "game_only" ? "game time" : tgt === "food_only" ? "food" : "total";
+        if (t === "bonus_mins") return "+" + (pct || "") + "% bonus playtime";
+        if (t === "bundle" || t === "free_item") return "Bundle / FOC — one food item free" + (p.notes ? " · " + p.notes : "");
+        if (pct) return tgtEn + " " + pct + "% off" + (p.notes ? " · " + p.notes : "");
         return p.notes || "Promotion";
       }
       function loadPromos() {
@@ -943,18 +955,18 @@
         coupon.checking = true; coupon.message = "";
         try {
           const r = await PSV.api("/api/coupons/validate", { method: "POST", headers: HJSON, body: JSON.stringify({ code: code }) });
-          if (r && r.success === false) throw new Error(r.error || "Coupon မမှန်ပါ");
+          if (r && r.success === false) throw new Error(r.error || "Coupon is not valid");
           const d = PSV.unwrap(r); const c = (d && d.coupon) || {};
-          if (!c.code) throw new Error("Coupon မတွေ့ပါ");
+          if (!c.code) throw new Error("Coupon not found");
           coupon.code = c.code;
           coupon.minutes = Number(c.balance_minutes) || 0;
           coupon.discount = Math.round(coupon.minutes * (Number(form.base_rate) || 0) / 60);
           coupon.applied = true;
-          coupon.message = "✓ သက်တမ်းရှိ — " + coupon.minutes + " mins (~" + fKs(coupon.discount) + " Ks). Save နှိပ်ချိန် redeem ဖြစ်မယ်။";
+          coupon.message = "✓ Valid — " + coupon.minutes + " mins (~" + fKs(coupon.discount) + " Ks). Redeemed when you save.";
           haptic("light"); scheduleCalc();
         } catch (e) {
           coupon.applied = false; coupon.minutes = 0; coupon.discount = 0;
-          coupon.message = "✗ " + (e && e.message ? e.message : "Coupon မမှန်ပါ");
+          coupon.message = "✗ " + (e && e.message ? e.message : "Coupon is not valid");
           haptic("medium");
         } finally { coupon.checking = false; }
       }
@@ -1010,7 +1022,7 @@
         if ((!cid) && (!mid || mid === "0 (guest)")) return "";
         const hit = activeBookings.value.find((b) => (cid && String(b.console_id || "").trim().toLowerCase() === cid) || (mid && mid !== "0 (guest)" && String(b.member_id || "").trim().toLowerCase() === mid));
         if (!hit) return "";
-        return "ဒီ " + (cid && String(hit.console_id || "").trim().toLowerCase() === cid ? "Console" : "Member") + " က အခု BK#" + hit.id + " session လုပ်နေတယ် (" + (hit.status || "Active") + ")";
+        return "This " + (cid && String(hit.console_id || "").trim().toLowerCase() === cid ? "console" : "member") + " already has session BK#" + hit.id + " running (" + (hit.status || "Active") + ")";
       });
       async function ensureNoActiveSession() {
         try {
@@ -1023,7 +1035,7 @@
           if (!hitConsole && !hitMember) return "ok";
           const bk = hitConsole || hitMember;
           const who = hitConsole ? ("Console " + form.console_id) : ("Member " + form.member_id);
-          const okc = await confirmBox("⚠️ Session လုပ်နေတယ်", who + " က အခု BK#" + bk.id + " session လုပ်နေတယ် — သေချာလား? ထပ်ကောက်ရင် double-charge ဖြစ်နိုင်တယ်။", "ဆက်လုပ်", "မလုပ်", false);
+          const okc = await confirmBox("⚠️ Session already active", who + " already has session BK#" + bk.id + " running — continue anyway? Charging again may double-charge the customer.", "Continue", "Cancel", false);
           return okc ? "ok" : "cancel";
         } catch (_e) { return "ok"; } // never hard-block
       }
@@ -1089,6 +1101,10 @@
       const voucherOpen = ref(false);
       const lastVoucher = ref(null);
       const printing = ref(false);
+      const pendingSaved = ref(false);   // defer the "saved" emit until the voucher popup closes
+      // Keep the user on the form (with the discount breakdown visible) while the
+      // voucher preview is open; refresh the Today list once it is dismissed.
+      watch(voucherOpen, (v) => { if (!v && pendingSaved.value) { pendingSaved.value = false; emit("saved"); } });
       async function doPrintVoucher() {
         if (!lastVoucher.value) return;
         printing.value = true;
@@ -1350,33 +1366,41 @@
             final_pm = paymentMethodComputed.value;
           }
 
-          // ── 🎟️ Coupon redeem (idempotent per sale_ref = voucher) ──
-          if (coupon.applied) {
-            try {
-              const cr = await PSV.api("/api/coupons/redeem", { method: "POST", headers: HJSON, body: JSON.stringify({ code: coupon.code, minutes: coupon.minutes, sale_ref: form.voucher_no, staff_name: PSV.getStaff().name }) });
-              if (cr && cr.success === false) throw new Error(cr.error || "Coupon redeem မအောင်မြင်");
-              const cd = PSV.unwrap(cr) || {};
-              coupon.message = "✓ Redeem ပြီး — " + (cd.deducted_minutes != null ? cd.deducted_minutes : coupon.minutes) + " mins" + (cd.remaining_minutes != null ? " (ကျန် " + cd.remaining_minutes + ")" : "");
-              showToast("Coupon " + coupon.code + " · -" + (cd.deducted_minutes != null ? cd.deducted_minutes : coupon.minutes) + " mins", "success");
-            } catch (ce) {
-              showToast("Coupon redeem မအောင်မြင်: " + ce.message, "fail");
-              submitting.value = false; return;
-            }
-          }
-
+          // ── 🎟️ Coupon redemption is performed by the SERVER inside the /api/sales/record
+          //    money path (idempotent on sale_ref), so the client never double-redeems.
+          //    The UI shows the real deducted minutes from the response below.
+          const saleRef = PSV.genClientRef();
+          const cart = cartForCalc();
           const payload = {
             voucher_no: form.voucher_no, member_id: member_id,
             console_id: form.console_id, mins: form.mins, base_rate: form.base_rate,
             multiplier: form.multiplier, game_amt: final_game_amt, food_items: form.food_items,
-            food_total: form.food_total, discount: discTotal, net_total: netAfterDiscount,
+            food_total: form.food_total, discount: Number(form.discount) || 0, net_total: Math.max(0, rawCash.value - (Number(form.discount) || 0)),
+            // NOTE: discount/net above are the MANUAL-only fallback. When promo_id or coupon_code
+            // is present the server recomputes discount+net (compute_totals) and ignores these.
             payment_method: final_pm, staff: PSV.getStaff().name,
             wallet_deduct: wallet_deduct,
+            // ── money-path parity: same cart the preview calc used ──
             promotion_name: promo.title || "",
+            promo_id: promo.id || "",
             coupon_code: coupon.applied ? coupon.code : "",
+            coupon_minutes: coupon.applied ? coupon.minutes : 0,
+            manual_discount: Number(form.discount) || 0,
+            foc_item: focItem.value || "",
+            is_member: !!cart.is_member,
+            wallet_mins: cart.wallet_mins || 0,
+            effective_cost_mins: cart.effective_cost_mins || 0,
+            gross_total: (Number(final_game_amt) || 0) + (Number(form.food_total) || 0),
             booking_id: (depositApplied.value && depositRedeem.value) ? depositRedeem.value.booking_id : "",
-            client_ref: PSV.genClientRef(),
+            client_ref: saleRef,
           };
           const res = PSV.unwrap(await PSV.api("/api/sales/record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }));
+          // 🎟️ Reflect the server's coupon redemption (authoritative).
+          if (coupon.applied && res && res.coupon_redeem) {
+            const cm = res.coupon_redeem;
+            coupon.message = "✓ Redeemed — " + (cm.deducted_minutes != null ? cm.deducted_minutes : coupon.minutes) + " mins" + (cm.remaining_minutes != null ? (" (" + cm.remaining_minutes + " left)") : "");
+            showToast("Coupon " + coupon.code + " · -" + (cm.deducted_minutes != null ? cm.deducted_minutes : coupon.minutes) + " mins", "success");
+          }
           if (res && res.duplicate) showToast("Duplicate voucher " + (res.voucher_no || ""), "warning");
           else {
             // 🧾 Stock-out for food items (mirror sale bot _sale_bg → api_add_stock_out)
@@ -1401,7 +1425,11 @@
               if (nm && q > 0) vItems.push({ name: "🍜 " + nm, qty: q, price: p });
             }
             const vSubtotal = sc ? (Number(sc.cash_payable) || 0) : rawCash.value;
-            const vPay = final_pm + (depAmt > 0 ? (" + Deposit " + fKs(depAmt) + " Ks") : "");
+            // Server response is authoritative for the recorded discount / payable / deposit (idempotent)
+            const serverDiscount = (res && res.discount != null) ? Number(res.discount) : discTotal;
+            const cashDueFinal = (res && res.payable_total != null) ? Number(res.payable_total) : payableNow;
+            const depFinal = (res && res.deposit_deducted != null) ? Number(res.deposit_deducted) : depAmt;
+            const vPay = final_pm + (depFinal > 0 ? (" + Deposit " + fKs(depFinal) + " Ks") : "");
             lastVoucher.value = {
               voucher_no: vno,
               date: PSV.todayMMT(),
@@ -1410,17 +1438,17 @@
               member: isMemberSale ? (form.member_search || form.member_id) : "Guest",
               items: vItems,
               subtotal: vSubtotal,
-              discount: discTotal,
-              total: netAfterDiscount,
-              deposit: depAmt,
-              cashDue: payableNow,
+              discount: serverDiscount,
+              total: cashDueFinal + depFinal,
+              deposit: depFinal,
+              cashDue: cashDueFinal,
               payment: vPay,
               balance: wallet_deduct > 0 ? ("Wallet −" + wallet_deduct + " mins") : "",
-              notes: "Subtotal: " + fKs(vSubtotal) + " Ks" + (discTotal > 0 ? (" | Discount: -" + fKs(discTotal) + " Ks") : "") + (depAmt > 0 ? (" | Deposit: -" + fKs(depAmt) + " Ks") : "") + (promo.title ? (" | Promo: " + promo.title) : "") + (coupon.applied ? (" | Coupon: " + coupon.code) : ""),
+              notes: "Subtotal: " + fKs(vSubtotal) + " Ks" + (serverDiscount > 0 ? (" | Discount: -" + fKs(serverDiscount) + " Ks") : "") + (depFinal > 0 ? (" | Deposit: -" + fKs(depFinal) + " Ks") : "") + (promo.title ? (" | Promo: " + promo.title) : "") + (coupon.applied ? (" | Coupon: " + coupon.code) : ""),
             };
             voucherOpen.value = true;
             try { window.PSVLastVoucher = { raw: lastVoucher.value }; } catch (_e) {}
-            showToast("Saved ✓ " + vno + (discTotal > 0 ? (" · Discount −" + fKs(discTotal)) : "") + (wallet_deduct > 0 ? (" · Wallet −" + wallet_deduct + "m") : ""), "success");
+            showToast("Saved ✓ " + vno + (serverDiscount > 0 ? (" · Discount −" + fKs(serverDiscount)) : "") + (wallet_deduct > 0 ? (" · Wallet −" + wallet_deduct + "m") : ""), "success");
             form.voucher_no = PSV.genVoucherNo(); form.member_id = ""; form.member_search = ""; form.console_id = "";
             form.game_name = ""; form.mins = 0; form.base_rate = 0; form.multiplier = 1; form.game_amt = 0;
             form.food_items = ""; form.food_total = 0; form.discount = 0;
@@ -1434,7 +1462,7 @@
             try { PSV.pendingDepositRedeem = null; } catch (_e2) {}
             serverCalc.value = null;
             loadActiveBookings();
-            emit("saved");
+            pendingSaved.value = true;   // emit("saved") fires when the voucher popup closes
           }
         } catch (e) { showToast("Error: " + e.message, "fail"); }
         finally { submitting.value = false; }
@@ -1562,60 +1590,76 @@
           <van-field v-model="form.name" label="Name" placeholder="Name" />
           <van-field v-model="form.phone" label="Phone" type="tel" placeholder="09..." />
           <van-field v-model.number="form.initial_mins" type="number" label="Initial Mins" placeholder="0" />
-          <van-field v-model.number="form.amount" type="number" label="Amount (Ks)" placeholder="0" />
-          <van-field v-model.number="form.kpay" type="number" label="KPay (Ks)" placeholder="0" />
-          <van-field v-model.number="form.cash" type="number" label="Cash (Ks)" placeholder="0" />
+          <van-field v-if="!form.is_gift" v-model.number="form.amount" type="number" label="Amount (Ks)" placeholder="0" />
+          <van-field v-if="!form.is_gift" v-model.number="form.kpay" type="number" label="KPay (Ks)" placeholder="0" />
+          <van-field v-if="!form.is_gift" v-model.number="form.cash" type="number" label="Cash (Ks)" placeholder="0" />
           <van-field v-model="form.referral_code" label="Referral Code" placeholder="(optional)" />
         </van-cell-group>
+        <van-cell-group inset style="margin-top:10px">
+          <van-cell title="Gift / Free card" label="Issue free minutes — requires the owner PIN">
+            <template #right-icon><van-switch v-model="form.is_gift" size="22" @change="onGiftToggle" /></template>
+          </van-cell>
+          <van-field v-if="form.is_gift" v-model="form.pin" type="password" label="Owner PIN" placeholder="Enter owner PIN" autocomplete="off" />
+        </van-cell-group>
+        <div v-if="form.is_gift" style="margin:0 16px 4px;color:var(--pv-muted);font-size:12px">Gift card grants free minutes with no payment. A wrong PIN shows an error.</div>
         <div style="padding:14px 16px">
           <van-button type="primary" block :loading="submitting" @click="submit">Register</van-button>
         </div>
       </div>
     `,
     setup() {
-      const form = reactive({ member_id: "", name: "", phone: "", initial_mins: 0, amount: 0, kpay: 0, cash: 0, referral_code: "" });
+      const form = reactive({ member_id: "", name: "", phone: "", initial_mins: 0, amount: 0, kpay: 0, cash: 0, referral_code: "", is_gift: false, pin: "" });
       const submitting = ref(false);
+      function onGiftToggle(v) { haptic("light"); if (v) { form.amount = 0; form.kpay = 0; form.cash = 0; } }
       async function nextId() { try { const id = PSV.unwrap(await PSV.api("/api/next_member_id")); if (id) form.member_id = String(id); } catch (_e) {} }
       onMounted(nextId);
       async function submit() {
         submitting.value = true; haptic("medium");
         try {
-          const res = PSV.unwrap(await PSV.api("/api/members/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: form.member_id, name: form.name, phone: form.phone, staff: PSV.getStaff().name, initial_mins: form.initial_mins, amount: form.amount, kpay: form.kpay, cash: form.cash, mins_added: form.initial_mins, referral_code: form.referral_code }) }));
+          const payload = { member_id: form.member_id, name: form.name, phone: form.phone, staff: PSV.getStaff().name, initial_mins: form.initial_mins, amount: form.amount, kpay: form.kpay, cash: form.cash, mins_added: form.initial_mins, referral_code: form.referral_code };
+          if (form.is_gift) { payload.is_gift = true; payload.pin = form.pin; }  // PIN is never logged
+          const raw = await PSV.api("/api/members/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+          if (raw && raw.success === false) throw new Error(raw.error || "Register failed");
+          const res = PSV.unwrap(raw);
           showToast("Saved ✓ " + (res && res.member_id ? res.member_id : ""), "success");
-          form.name = ""; form.phone = ""; form.initial_mins = 0; form.amount = 0; form.kpay = 0; form.cash = 0; form.referral_code = "";
+          form.name = ""; form.phone = ""; form.initial_mins = 0; form.amount = 0; form.kpay = 0; form.cash = 0; form.referral_code = ""; form.is_gift = false; form.pin = "";
           nextId();
-        } catch (e) { showToast("Error: " + e.message, "fail"); }
+        } catch (e) {
+          const m = String(e && e.message ? e.message : "");
+          if (/owner pin|invalid pin|403/i.test(m)) showToast("Owner PIN required — the PIN is incorrect.", "fail");
+          else showToast("Error: " + m, "fail");
+        }
         finally { submitting.value = false; }
       }
-      return { form, submitting, submit };
+      return { form, submitting, submit, onGiftToggle };
     },
   };
 
   // ── WAVE 1: booking ops + deposit helpers ───────────────
   const BK_REJECT_REASONS = [
-    { text: "အချိန်မရ (slot မအား)", note: "Slot unavailable", value: "slot_unavailable" },
-    { text: "ငွေမဆပ် (deposit မရ)", note: "Deposit not received", value: "payment_not_received" },
-    { text: "အခြား", note: "Other", value: "other" },
+    { text: "Slot unavailable", note: "No free time slot", value: "slot_unavailable" },
+    { text: "Deposit not received", note: "Payment not received", value: "payment_not_received" },
+    { text: "Other", note: "Add a note", value: "other" },
   ];
   const BK_CANCEL_REASONS = [
-    { text: "ဖောက်သည် ကိုယ်တိုင် ဖျက်", note: "Customer cancelled", value: "customer_cancelled" },
-    { text: "Console မအား / ပြောင်း", note: "Console unavailable", value: "console_unavailable" },
-    { text: "ဖောက်သည် မလာ (no-show)", note: "No-show", value: "no_show" },
-    { text: "အခြား", note: "Other", value: "other" },
+    { text: "Customer cancelled", note: "Customer requested", value: "customer_cancelled" },
+    { text: "Console unavailable", note: "Console busy or switched", value: "console_unavailable" },
+    { text: "No-show", note: "Customer did not arrive", value: "no_show" },
+    { text: "Other", note: "Add a note", value: "other" },
   ];
   const BK_STATUS = {
-    pending:          { en: "Pending",    my: "စောင့်ဆိုင်",     tone: "warn" },
-    pending_check_in: { en: "Confirmed",  my: "Check-in စောင့်", tone: "warn" },
-    confirmed:        { en: "Confirmed",  my: "အတည်ပြု",       tone: "ok" },
-    checked_in:       { en: "Checked-in", my: "ရောက်ရှိ",       tone: "ok" },
-    active:           { en: "Active",     my: "ကစားနေ",         tone: "gold" },
-    done:             { en: "Completed",  my: "ပြီးဆုံး",        tone: "dim" },
-    completed:        { en: "Completed",  my: "ပြီးဆုံး",        tone: "dim" },
-    cancelled:        { en: "Cancelled",  my: "ဖျက်ပြီး",        tone: "danger" },
-    rejected:         { en: "Rejected",   my: "ငြင်းပယ်",        tone: "danger" },
+    pending:          { en: "Pending",    tone: "warn" },
+    pending_check_in: { en: "Confirmed",  tone: "warn" },
+    confirmed:        { en: "Confirmed",  tone: "ok" },
+    checked_in:       { en: "Checked-in", tone: "ok" },
+    active:           { en: "Active",     tone: "gold" },
+    done:             { en: "Completed",  tone: "dim" },
+    completed:        { en: "Completed",  tone: "dim" },
+    cancelled:        { en: "Cancelled",  tone: "danger" },
+    rejected:         { en: "Rejected",   tone: "danger" },
   };
   function bkKey(s) { return String(s == null ? "" : s).toLowerCase().trim(); }
-  function bkStatus(s) { return BK_STATUS[bkKey(s)] || { en: (s || "-"), my: "", tone: "dim" }; }
+  function bkStatus(s) { return BK_STATUS[bkKey(s)] || { en: (s || "-"), tone: "dim" }; }
   const HJSON = { "Content-Type": "application/json" };
   function psvStaffName() { try { return (PSV.getStaff() || {}).name || "staff"; } catch (_e) { return "staff"; } }
   function confirmBox(title, message, okText, cancelText, danger) {
@@ -1626,7 +1670,7 @@
             title: title,
             message: message,
             confirmButtonText: okText || "OK",
-            cancelButtonText: cancelText || "မလုပ်",
+            cancelButtonText: cancelText || "Cancel",
             confirmButtonColor: danger ? "#f87171" : "#f0b429",
             messageAlign: "left",
           }).then(function () { resolve(true); }).catch(function () { resolve(false); });
@@ -1642,9 +1686,9 @@
     components: { PageHeader },
     template: `
       <div class="pv-page psv-bk">
-        <PageHeader title="Booking စာရင်း" />
+        <PageHeader title="Bookings" />
         <div class="psv-bk-chips">
-          <button v-for="c in chips" :key="c.id" class="psv-chip" :class="{ 'psv-chip--on': chip === c.id }" @click="setChip(c.id)">{{ c.icon }} {{ c.my }}</button>
+          <button v-for="c in chips" :key="c.id" class="psv-chip" :class="{ 'psv-chip--on': chip === c.id }" @click="setChip(c.id)">{{ c.icon }} {{ c.label }}</button>
         </div>
         <div class="psv-bk-hint">{{ chipHint }}</div>
 
@@ -1655,7 +1699,7 @@
           <div v-else-if="!rows.length" class="psv-empty">
             <div style="font-size:34px">📭</div>
             <div style="margin-top:8px">{{ emptyText }}</div>
-            <button class="psv-btn psv-btn--ghost" style="margin-top:14px" @click="goNew">➕ Booking အသစ်</button>
+            <button class="psv-btn psv-btn--ghost" style="margin-top:14px" @click="goNew">➕ New Booking</button>
           </div>
           <div v-else class="psv-bk-list">
             <div v-for="b in rows" :key="b.id" class="psv-bk-card" :class="'is-' + bkStatus(b.status).tone">
@@ -1664,7 +1708,7 @@
                   <div class="psv-bk-card__name">{{ b.customerName || b.member_id || 'Guest' }}</div>
                   <div class="psv-bk-card__sub">BK#{{ b.id }} · {{ b.console_id || b.consoleType || '-' }}</div>
                 </div>
-                <span class="psv-pill" :class="'psv-pill--' + bkStatus(b.status).tone">{{ bkStatus(b.status).my }}<i>{{ bkStatus(b.status).en }}</i></span>
+                <span class="psv-pill" :class="'psv-pill--' + bkStatus(b.status).tone">{{ bkStatus(b.status).en }}</span>
               </div>
               <div class="psv-bk-card__meta">
                 <span>📅 {{ b.date }}</span>
@@ -1677,9 +1721,9 @@
               </div>
               <div class="psv-bk-actions">
                 <button v-for="a in cardActions(b)" :key="a.id" class="psv-abtn" :class="'psv-abtn--' + a.tone" :disabled="busy === b.id" @click.stop="runAction(a, b)">
-                  <span class="psv-abtn__ico">{{ a.icon }}</span>{{ a.my }}
+                  <span class="psv-abtn__ico">{{ a.icon }}</span>{{ a.en }}
                 </button>
-                <button class="psv-abtn psv-abtn--ghost" :disabled="busy === b.id" @click.stop="openDetail(b)">⋯ အသေးစိတ်</button>
+                <button class="psv-abtn psv-abtn--ghost" :disabled="busy === b.id" @click.stop="openDetail(b)">⋯ Details</button>
               </div>
             </div>
           </div>
@@ -1694,27 +1738,27 @@
                 <div class="psv-bk-detail__name">{{ detail.customerName || detail.member_id || 'Guest' }}</div>
                 <div class="psv-bk-detail__id">BK#{{ detail.id }}</div>
               </div>
-              <span class="psv-pill" :class="'psv-pill--' + bkStatus(detail.status).tone">{{ bkStatus(detail.status).my }}<i>{{ bkStatus(detail.status).en }}</i></span>
+              <span class="psv-pill" :class="'psv-pill--' + bkStatus(detail.status).tone">{{ bkStatus(detail.status).en }}</span>
             </div>
             <div class="psv-card psv-rows">
               <div class="psv-row"><span>Console</span><b>{{ detail.console_id || detail.consoleType || '-' }}</b></div>
-              <div class="psv-row"><span>ရက် / အချိန်</span><b>{{ detail.date }} · {{ fmt12h(detail.timeSlot || detail.startTime) }}</b></div>
-              <div class="psv-row"><span>ကြာချိန်</span><b>{{ detail.durationMins || '-' }} မိနစ်</b></div>
-              <div class="psv-row" v-if="detail.gameName"><span>ဂိမ်း</span><b>{{ detail.gameName }}</b></div>
-              <div class="psv-row" v-if="detail.phone"><span>ဖုန်း</span><b>{{ detail.phone }}</b></div>
+              <div class="psv-row"><span>Date / Time</span><b>{{ detail.date }} · {{ fmt12h(detail.timeSlot || detail.startTime) }}</b></div>
+              <div class="psv-row"><span>Duration</span><b>{{ detail.durationMins || '-' }} min</b></div>
+              <div class="psv-row" v-if="detail.gameName"><span>Game</span><b>{{ detail.gameName }}</b></div>
+              <div class="psv-row" v-if="detail.phone"><span>Phone</span><b>{{ detail.phone }}</b></div>
               <div class="psv-row" v-if="detail.member_id"><span>Member</span><b>{{ detail.member_id }}</b></div>
               <div class="psv-row" v-if="detail.deposit_status && detail.deposit_status !== 'none'"><span>Deposit</span><b>{{ depositText(detail) }}</b></div>
             </div>
             <div v-if="detail.notes" class="psv-card">
-              <div class="psv-field-label">မှတ်ချက်</div>
+              <div class="psv-field-label">Notes</div>
               <div style="font-size:13px;line-height:1.6">{{ detail.notes }}</div>
             </div>
-            <div class="psv-section-title">လုပ်ဆောင်ချက်များ</div>
+            <div class="psv-section-title">Actions</div>
             <div class="psv-bk-detail__grid">
               <button v-for="a in detailActions(detail)" :key="a.id" class="psv-abtn psv-abtn--block" :class="'psv-abtn--' + a.tone" :disabled="busy === detail.id" @click="runAction(a, detail)">
-                <span class="psv-abtn__ico">{{ a.icon }}</span>{{ a.my }}<i v-if="a.en">{{ a.en }}</i>
+                <span class="psv-abtn__ico">{{ a.icon }}</span>{{ a.en }}
               </button>
-              <div v-if="!detailActions(detail).length" class="psv-empty" style="padding:16px">လုပ်ဆောင်စရာ မရှိတော့ပါ</div>
+              <div v-if="!detailActions(detail).length" class="psv-empty" style="padding:16px">No actions available</div>
             </div>
           </div>
         </van-popup>
@@ -1723,15 +1767,15 @@
         <van-popup v-model:show="reasonOpen" position="bottom" round class="psv-sheet">
           <div class="psv-sheet__handle"></div>
           <div class="psv-sheet__body">
-            <div class="psv-sheet-title">{{ reasonMode === 'reject' ? '❌ ငြင်းပယ်ရသည့် အကြောင်းရင်း' : '⛔ ဖျက်ရသည့် အကြောင်းရင်း' }}</div>
+            <div class="psv-sheet-title">{{ reasonMode === 'reject' ? '❌ Reason for rejecting' : '⛔ Reason for cancelling' }}</div>
             <div class="psv-reason" v-for="r in reasonList" :key="r.value" :class="{ 'is-on': reasonPick === r.value }" @click="reasonPick = r.value">
               <div class="psv-reason__radio"></div>
               <div class="psv-reason__main"><div class="psv-reason__t">{{ r.text }}</div><div class="psv-reason__s">{{ r.note }}</div></div>
             </div>
-            <van-field v-if="reasonPick === 'other'" v-model="reasonNote" rows="2" autosize type="textarea" placeholder="အကြောင်းရင်း ရေးပါ…" />
+            <van-field v-if="reasonPick === 'other'" v-model="reasonNote" rows="2" autosize type="textarea" placeholder="Type a reason…" />
             <div class="psv-btn-row" style="margin-top:12px">
-              <button class="psv-btn psv-btn--ghost psv-btn--block" @click="reasonOpen = false">မလုပ်တော့</button>
-              <button class="psv-btn psv-btn--danger psv-btn--block" :disabled="!reasonPick" @click="confirmReason">အတည်ပြု</button>
+              <button class="psv-btn psv-btn--ghost psv-btn--block" @click="reasonOpen = false">Cancel</button>
+              <button class="psv-btn psv-btn--danger psv-btn--block" :disabled="!reasonPick" @click="confirmReason">Confirm</button>
             </div>
           </div>
         </van-popup>
@@ -1741,9 +1785,10 @@
           <div class="psv-sheet__handle"></div>
           <div class="psv-sheet__body">
             <div class="psv-sheet-title">👁 Deposit Proof — BK#{{ proof.booking_id }}</div>
-            <img v-if="proof.isImg" :src="proof.ref" class="psv-proof-img" />
-            <div v-else class="psv-card"><div class="psv-field-label">Ref / အချက်အလက်</div><div style="font-size:14px;word-break:break-all">{{ proof.ref }}</div></div>
-            <button class="psv-btn psv-btn--primary psv-btn--block" style="margin-top:12px" @click="proofOpen = false">ပိတ်</button>
+            <div v-if="proof.restricted" class="psv-card"><div class="psv-field-label">Restricted</div><div style="font-size:13px;line-height:1.6">Proof is not available for your role. Ask an owner / admin to view it.</div></div>
+            <img v-else-if="proof.isImg" :src="proof.ref" class="psv-proof-img" />
+            <div v-else class="psv-card"><div class="psv-field-label">Ref / details</div><div style="font-size:14px;word-break:break-all">{{ proof.ref }}</div></div>
+            <button class="psv-btn psv-btn--primary psv-btn--block" style="margin-top:12px" @click="proofOpen = false">Close</button>
           </div>
         </van-popup>
 
@@ -1756,13 +1801,13 @@
     `,
     setup() {
       const CHIPS = [
-        { id: "today", icon: "📅", my: "ဒီနေ့", hint: "ဒီနေ့ Booking အားလုံး" },
-        { id: "open", icon: "🔓", my: "ပွင့်", hint: "Pending · Confirmed · Checked-in · Active" },
-        { id: "pending", icon: "⏳", my: "စောင့်ဆိုင်", hint: "Approve / Reject လုပ်ရန် စောင့်နေသည်" },
-        { id: "confirmed", icon: "✅", my: "အတည်ပြု", hint: "အတည်ပြုပြီး — ဖောက်သည် လာရင် Check-in လုပ်ပါ" },
-        { id: "checked_in", icon: "🎟", my: "ရောက်ရှိ", hint: "ရောက်ရှိပြီး — Console မှာ Session စရန်" },
-        { id: "active", icon: "▶️", my: "ကစားနေ", hint: "Session လည်ပတ်နေသည်" },
-        { id: "deposit", icon: "💰", my: "Deposit", hint: "Deposit စစ်ဆေး / လဲလှယ်ရန်" },
+        { id: "today", icon: "📅", label: "Today", hint: "All bookings for today" },
+        { id: "open", icon: "🔓", label: "Open", hint: "Pending · Confirmed · Checked-in · Active" },
+        { id: "pending", icon: "⏳", label: "Pending", hint: "Waiting for approve / reject" },
+        { id: "confirmed", icon: "✅", label: "Confirmed", hint: "Confirmed — check in when the customer arrives" },
+        { id: "checked_in", icon: "🎟", label: "Checked-in", hint: "Arrived — start the console session" },
+        { id: "active", icon: "▶️", label: "Active", hint: "Session in progress" },
+        { id: "deposit", icon: "💰", label: "Deposit", hint: "Verify / redeem a deposit" },
       ];
       const chip = ref("open");
       const rows = ref([]);
@@ -1778,11 +1823,11 @@
       const reasonNote = ref("");
       const reasonTarget = ref(null);
       const proofOpen = ref(false);
-      const proof = reactive({ ref: "", isImg: false, booking_id: "" });
+      const proof = reactive({ ref: "", isImg: false, booking_id: "", restricted: false });
 
       const chipMeta = computed(() => CHIPS.find((c) => c.id === chip.value) || CHIPS[1]);
       const chipHint = computed(() => chipMeta.value.hint);
-      const emptyText = computed(() => (chip.value === "deposit" ? "Deposit စစ်ဆေးရန် မရှိပါ" : "Booking မရှိပါ"));
+      const emptyText = computed(() => (chip.value === "deposit" ? "No deposits to verify" : "No bookings"));
       const reasonList = computed(() => (reasonMode.value === "reject" ? BK_REJECT_REASONS : BK_CANCEL_REASONS));
 
       function hasDepositPending(b) { return ["paid", "pending"].includes(bkKey(b.deposit_status)); }
@@ -1793,32 +1838,32 @@
         const amount = b.deposit_amount ? Number(b.deposit_amount).toLocaleString() : "";
         const method = (b.deposit_method || "").toUpperCase();
         const lbl = amount ? amount + (method ? " " + method : "") : "-";
-        const map = { paid: "ရရှိ (စစ်ရန်) " + lbl, pending: "စောင့်ဆိုင် " + lbl, verified: "စစ်ပြီး " + lbl, redeemed: "သုံးပြီး " + lbl, forfeited: "ပြန်မအမ်း " + lbl, refunded: "ပြန်အမ်း " + lbl };
+        const map = { paid: "Received (verify) " + lbl, pending: "Pending " + lbl, verified: "Verified " + lbl, redeemed: "Redeemed " + lbl, forfeited: "Forfeited " + lbl, refunded: "Refunded " + lbl };
         return map[s] || ("Deposit " + lbl);
       }
       function cardActions(b) {
         const k = bkKey(b.status);
         const out = [];
         if (k === "pending") {
-          out.push({ id: "approve", my: "အတည်ပြု", en: "Approve", icon: "✅", tone: "ok", kind: "approve" });
-          out.push({ id: "reject", my: "ငြင်းပယ်", en: "Reject", icon: "❌", tone: "danger", kind: "reject" });
-          if (hasDepositPending(b)) out.push({ id: "verify", my: "Deposit စစ်", en: "Verify", icon: "💰", tone: "gold", kind: "verify" });
-          out.push({ id: "cancel", my: "ဖျက်", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
+          out.push({ id: "approve", en: "Approve", icon: "✅", tone: "ok", kind: "approve" });
+          out.push({ id: "reject", en: "Reject", icon: "❌", tone: "danger", kind: "reject" });
+          if (hasDepositPending(b)) out.push({ id: "verify", en: "Verify deposit", icon: "💰", tone: "gold", kind: "verify" });
+          out.push({ id: "cancel", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
         } else if (k === "confirmed" || k === "pending_check_in") {
           out.push({ id: "checkin", my: "Check-in", en: "Arrived", icon: "🎟", tone: "ok", kind: "checkin" });
-          if (hasDepositPending(b)) out.push({ id: "verify", my: "Deposit စစ်", en: "Verify", icon: "💰", tone: "gold", kind: "verify" });
-          out.push({ id: "cancel", my: "ဖျက်", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
+          if (hasDepositPending(b)) out.push({ id: "verify", en: "Verify deposit", icon: "💰", tone: "gold", kind: "verify" });
+          out.push({ id: "cancel", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
         } else if (k === "checked_in") {
-          out.push({ id: "consoles", my: "Session စ", en: "Start", icon: "▶️", tone: "gold", kind: "consoles" });
-          out.push({ id: "cancel", my: "ဖျက်", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
+          out.push({ id: "consoles", en: "Start session", icon: "▶️", tone: "gold", kind: "consoles" });
+          out.push({ id: "cancel", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
         }
         return out;
       }
       function detailActions(b) {
         const out = cardActions(b);
-        if (isVerified(b)) out.push({ id: "redeem", my: "Sale မှာ နုတ်", en: "Redeem at sale", icon: "↩️", tone: "gold", kind: "redeem" });
-        if (depRef(b)) out.push({ id: "proof", my: "ငွေလွှဲ အထောက်အထား", en: "View proof", icon: "👁", tone: "ghost", kind: "proof" });
-        if (bkKey(b.status) === "active") out.push({ id: "consoles", my: "Session ကြည့်", en: "View session", icon: "🖥", tone: "ghost", kind: "consoles" });
+        if (isVerified(b)) out.push({ id: "redeem", en: "Redeem at sale", icon: "↩️", tone: "gold", kind: "redeem" });
+        if (depRef(b)) out.push({ id: "proof", en: "View proof", icon: "👁", tone: "ghost", kind: "proof" });
+        if (bkKey(b.status) === "active") out.push({ id: "consoles", en: "View session", icon: "🖥", tone: "ghost", kind: "consoles" });
         return out;
       }
 
@@ -1844,7 +1889,7 @@
           rows.value = list;
         } catch (e) {
           rows.value = [];
-          showToast("Load မရ: " + e.message, "fail");
+          showToast("Load failed: " + e.message, "fail");
         } finally { loading.value = false; refreshing.value = false; }
       }
       function setChip(id) { haptic("light"); chip.value = id; load(); }
@@ -1862,7 +1907,7 @@
         if (found) { detail.value = found; detailOpen.value = true; return; }
         const one = await fetchOne(id);
         if (one) { detail.value = one; detailOpen.value = true; }
-        else showToast("BK#" + id + " မတွေ့ပါ", "fail");
+        else showToast("BK#" + id + " not found", "fail");
       }
       function openDetail(b) { haptic("light"); detail.value = b; detailOpen.value = true; }
 
@@ -1879,58 +1924,63 @@
       }
 
       async function doApprove(b) {
-        const okc = await confirmBox("အတည်ပြုမလား?", "BK#" + b.id + " (" + (b.customerName || "Guest") + ") ကို Confirmed လုပ်မယ်။ ဖောက်သည်ကို Telegram မှ အသိပေးမယ်။", "အတည်ပြု", "မလုပ်");
+        const okc = await confirmBox("Approve booking?", "Approve BK#" + b.id + " (" + (b.customerName || "Guest") + "). The customer will be notified on Telegram.", "Approve", "Cancel");
         if (!okc) return;
         busy.value = b.id;
         try {
           await PSV.api("/api/bookings/" + b.id + "/status", { method: "PATCH", headers: HJSON, body: JSON.stringify({ status: "confirmed", staffName: psvStaffName() }) });
-          haptic("medium"); showToast("အတည်ပြုပြီး ✓", "success");
+          haptic("medium"); showToast("Approved ✓", "success");
           await afterMutation(b.id, { status: "confirmed" });
-        } catch (e) { showToast("မအောင်မြင်: " + e.message, "fail"); }
+        } catch (e) { showToast("Failed: " + e.message, "fail"); }
         finally { busy.value = null; }
       }
       async function doCheckin(b) {
-        const okc = await confirmBox("Check-in လုပ်မလား?", "BK#" + b.id + " ဖောက်သည် ရောက်ရှိကြောင်း မှတ်မယ် (ကစားချိန် မစသေးပါ)။", "Check-in", "မလုပ်");
+        const okc = await confirmBox("Check in?", "Mark BK#" + b.id + " as arrived (play time has not started yet).", "Check-in", "Cancel");
         if (!okc) return;
         busy.value = b.id;
         try {
           await PSV.api("/api/bookings/checkin", { method: "POST", headers: HJSON, body: JSON.stringify({ id: b.id, staff_name: psvStaffName() }) });
-          haptic("medium"); showToast("Check-in ပြီး 🎟", "success");
+          haptic("medium"); showToast("Checked in 🎟", "success");
           await afterMutation(b.id, { status: "checked_in" });
-        } catch (e) { showToast("မအောင်မြင်: " + e.message, "fail"); }
+        } catch (e) { showToast("Failed: " + e.message, "fail"); }
         finally { busy.value = null; }
       }
       async function doVerify(b) {
         const amt = Number(b.deposit_amount) || 0;
-        const okc = await confirmBox("Deposit စစ်ဆေးမလား?", "BK#" + b.id + " · " + amt.toLocaleString() + " Ks (" + (b.deposit_method || "").toUpperCase() + ")။ Verified လုပ်ပြီး Booking ကို Confirmed လုပ်မယ်။ ငွေဝင်စာရင်း (cash inject) ဖြစ်မယ်။", "Verified", "မလုပ်");
+        const okc = await confirmBox("Verify deposit?", "BK#" + b.id + " · " + amt.toLocaleString() + " Ks (" + (b.deposit_method || "").toUpperCase() + "). This marks it Verified, confirms the booking and records a cash injection.", "Verified", "Cancel");
         if (!okc) return;
         busy.value = b.id;
         try {
           await PSV.api("/api/bookings/" + b.id + "/deposit/verify", { method: "PATCH", headers: HJSON, body: JSON.stringify({ verified_by: psvStaffName() }) });
-          haptic("medium"); showToast("Deposit စစ်ပြီး 💰", "success");
+          haptic("medium"); showToast("Deposit verified 💰", "success");
           await afterMutation(b.id, { deposit_status: "verified", status: "confirmed" });
-        } catch (e) { showToast("မအောင်မြင်: " + e.message, "fail"); }
+        } catch (e) { showToast("Failed: " + e.message, "fail"); }
         finally { busy.value = null; }
       }
       async function doRedeem(b) {
         try {
           const d = PSV.unwrap(await PSV.api("/api/bookings/" + b.id + "/deposit/pre-redeem", { method: "POST" }));
           const amt = Number((d && d.deposit_amount) || 0);
-          if (!amt) { showToast("Verified deposit မရှိပါ", "warning"); return; }
+          if (!amt) { showToast("No verified deposit", "warning"); return; }
           try { PSV.pendingDepositRedeem = { booking_id: b.id, amount: amt, method: (d && d.deposit_method) || "", ts: Date.now() }; } catch (_e) {}
           haptic("light");
-          showToast("Deposit " + amt.toLocaleString() + " Ks — Sale မှာ ချိတ်ဆက်ထားပြီ", "success");
+          showToast("Deposit " + amt.toLocaleString() + " Ks — linked to the sale", "success");
           detailOpen.value = false;
           router.push("/sales");
-        } catch (e) { showToast("မအောင်မြင်: " + e.message, "fail"); }
+        } catch (e) { showToast("Failed: " + e.message, "fail"); }
       }
       function showProof(b) {
         const ref = depRef(b);
-        if (!ref) { showToast("Proof ref မရှိသေးပါ — API မှ deposit_ref မပေးသေး", "warning"); return; }
-        proof.ref = ref;
-        proof.isImg = /^https?:\/\//i.test(ref) || /\.(png|jpe?g|webp|gif)$/i.test(ref);
+        // New booking objects carry can_view_proof; when false the ref is redacted.
+        const canView = (b.can_view_proof == null) ? !!ref : !!b.can_view_proof;
         proof.booking_id = b.id;
+        if (!canView || !ref) { proof.ref = ""; proof.isImg = false; proof.restricted = true; proofOpen.value = true; haptic("light"); return; }
+        proof.ref = ref;
+        const rtype = String(b.deposit_ref_type || "").toLowerCase();
+        proof.isImg = rtype === "image" || rtype === "both" || (!rtype && (/^https?:\/\//i.test(ref) || /\.(png|jpe?g|webp|gif)$/i.test(ref)));
+        proof.restricted = false;
         proofOpen.value = true;
+        haptic("light");
       }
 
       function openReason(mode, b) { reasonMode.value = mode; reasonPick.value = ""; reasonNote.value = ""; reasonTarget.value = b; reasonOpen.value = true; haptic("light"); }
@@ -1942,22 +1992,22 @@
         reasonOpen.value = false;
         const isReject = reasonMode.value === "reject";
         const conseq = isReject
-          ? "BK#" + b.id + " ကို ငြင်းပယ်မယ် · ဖောက်သည်ကို အသိပေးမယ် · Paid deposit ရှိရင် ပြန်အမ်းရန် လိုအပ်နိုင်တယ်။"
-          : "BK#" + b.id + " ကို ဖျက်မယ် · ဖောက်သည်ကို အသိပေးမယ် · Verified deposit ရှိရင် ပြန်မအမ်းဘဲ forfeit ဖြစ်မယ် (ဘောက်ချာ မရ)။";
-        const okc = await confirmBox(isReject ? "ငြင်းပယ်မလား?" : "Booking ဖျက်မလား?", conseq + " အကြောင်းရင်း: " + label, isReject ? "ငြင်းပယ်" : "ဖျက်", "မလုပ်", true);
+          ? "This will reject BK#" + b.id + " and notify the customer. Any paid deposit may need a refund."
+          : "This will cancel BK#" + b.id + " and notify the customer. A verified deposit is forfeited (no voucher).";
+        const okc = await confirmBox(isReject ? "Reject booking?" : "Cancel booking?", conseq + " Reason: " + label, isReject ? "Reject" : "Cancel", "Back", true);
         if (!okc) return;
         busy.value = b.id;
         try {
           if (isReject) {
             await PSV.api("/api/bookings/" + b.id + "/status", { method: "PATCH", headers: HJSON, body: JSON.stringify({ status: "rejected", staffNote: label, staffName: psvStaffName() }) });
-            showToast("ငြင်းပယ်ပြီး ❌", "success");
+            showToast("Rejected ❌", "success");
             await afterMutation(b.id, { status: "rejected" });
           } else {
-            await PSV.api("/api/bookings/cancel", { method: "POST", headers: HJSON, body: JSON.stringify({ id: b.id, reason: label }) });
-            showToast("ဖျက်ပြီး ⛔", "success");
+            await PSV.api("/api/bookings/cancel", { method: "POST", headers: HJSON, body: JSON.stringify({ id: b.id, booking_id: b.id, reason: label, staff_name: psvStaffName() }) });
+            showToast("Cancelled ⛔", "success");
             await afterMutation(b.id, { status: "cancelled" });
           }
-        } catch (e) { showToast("မအောင်မြင်: " + e.message, "fail"); }
+        } catch (e) { showToast("Failed: " + e.message, "fail"); }
         finally { busy.value = null; }
       }
 
@@ -2114,7 +2164,7 @@
   };
 
   // ── VIEW: More — category-organized staff menu (WAVE 1) ──
-  // App mode: bilingual, category sections, roadmap items greyed "နောက် pass".
+  // App mode: English-only, category sections, roadmap items greyed "Soon".
   // Telegram mode: unchanged legacy grid (MORE_ITEMS) — no visual regression.
   const MORE_ITEMS = [
     { path: "/consoles", icon: "🕹️", label: "Consoles" },
@@ -2131,61 +2181,61 @@
     { path: "/notifications", icon: "🔔", label: "Alerts" },
   ];
   const MENU_GROUPS = [
-    { id: "sales", emoji: "🎮", my: "အရောင်း", en: "Sales", tone: "gold", items: [
-      { my: "အရောင်းတင်ရန်", en: "New walk-in sale", icon: "🛒", path: "/sales" },
-      { my: "Session ပြီးအရောင်း", en: "End-of-session sale", icon: "🎫", path: "/sales" },
-      { my: "အစားအသောက် အရောင်း", en: "Food & drink sale", icon: "🍔", path: "/food-orders" },
-      { my: "အစားအသောက် စာရင်း", en: "Food menu list", icon: "🍜", path: "/food" },
-      { my: "Discount / Promo", en: "View promotions", icon: "🏷️", path: "/promotions" },
-      { my: "Coupon", en: "Validate & redeem coupon", icon: "🎟️", path: "/sales" },
+    { id: "sales", emoji: "🎮", en: "Sales", tone: "gold", items: [
+      { en: "New walk-in sale", sub: "Open the sale form", icon: "🛒", path: "/sales" },
+      { en: "End-of-session sale", sub: "Check out a console session", icon: "🎫", path: "/sales" },
+      { en: "Food & drink sale", sub: "Sell food without game time", icon: "🍔", path: "/food-orders" },
+      { en: "Food menu list", sub: "Browse the food menu", icon: "🍜", path: "/food" },
+      { en: "Discount / Promo", sub: "View active promotions", icon: "🏷️", path: "/promotions" },
+      { en: "Coupon", sub: "Validate & redeem a coupon", icon: "🎟️", path: "/sales" },
     ] },
-    { id: "booking", emoji: "📅", my: "Booking", en: "Bookings", tone: "warn", items: [
-      { my: "ဒီနေ့ Booking စာရင်း", en: "Today's bookings", icon: "📋", path: "/bookings" },
-      { my: "အတည်ပြု / ငြင်းပယ်", en: "Approve or reject", icon: "✅", path: "/bookings" },
-      { my: "Check-in", en: "Customer arrived", icon: "🎟️", path: "/bookings" },
-      { my: "Booking ဖျက်", en: "Cancel a booking", icon: "⛔", path: "/bookings" },
-      { my: "Deposit စစ်ရန်", en: "Verify deposit", icon: "💰", path: "/bookings" },
-      { my: "Reminder", en: "Booking reminders", icon: "🔔", path: "/notifications" },
+    { id: "booking", emoji: "📅", en: "Bookings", tone: "warn", items: [
+      { en: "Today's bookings", sub: "All bookings for today", icon: "📋", path: "/bookings" },
+      { en: "Approve or reject", sub: "Process pending bookings", icon: "✅", path: "/bookings" },
+      { en: "Check-in", sub: "Mark customer as arrived", icon: "🎟️", path: "/bookings" },
+      { en: "Cancel a booking", sub: "Cancel with a reason", icon: "⛔", path: "/bookings" },
+      { en: "Verify deposit", sub: "Confirm a deposit payment", icon: "💰", path: "/bookings" },
+      { en: "Reminders", sub: "Booking reminders", icon: "🔔", path: "/notifications" },
     ] },
-    { id: "sessions", emoji: "🖥", my: "Session / Console", en: "Sessions & consoles", tone: "indigo", items: [
-      { my: "အလုပ်လုပ်နေတဲ့ Session များ", en: "Live sessions", icon: "🖥", path: "/consoles" },
-      { my: "အချိန်တိုး", en: "Extend session", icon: "⏱", path: "/consoles" },
-      { my: "Session ပိတ်", en: "End session", icon: "⏹", path: "/consoles" },
-      { my: "ဂိမ်းစာရင်း", en: "Game library", icon: "🎮", path: "/games" },
-      { my: "Console ပြောင်း (Move)", en: "Move session to another console", icon: "🔀", tag: "နောက် pass" },
-      { my: "Session လဲ (Swap)", en: "Swap two sessions", icon: "🔁", tag: "နောက် pass" },
+    { id: "sessions", emoji: "🖥", en: "Sessions & consoles", tone: "indigo", items: [
+      { en: "Live sessions", sub: "Consoles in use", icon: "🖥", path: "/consoles" },
+      { en: "Extend session", sub: "Add more minutes", icon: "⏱", path: "/consoles" },
+      { en: "End session", sub: "Close a session", icon: "⏹", path: "/consoles" },
+      { en: "Game library", sub: "Installed games", icon: "🎮", path: "/games" },
+      { en: "Move session", sub: "Move a session to another console", icon: "🔀", path: "/sessions" },
+      { en: "Swap sessions", sub: "Swap two sessions", icon: "🔁", path: "/sessions" },
     ] },
-    { id: "member", emoji: "👥", my: "အဖွဲ့ဝင်", en: "Members", tone: "teal", items: [
-      { my: "အဖွဲ့ဝင် ရှာရန်", en: "Find a member", icon: "🔍", path: "/members" },
-      { my: "အဖွဲ့ဝင် အသစ်ဖွင့်", en: "Register new member", icon: "➕", path: "/members/register" },
-      { my: "ငွေဖြည့် (Top-up)", en: "Wallet top-up", icon: "💳", path: "/deposit" },
-      { my: "Gift / Free card", en: "PIN-gated free card", icon: "🎁", tag: "နောက် pass" },
-      { my: "Rank / Bonus", en: "Rank & bonus table", icon: "🏅", tag: "နောက် pass" },
-      { my: "ဖုန်းဆက်ရန်", en: "Call member", icon: "📞", tag: "နောက် pass" },
+    { id: "member", emoji: "👥", en: "Members", tone: "teal", items: [
+      { en: "Find a member", sub: "Search members", icon: "🔍", path: "/members" },
+      { en: "Register new member", sub: "Create a member", icon: "➕", path: "/members/register" },
+      { en: "Wallet top-up", sub: "Add credit / minutes", icon: "💳", path: "/deposit" },
+      { en: "Gift / Free card", sub: "Issue free minutes (owner PIN)", icon: "🎁", path: "/gift-card" },
+      { en: "Rank / Bonus", sub: "Rank & bonus table", icon: "🏅", path: "/rank-bonus" },
+      { en: "Call member", sub: "Call a member", icon: "📞", tag: "Soon" },
     ] },
-    { id: "inventory", emoji: "📦", my: "Inventory", en: "Stock", tone: "gold", items: [
-      { my: "Stock-in (ပစ္စည်းဝင်)", en: "Receive stock", icon: "📥", path: "/inventory" },
-      { my: "Stock-out (ပစ္စည်းထုတ်)", en: "Manual stock-out", icon: "📤", tag: "နောက် pass" },
-      { my: "ကုန်နီးပါး Alert", en: "Low-stock alerts", icon: "⚠️", tag: "နောက် pass" },
-      { my: "Stock check", en: "Stock reconcile", icon: "🧮", tag: "နောက် pass" },
+    { id: "inventory", emoji: "📦", en: "Inventory", tone: "gold", items: [
+      { en: "Stock-in", sub: "Receive stock", icon: "📥", path: "/inventory" },
+      { en: "Stock-out", sub: "Manual stock-out", icon: "📤", path: "/stock-out" },
+      { en: "Low-stock alerts", sub: "Items running low", icon: "⚠️", path: "/stock-alerts" },
+      { en: "Stock check", sub: "Reconcile stock", icon: "🧮", path: "/stock-check" },
     ] },
-    { id: "print", emoji: "🖨", my: "Print", en: "Printing", tone: "indigo", items: [
-      { my: "ဘောက်ချာ ရိုက်ရန်", en: "Print voucher", icon: "🧾", path: "/print" },
-      { my: "စမ်းသပ် Print", en: "Test print", icon: "🖨", path: "/print" },
-      { my: "Top-up ပြေစာ", en: "Top-up receipt", icon: "📃", path: "/deposit" },
+    { id: "print", emoji: "🖨", en: "Printing", tone: "indigo", items: [
+      { en: "Print voucher", sub: "Print a sale voucher", icon: "🧾", path: "/print" },
+      { en: "Test print", sub: "Send a test page", icon: "🖨", path: "/print" },
+      { en: "Top-up receipt", sub: "Print a top-up receipt", icon: "📃", path: "/deposit" },
     ] },
-    { id: "report", emoji: "📊", my: "Report", en: "Reports", tone: "teal", items: [
-      { my: "ဒီနေ့ အနှစ်ချုပ်", en: "Today's summary", icon: "📊", path: "/reports" },
-      { my: "အသုံးစရိတ် (OPEX)", en: "Operating expenses", icon: "💸", path: "/opex" },
-      { my: "ငွေလက်ကျန်", en: "Account balance", icon: "🏦", tag: "နောက် pass" },
+    { id: "report", emoji: "📊", en: "Reports", tone: "teal", items: [
+      { en: "Today's summary", sub: "Daily totals", icon: "📊", path: "/reports" },
+      { en: "Operating expenses (OPEX)", sub: "Owner only", icon: "💸", tag: "Owner only" },
+      { en: "Account balance", sub: "Cash position (read-only)", icon: "🏦", path: "/balances" },
     ] },
-    { id: "me", emoji: "🕒", my: "Me / Staff", en: "Me & staff", tone: "dim", items: [
-      { my: "အလုပ်ချိန် (Attendance)", en: "Attendance in / out", icon: "🕐", path: "/attendance" },
-      { my: "လစာ ကြိုယူ", en: "Salary advance", icon: "💰", path: "/salary" },
-      { my: "ဝန်ထမ်းများ", en: "Staff list", icon: "👥", path: "/staff" },
-      { my: "သတိပေးချက်", en: "Notifications", icon: "🔔", path: "/notifications" },
-      { my: "ဆက်တင်", en: "Settings & profile", icon: "⚙️", path: "/me" },
-      { my: "ထွက်ရန် (Logout)", en: "Sign out", icon: "🚪", action: "logout" },
+    { id: "me", emoji: "🕒", en: "Me & staff", tone: "dim", items: [
+      { en: "Attendance in / out", sub: "Shift check-in", icon: "🕐", path: "/attendance" },
+      { en: "Salary advance", sub: "Owner-only request", icon: "💰", path: "/salary", tag: "Owner only" },
+      { en: "Staff list", sub: "View staff", icon: "👥", path: "/staff" },
+      { en: "Notifications", sub: "Alerts & reminders", icon: "🔔", path: "/notifications" },
+      { en: "Settings & profile", sub: "Account settings", icon: "⚙️", path: "/me" },
+      { en: "Sign out", sub: "Log out of the app", icon: "🚪", action: "logout" },
     ] },
   ];
 
@@ -2202,36 +2252,47 @@
         <div v-for="g in groups" :key="g.id" class="psv-menu-group" :class="'psv-tone-' + g.tone">
           <div class="psv-menu-head">
             <span class="psv-menu-head__ico">{{ g.emoji }}</span>
-            <span class="psv-menu-head__my">{{ g.my }}</span>
-            <span class="psv-menu-head__en">{{ g.en }}</span>
+            <span class="psv-menu-head__my">{{ g.en }}</span>
           </div>
           <div class="psv-card psv-list psv-menu-list">
-            <div v-for="it in g.items" :key="it.my" class="psv-menu-item" :class="{ 'is-soon': it.tag }" @click="tap(it)">
+            <div v-for="it in g.items" :key="it.en" class="psv-menu-item" :class="{ 'is-soon': it.tag }" @click="tap(it)">
               <span class="psv-menu-item__ico">{{ it.icon }}</span>
               <div class="psv-menu-item__main">
-                <div class="psv-menu-item__my">{{ it.my }}</div>
-                <div class="psv-menu-item__en">{{ it.en }}</div>
+                <div class="psv-menu-item__my">{{ it.en }}</div>
+                <div class="psv-menu-item__en">{{ it.sub }}</div>
               </div>
+              <span v-if="badge(it)" class="psv-menu-badge">{{ badge(it) > 99 ? '99+' : badge(it) }}</span>
               <span v-if="it.tag" class="psv-soon">{{ it.tag }}</span>
               <van-icon v-else name="arrow" />
             </div>
           </div>
         </div>
-        <button class="psv-btn psv-btn--danger psv-btn--block" @click="logout">🚪 ထွက်ရန် (Logout)</button>
+        <button class="psv-btn psv-btn--danger psv-btn--block" @click="logout">🚪 Log out</button>
         <div class="psv-foot">PS VIBE Staff · Play The Game. Share The VIBE!</div>
       </div>
     `,
     setup() {
       const staff = PSV.getStaff() || {};
       const initials = String(staff.name || "?").trim().slice(0, 2).toUpperCase();
+      // WAVE 3: live low-stock count drives the badge on the "Low-stock alerts" row.
+      const lowStock = ref(0);
+      async function loadBadges() {
+        try {
+          const arr = PSV.unwrap(await PSV.api("/api/dashboard/inventory/alerts"));
+          lowStock.value = Array.isArray(arr) ? arr.length : Number((arr && arr.total) || 0);
+        } catch (_e) { lowStock.value = 0; }
+      }
+      onMounted(loadBadges);
+      function badge(it) { return (it.path === "/stock-alerts" && lowStock.value > 0) ? lowStock.value : 0; }
       function tap(it) {
         haptic("light");
-        if (it.tag) { showToast("⏳ " + it.my + " — နောက် pass မှာ လာမယ်", "text"); return; }
         if (it.action === "logout") { logout(); return; }
-        if (it.path) router.push(it.path);
+        if (it.path) { router.push(it.path); return; }
+        if (it.tag === "Owner only") { showToast("🔒 " + it.en + " — owner only, ask an admin", "text"); return; }
+        if (it.tag) { showToast("⏳ " + it.en + " — coming soon", "text"); return; }
       }
-      function logout() { haptic("medium"); PSV.logout(); showToast("ထွက်ပြီးပါပြီ", "success"); }
-      return { groups: MENU_GROUPS, staff, initials, tap, logout };
+      function logout() { haptic("medium"); PSV.logout(); showToast("Signed out", "success"); }
+      return { groups: MENU_GROUPS, staff, initials, tap, logout, badge, lowStock };
     },
   };
 
@@ -2239,7 +2300,7 @@
     components: { PageHeader, MoreMenu },
     template: `
       <div class="pv-page psv-menu">
-        <PageHeader :title="nativeMode ? 'မီနူး' : 'More'" />
+        <PageHeader :title="nativeMode ? 'Menu' : 'More'" />
         <MoreMenu v-if="nativeMode" />
         <div v-else class="pv-more">
           <div class="pv-action" v-for="it in items" :key="it.path" @click="go(it.path)">
@@ -2330,12 +2391,27 @@
             <van-empty v-if="!sessionFoodGroups.length" description="No food items" />
             <div v-if="foodSel.length" style="padding:10px 16px 0;display:flex;align-items:center;gap:8px">
               <span style="font-weight:600">🛒 Adding ({{ foodSel.length }})</span>
-              <span style="color:var(--pv-muted);font-size:12px;flex:1">qty ကို ရွေးပြီး Save နှိပ်ပါ — အရင်မှာထားတာတွေ မထိဘဲ ထပ်ထည့်ပါမယ်</span>
+              <span style="color:var(--pv-muted);font-size:12px;flex:1">Pick quantities then tap Save — existing items are kept and these are added</span>
               <span style="font-weight:700;color:var(--pv-primary)">{{ fKs(foodSel.reduce((s,x)=>s+(Number(x.qty)||0)*(Number(x.price)||0),0)) }} Ks</span>
             </div>
             <div style="padding:14px 16px;display:flex;gap:8px">
               <van-button block plain @click="foodShow=false">Cancel</van-button>
               <van-button block type="primary" :loading="foodSaving" :disabled="!foodSel.length" @click="saveSessionFood">{{ foodSel.length ? ('Add ' + foodSel.length + ' item(s)') : 'Select items to add' }}</van-button>
+            </div>
+          </div>
+        </van-popup>
+
+        <!-- 🔀 Move / 🔁 Swap session -->
+        <van-popup v-model:show="xsess.show" position="bottom" round style="max-height:70vh">
+          <div style="max-height:70vh;overflow:auto;padding:12px 0 20px">
+            <div class="psv-sheet-title" style="padding:0 16px">{{ xsess.mode === 'move' ? '🔀 Move session to console' : '🔁 Swap with session' }}</div>
+            <van-empty v-if="!xsess.options.length" :description="xsess.mode === 'move' ? 'No other consoles' : 'No other active sessions'" />
+            <div v-for="o in xsess.options" :key="o.console_id || o.id" class="psv-list-row" style="padding:12px 16px" @click="xsess.mode === 'move' ? doMove(o) : doSwap(o)">
+              <div class="psv-list-row__main">
+                <div class="psv-list-row__title">{{ o.console_id || o.id }}</div>
+                <div class="psv-list-row__sub">{{ o.status || '-' }}<template v-if="o.current_member || o.customer_name"> · {{ o.current_member || o.customer_name }}</template></div>
+              </div>
+              <van-icon name="arrow" />
             </div>
           </div>
         </van-popup>
@@ -2388,6 +2464,8 @@
         } else if (st === "active" && hasBooking) {
           actions.push({ name: "🍔 Food Order", value: "food", color: "#ff976a" });
           actions.push({ name: "⏱ Extend Session", value: "extend", color: "#1989fa" });
+          actions.push({ name: "🔀 Move to console", value: "move", color: "#1989fa" });
+          actions.push({ name: "🔁 Swap with session", value: "swap", color: "#1989fa" });
           actions.push({ name: "⏹ End Session", value: "end", color: "#ee0a24" });
         }
         if (!actions.length) {
@@ -2416,9 +2494,45 @@
           extendDlg.show = true;
         } else if (action.value === "food") {
           openSessionFood(c);
+        } else if (action.value === "move") {
+          openMove(c);
+        } else if (action.value === "swap") {
+          openSwap(c);
         } else if (action.value === "end") {
           confirmEnd(c);
         }
+      }
+
+      // 🔀 Move / 🔁 Swap (Wave 2 contract). The server enforces overlap guards and
+      // returns a conflict message which we surface verbatim.
+      const xsess = reactive({ show: false, mode: "move", src: null, options: [] });
+      function openMove(c) {
+        xsess.mode = "move"; xsess.src = c;
+        const cid = c.console_id || c.id;
+        xsess.options = list.value.filter((x) => (x.console_id || x.id) !== cid);
+        xsess.show = true; haptic("light");
+      }
+      function openSwap(c) {
+        xsess.mode = "swap"; xsess.src = c;
+        xsess.options = list.value.filter((x) => x.booking_id && x.booking_id !== c.booking_id && String(x.status || "").toLowerCase() === "active");
+        xsess.show = true; haptic("light");
+      }
+      async function doMove(target) {
+        const c = xsess.src; if (!c || !target) return;
+        const to = target.console_id || target.id;
+        xsess.show = false; haptic("medium");
+        try {
+          await PSV.api("/api/sessions/move", { method: "POST", headers: HJSON, body: JSON.stringify({ booking_id: c.booking_id, to_console_id: to }) });
+          showToast("Moved to " + to, "success"); load();
+        } catch (e) { showToast(e.message || "Move failed", "fail"); }
+      }
+      async function doSwap(target) {
+        const c = xsess.src; if (!c || !target) return;
+        xsess.show = false; haptic("medium");
+        try {
+          await PSV.api("/api/sessions/swap", { method: "POST", headers: HJSON, body: JSON.stringify({ booking_id_1: c.booking_id, booking_id_2: target.booking_id }) });
+          showToast("Sessions swapped", "success"); load();
+        } catch (e) { showToast(e.message || "Swap failed", "fail"); }
       }
 
       // 🍔 Session Food Order (mirror sale bot cmd_session_food_order → food_cart by booking)
@@ -2447,7 +2561,7 @@
             const ex = PSV.unwrap(await PSV.api("/api/food-cart/booking/" + encodeURIComponent(bid)));
             const items = (ex && ex.items) || [];
             if (items && items.length) {
-              foodNote.value = "အရင်မှာထားပြီးသား " + items.length + " items ရှိ — ထပ်ထည့်ချင်တာတွေ ရွေးပြီး Save နှိပ်ပါ";
+              foodNote.value = items.length + " items already ordered — pick more and tap Save to add";
             }
           } catch (ee) { /* existing count optional */ }
         }
@@ -2632,7 +2746,7 @@
         } catch (e) { showToast("Start failed: " + e.message, "fail"); }
       }
 
-      return { list, loading, refreshing, dotClass, isActive, fmtTime, load, sheetShow, sheetActions, openActions, onAction, startShow, startForm, startMemberPicker, startGamePicker, startMemberCols, startGameCols, startBind, endDlg, extendDlg, noop, submitStart, doEndSession, doExtend, loadStartOptions, pickStartMember, pickStartGame, bindCheckin, foodShow, foodConsole, foodNote, sessionFoodGroups, foodSel, sQty, sSetQty, foodSaving, saveSessionFood, openSessionFood, fKs };
+      return { list, loading, refreshing, dotClass, isActive, fmtTime, load, sheetShow, sheetActions, openActions, onAction, xsess, doMove, doSwap, startShow, startForm, startMemberPicker, startGamePicker, startMemberCols, startGameCols, startBind, endDlg, extendDlg, noop, submitStart, doEndSession, doExtend, loadStartOptions, pickStartMember, pickStartGame, bindCheckin, foodShow, foodConsole, foodNote, sessionFoodGroups, foodSel, sQty, sSetQty, foodSaving, saveSessionFood, openSessionFood, fKs };
     },
   };
 
@@ -2662,7 +2776,7 @@
         <van-popup v-model:show="editShow" position="bottom" round style="max-height:85vh">
           <div style="max-height:85vh;overflow:auto;padding:12px 0 20px">
             <div style="padding:0 16px 8px;font-weight:600">🍔 Food Order — {{ editTarget ? (editTarget.console_id + ' · ' + (editTarget.customer_name || 'Guest')) : '' }} <span style="color:var(--pv-muted);font-weight:400;font-size:12px">(charged at session end)</span></div>
-            <div style="padding:0 16px 8px;color:var(--pv-muted);font-size:12px">qty 0 ထားရင် ဖျက်ပါမယ် — Save နှိပ်ပါ</div>
+            <div style="padding:0 16px 8px;color:var(--pv-muted);font-size:12px">Set qty to 0 to remove an item — then tap Save</div>
             <van-cell-group inset style="margin-top:8px">
               <van-cell v-for="it in editSel" :key="it.name" center>
                 <template #title>
@@ -2674,7 +2788,7 @@
                 </template>
               </van-cell>
             </van-cell-group>
-            <van-empty v-if="!editSel.length" description="No items — Consoles ကနေ ထပ်ထည့်ပါ" />
+            <van-empty v-if="!editSel.length" description="No items — add more from Consoles" />
             <div v-if="editSel.length" style="padding:10px 16px 0;display:flex;align-items:center;gap:8px">
               <span style="font-weight:600">🛒 Total ({{ editSel.length }})</span>
               <span style="font-weight:700;color:var(--pv-primary);flex:1;text-align:right">{{ fKs(editSel.reduce((s,x)=>s+(Number(x.qty)||0)*(Number(x.price)||0),0)) }} Ks</span>
@@ -2856,26 +2970,53 @@
     components: { PageHeader },
     template: `
       <div class="pv-page">
-        <PageHeader title="Reports" back="/more" />
-        <van-cell-group inset style="margin-top:8px" v-if="stats">
-          <van-cell title="Today's Bookings" :value="String(stats.today_bookings ?? '-')" />
-          <van-cell title="Active Players" :value="String(stats.active_players ?? '-')" />
-          <van-cell title="Today's Revenue" :value="fKs(stats.today_revenue) + ' Ks'" />
-          <van-cell title="Total Members" :value="String(stats.total_members ?? '-')" />
-        </van-cell-group>
-        <van-empty v-else description="Data unavailable (dashboard login required)" />
+        <PageHeader title="Today's Summary" back="/more" />
+        <van-skeleton title :row="4" v-if="loading" style="margin:12px" />
+        <template v-else>
+          <div v-if="!stats" class="psv-empty">Summary unavailable — pull to refresh</div>
+          <template v-else>
+            <van-cell-group inset title="Totals" style="margin-top:8px">
+              <van-cell title="Sales total" :value="fKs(stats.today_revenue) + ' Ks'" />
+              <van-cell title="Food & drink" :value="fKs(foodTotal) + ' Ks'" />
+              <van-cell title="Transactions" :value="String(stats.sales_count ?? '-') + ' · ' + String(stats.today_bookings ?? '-') + ' bookings'" />
+              <van-cell title="Active players" :value="String(stats.active_players ?? '-') + ' · ' + String(stats.total_members ?? '-') + ' members'" />
+            </van-cell-group>
+            <van-cell-group inset title="Per staff" style="margin-top:14px">
+              <van-cell v-for="s in byStaff" :key="s.staff_name" :title="s.staff_name || '—'" :label="s.count + ' sale(s) · food ' + fKs(s.food) + ' Ks'" :value="fKs(s.net) + ' Ks'" />
+              <van-cell v-if="!byStaff.length" title="No sales yet today" />
+            </van-cell-group>
+            <van-cell-group inset title="Low stock" style="margin-top:14px">
+              <van-cell v-for="a in lowStock" :key="a.id" :title="a.item_name" :label="'Qty ' + a.quantity + ' / reorder ' + a.reorder_level">
+                <template #value><van-tag :type="a.status === 'critical' ? 'danger' : 'warning'">{{ a.status }}</van-tag></template>
+              </van-cell>
+              <van-cell v-if="!lowStock.length" title="All good" label="No items below reorder level" />
+            </van-cell-group>
+            <div style="padding:14px 16px">
+              <van-button block plain type="primary" @click="openBalances">🏦 Account balances (read-only)</van-button>
+            </div>
+          </template>
+        </template>
       </div>
     `,
     setup() {
       const stats = ref(null);
+      const lowStock = ref([]);
+      const loading = ref(true);
+      const byStaff = computed(() => ((stats.value && stats.value.sales_by_staff) || []).slice());
+      const foodTotal = computed(() => byStaff.value.reduce((sum, s) => sum + (Number(s.food) || 0), 0));
+      function openBalances() { haptic("light"); router.push("/balances"); }
       async function load() {
-        try {
-          const d = PSV.unwrap(await PSV.api("/api/dashboard/stats"));
-          stats.value = d || null;
-        } catch (e) { stats.value = null; }
+        loading.value = true;
+        const [st, al] = await Promise.allSettled([
+          PSV.api("/api/dashboard/stats"),
+          PSV.api("/api/dashboard/inventory/alerts"),
+        ]);
+        stats.value = st.status === "fulfilled" ? (PSV.unwrap(st.value) || null) : null;
+        lowStock.value = al.status === "fulfilled" ? (PSV.unwrap(al.value) || []) : [];
+        loading.value = false;
       }
       onMounted(load);
-      return { stats, fKs };
+      return { stats, lowStock, loading, byStaff, foodTotal, openBalances, fKs };
     },
   };
 
@@ -2893,6 +3034,14 @@
           <van-button type="primary" block @click="checkin('Present')">Check-In</van-button>
           <van-button type="success" block @click="checkin('Late')">Late</van-button>
         </div>
+        <div style="display:flex;gap:10px;padding:10px 16px 0">
+          <van-button type="warning" block @click="checkout">Check-Out</van-button>
+          <van-button plain block @click="loadToday">Refresh</van-button>
+        </div>
+        <div class="psv-card psv-rows" style="margin-top:12px">
+          <div class="psv-row"><span>Today's status</span><b>{{ today.status || 'Not checked in' }}</b></div>
+          <div class="psv-row" v-if="today.check_in || today.check_out"><span>In / Out</span><b>{{ today.check_in || '-' }} / {{ today.check_out || '-' }}</b></div>
+        </div>
         <div style="padding:14px 16px">
           <van-button plain block @click="loadAdvances">View Salary Advances</van-button>
         </div>
@@ -2907,19 +3056,40 @@
       const staffName = ref(PSV.getStaff().name || "");
       const advances = ref([]);
       const advancesLoaded = ref(false);
+      const today = reactive({ status: "", check_in: "", check_out: "" });
+      function _applyRow(row) {
+        if (!row) { today.status = ""; today.check_in = ""; today.check_out = ""; return; }
+        today.status = row.status || "";
+        today.check_in = row.check_in ? String(row.check_in).slice(11, 16) : "";
+        today.check_out = row.check_out ? String(row.check_out).slice(11, 16) : "";
+      }
+      async function loadToday() {
+        try { const d = PSV.unwrap(await PSV.api("/api/attendance/today?staff_name=" + encodeURIComponent(staffName.value))); _applyRow(d && d.today); }
+        catch (_e) {}
+      }
       async function checkin(status) {
         haptic("medium");
         try {
-          await PSV.api("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staffName.value, status }) });
+          const d = PSV.unwrap(await PSV.api("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staffName.value, status }) }));
+          _applyRow(d && d.today);
           showToast("Checked in ✓", "success");
         } catch (e) { showToast("Error: " + e.message, "fail"); }
       }
+      async function checkout() {
+        haptic("medium");
+        try {
+          const d = PSV.unwrap(await PSV.api("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staffName.value, status: "check-out" }) }));
+          _applyRow(d && d.today);
+          showToast("Checked out ✓", "success");
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
+      }
+      onMounted(loadToday);
       async function loadAdvances() {
         try { const d = PSV.unwrap(await PSV.api("/api/fetch_salary_advances/" + month.value)); advances.value = (d && d.advances) || []; }
         catch (e) { advances.value = []; }
         advancesLoaded.value = true;
       }
-      return { month, staffName, advances, advancesLoaded, checkin, loadAdvances, fKs };
+      return { month, staffName, advances, advancesLoaded, today, checkin, checkout, loadToday, loadAdvances, fKs };
     },
   };
 
@@ -2929,7 +3099,7 @@
     template: `
       <div class="pv-page">
         <PageHeader title="OPEX" back="/more" />
-        <van-notice-bar wrapable text="OPEX requires dashboard login" left-icon="info-o" />
+        <van-notice-bar wrapable text="Owner only — OPEX is managed from the dashboard" left-icon="info-o" />
       </div>
     `,
     setup() { return {}; },
@@ -3088,10 +3258,473 @@
     template: `
       <div class="pv-page">
         <PageHeader title="Salary" back="/more" />
-        <van-notice-bar wrapable text="Salary/payroll requires dashboard login" left-icon="info-o" />
+        <van-skeleton title :row="3" v-if="loading" style="margin:12px" />
+        <template v-else>
+          <div v-if="ownerOnly" class="psv-owner-card">
+            <div class="psv-owner-card__ico">🔒</div>
+            <div class="psv-owner-card__t">Owner only</div>
+            <div class="psv-owner-card__s">Requesting or approving a salary advance needs the owner (admin) account. Ask an admin to action it from the dashboard.</div>
+            <div v-if="serverMsg" class="psv-owner-card__m">{{ serverMsg }}</div>
+          </div>
+          <template v-else>
+            <van-notice-bar wrapable text="Read-only — advances are settled by an admin" left-icon="info-o" />
+            <van-cell-group inset title="This month" style="margin-top:8px">
+              <van-cell v-for="a in advances" :key="a.advance_date + a.staff_name" :title="a.staff_name" :label="a.advance_date + ' · ' + (a.repayment_status || '')" :value="fKs(a.amount) + ' Ks'" />
+              <van-cell v-if="!advances.length" title="No advances this month" />
+            </van-cell-group>
+          </template>
+        </template>
       </div>
     `,
-    setup() { return {}; },
+    setup() {
+      const loading = ref(true);
+      const ownerOnly = ref(false);
+      const serverMsg = ref("");
+      const advances = ref([]);
+      async function load() {
+        loading.value = true;
+        try {
+          const d = PSV.unwrap(await PSV.api("/api/dashboard/salary/advances"));
+          advances.value = (d && (d.advances || d)) || [];
+          ownerOnly.value = false;
+        } catch (e) {
+          const msg = String((e && e.message) || "");
+          // 403 → owner-only; 401 → dashboard account required (same wall).
+          if (isOwnerBlock(e) || /401|unauthor|user not found/i.test(msg)) { ownerOnly.value = true; serverMsg.value = msg; }
+          else { ownerOnly.value = true; serverMsg.value = msg; }
+        } finally { loading.value = false; }
+      }
+      onMounted(load);
+      return { loading, ownerOnly, serverMsg, advances, fKs };
+    },
+  };
+
+  // ── VIEW: Sessions — Move / Swap (WAVE 3) ──────────────
+  // The server enforces the real guards (target must be Free for a move; both
+  // bookings Active for a swap) and returns success:false with a message. We
+  // flag busy destinations up front and surface the server refusal verbatim.
+  const SessionsTools = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Sessions" back="/more" />
+        <van-tabs v-model:active="tab" sticky>
+          <van-tab title="Move">
+            <van-pull-refresh v-model="refreshing" @refresh="load">
+              <van-skeleton title :row="3" v-if="loading" style="margin:12px" />
+              <van-empty v-else-if="!active.length" description="No live sessions" />
+              <van-cell-group v-else inset style="margin-top:8px">
+                <van-cell v-for="c in active" :key="cid(c)" :title="cid(c)" is-link @click="pickSource(c, 'move')">
+                  <template #label>{{ c.current_member || c.customer_name || 'Guest' }}<span v-if="c.current_game"> · {{ c.current_game }}</span></template>
+                </van-cell>
+              </van-cell-group>
+            </van-pull-refresh>
+            <div class="psv-note">Pick a live session, then a destination console. A busy destination is flagged and refused by the server.</div>
+          </van-tab>
+          <van-tab title="Swap">
+            <van-pull-refresh v-model="refreshing" @refresh="load">
+              <van-skeleton title :row="3" v-if="loading" style="margin:12px" />
+              <van-empty v-else-if="active.length < 2" description="Need at least two live sessions" />
+              <van-cell-group v-else inset style="margin-top:8px">
+                <van-cell v-for="c in active" :key="cid(c)" :title="cid(c)" is-link @click="pickSource(c, 'swap')">
+                  <template #label>{{ c.current_member || c.customer_name || 'Guest' }}<span v-if="c.current_game"> · {{ c.current_game }}</span></template>
+                </van-cell>
+              </van-cell-group>
+            </van-pull-refresh>
+            <div class="psv-note">Pick two live sessions to swap their consoles.</div>
+          </van-tab>
+        </van-tabs>
+
+        <van-popup v-model:show="pick" position="bottom" round style="max-height:75vh">
+          <div class="psv-sheet">
+            <div class="psv-sheet__handle"></div>
+            <div class="psv-sheet__body">
+              <div class="psv-sheet-title">{{ mode === 'move' ? '🔀 Move to console' : '🔁 Swap with session' }}</div>
+              <div class="psv-note" v-if="src">From {{ cid(src) }}<span v-if="src.current_member || src.customer_name"> · {{ src.current_member || src.customer_name }}</span></div>
+              <van-empty v-if="!targets.length" :description="mode === 'move' ? 'No other consoles' : 'No other live sessions'" />
+              <div v-for="t in targets" :key="cid(t)" class="psv-list-row" @click="choose(t)">
+                <div class="psv-list-row__main">
+                  <div class="psv-list-row__title">{{ cid(t) }}</div>
+                  <div class="psv-list-row__sub">{{ t.status || '-' }}<template v-if="t.current_member || t.customer_name"> · {{ t.current_member || t.customer_name }}</template></div>
+                </div>
+                <span v-if="mode === 'move' && !isFree(t)" class="psv-pill psv-pill--warn">busy</span>
+                <van-icon name="arrow" />
+              </div>
+            </div>
+          </div>
+        </van-popup>
+
+        <van-dialog v-model:show="conflict.show" title="Console busy" show-cancel-button confirm-button-text="Continue" @confirm="confirmGo">
+          <div style="padding:16px 16px 4px">{{ conflict.msg }}</div>
+        </van-dialog>
+      </div>
+    `,
+    setup() {
+      const tab = ref(0);
+      const list = ref([]);
+      const loading = ref(true);
+      const refreshing = ref(false);
+      const pick = ref(false);
+      const mode = ref("move");
+      const src = ref(null);
+      const targets = ref([]);
+      const conflict = reactive({ show: false, msg: "", pending: null });
+      function cid(c) { return c && (c.console_id || c.id); }
+      function isFree(c) { return String((c && c.status) || "").toLowerCase() === "free"; }
+      const active = computed(() => list.value.filter((c) => String(c.status || "").toLowerCase() === "active"));
+      async function load() {
+        loading.value = true;
+        try { const d = PSV.unwrap(await PSV.api("/api/fetch_console_status")); list.value = (d && d.consoles) || []; }
+        catch (e) { showToast("Load failed: " + e.message, "fail"); list.value = []; }
+        finally { loading.value = false; refreshing.value = false; }
+      }
+      onMounted(load);
+      function pickSource(c, m) {
+        haptic("light"); mode.value = m; src.value = c;
+        targets.value = m === "move"
+          ? list.value.filter((x) => cid(x) !== cid(c))
+          : active.value.filter((x) => cid(x) !== cid(c));
+        pick.value = true;
+      }
+      function choose(t) {
+        if (!src.value) return;
+        if (mode.value === "swap") { doSwap(t); return; }
+        if (!isFree(t)) {
+          conflict.msg = "Console " + cid(t) + " is " + (t.status || "busy") + ". The move will be refused by the server.";
+          conflict.pending = () => doMove(t);
+          conflict.show = true; haptic("medium"); return;
+        }
+        doMove(t);
+      }
+      function confirmGo() { const f = conflict.pending; conflict.pending = null; if (f) f(); }
+      async function doMove(t) {
+        pick.value = false; haptic("medium");
+        try {
+          asOk(await PSV.api("/api/sessions/move", { method: "POST", headers: HJSON, body: JSON.stringify({ booking_id: src.value.booking_id, to_console_id: cid(t) }) }));
+          showToast("Moved to " + cid(t) + " ✓", "success"); load();
+        } catch (e) { showToast(String(e.message || "Move failed"), "fail"); }
+      }
+      async function doSwap(t) {
+        pick.value = false; haptic("medium");
+        try {
+          asOk(await PSV.api("/api/sessions/swap", { method: "POST", headers: HJSON, body: JSON.stringify({ booking_id_1: src.value.booking_id, booking_id_2: t.booking_id }) }));
+          showToast("Sessions swapped ✓", "success"); load();
+        } catch (e) { showToast(String(e.message || "Swap failed"), "fail"); }
+      }
+      return { tab, loading, refreshing, pick, mode, src, targets, active, conflict, cid, isFree, pickSource, choose, confirmGo, load };
+    },
+  };
+
+  // ── VIEW: Stock-out — manual deduction (WAVE 3) ─────────
+  const StockOut = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Stock-out" back="/more" />
+        <div class="psv-pad">
+          <div class="psv-field-card">
+            <div class="psv-field-label">Item</div>
+            <div class="psv-field psv-field--tap" @click="openPicker">
+              <span v-if="item.id" class="psv-field__value">{{ item.item_name }} <span class="psv-field__sub">· {{ item.quantity }} in stock</span></span>
+              <span v-else class="psv-field__ph">Select an item…</span>
+              <van-icon name="arrow" />
+            </div>
+          </div>
+          <div class="psv-field-card">
+            <div class="psv-field-label">Quantity</div>
+            <input v-model.number="qty" class="psv-input" type="number" inputmode="numeric" placeholder="0" />
+          </div>
+          <div class="psv-field-card">
+            <div class="psv-field-label">Reason / note</div>
+            <input v-model="reason" class="psv-input" type="text" placeholder="e.g. damaged, staff meal" />
+          </div>
+          <div class="psv-card psv-receipt">
+            <div class="psv-row"><span>Item</span><b>{{ item.item_name || '—' }}</b></div>
+            <div class="psv-row"><span>Quantity</span><b>{{ Number(qty) || 0 }}</b></div>
+            <div class="psv-row"><span>Unit price</span><b class="psv-tabnum">{{ fKs(item.unit_price) }} Ks</b></div>
+            <div class="psv-row psv-receipt__total"><span>Value</span><b class="psv-tabnum">{{ fKs((Number(qty) || 0) * (Number(item.unit_price) || 0)) }} Ks</b></div>
+          </div>
+          <button class="psv-btn psv-btn--primary psv-btn--block" :disabled="busy || !item.id || !(Number(qty) > 0)" @click="submit">
+            <span v-if="!busy">Record stock-out</span><span v-else>Working…</span>
+          </button>
+        </div>
+        <van-popup v-model:show="picker" position="bottom" round style="max-height:70vh">
+          <div class="psv-sheet">
+            <div class="psv-sheet__handle"></div>
+            <van-search v-model="q" placeholder="Search item" />
+            <div class="psv-sheet__body">
+              <div v-if="!filtered.length" class="psv-empty">No items</div>
+              <div v-for="s in filtered" :key="s.id" class="psv-list-row" @click="pick(s)">
+                <div class="psv-list-row__main"><div class="psv-list-row__title">{{ s.item_name }}</div><div class="psv-list-row__sub">{{ s.category || '-' }} · {{ s.quantity }} in stock</div></div>
+                <van-icon name="arrow" />
+              </div>
+            </div>
+          </div>
+        </van-popup>
+      </div>
+    `,
+    setup() {
+      const picker = ref(false);
+      const q = ref("");
+      const stock = ref([]);
+      const item = reactive({ id: "", item_name: "", quantity: 0, unit_price: 0 });
+      const qty = ref(0);
+      const reason = ref("");
+      const busy = ref(false);
+      const filtered = computed(() => {
+        const s = q.value.trim().toLowerCase();
+        if (!s) return stock.value;
+        return stock.value.filter((x) => String(x.item_name || "").toLowerCase().includes(s));
+      });
+      async function openPicker() {
+        haptic("light"); picker.value = true;
+        if (!stock.value.length) {
+          try { const d = PSV.unwrap(await PSV.api("/api/dashboard/inventory")); stock.value = Array.isArray(d) ? d : ((d && d.items) || []); }
+          catch (e) { showToast("Load failed: " + e.message, "fail"); }
+        }
+      }
+      function pick(s) { item.id = s.id; item.item_name = s.item_name; item.quantity = Number(s.quantity) || 0; item.unit_price = Number(s.unit_price) || 0; picker.value = false; haptic("light"); }
+      async function submit() {
+        const n = Number(qty.value) || 0;
+        if (!item.id || n <= 0 || busy.value) return;
+        busy.value = true; haptic("medium");
+        try {
+          const r = asOk(await PSV.api("/api/dashboard/stock-out", { method: "POST", headers: HJSON, body: JSON.stringify({ item_id: item.id, quantity: n, unit_price: item.unit_price, notes: reason.value, staff_name: PSV.getStaff().name }) }));
+          const data = PSV.unwrap(r);
+          const nq = data && data.new_quantity;
+          showToast("Stock-out recorded ✓" + (nq != null ? (" · new qty " + nq) : ""), "success");
+          if (nq != null) item.quantity = nq;
+          qty.value = 0; reason.value = "";
+        } catch (e) { showToast(String(e.message || "Stock-out failed"), "fail"); }
+        finally { busy.value = false; }
+      }
+      return { picker, q, stock, item, qty, reason, busy, filtered, openPicker, pick, submit, fKs };
+    },
+  };
+
+  // ── VIEW: Low-stock alerts (WAVE 3) ─────────────────────
+  const StockAlerts = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Low-stock alerts" back="/more" />
+        <van-pull-refresh v-model="refreshing" @refresh="load">
+          <van-skeleton title :row="3" v-if="loading" style="margin:12px" />
+          <van-empty v-else-if="!list.length" description="No low-stock items" />
+          <van-cell-group v-else inset style="margin-top:8px">
+            <van-cell v-for="a in list" :key="a.id" :title="a.item_name" :label="'Qty ' + a.quantity + ' / reorder ' + a.reorder_level + ' · short ' + a.shortage">
+              <template #value><van-tag :type="a.status === 'critical' ? 'danger' : 'warning'">{{ a.status }}</van-tag></template>
+            </van-cell>
+          </van-cell-group>
+        </van-pull-refresh>
+      </div>
+    `,
+    setup() {
+      const list = ref([]); const loading = ref(true); const refreshing = ref(false);
+      async function load() {
+        loading.value = true;
+        try { const d = PSV.unwrap(await PSV.api("/api/dashboard/inventory/alerts")); list.value = Array.isArray(d) ? d : ((d && d.items) || []); }
+        catch (e) { showToast("Load failed: " + e.message, "fail"); list.value = []; }
+        finally { loading.value = false; refreshing.value = false; }
+      }
+      onMounted(load);
+      return { list, loading, refreshing, load };
+    },
+  };
+
+  // ── VIEW: Stock check — reconcile (WAVE 3) ──────────────
+  const StockCheck = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Stock check" back="/more" />
+        <van-skeleton title :row="4" v-if="loading" style="margin:12px" />
+        <template v-else>
+          <div class="psv-card psv-rows" style="margin-top:8px">
+            <div class="psv-row"><span>Date</span><b>{{ date }}</b></div>
+            <div class="psv-row"><span>Progress</span><b>{{ checked }} / {{ items.length }} ({{ pct }}%)</b></div>
+          </div>
+          <van-cell-group inset style="margin-top:10px">
+            <van-cell v-for="it in items" :key="it.item_name" center>
+              <template #title>
+                <span>{{ it.item_name }}</span>
+                <span class="psv-check__sys">sys {{ it.system_qty }}</span>
+                <span v-if="variance(it) !== null" class="psv-check__var" :class="variance(it) === 0 ? 'is-ok' : 'is-bad'">Δ {{ variance(it) }}</span>
+              </template>
+              <template #right-icon>
+                <input class="psv-check__in" type="number" inputmode="numeric" :value="entry(it)" placeholder="—" @input="setEntry(it, $event)" />
+              </template>
+            </van-cell>
+          </van-cell-group>
+          <div style="padding:14px 16px">
+            <button class="psv-btn psv-btn--primary psv-btn--block" :disabled="busy || !dirtyCount" @click="submit">
+              <span v-if="!busy">Save {{ dirtyCount }} count{{ dirtyCount === 1 ? '' : 's' }}</span><span v-else>Saving…</span>
+            </button>
+          </div>
+        </template>
+      </div>
+    `,
+    setup() {
+      const items = ref([]);
+      const loading = ref(true);
+      const busy = ref(false);
+      const date = ref("");
+      const counts = reactive({});
+      const entry = (it) => (counts[it.item_name] != null ? counts[it.item_name] : (it.actual_qty != null ? String(it.actual_qty) : ""));
+      const checked = computed(() => items.value.filter((it) => entry(it) !== "").length);
+      const pct = computed(() => items.value.length ? Math.round(checked.value / items.value.length * 100) : 0);
+      const dirtyCount = computed(() => Object.keys(counts).filter((k) => counts[k] !== "" && counts[k] != null).length);
+      function setEntry(it, e) { counts[it.item_name] = e.target.value; }
+      function variance(it) { const e = entry(it); if (e === "" || e == null) return null; return Number(it.system_qty) - Number(e); }
+      async function load() {
+        loading.value = true;
+        try { const d = PSV.unwrap(await PSV.api("/api/dashboard/stock-check")); items.value = (d && d.items) || []; date.value = (d && d.date) || PSV.todayMMT(); }
+        catch (e) { showToast("Load failed: " + e.message, "fail"); items.value = []; }
+        finally { loading.value = false; }
+      }
+      onMounted(load);
+      async function submit() {
+        const payload = [];
+        for (const name in counts) { const v = counts[name]; if (v === "" || v == null) continue; payload.push({ item_name: name, actual_qty: Number(v) }); }
+        if (!payload.length) { showToast("Enter at least one count", "warning"); return; }
+        busy.value = true; haptic("medium");
+        try {
+          asOk(await PSV.api("/api/dashboard/stock-check", { method: "POST", headers: HJSON, body: JSON.stringify({ date: date.value, items: payload, checked_by: PSV.getStaff().name }) }));
+          showToast("Saved " + payload.length + " count(s) ✓", "success");
+          Object.keys(counts).forEach((k) => delete counts[k]);
+          load();
+        } catch (e) { showToast(String(e.message || "Save failed"), "fail"); }
+        finally { busy.value = false; }
+      }
+      return { items, loading, busy, date, checked, pct, dirtyCount, entry, setEntry, variance, submit };
+    },
+  };
+
+  // ── VIEW: Account balances — read-only (WAVE 3) ────────
+  const Balances = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Account balances" back="/more" />
+        <van-skeleton title :row="4" v-if="loading" style="margin:12px" />
+        <template v-else>
+          <div v-if="err" class="psv-owner-card">
+            <div class="psv-owner-card__ico">🏦</div>
+            <div class="psv-owner-card__t">Unavailable</div>
+            <div class="psv-owner-card__s">{{ err }}</div>
+          </div>
+          <template v-else>
+            <div class="psv-readonly">🔒 Read-only — cash position shown for reference only</div>
+            <van-cell-group inset style="margin-top:8px">
+              <van-cell v-for="a in accounts" :key="a.key" :title="(a.icon ? a.icon + ' ' : '') + a.label" :label="a.type">
+                <template #value><span class="pv-amount">{{ fKs(a.balance) }} Ks</span></template>
+              </van-cell>
+              <van-cell v-if="!accounts.length" title="No accounts" />
+            </van-cell-group>
+          </template>
+        </template>
+      </div>
+    `,
+    setup() {
+      const accounts = ref([]); const loading = ref(true); const err = ref("");
+      async function load() {
+        loading.value = true;
+        // Staff-accessible read-only endpoint. NOT /api/dashboard/finance/balances —
+        // that returns 401 for staff and PSV.api then force-logs-out the whole app.
+        try { const d = PSV.unwrap(await PSV.api("/api/finance/account-balances")); const arr = [].concat((d && d.operating) || [], (d && d.capital) || []); accounts.value = arr.map((x) => ({ key: x.name, label: x.name, type: x.type || x.notes || "", balance: Number(x.balance) || 0 })); err.value = ""; }
+        catch (e) { accounts.value = []; const m = String((e && e.message) || ""); err.value = (isOwnerBlock(e) || /401|unauthor|user not found/i.test(m)) ? "Account balances need a dashboard (owner/staff) login." : m; }
+        finally { loading.value = false; }
+      }
+      onMounted(load);
+      return { accounts, loading, err, fKs };
+    },
+  };
+
+  // ── VIEW: Gift / Free card (WAVE 3) ─────────────────────
+  const GiftCard = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Gift / Free card" back="/more" />
+        <van-notice-bar wrapable text="Grants free minutes with no payment. Requires the owner PIN." left-icon="info-o" />
+        <van-cell-group inset style="margin-top:8px">
+          <van-field v-model="form.member_id" label="Member ID" placeholder="auto" />
+          <van-field v-model="form.name" label="Name" placeholder="Name" />
+          <van-field v-model="form.phone" label="Phone" type="tel" placeholder="09..." />
+          <van-field v-model.number="form.initial_mins" type="number" label="Free minutes" placeholder="0" />
+          <van-field v-model="form.pin" type="password" label="Owner PIN" placeholder="Enter owner PIN" autocomplete="off" />
+        </van-cell-group>
+        <div class="psv-note">A wrong PIN is rejected with 403 and nothing is created. The PIN is never logged or stored.</div>
+        <div style="padding:14px 16px">
+          <van-button type="primary" block :loading="busy" @click="submit">Issue gift card</van-button>
+        </div>
+      </div>
+    `,
+    setup() {
+      const form = reactive({ member_id: "", name: "", phone: "", initial_mins: 0, pin: "" });
+      const busy = ref(false);
+      async function nextId() { try { const id = PSV.unwrap(await PSV.api("/api/next_member_id")); if (id) form.member_id = String(id); } catch (_e) {} }
+      onMounted(nextId);
+      async function submit() {
+        busy.value = true; haptic("medium");
+        try {
+          // PIN lives only in this request body — never persisted or logged.
+          asOk(await PSV.api("/api/members/register", { method: "POST", headers: HJSON, body: JSON.stringify({ member_id: form.member_id, name: form.name, phone: form.phone, staff: PSV.getStaff().name, initial_mins: form.initial_mins, mins_added: form.initial_mins, amount: 0, is_gift: true, pin: form.pin }) }));
+          showToast("Gift card issued ✓ " + form.member_id, "success");
+          form.name = ""; form.phone = ""; form.initial_mins = 0; nextId();
+        } catch (e) {
+          const m = String((e && e.message) || "");
+          if (/pin|owner|403|not allowed/i.test(m)) showToast("Owner PIN required — wrong or missing PIN.", "fail");
+          else showToast(m || "Gift card failed", "fail");
+        }
+        finally { form.pin = ""; busy.value = false; }
+      }
+      return { form, busy, submit };
+    },
+  };
+
+  // ── VIEW: Rank / Bonus table (WAVE 3) ──────────────────
+  const RankBonus = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Rank / Bonus" back="/more" />
+        <van-skeleton title :row="4" v-if="loading" style="margin:12px" />
+        <template v-else>
+          <div class="psv-card psv-rows" style="margin-top:8px">
+            <div class="psv-row"><span>Master from</span><b class="psv-tabnum">{{ fKs(thresholds.master_threshold) }} Ks</b></div>
+            <div class="psv-row"><span>Immortal from</span><b class="psv-tabnum">{{ fKs(thresholds.immortal_threshold) }} Ks</b></div>
+          </div>
+          <div class="psv-table-wrap">
+            <table class="psv-table">
+              <thead><tr><th>Amount (Ks)</th><th>Warrior</th><th>Master</th><th>Immortal</th></tr></thead>
+              <tbody>
+                <tr v-for="r in rows" :key="r.threshold">
+                  <td class="psv-tabnum">{{ fKs(r.threshold) }}</td>
+                  <td class="psv-tabnum">{{ r.warrior_bonus }}</td>
+                  <td class="psv-tabnum">{{ r.master_bonus }}</td>
+                  <td class="psv-tabnum">{{ r.immortal_bonus }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="psv-note">Bonus minutes granted on top-up, by rank tier.</div>
+        </template>
+      </div>
+    `,
+    setup() {
+      const loading = ref(true); const rows = ref([]);
+      const thresholds = reactive({ master_threshold: 0, immortal_threshold: 0 });
+      async function load() {
+        loading.value = true;
+        const [b, t] = await Promise.allSettled([PSV.api("/api/fetch_bonus_table"), PSV.api("/api/fetch_rank_thresholds")]);
+        rows.value = b.status === "fulfilled" ? (PSV.unwrap(b.value) || []) : [];
+        if (t.status === "fulfilled") { const d = PSV.unwrap(t.value) || {}; thresholds.master_threshold = d.master_threshold || 0; thresholds.immortal_threshold = d.immortal_threshold || 0; }
+        loading.value = false;
+      }
+      onMounted(load);
+      return { loading, rows, thresholds, fKs };
+    },
   };
 
   // ── Registration + boot ─────────────────────────────────
@@ -3117,6 +3750,13 @@
     router.register("/promotions", Promotions);
     router.register("/salary", Salary);
     router.register("/notifications", NotificationsScreen);
+    router.register("/sessions", SessionsTools);
+    router.register("/stock-out", StockOut);
+    router.register("/stock-alerts", StockAlerts);
+    router.register("/stock-check", StockCheck);
+    router.register("/balances", Balances);
+    router.register("/gift-card", GiftCard);
+    router.register("/rank-bonus", RankBonus);
   }
 
   // ── VIEW: Standalone staff login (no Telegram context) ──
@@ -3227,7 +3867,7 @@
         <van-popup v-model:show="receiptOpen" position="bottom" round class="psv-sheet" :style="{ maxHeight: '90vh' }">
           <div class="psv-sheet__handle"></div>
           <div class="psv-sheet__body">
-            <div class="psv-sheet-title">🧾 Top-up ပြေစာ</div>
+            <div class="psv-sheet-title">🧾 Top-up Receipt</div>
             <div class="psv-paper">
               <img v-if="receiptPng" :src="receiptPng" alt="top-up receipt" class="psv-paper__img" />
               <div v-else class="psv-skeleton" style="height:300px"></div>
@@ -3243,8 +3883,8 @@
               <div class="psv-row"><span>Time</span><b>{{ receipt.time }}</b></div>
             </div>
             <div class="psv-btn-row">
-              <button class="psv-btn psv-btn--ghost" @click="receiptOpen = false">ပိတ်</button>
-              <button class="psv-btn psv-btn--primary" :disabled="printingReceipt" @click="printReceipt">{{ printingReceipt ? 'Printing…' : '🖨 ပြေစာ ရိုက်' }}</button>
+              <button class="psv-btn psv-btn--ghost" @click="receiptOpen = false">Close</button>
+              <button class="psv-btn psv-btn--primary" :disabled="printingReceipt" @click="printReceipt">{{ printingReceipt ? 'Printing…' : '🖨 Print receipt' }}</button>
             </div>
           </div>
         </van-popup>
@@ -3438,7 +4078,12 @@
           <div class="psv-card psv-rows">
             <div class="psv-row"><span>Today</span><b class="psv-tabnum">{{ fKs(summary.minsToday) }} mins</b></div>
             <div class="psv-row"><span>Sales today</span><b class="psv-tabnum">{{ summary.salesToday }}</b></div>
-            <div class="psv-row"><span>Status</span><b>{{ attendance.status }}</b></div>
+            <div class="psv-row"><span>Attendance</span><b>{{ attendance.status }}</b></div>
+            <div class="psv-row" v-if="attendance.check_in || attendance.check_out"><span>In / Out</span><b>{{ attendance.check_in || '-' }} / {{ attendance.check_out || '-' }}</b></div>
+          </div>
+          <div class="psv-btn-row">
+            <button class="psv-btn psv-btn--ghost" :disabled="attBusy || attendance.open" @click="checkIn">Check in</button>
+            <button class="psv-btn psv-btn--primary" :disabled="attBusy || !attendance.open" @click="checkOut">Check out</button>
           </div>
 
           <div class="psv-section-title">Settings</div>
@@ -3478,15 +4123,46 @@
       const appVersion = ref("1.0.0");
       const updateText = ref("Up to date");
       const summary = reactive({ minsToday: 0, salesToday: 0 });
-      const attendance = reactive({ status: "Not checked in" });
+      const attendance = reactive({ status: "Not checked in", check_in: "", check_out: "", open: false });
+      const attBusy = ref(false);
       function goPrint() { haptic("light"); router.push("/print"); }
       function goNotifications() { haptic("light"); router.push("/notifications"); }
+      // 🕐 Attendance: today's row + check-in / check-out (Wave 2 contract)
+      async function loadAttendance() {
+        try {
+          const d = PSV.unwrap(await PSV.api("/api/attendance/today?staff_name=" + encodeURIComponent(staff.name || "")));
+          const row = (d && d.today) || null;
+          if (!row) { attendance.status = "Not checked in"; attendance.check_in = ""; attendance.check_out = ""; attendance.open = false; return; }
+          const st = String(row.status || "").toLowerCase();
+          attendance.check_in = row.check_in ? String(row.check_in).slice(11, 16) : "";
+          attendance.check_out = row.check_out ? String(row.check_out).slice(11, 16) : "";
+          attendance.open = ["checked_in", "present", "late"].includes(st) && !row.check_out;
+          attendance.status = row.check_out ? "Checked out" : (st === "late" ? "Late" : (st === "checked_in" || st === "present" ? "Checked in" : (row.status || "-")));
+        } catch (_e) { /* attendance is best-effort */ }
+      }
+      async function checkIn() {
+        if (attBusy.value) return; attBusy.value = true; haptic("medium");
+        try {
+          await PSV.api("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staff.name, status: "Present" }) });
+          showToast("Checked in ✓", "success"); await loadAttendance();
+        } catch (e) { showToast("Check-in failed: " + e.message, "fail"); }
+        finally { attBusy.value = false; }
+      }
+      async function checkOut() {
+        if (attBusy.value) return; attBusy.value = true; haptic("medium");
+        try {
+          await PSV.api("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staff.name, status: "check-out" }) });
+          showToast("Checked out ✓", "success"); await loadAttendance();
+        } catch (e) { showToast("Check-out failed: " + e.message, "fail"); }
+        finally { attBusy.value = false; }
+      }
       function load() {
         try {
           const info = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.PSVShell;
           if (info && info.getAppInfo) { info.getAppInfo().then((a) => { if (a && a.versionName) appVersion.value = a.versionName; }).catch(() => {}); }
         } catch (_e) {}
         PSV.api("/api/sales/list-today").then((r) => { const d = PSV.unwrap(r); if (Array.isArray(d)) { summary.salesToday = d.length; summary.minsToday = d.reduce((a, x) => a + (Number(x.mins) || 0), 0); } }).catch(() => {});
+        loadAttendance();
       }
       async function checkUpdate() {
         try {
@@ -3499,7 +4175,7 @@
       function onNotify() { haptic("light"); showToast(notify.value ? "Notifications on" : "Notifications off", "success"); }
       function logout() { haptic("medium"); PSV.logout(); showToast("Logged out", "success"); }
       onMounted(load);
-      return { staff, initials, notify, appVersion, updateText, summary, attendance, goPrint, goNotifications, checkUpdate, onNotify, logout, fKs };
+      return { staff, initials, notify, appVersion, updateText, summary, attendance, attBusy, checkIn, checkOut, goPrint, goNotifications, checkUpdate, onNotify, logout, fKs };
     },
   };
 
@@ -3640,7 +4316,7 @@
           <van-tabbar-item name="/sales" icon="shopping-cart-o">Sale</van-tabbar-item>
           <van-tabbar-item name="/bookings" icon="calendar-o">Booking</van-tabbar-item>
           <van-tabbar-item name="/print" icon="printer">Print</van-tabbar-item>
-          <van-tabbar-item name="/more" icon="apps-o">မီနူး</van-tabbar-item>
+          <van-tabbar-item name="/more" icon="apps-o">Menu</van-tabbar-item>
         </van-tabbar>
       </div>
     `,
