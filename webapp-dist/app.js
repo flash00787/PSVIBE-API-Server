@@ -677,7 +677,7 @@
         <!-- 🏷️ Promotion + 🎟️ Coupon (WAVE 2 — discounting parity with the sale bot).
              MONEY RULE: the discounted total is ALWAYS computed by the server
              (POST /api/promotions/calc); the client only displays what it returns. -->
-        <div style="margin:10px 16px 0">
+        <div v-if="promos.length || promo.id || coupon.applied || coupon.code" style="margin:10px 16px 0">
           <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 10px">
             <span style="font-weight:600">🏷️ Promotion / 🎟️ Coupon</span>
             <span v-if="calcStatus === 'ok' && totalDiscountKs > 0" class="psv-verified">🛡 server verified</span>
