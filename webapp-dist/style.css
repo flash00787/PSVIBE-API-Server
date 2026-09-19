@@ -391,10 +391,10 @@ html, body {
 .psv-tl-empty__sub { margin-top: 6px; font-size: 12px; }
 .psv-tl-wrap { padding: 10px 0 6px; }
 .psv-tl-scroll { overflow: auto; max-height: calc(100vh - 300px); min-height: 220px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; border-top: 1px solid var(--pv-card-border); border-bottom: 1px solid var(--pv-card-border); background: var(--pv-card-bg); }
-.psv-tl-inner { display: grid; grid-template-columns: 120px 840px; width: 960px; }
+.psv-tl-inner { display: grid; grid-template-columns: 120px 960px; width: 1080px; }
 .psv-tl-corner { position: sticky; left: 0; top: 0; z-index: 4; background: var(--van-background-2); border-right: 1px solid var(--pv-card-border); border-bottom: 1px solid var(--pv-card-border); padding: 10px 6px; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--pv-muted); text-align: center; }
 .psv-tl-head-hours { position: sticky; top: 0; z-index: 3; display: flex; background: var(--van-background-2); border-bottom: 1px solid var(--pv-card-border); }
-.psv-tl-hour { width: 56px; flex: 0 0 56px; padding: 10px 0; text-align: center; font-size: 10.5px; font-weight: 700; color: var(--pv-muted); border-right: 1px solid var(--pv-card-border); }
+.psv-tl-hour { width: 64px; flex: 0 0 64px; padding: 10px 0; text-align: center; font-size: 10.5px; font-weight: 700; color: var(--pv-muted); border-right: 1px solid var(--pv-card-border); }
 .psv-tl-hour--end { font-size: 9.5px; border-right: 0; opacity: .8; }
 .psv-tl-label { position: sticky; left: 0; z-index: 2; background: var(--van-background-2); border-right: 1px solid var(--pv-card-border); border-bottom: 1px solid var(--pv-card-border); min-height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 4px; }
 .psv-tl-label__id { font-size: 12.5px; font-weight: 800; }
@@ -431,3 +431,7 @@ html, body {
 @keyframes psv-rlspin { to { transform: rotate(360deg); } }
 .psv-rl__title { font-size: 16px; font-weight: 800; }
 .psv-rl__sub { margin: 6px 0 16px; font-size: 12.5px; line-height: 1.5; color: var(--pv-muted); }
+
+/* WAVE 4 — narrow timeline blocks: keep the customer name, compact the time */
+.psv-tl-block.is-narrow { padding: 0 4px; }
+.psv-tl-block.is-narrow .psv-tl-block__time { font-size: 8.5px; }

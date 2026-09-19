@@ -575,7 +575,7 @@ html.psv-native .psv-tl-scroll { background: rgba(15,23,42,.55); border-color: v
 html.psv-native .psv-tl-corner { background: var(--pv-navy-800); border-color: var(--psv-border); color: var(--psv-text-dim); }
 html.psv-native .psv-tl-head-hours { background: var(--pv-navy-800); border-color: var(--psv-border); }
 html.psv-native .psv-tl-hour { border-color: var(--psv-border); color: var(--psv-text-dim); }
-html.psv-native .psv-tl-label { background: rgba(15,23,42,.92); border-color: var(--psv-border); }
+html.psv-native .psv-tl-label { background: #0f172a; border-color: var(--psv-border); }
 html.psv-native .psv-tl-label__id { color: var(--psv-text); }
 html.psv-native .psv-tl-track { border-color: var(--psv-border); }
 html.psv-native .psv-tl-gl { background: var(--psv-border); }
@@ -586,8 +586,12 @@ html.psv-native .psv-tl-block.is-pending { background: rgba(251,191,36,.26); col
 html.psv-native .psv-tl-block.is-confirmed { background: rgba(96,165,250,.26); color: #dbeafe; border-color: rgba(96,165,250,.55); }
 html.psv-native .psv-tl-block.is-checkedin { background: rgba(45,212,191,.26); color: #ccfbf1; border-color: rgba(45,212,191,.55); }
 html.psv-native .psv-tl-block.is-active { background: rgba(52,211,153,.30); color: #d1fae5; border-color: rgba(52,211,153,.6); }
-html.psv-native .psv-tl-block.is-done { background: rgba(148,163,184,.18); color: #b6c2d6; border-color: rgba(148,163,184,.35); opacity: .7; }
+html.psv-native .psv-tl-block.is-done { background: rgba(148,163,184,.16); color: #94a3b8; border-color: rgba(148,163,184,.30); opacity: .6; }
 
 html.psv-native .psv-rl__card { background: var(--pv-glass-2); border-color: var(--psv-border); box-shadow: var(--pv-shadow); backdrop-filter: blur(16px) saturate(120%); -webkit-backdrop-filter: blur(16px) saturate(120%); }
 html.psv-native .psv-rl__title { color: var(--psv-text); }
 html.psv-native .psv-rl__sub { color: var(--psv-text-dim); }
+
+/* WAVE 4 — active chip contrast on the dark premium canvas */
+html.psv-native .psv-chip--on { color: var(--psv-gold); background: rgba(240,180,41,.16); border-color: rgba(240,180,41,.5); }
+html.psv-native .psv-bk-hint { color: var(--psv-text-dim); }

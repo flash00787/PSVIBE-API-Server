@@ -1718,7 +1718,7 @@
   //  Tapping a block reuses the existing booking detail sheet (embedded mode
   //  emits `pick`; standalone mode deep-links into /bookings).
   // ══════════════════════════════════════════════════════════
-  const TL_OPEN_HOUR = 9, TL_CLOSE_HOUR = 23, TL_HOUR_W = 56;
+  const TL_OPEN_HOUR = 9, TL_CLOSE_HOUR = 23, TL_HOUR_W = 64;
   const TL_GRID_HOURS = (function () { const a = []; for (let h = TL_OPEN_HOUR; h < TL_CLOSE_HOUR; h++) a.push(h); return a; })();
   const TL_DEAD = ["cancelled", "canceled", "rejected", "no_show", "noshow", "no-show", "expired"];
   function tlMin(t) {
@@ -1805,9 +1805,9 @@
                   <div class="psv-tl-track">
                     <div class="psv-tl-gl" v-for="h in gridLines" :key="h" :style="{ left: hourPx(h) + 'px' }"></div>
                     <div v-if="showNow" class="psv-tl-now" :style="{ left: nowPx + 'px' }"></div>
-                    <button v-for="b in blocksOf(c.id)" :key="b.id" class="psv-tl-block" :class="'is-' + tone(b.status)" :style="blockStyle(b)" @click="pick(b)">
+                    <button v-for="b in blocksOf(c.id)" :key="b.id" class="psv-tl-block" :class="['is-' + tone(b.status), { 'is-narrow': isNarrow(b) }]" :style="blockStyle(b)" @click="pick(b)">
                       <span class="psv-tl-block__name">{{ b.customerName || b.memberId || 'Guest' }}</span>
-                      <span class="psv-tl-block__time">{{ range(b) }}</span>
+                      <span class="psv-tl-block__time">{{ blockTime(b) }}</span>
                     </button>
                   </div>
                 </template>
@@ -1876,6 +1876,18 @@
         const left = ((r.st - TL_OPEN_HOUR * 60) / 60) * TL_HOUR_W;
         const w = Math.max(((r.end - r.st) / 60) * TL_HOUR_W, 34);
         return { left: Math.max(left, 0) + "px", width: w + "px" };
+      }
+      function isNarrow(b) {
+        const r = minutesOf(b);
+        if (!r) return true;
+        return ((r.end - r.st) / 60) * TL_HOUR_W < 120;
+      }
+      function blockTime(b) {
+        const r = minutesOf(b);
+        if (!r) return "—";
+        if (isNarrow(b)) return tlFmt(r.st);
+        const openEnd = !(Number(b.durationMins) > 0) && tlMin(b.endTime) == null;
+        return tlFmt(r.st) + "–" + (openEnd ? "Open" : tlFmt(r.end));
       }
       function range(b) {
         const r = minutesOf(b);
@@ -1962,7 +1974,7 @@
       });
       return { embedded: props.embedded, refreshing, day, bookings, consoles, loading, err, scroller, gridHours, gridLines,
         isToday, isTomorrow, dayLabel, nowPx, showNow, openHourLabel, closeHourLabel,
-        hourPx, hourLabel, tone, blocksOf, blockStyle, range, utilOf, utilTone, pick, goToday, goTomorrow, step, load };
+        hourPx, hourLabel, tone, blocksOf, blockStyle, isNarrow, blockTime, range, utilOf, utilTone, pick, goToday, goTomorrow, step, load };
     },
   };
 
