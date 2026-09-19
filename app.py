@@ -58,6 +58,7 @@ from routes.reports import router as reports_router
 from routes.promotions import router as promotions_router
 from routes.tournament_routes import router as tournament_router
 from routes.telegram_webapp import router as telegram_webapp_router
+from routes.staff_app_routes import router as staff_app_router
 from dashboard_routes import router as dashboard_router
 from kora_cmds import router as kora_cmds_router
 from digest_routes import router as digest_router
@@ -320,6 +321,7 @@ app.include_router(reports_router)
 app.include_router(promotions_router)
 app.include_router(tournament_router)
 app.include_router(telegram_webapp_router)
+app.include_router(staff_app_router)
 
 # ── Config Cache ──
 _config_cache_data = None
@@ -739,6 +741,15 @@ try:
         if os.path.isdir(webapp_dir):
             app.mount("/webapp", _NoCacheStaticFiles(directory=webapp_dir, html=True), name="webapp_static")
             logger.info("Telegram Mini App mounted at /webapp")
+
+        # ═══════════════════════════════════════
+        #  STAFF APP (standalone Android/WebView)
+        #  Hosts the APK + download page + version.json at /staff-app/
+        # ═══════════════════════════════════════
+        staff_app_dir = os.path.join(os.path.dirname(__file__), "staff-app-dist")
+        if os.path.isdir(staff_app_dir):
+            app.mount("/staff-app", _NoCacheStaticFiles(directory=staff_app_dir, html=True), name="staff_app_static")
+            logger.info("PS VIBE Staff App mounted at /staff-app")
 
         # ═══ SEL Currency Exchange Dashboard ═══
         _sel_dash_dir = "/opt/kora-projects/sel_exchange/dashboard"

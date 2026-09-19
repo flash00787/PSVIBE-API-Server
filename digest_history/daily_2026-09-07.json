@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-09-07T05:55:32.058461Z",
+  "date": "2026-09-07",
+  "summary": {
+    "total_sales": {
+      "count": 1,
+      "gross": 9500.0,
+      "net": 9500.0
+    },
+    "total_topups": {
+      "count": 0,
+      "amount": 0.0,
+      "mins_added": 0
+    },
+    "active_sessions": 1,
+    "completed_sessions": 1,
+    "food_sales": {
+      "count": 0,
+      "total": 0.0
+    },
+    "new_members": 0,
+    "top_consoles": [
+      {
+        "console_id": "C-01",
+        "hours": 1.0
+      },
+      {
+        "console_id": "C-09",
+        "hours": 1.0
+      }
+    ],
+    "top_games": [
+      {
+        "game": "Any",
+        "sessions": 1
+      },
+      {
+        "game": "God of War Ragnarok",
+        "sessions": 1
+      },
+      {
+        "game": "GTA 5",
+        "sessions": 1
+      },
+      {
+        "game": "UFC 5",
+        "sessions": 1
+      }
+    ],
+    "revenue_by_payment": [
+      {
+        "method": "Cash:9500",
+        "count": 1,
+        "total": 9500.0
+      }
+    ]
+  },
+  "alerts": [
+    "🔴 1 active session(s) still running — check if any are stuck."
+  ],
+  "recommendations": [
+    "No food sales today — check if food sales are being recorded properly.",
+    "Top console (C-01) only had 1.0h — low utilization day."
+  ]
+}

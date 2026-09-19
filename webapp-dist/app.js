@@ -34,6 +34,11 @@
   const showToast = (msg, type) => PSV.toast(msg, type);
   const haptic = (t) => PSV.haptic(t);
   const fKs = (n) => PSV.fmtKs(n);
+
+  // ── Auth gate (standalone staff login) ──────────────────
+  // Telegram path is NEVER gated (initData drives auth). Only the standalone
+  // (no-initData) Android/WebView path shows the login screen.
+  const authGate = ref(false); // true → show LoginScreen
   // 24h "HH:MM" → 12h "hh:mm AM/PM" (00:00→12:00 AM, 12:00→12:00 PM, 13:00→01:00 PM)
   const fmt12h = (v) => {
     if (!v) return "";
@@ -115,8 +120,12 @@
           <div>
             <div class="pv-hello">Welcome 👋</div>
             <div class="pv-staff-name">{{ staffName }}</div>
+            <div v-if="webLogin" class="pv-account-role">{{ staffRole }}</div>
           </div>
-          <van-icon name="replay" size="22" @click="load" style="color:var(--pv-muted);cursor:pointer" />
+          <div style="display:flex;align-items:center;gap:14px">
+            <van-icon v-if="webLogin" name="revoke" size="20" @click="doLogout" style="color:var(--pv-danger);cursor:pointer" />
+            <van-icon name="replay" size="22" @click="load" style="color:var(--pv-muted);cursor:pointer" />
+          </div>
         </div>
 
         <van-skeleton title :row="3" v-if="loading" style="margin:12px 14px" />
@@ -188,6 +197,9 @@
     `,
     setup() {
       const staffName = ref(PSV.getStaff().name || "");
+      const webLogin = ref(PSV.usesWebLogin());
+      const staffRole = ref(PSV.getStaff().role || "");
+      function doLogout() { PSV.logout(); showToast("Logged out", "success"); }
       const loading = ref(true);
       const summary = reactive({ todayRevenue: 0, activeConsoles: 0, todaySales: 0, totalMembers: 0 });
       const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay"];
@@ -333,7 +345,7 @@
         loading.value = false;
       }
       onMounted(load);
-      return { staffName, loading, summary, fKs, go, load, topup, topupFiltered, topupTier, topupPaid, topupRemaining, topupPreview, calcTopupBonus, openTopup, pickTopup, confirmTopup, topupOpenPay, topupPickPay, topupConfirmSplit, topupRemoveSplit };
+      return { staffName, webLogin, staffRole, doLogout, loading, summary, fKs, go, load, topup, topupFiltered, topupTier, topupPaid, topupRemaining, topupPreview, calcTopupBonus, openTopup, pickTopup, confirmTopup, topupOpenPay, topupPickPay, topupConfirmSplit, topupRemoveSplit };
     },
   };
 
@@ -386,6 +398,9 @@
             <van-cell-group inset v-if="detailSale.notes" style="margin-top:10px" title="Notes">
               <van-cell :value="detailSale.notes" />
             </van-cell-group>
+            <div style="margin-top:16px">
+              <van-button block type="primary" :loading="printingDetail" @click="doPrintDetail">Print voucher</van-button>
+            </div>
           </div>
         </van-popup>
       </div>
@@ -404,6 +419,32 @@
         haptic("light");
       }
       function closeDetail() { detailOpen.value = false; }
+
+      const printingDetail = ref(false);
+      async function doPrintDetail() {
+        const s = detailSale.value; if (!s) return;
+        const items = [];
+        if (Number(s.amount)) items.push({ name: "🎮 Game time", qty: 1, price: Number(s.amount) });
+        const ft = Number(s.gross) - Number(s.amount);
+        if (ft > 0) {
+          let fi = s.notes || ""; const mm = /Food:\s*([^|]+)/.exec(fi); if (mm) fi = mm[1].trim();
+          items.push({ name: "🍜 " + (fi || "Food"), qty: 1, price: ft });
+        }
+        printingDetail.value = true;
+        try {
+          await PSV.printVoucher({
+            voucher_no: s.voucher_no || s.id,
+            date: s.sale_date || "",
+            time: s.sale_time || "",
+            staff: s.staff_name || "",
+            member: memberLabel.value,
+            items: items,
+            total: Number(s.net) || 0,
+            payment: s.payment_method || "",
+            notes: Number(s.discount) > 0 ? ("Discount " + fKs(s.discount) + " Ks") : "",
+          });
+        } finally { printingDetail.value = false; }
+      }
 
       const memberLabel = computed(() => {
         const s = detailSale.value; if (!s) return '-';
@@ -470,7 +511,7 @@
         return lines.join('\n');
       }
       return { tab, today, loadingToday, refreshing, fKs, loadToday, onSaved, labelFor,
-               detailSale, detailOpen, openDetail, closeDetail, memberLabel, memberNameLabel, foodTotal, foodLabel };
+               detailSale, detailOpen, openDetail, closeDetail, memberLabel, memberNameLabel, foodTotal, foodLabel, printingDetail, doPrintDetail };
     },
   };
 
@@ -620,6 +661,40 @@
             </div>
           </div>
         </van-popup>
+
+        <!-- 🧾 Sale complete — voucher preview + 80mm print -->
+        <van-popup v-model:show="voucherOpen" position="bottom" round closeable :style="{ maxHeight: '86vh' }">
+          <div v-if="lastVoucher" style="padding:18px 16px 24px">
+            <div style="text-align:center;margin-bottom:8px">
+              <div style="font-size:20px;font-weight:800">PS VIBE</div>
+              <div style="font-size:11px;color:var(--pv-muted)">Sale Complete ✓</div>
+            </div>
+            <van-cell-group inset>
+              <van-cell title="Voucher" :value="lastVoucher.voucher_no" />
+              <van-cell title="Date / Time" :value="lastVoucher.date + ' ' + lastVoucher.time" />
+              <van-cell title="Staff" :value="lastVoucher.staff" />
+              <van-cell title="Member" :value="lastVoucher.member" />
+            </van-cell-group>
+            <van-cell-group inset style="margin-top:10px" title="Items">
+              <van-cell v-for="(it, i) in lastVoucher.items" :key="i" :title="it.name">
+                <template #value><span class="pv-amount">{{ it.qty }} × {{ fKs(it.price) }} = {{ fKs(it.qty * it.price) }}</span></template>
+              </van-cell>
+              <van-empty v-if="!lastVoucher.items.length" image-size="40" description="No items" style="padding:6px 0" />
+            </van-cell-group>
+            <van-cell-group inset style="margin-top:10px">
+              <van-cell title="Total" style="font-weight:700">
+                <template #value><span class="pv-amount" style="font-size:16px">{{ fKs(lastVoucher.total) }} Ks</span></template>
+              </van-cell>
+              <van-cell v-if="lastVoucher.payment" title="Payment" :value="lastVoucher.payment" />
+              <van-cell v-if="lastVoucher.balance" title="Wallet" :value="lastVoucher.balance" />
+            </van-cell-group>
+            <div style="display:flex;gap:10px;margin-top:16px">
+              <van-button block plain @click="voucherOpen=false">Close</van-button>
+              <van-button block type="primary" :loading="printing" @click="doPrintVoucher">Print voucher</van-button>
+            </div>
+            <div style="text-align:center;color:var(--pv-muted);font-size:11px;margin-top:10px">80mm thermal via Bluetooth — or share / download the PNG</div>
+          </div>
+        </van-popup>
       </div>
     `,
     setup(_, { emit }) {
@@ -678,6 +753,17 @@
       const memberQuery = ref("");
       const submitting = ref(false);
       const payColumns = PAY_METHODS.map((p) => ({ text: p, value: p }));
+
+      // 🧾 Sale-complete voucher preview (drives 80mm thermal print)
+      const voucherOpen = ref(false);
+      const lastVoucher = ref(null);
+      const printing = ref(false);
+      async function doPrintVoucher() {
+        if (!lastVoucher.value) return;
+        printing.value = true;
+        try { await PSV.printVoucher(lastVoucher.value); }
+        finally { printing.value = false; }
+      }
 
       const paidTotal = computed(() => form.payment_splits.reduce((s, x) => s + (Number(x.amount)||0), 0));
       const splitRemaining = computed(() => Math.max(0, Number(cashNetTotal.value) - paidTotal.value));
@@ -924,6 +1010,27 @@
                 await PSV.api("/api/stock-out/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item_name: name, qty, unit_cost: price, total_cost: qty * price, staff: PSV.getStaff().name, notes: "Voucher: " + vno }) });
               }
             } catch (soe) { console.warn("stock-out log warning:", soe); }
+            // 🧾 Voucher snapshot for on-screen preview + 80mm thermal print
+            const vItems = [];
+            if (effectiveMins.value > 0 || (Number(form.game_amt) || 0) > 0) {
+              vItems.push({ name: "🎮 " + (form.game_name || "Game time") + " (" + effectiveMins.value + "m)", qty: 1, price: Number(form.game_amt) || 0 });
+            }
+            for (const fl of foodLines.value) {
+              const nm = (fl.name || "").trim(); const q = Number(fl.qty) || 0; const p = Number(fl.price) || 0;
+              if (nm && q > 0) vItems.push({ name: "🍜 " + nm, qty: q, price: p });
+            }
+            lastVoucher.value = {
+              voucher_no: vno,
+              date: PSV.todayMMT(),
+              time: new Date().toTimeString().slice(0, 5),
+              staff: PSV.getStaff().name,
+              member: isMemberSale ? (form.member_search || form.member_id) : "Guest",
+              items: vItems,
+              total: final_net_total,
+              payment: final_pm,
+              balance: wallet_deduct > 0 ? ("Wallet −" + wallet_deduct + " mins") : "",
+            };
+            voucherOpen.value = true;
             showToast("Saved ✓ " + vno + (wallet_deduct > 0 ? (" · Wallet −" + wallet_deduct + "m") : ""), "success");
             form.voucher_no = PSV.genVoucherNo(); form.member_id = ""; form.member_search = ""; form.console_id = "";
             form.game_name = ""; form.mins = 0; form.base_rate = 0; form.multiplier = 1; form.game_amt = 0;
@@ -937,7 +1044,7 @@
         finally { submitting.value = false; }
       }
 
-      return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, fKs };
+      return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs };
     },
   };
 
@@ -2177,9 +2284,57 @@
     router.register("/salary", Salary);
   }
 
-  const App = {
+  // ── VIEW: Standalone staff login (no Telegram context) ──
+  const LoginScreen = {
+    emits: ["logged-in"],
     template: `
-      <div>
+      <div class="pv-login">
+        <div class="pv-login__brand">PS <span class="vibe">VIBE</span></div>
+        <div class="pv-login__tag">Play The Game. Share The VIBE!</div>
+        <div class="pv-login__title">Staff Sign In</div>
+        <van-form @submit="onSubmit">
+          <van-cell-group inset>
+            <van-field v-model="username" name="username" label="Username" placeholder="staff username" :rules="[{ required: true, message: 'Username required' }]" />
+            <van-field v-model="password" type="password" name="password" label="Password" placeholder="" :rules="[{ required: true, message: 'Password required' }]" />
+          </van-cell-group>
+          <div style="margin:14px 16px 0">
+            <van-checkbox v-model="remember" shape="square">Remember me</van-checkbox>
+          </div>
+          <div style="padding:16px">
+            <van-button type="primary" block native-type="submit" :loading="busy" loading-text="Signing in...">Login</van-button>
+          </div>
+        </van-form>
+        <div class="pv-login__hint">Sign in with the staff account created by the owner in the PS VIBE dashboard.</div>
+      </div>
+    `,
+    setup(_, { emit }) {
+      const username = ref("");
+      const password = ref("");
+      const remember = ref(true);
+      const busy = ref(false);
+      async function onSubmit() {
+        if (busy.value) return;
+        busy.value = true;
+        haptic("medium");
+        try {
+          await PSV.login(username.value.trim(), password.value, remember.value);
+          showToast("Welcome " + (PSV.getStaff().name || "") + " ✓", "success");
+          emit("logged-in");
+        } catch (e) {
+          showToast((e && e.message) ? e.message : "Login failed", "fail");
+        } finally { busy.value = false; }
+      }
+      return { username, password, remember, busy, onSubmit };
+    },
+  };
+
+  const App = {
+    components: { LoginScreen },
+    template: `
+      <div v-if="needLogin">
+        <LoginScreen @logged-in="onLoggedIn" />
+      </div>
+      <div v-else>
         <component :is="activeView" />
         <van-tabbar v-model="tab" active-color="#818cf8" inactive-color="#64748b" :safe-area-inset-bottom="true" class="app-tabbar">
           <van-tabbar-item name="/" icon="wap-home-o">Home</van-tabbar-item>
@@ -2196,7 +2351,9 @@
         get: () => (["/", "/sales", "/members", "/bookings", "/more"].includes(router.current.value) ? router.current.value : "/more"),
         set: (v) => { if (v && v !== router.current.value) { haptic("light"); router.push(v); } },
       });
-      return { activeView, tab };
+      const needLogin = computed(() => authGate.value);
+      function onLoggedIn() { authGate.value = false; haptic("light"); }
+      return { activeView, tab, needLogin, onLoggedIn };
     },
   };
 
@@ -2230,14 +2387,18 @@
 
     if (tg) { tg.ready(); tg.expand(); }
 
+    // Standalone (no Telegram initData): restore a stored session, else gate to login.
+    // The Telegram path below is UNCHANGED.
+    if (!(tg && tg.initData)) {
+      if (!PSV.isAuthed() && !PSV.loadStoredAuth()) authGate.value = true;
+      window.addEventListener("psv-auth-expired", () => { authGate.value = true; });
+    }
+
     (async () => {
+      if (!(tg && tg.initData)) return; // standalone handled above
       if (!PSV.isAuthed()) {
         const ok = await PSV.authenticate(true);
-        if (!ok && (!tg || !tg.initData)) {
-          showToast("Open from Telegram bot", "warning");
-        } else if (!ok) {
-          showToast("Authorization failed", "fail");
-        }
+        if (!ok) showToast("Authorization failed", "fail");
       }
     })();
   }

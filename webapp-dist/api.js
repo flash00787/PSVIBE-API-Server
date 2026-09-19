@@ -1,9 +1,11 @@
 /* PS VIBE Mini App — API helper module (no build step, plain ES module via window).
  *
- * Auth flow (unchanged from Phase 1/2):
- *   Telegram initData  →  POST /api/telegram/validate  →  JWT (memory only)  →  Bearer calls.
+ * Auth flows:
+ *   [Telegram]  initData  →  POST /api/telegram/validate  →  JWT (memory only)  →  Bearer calls.
+ *   [Standalone] username+password → POST /auth/login → access+refresh (localStorage, see below)
+ *                401 → POST /auth/refresh (once) → retry; on failure → clear + login screen.
  *
- * Exposes: window.PSV = { api, authenticate, getStaff, genClientRef, genVoucherNo, fmt, ... }
+ * Exposes: window.PSV = { api, login, logout, authenticate, getStaff, ... , printVoucher }
  */
 (function () {
   "use strict";
@@ -11,8 +13,36 @@
   // ── Telegram WebApp handle ──────────────────────────────
   const tg = window.Telegram && window.Telegram.WebApp;
 
-  let jwt = null;        // in-memory only (XSS-safe — never localStorage)
-  let staff = { name: "", id: null };
+  let jwt = null;        // effective access token
+  let refreshTok = null; // standalone staff-login refresh token
+  let isWebLogin = false; // true when authenticated via /auth/login (NOT Telegram)
+  let staff = { name: "", id: null, role: "" };
+
+  // ── Standalone (non-Telegram) token store ───────────────
+  // TRADEOFF: The Android/WebView shell has NO Telegram context, so there is no
+  // initData to exchange. To keep staff signed in between app launches we persist
+  // the access+refresh pair in localStorage. This is a deliberate, scoped exception:
+  // the Telegram path stays memory-only (XSS-safer) and never touches these keys.
+  const AUTH_KEY = "psvibe.staff.auth";
+  function _persistAuth() {
+    if (!isWebLogin) return;
+    try { localStorage.setItem(AUTH_KEY, JSON.stringify({ access: jwt, refresh: refreshTok, staff: staff })); } catch (_e) {}
+  }
+  function _clearStored() { try { localStorage.removeItem(AUTH_KEY); } catch (_e) {} }
+  function _loadStored() {
+    try {
+      const raw = localStorage.getItem(AUTH_KEY);
+      if (!raw) return false;
+      const o = JSON.parse(raw);
+      if (o && o.access) { jwt = o.access; refreshTok = o.refresh || null; staff = o.staff || staff; isWebLogin = true; return true; }
+    } catch (_e) {}
+    return false;
+  }
+  function _forceLogout() {
+    jwt = null; refreshTok = null; isWebLogin = false; staff = { name: "", id: null, role: "" };
+    _clearStored();
+    try { window.dispatchEvent(new Event("psv-auth-expired")); } catch (_e) {}
+  }
 
   // ── Low-level API call ──────────────────────────────────
   async function api(path, options) {
@@ -27,15 +57,15 @@
       throw new Error("Network error — အင်တာနက် ချိတ်ဆက်မှု စစ်ပါ");
     }
 
-    // Auto re-validate once on 401
-    if (resp.status === 401) {
-      jwt = null;
-      const ok = await authenticate(true /* silent */);
+    // Auto-recover once on 401 (refresh for web login, re-validate for Telegram)
+    const _noRecover = /^\/auth\//.test(path) || path === "/api/telegram/validate";
+    if (resp.status === 401 && !_noRecover) {
+      const ok = await _recoverAuth();
       if (ok) {
         headers["Authorization"] = "Bearer " + jwt;
         resp = await fetch(path, Object.assign({}, options, { headers }));
       } else {
-        throw new Error("Session expired — bot ကနေ ပြန်ဖွင့်ပါ");
+        throw new Error(isWebLogin ? "Session expired — login ပြန်လုပ်ပါ" : "Session expired — bot ကနေ ပြန်ဖွင့်ပါ");
       }
     }
 
@@ -94,6 +124,65 @@
   function isAuthed() { return !!jwt; }
   function getStaff() { return staff; }
   function getTg() { return tg; }
+
+  // ── 401 recovery ────────────────────────────────────────
+  async function _recoverAuth() {
+    if (isWebLogin) {
+      // Standalone path: try refresh once, else force back to login.
+      if (refreshTok) {
+        try {
+          const r = await fetch("/auth/refresh", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refresh_token: refreshTok }),
+          });
+          if (r.ok) {
+            const d = await r.json();
+            if (d && d.access_token) {
+              jwt = d.access_token;
+              refreshTok = d.refresh_token || refreshTok;
+              if (d.user) staff = { name: d.user.name || d.user.username, id: d.user.username || null, role: d.user.role || "" };
+              _persistAuth();
+              return true;
+            }
+          }
+        } catch (_e) {}
+      }
+      _forceLogout();
+      return false;
+    }
+    // Telegram path (UNCHANGED): silently re-validate initData once.
+    jwt = null;
+    return await authenticate(true);
+  }
+
+  // ── Standalone login / logout ───────────────────────────
+  async function login(username, password, remember) {
+    const r = await fetch("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: username, password: password }),
+    });
+    let body = null;
+    try { body = await r.json(); } catch (_e) {}
+    if (!r.ok) {
+      let m = (body && (body.detail || body.error)) || ("Login failed (HTTP " + r.status + ")");
+      if (m && typeof m === "object") m = m.error || JSON.stringify(m);
+      throw new Error(m || "Login failed");
+    }
+    if (!body || !body.access_token) throw new Error("Login failed — no token returned");
+    jwt = body.access_token;
+    refreshTok = body.refresh_token || null;
+    const u = body.user || {};
+    staff = { name: u.name || u.username || username, id: u.username || null, role: u.role || "staff", username: u.username || username };
+    isWebLogin = true;
+    if (remember === false) _clearStored(); else _persistAuth();
+    return staff;
+  }
+
+  function logout() { _forceLogout(); }
+  function loadStoredAuth() { return _loadStored(); }
+  function usesWebLogin() { return isWebLogin; }
 
   // ── Helpers ─────────────────────────────────────────────
   function genClientRef() {
@@ -169,8 +258,128 @@
     });
   }
 
+  // ── 80mm thermal voucher rendering + printing ────────────
+  function _dataUrlToBlob(dataUrl) {
+    const parts = String(dataUrl).split(",");
+    const mime = (/data:(.*?);/.exec(parts[0]) || [])[1] || "image/png";
+    const bin = atob(parts[1] || "");
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return new Blob([u8], { type: mime });
+  }
+
+  function _voucherLines(data) {
+    data = data || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    const L = [];
+    const hr = () => L.push({ text: "--------------------------------", size: 14, align: "center" });
+    const nf = (n) => (Number(n) || 0).toLocaleString("en-US");
+    L.push({ text: "PS VIBE", bold: true, size: 36, align: "center" });
+    L.push({ text: "Play The Game. Share The VIBE!", size: 13, align: "center" });
+    L.push({ text: "PS5 Gaming Lounge", size: 13, align: "center" });
+    L.push({ text: "", size: 6 });
+    hr();
+    L.push({ text: "VOUCHER: " + (data.voucher_no || "-"), bold: true, size: 18 });
+    if (data.date) L.push({ text: "Date: " + data.date + (data.time ? " " + data.time : ""), size: 15 });
+    if (data.staff) L.push({ text: "Staff: " + data.staff, size: 15 });
+    if (data.member) L.push({ text: "Member: " + data.member, size: 15 });
+    hr();
+    if (items.length) {
+      for (const it of items) {
+        const qty = Number(it.qty) || 0;
+        const price = Number(it.price) || 0;
+        L.push({ text: (it.name || "-"), size: 15 });
+        L.push({ text: "   " + qty + " x " + nf(price) + " = " + nf(qty * price), size: 14, align: "right" });
+      }
+    } else {
+      L.push({ text: "(no items)", size: 14, align: "center" });
+    }
+    hr();
+    L.push({ text: "TOTAL: " + nf(data.total) + " Ks", bold: true, size: 20, align: "right" });
+    if (data.payment) L.push({ text: "Paid: " + data.payment, size: 15 });
+    if (data.balance) L.push({ text: "Balance: " + data.balance, size: 15 });
+    if (data.notes) L.push({ text: "Note: " + data.notes, size: 14 });
+    hr();
+    L.push({ text: "Thank you! Please come again", size: 14, align: "center" });
+    L.push({ text: "PS VIBE", size: 14, align: "center" });
+    return L;
+  }
+
+  // Render voucher to a 576px-wide PNG (80mm @ 203dpi). Returns dataURL.
+  function renderVoucherPng(data) {
+    return new Promise((resolve, reject) => {
+      try {
+        const W = 576;
+        const PAD = 20;
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        const lines = _voucherLines(data);
+        let H = PAD * 2;
+        for (const ln of lines) H += (ln.size || 16) + 8;
+        canvas.width = W;
+        canvas.height = Math.max(H, 160);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#000000";
+        ctx.textBaseline = "top";
+        let y = PAD;
+        for (const ln of lines) {
+          const size = ln.size || 16;
+          ctx.font = (ln.bold ? "bold " : "") + size + "px 'Courier New', monospace";
+          ctx.textAlign = ln.align || "left";
+          const x = ln.align === "center" ? W / 2 : (ln.align === "right" ? W - PAD : PAD);
+          ctx.fillText(String(ln.text == null ? "" : ln.text), x, y);
+          y += size + 8;
+        }
+        resolve(canvas.toDataURL("image/png"));
+      } catch (e) { reject(e); }
+    });
+  }
+
+  // Print a voucher: native Bluetooth plugin → share → download. Never throws.
+  async function printVoucher(data) {
+    let dataUrl;
+    try { dataUrl = await renderVoucherPng(data); }
+    catch (e) { toast("Voucher render failed: " + (e && e.message ? e.message : e), "fail"); return false; }
+    const base64 = String(dataUrl).split(",")[1] || "";
+    const cap = window.Capacitor;
+    const plugin = cap && cap.Plugins && cap.Plugins.PSVPrinter;
+    if (plugin && typeof plugin.printImage === "function") {
+      try {
+        await plugin.printImage({ base64: base64 });
+        toast("Voucher sent to printer ✓", "success");
+        return true;
+      } catch (e) {
+        toast("Print failed — saving image instead", "warning");
+      }
+    }
+    try {
+      const fname = "voucher-" + ((data && data.voucher_no) || Date.now()) + ".png";
+      const file = new File([_dataUrlToBlob(dataUrl)], fname, { type: "image/png" });
+      if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+        await navigator.share({ files: [file], title: "PS VIBE Voucher" });
+        return true;
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return false;
+    }
+    try {
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = "voucher-" + ((data && data.voucher_no) || Date.now()) + ".png";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      toast("Voucher image downloaded", "success");
+      return true;
+    } catch (e) {
+      toast("Print/share unavailable on this device", "fail");
+      return false;
+    }
+  }
+
   window.PSV = {
     api, unwrap, authenticate, isAuthed, getStaff, getTg,
+    login, logout, loadStoredAuth, usesWebLogin,
+    renderVoucherPng, printVoucher,
     genClientRef, genVoucherNo, fmtKs, todayMMT, monthMMT, toast, haptic,
   };
 })();

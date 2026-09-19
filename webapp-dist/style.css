@@ -192,3 +192,12 @@ html, body {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
 }
+
+/* ── Standalone staff login ─────────────────────────── */
+.pv-login { min-height: 100vh; padding: 56px 18px 24px; display: flex; flex-direction: column; }
+.pv-login__brand { font-size: 30px; font-weight: 800; letter-spacing: -.4px; text-align: center; }
+.pv-login__brand .vibe { background: var(--pv-accent-grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.pv-login__tag { text-align: center; color: var(--pv-muted); font-size: 12px; margin-top: 4px; }
+.pv-login__title { text-align: center; font-size: 18px; font-weight: 700; margin: 28px 0 16px; }
+.pv-login__hint { text-align: center; color: var(--pv-muted); font-size: 12px; margin: 18px 22px 0; line-height: 1.6; }
+.pv-account-role { font-size: 12px; color: var(--pv-muted); margin-top: 2px; text-transform: capitalize; }
