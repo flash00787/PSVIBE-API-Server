@@ -323,6 +323,14 @@ app.include_router(tournament_router)
 app.include_router(telegram_webapp_router)
 app.include_router(staff_app_router)
 
+
+@app.get("/firebase-service-account.json", include_in_schema=False)
+async def _block_firebase_service_account():
+    """Defense-in-depth: never serve the Firebase service account.
+    It lives in the API dir (outside every static mount); this hard-404s any request anyway."""
+    from starlette.responses import Response as _Resp
+    return _Resp(status_code=404)
+
 # ── Config Cache ──
 _config_cache_data = None
 _config_cache_time = 0

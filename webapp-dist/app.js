@@ -2289,22 +2289,27 @@
     emits: ["logged-in"],
     template: `
       <div class="pv-login">
-        <div class="pv-login__brand">PS <span class="vibe">VIBE</span></div>
-        <div class="pv-login__tag">Play The Game. Share The VIBE!</div>
-        <div class="pv-login__title">Staff Sign In</div>
-        <van-form @submit="onSubmit">
-          <van-cell-group inset>
-            <van-field v-model="username" name="username" label="Username" placeholder="staff username" :rules="[{ required: true, message: 'Username required' }]" />
-            <van-field v-model="password" type="password" name="password" label="Password" placeholder="" :rules="[{ required: true, message: 'Password required' }]" />
-          </van-cell-group>
-          <div style="margin:14px 16px 0">
-            <van-checkbox v-model="remember" shape="square">Remember me</van-checkbox>
-          </div>
-          <div style="padding:16px">
-            <van-button type="primary" block native-type="submit" :loading="busy" loading-text="Signing in...">Login</van-button>
-          </div>
-        </van-form>
-        <div class="pv-login__hint">Sign in with the staff account created by the owner in the PS VIBE dashboard.</div>
+        <div class="pv-login__hero">
+          <div class="pv-login__logo">PS <span class="vibe">VIBE</span></div>
+          <div class="pv-login__tag">Play The Game. Share The VIBE!</div>
+        </div>
+        <div class="pv-login__card">
+          <div class="pv-login__title">Staff Sign In</div>
+          <div class="pv-login__sub">PS5 Gaming Lounge · Staff App</div>
+          <van-form @submit="onSubmit">
+            <div class="pv-login__fields">
+              <van-field v-model="username" name="username" label="Username" placeholder="staff username" :rules="[{ required: true, message: 'Username required' }]" />
+              <van-field v-model="password" type="password" name="password" label="Password" placeholder="" :rules="[{ required: true, message: 'Password required' }]" />
+            </div>
+            <div class="pv-login__row">
+              <van-checkbox v-model="remember" shape="square">Remember me</van-checkbox>
+            </div>
+            <div v-if="errorMsg" class="pv-login__error">{{ errorMsg }}</div>
+            <van-button class="pv-login__cta" type="primary" block native-type="submit" :loading="busy" loading-text="Signing in...">Login</van-button>
+          </van-form>
+          <div class="pv-login__hint">Sign in with the staff account created by the owner in the PS VIBE dashboard.</div>
+        </div>
+        <div class="pv-login__foot">PS VIBE Staff · v1.0.0</div>
       </div>
     `,
     setup(_, { emit }) {
@@ -2312,19 +2317,23 @@
       const password = ref("");
       const remember = ref(true);
       const busy = ref(false);
+      const errorMsg = ref("");
       async function onSubmit() {
         if (busy.value) return;
         busy.value = true;
+        errorMsg.value = "";
         haptic("medium");
         try {
           await PSV.login(username.value.trim(), password.value, remember.value);
           showToast("Welcome " + (PSV.getStaff().name || "") + " ✓", "success");
           emit("logged-in");
         } catch (e) {
-          showToast((e && e.message) ? e.message : "Login failed", "fail");
+          const msg = (e && e.message) ? e.message : "Login failed";
+          errorMsg.value = msg;
+          showToast(msg, "fail");
         } finally { busy.value = false; }
       }
-      return { username, password, remember, busy, onSubmit };
+      return { username, password, remember, busy, errorMsg, onSubmit };
     },
   };
 
@@ -2394,6 +2403,12 @@
     router.start();
 
     if (tg) { tg.ready(); tg.expand(); }
+
+    // Inside Telegram → ensure the standalone(native) theme is OFF (head script may
+    // have set it if the SDK had not loaded yet when it ran).
+    if (tg && tg.initData) {
+      try { document.documentElement.classList.remove("psv-native"); } catch (_e) {}
+    }
 
     (async () => {
       if (!(tg && tg.initData)) return; // standalone handled above

@@ -5,6 +5,7 @@ Adds:
   GET    /api/staff/devices          — list registered devices (admin only)
   DELETE /api/staff/devices/{id}     — remove a registered device (admin only)
   GET    /api/staff/app/version      — PUBLIC — APK version manifest (served from staff-app-dist/version.json)
+  POST   /api/staff/push/test        — send a test FCM push to all registered devices (admin only)
 
 The staff_devices table is created idempotently on first use.
 Static APK + download page are mounted separately in app.py at /staff-app/.
@@ -129,3 +130,21 @@ async def app_version():
     except Exception as e:
         logger.warning(f"version.json read failed: {e}")
     return _DEFAULT_VERSION
+
+
+@router.post("/push/test")
+async def push_test(body: dict = Body(...), user: dict = Depends(require_admin)):
+    """Send a test FCM push to ALL registered staff devices (admin only).
+
+    Body: {"title": "...", "body": "..."}. Returns per-token send results.
+    This is the end-to-end verification path for the Staff App push pipeline.
+    """
+    title = str(body.get("title") or "PS VIBE test push")
+    text = str(body.get("body") or "FCM test from the PS VIBE staff API")
+    try:
+        import fcm
+        result = fcm.send_to_staff(title, text, data={"type": "test", "title": title, "body": text})
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error(f"POST /staff/push/test error: {e}")
+        return {"success": False, "error": str(e)}

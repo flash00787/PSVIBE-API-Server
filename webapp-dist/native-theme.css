@@ -1,0 +1,245 @@
+/* PS VIBE Staff App — native (standalone) premium theme
+ * ------------------------------------------------------------------
+ * Activated only when <html> has the .psv-native class, which is set by the
+ * inline head script in index.html when there is NO Telegram initData.
+ * The Telegram Mini App path is left visually untouched.
+ *
+ * Pure CSS, dependency-free (no new libraries) — layered on top of Vant 4.
+ * Design: deep navy (#0b1220 / #0f172a) + gold (#f0b429), glassy dark
+ * surfaces, 12–18px radii, soft shadows, generous spacing, 44px+ tap targets.
+ * Exposes design tokens as CSS custom properties for other stages to extend.
+ */
+
+html.psv-native {
+  /* ── Brand / palette ─────────────────────────────── */
+  --pv-navy-900: #0b1220;
+  --pv-navy-800: #0f172a;
+  --pv-navy-700: #131f38;
+  --pv-gold: #f0b429;
+  --pv-gold-hi: #ffca45;
+  --pv-gold-deep: #c9931a;
+  --pv-ink: #eaf0fb;
+  --pv-ink-dim: #93a1bd;
+  --pv-ink-faint: #6b7a99;
+  --pv-line: rgba(148, 163, 184, 0.14);
+  --pv-glass: rgba(19, 31, 56, 0.66);
+  --pv-glass-2: rgba(15, 23, 42, 0.80);
+  --pv-danger: #f87171;
+  --pv-success: #34d399;
+
+  /* ── Shape / elevation / spacing ─────────────────── */
+  --pv-r-lg: 18px;
+  --pv-r-md: 14px;
+  --pv-r-sm: 10px;
+  --pv-shadow: 0 20px 45px -20px rgba(0, 0, 0, 0.75);
+  --pv-shadow-sm: 0 8px 22px -14px rgba(0, 0, 0, 0.7);
+  --pv-gap: 16px;
+  --pv-tap: 48px;
+
+  /* ── Vant token overrides (scoped to standalone) ─── */
+  --van-background: var(--pv-navy-900);
+  --van-background-2: var(--pv-navy-800);
+  --van-text-color: var(--pv-ink);
+  --van-text-color-2: var(--pv-ink-dim);
+  --van-text-color-3: var(--pv-ink-faint);
+  --van-primary-color: var(--pv-gold);
+  --van-danger-color: var(--pv-danger);
+  --van-success-color: var(--pv-success);
+  --van-border-color: var(--pv-line);
+  --van-font-size-md: 15px;
+  --van-radius-md: var(--pv-r-md);
+  --van-radius-lg: var(--pv-r-lg);
+}
+
+/* ── Base canvas ─────────────────────────────────────── */
+html.psv-native,
+html.psv-native body {
+  background: var(--pv-navy-900);
+  color: var(--pv-ink);
+}
+html.psv-native body {
+  background:
+    radial-gradient(1100px 520px at 12% -8%, rgba(240, 180, 41, 0.10), transparent 60%),
+    radial-gradient(900px 480px at 100% 0%, rgba(99, 102, 241, 0.10), transparent 55%),
+    var(--pv-navy-900);
+  min-height: 100vh;
+  -webkit-tap-highlight-color: transparent;
+}
+html.psv-native #app { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+
+/* ══════════════════════════════════════════════════════
+ *  LOGIN — the showcase screen
+ * ══════════════════════════════════════════════════════ */
+.psv-native .pv-login {
+  min-height: 100vh;
+  padding: 60px 20px 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.psv-native .pv-login__hero { text-align: center; margin-bottom: 28px; }
+.psv-native .pv-login__logo {
+  font-size: 42px;
+  font-weight: 900;
+  letter-spacing: -1.2px;
+  line-height: 1;
+}
+.psv-native .pv-login__logo .vibe {
+  background: linear-gradient(135deg, #ffe08a, var(--pv-gold));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.psv-native .pv-login__tag {
+  margin-top: 8px;
+  font-size: 13px;
+  letter-spacing: 0.3px;
+  color: var(--pv-ink-dim);
+}
+.psv-native .pv-login__card {
+  width: 100%;
+  max-width: 430px;
+  padding: 24px 18px 22px;
+  border-radius: var(--pv-r-lg);
+  background: var(--pv-glass);
+  border: 1px solid var(--pv-line);
+  box-shadow: var(--pv-shadow);
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+}
+.psv-native .pv-login__title {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  text-align: center;
+  margin: 0 0 2px;
+}
+.psv-native .pv-login__sub {
+  text-align: center;
+  font-size: 12px;
+  color: var(--pv-ink-faint);
+  margin-bottom: 20px;
+}
+.psv-native .pv-login__fields {
+  background: var(--pv-glass-2);
+  border: 1px solid var(--pv-line);
+  border-radius: var(--pv-r-md);
+  overflow: hidden;
+}
+.psv-native .pv-login__fields .van-cell { background: transparent; min-height: 54px; }
+.psv-native .pv-login__fields .van-cell::after { border-color: var(--pv-line); }
+.psv-native .pv-login__row { margin: 14px 2px 4px; }
+.psv-native .pv-login__error {
+  margin: 8px 0 12px;
+  padding: 11px 14px;
+  border-radius: var(--pv-r-sm);
+  font-size: 13px;
+  color: #ffd7d7;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+}
+.psv-native .pv-login__cta.van-button {
+  height: 54px;
+  margin-top: 18px;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  color: #1a1205;
+  border: none;
+  border-radius: var(--pv-r-md);
+  background: linear-gradient(135deg, #ffd76a, var(--pv-gold));
+  box-shadow: 0 16px 32px -14px rgba(240, 180, 41, 0.65);
+}
+.psv-native .pv-login__cta.van-button:active { transform: scale(0.985); }
+.psv-native .pv-login__hint {
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--pv-ink-faint);
+  margin: 18px 8px 0;
+}
+.psv-native .pv-login__foot {
+  margin-top: 26px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--pv-ink-faint);
+  text-transform: uppercase;
+}
+
+/* ══════════════════════════════════════════════════════
+ *  App shell / shared surfaces (base tokens for later stages)
+ * ══════════════════════════════════════════════════════ */
+.psv-native .pv-header { padding: 18px 16px 8px; }
+.psv-native .pv-brand { font-weight: 900; letter-spacing: -0.3px; }
+.psv-native .pv-brand .vibe {
+  background: linear-gradient(135deg, #ffe08a, var(--pv-gold));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.psv-native .pv-staff-name { font-weight: 800; letter-spacing: -0.2px; }
+.psv-native .pv-account-role {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--pv-gold);
+  background: rgba(240, 180, 41, 0.12);
+  border: 1px solid rgba(240, 180, 41, 0.30);
+}
+.psv-native .pv-section-title { color: var(--pv-ink-faint); letter-spacing: 0.8px; }
+
+.psv-native .pv-stat,
+.psv-native .pv-action,
+.psv-native .pv-card {
+  background: var(--pv-glass);
+  border: 1px solid var(--pv-line);
+  border-radius: var(--pv-r-lg);
+  box-shadow: var(--pv-shadow-sm);
+}
+.psv-native .pv-stat__value { font-weight: 900; letter-spacing: -0.4px; }
+.psv-native .pv-action { min-height: 84px; }
+.psv-native .pv-action__icon { border-radius: 14px; background: rgba(240, 180, 41, 0.14); }
+
+/* ── Vant component polish ───────────────────────────── */
+.psv-native .van-nav-bar { background: transparent; }
+.psv-native .van-nav-bar__title { font-weight: 800; letter-spacing: 0.2px; }
+.psv-native .van-cell { background: transparent; }
+.psv-native .van-cell-group { background: var(--pv-glass-2); border: 1px solid var(--pv-line); }
+.psv-native .van-cell-group--inset { border-radius: var(--pv-r-md); }
+.psv-native .van-tabbar {
+  background: var(--pv-glass-2);
+  border-top: 1px solid var(--pv-line);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+}
+.psv-native .van-tabbar-item { min-height: 52px; font-weight: 600; }
+.psv-native .van-button { min-height: var(--pv-tap); border-radius: var(--pv-r-md); font-weight: 700; }
+.psv-native .van-button--primary { color: #1a1205; }
+.psv-native .van-checkbox { min-height: 44px; }
+.psv-native .van-popup--bottom.van-popup--round { border-radius: var(--pv-r-lg) var(--pv-r-lg) 0 0; }
+.psv-native .van-skeleton__avatar,
+.psv-native .van-skeleton__title,
+.psv-native .van-skeleton__row { background: rgba(148, 163, 184, 0.12); }
+.psv-native .van-toast {
+  background: rgba(8, 13, 24, 0.94);
+  border: 1px solid var(--pv-line);
+  border-radius: var(--pv-r-md);
+}
+
+/* ── Motion ──────────────────────────────────────────── */
+.psv-native .van-button,
+.psv-native .pv-action,
+.psv-native .van-cell,
+.psv-native .van-tabbar-item { transition: transform 0.12s ease, background 0.18s ease, opacity 0.18s ease; }
+.psv-native .pv-action:active { transform: scale(0.96); }
+.psv-native .van-button:active { transform: scale(0.985); }
+
+@media (prefers-reduced-motion: reduce) {
+  .psv-native .van-button,
+  .psv-native .pv-action,
+  .psv-native .van-cell { transition: none; }
+}
