@@ -72,24 +72,32 @@
     return String(h12).padStart(2, "0") + ":" + mm + " " + mer;
   };
 
-  // ── Tiny Hash Router ────────────────────────────────────
+  // ── Tiny Hash Router (WAVE 6: single-step back) ──────────
+  // WAVE 6 — BACK. The app runs in a Capacitor WebView (remote URL) *and* in
+  // Telegram/desktop. Android back must move exactly ONE step:
+  //     close the top overlay  →  previous screen  →  previous tab  →  exit app.
+  //   * navigation uses pushState/replaceState (same-document — never a reload);
+  //   * root-tab → root-tab switches REPLACE (back must not walk every tab tap);
+  //   * an in-app stack is the source of truth for router.back().
+  const ROOT_TABS = ["/", "/sales", "/members", "/bookings", "/print", "/more"];
+  const isRootTab = (p) => ROOT_TABS.indexOf(p) >= 0;
+
   const router = {
     routes: {},
     current: ref("/"),
     query: ref({}),
+    _stack: [],       // non-root breadcrumbs: [{path, hash}]
+    _tabStack: [],    // root-tab history (Home → Sales → …)
+    _overlays: [],    // LIFO overlay closers registered by open sheets/pickers/dialogs
     register(path, component, title) { this.routes[path] = component; this.routes[path + "__title"] = title; },
     title(path) { return this.routes[path + "__title"] || "PS VIBE"; },
-    push(path) {
-      if (window.location.hash === "#" + path) this.current.value = this.resolve();
-      else window.location.hash = "#" + path;
-    },
-    resolve() {
-      let h = window.location.hash.replace(/^#/, "");
-      // Split an optional query string (e.g. #/consoles?bind=3458). It is exposed via
-      // router.query so a view can deep-link (Consoles auto-selects a booking to bind).
+    onlyPath(path) { const q = String(path || "").indexOf("?"); return q >= 0 ? String(path).slice(0, q) : String(path || ""); },
+    // Parse "#/route?query" → update current + query refs. Returns the route.
+    applyHash(h) {
+      let s = String(h || "").replace(/^#/, "");
       let qs = "";
-      const qi = h.indexOf("?");
-      if (qi >= 0) { qs = h.slice(qi + 1); h = h.slice(0, qi); }
+      const qi = s.indexOf("?");
+      if (qi >= 0) { qs = s.slice(qi + 1); s = s.slice(0, qi); }
       const q = {};
       if (qs) qs.split("&").forEach((pair) => {
         if (!pair) return;
@@ -99,23 +107,98 @@
         try { q[decodeURIComponent(k)] = decodeURIComponent(v); } catch (_e) { q[k] = v; }
       });
       this.query.value = q;
-      if (!h || h === "/") return "/";
-      // try exact match, else fall back to closest (e.g. /sales/new → /sales)
-      if (this.routes[h]) return h;
-      return "/";
+      this.current.value = (!s || s === "/" || !this.routes[s]) ? "/" : s;
+      return this.current.value;
+    },
+    resolve() { return this.applyHash(window.location.hash); },
+    _write(how, path) {
+      try {
+        const st = { p: path };
+        if (how === "push") history.pushState(st, "", "#" + path);
+        else history.replaceState(st, "", "#" + path);
+      } catch (_e) { try { window.location.hash = "#" + path; } catch (_e2) {} }
+    },
+    push(path) {
+      const target = this.onlyPath(path);
+      const cur = this.current.value;
+      if (window.location.hash === "#" + path) { this.applyHash(window.location.hash); return; }
+      // Root tab → root tab: REPLACE, so back does not replay every tab tap.
+      if (isRootTab(cur) && isRootTab(target)) { this.replace(path, true); return; }
+      // A "back to the screen we came from" push (PageHeader `back`) steps back
+      // instead of stacking a duplicate entry.
+      const top = this._stack[this._stack.length - 1];
+      if (top && this.onlyPath(top.path) === target) { this._stack.pop(); this.replace(path); return; }
+      if (cur) this._stack.push({ path: cur, hash: window.location.hash || "#" + cur });
+      this._write("push", path);
+      this.applyHash("#" + path);
+    },
+    replace(path, fromTab) {
+      const target = this.onlyPath(path);
+      const cur = this.current.value;
+      if (fromTab && isRootTab(cur) && isRootTab(target) && cur !== target) {
+        if (this._tabStack[this._tabStack.length - 1] !== cur) this._tabStack.push(cur);
+        if (this._tabStack.length > 12) this._tabStack.shift();
+      }
+      this._write("replace", path);
+      this.applyHash("#" + path);
+    },
+    // Views (via the global overlay mixin) register a closer while a sheet is open.
+    pushOverlay(fn) { this._overlays.push(fn); },
+    popOverlay(fn) { const i = this._overlays.lastIndexOf(fn); if (i >= 0) this._overlays.splice(i, 1); },
+    closeTopOverlay() {
+      const fn = this._overlays[this._overlays.length - 1];
+      if (!fn) return false;
+      let ok = true;
+      try { ok = fn() !== false; } catch (_e) { ok = false; }
+      const i = this._overlays.lastIndexOf(fn);
+      if (i >= 0) this._overlays.splice(i, 1);
+      return ok;
+    },
+    // ONE step back. Returns false when there is nowhere left (caller exits the app).
+    back() {
+      if (this.closeTopOverlay()) return true;
+      if (this._stack.length) { this.replace(this._stack.pop().path); return true; }
+      if (this._tabStack.length) { this.replace(this._tabStack.pop()); return true; }
+      return false;
     },
     start() {
-      const onHash = () => { this.current.value = this.resolve(); };
-      window.addEventListener("hashchange", onHash);
-      this.current.value = this.resolve();
-      // Telegram hardware back key → in-app navigation
+      // System/browser/WebView back. Keep the in-app stacks in sync with it.
+      window.addEventListener("popstate", () => {
+        const p = this.onlyPath(window.location.hash.replace(/^#/, "")) || "/";
+        const last = this._stack[this._stack.length - 1];
+        if (last && this.onlyPath(last.path) === p) this._stack.pop();
+        else if (this._tabStack[this._tabStack.length - 1] === p) this._tabStack.pop();
+        this.applyHash(window.location.hash);
+      });
+      window.addEventListener("hashchange", () => this.applyHash(window.location.hash));
+      this.applyHash(window.location.hash);
+
+      // Android (Capacitor) hardware/gesture back. @capacitor/app is already bundled
+      // in the shipped shell, so wiring it here needs NO APK rebuild: registering a
+      // listener stops Capacitor calling webView.goBack() itself, giving us full
+      // control (single step, close sheets, exit only from a root tab).
+      try {
+        const Cap = window.Capacitor;
+        const AppPlugin = Cap && Cap.Plugins && Cap.Plugins.App;
+        if (AppPlugin && typeof AppPlugin.addListener === "function") {
+          AppPlugin.addListener("backButton", () => {
+            try { haptic("light"); } catch (_e) {}
+            let handled = false;
+            try { handled = router.back(); } catch (_e) { handled = false; }
+            if (!handled) { try { AppPlugin.exitApp(); } catch (_e) {} }
+          });
+        }
+      } catch (_e) { /* not a Capacitor shell */ }
+
+      // Telegram hardware back key → same single-step logic.
       try {
         const tg = PSV.getTg();
         if (tg && tg.BackButton) {
           tg.BackButton.onClick(() => {
-            const cur = this.current.value;
-            if (cur && cur !== "/") { haptic("light"); this.push("/"); }
-            else if (tg.close) { tg.close(); }
+            try { haptic("light"); } catch (_e) {}
+            let handled = false;
+            try { handled = router.back(); } catch (_e) { handled = false; }
+            if (!handled && tg.close) tg.close();
           });
           tg.BackButton.show();
         }
@@ -2635,6 +2718,7 @@
     { path: "/food", icon: "🍜", label: "Food" },
     { path: "/promotions", icon: "🎁", label: "Promo" },
     { path: "/salary", icon: "💰", label: "Salary" },
+    { path: "/transfer-history", icon: "🧾", label: "Transfer history" },
     { path: "/notifications", icon: "🔔", label: "Alerts" },
   ];
   const MENU_GROUPS = [
@@ -2690,6 +2774,7 @@
     { id: "accounts", emoji: "🏦", en: "Accounts", tone: "gold", items: [
       { en: "Account Balances", sub: "ACM's Acc & KBZ Bank", icon: "🏦", path: "/account-balances", ownerOnly: true },
       { en: "Transfer", sub: "Move money between accounts", icon: "🔄", path: "/transfer" },
+      { en: "Transfer history", sub: "Recent account transfers", icon: "🧾", path: "/transfer-history" },
     ] },
     { id: "me", emoji: "🕒", en: "Me & staff", tone: "dim", items: [
       { en: "Attendance in / out", sub: "Shift check-in", icon: "🕐", path: "/attendance" },
@@ -4211,62 +4296,88 @@
     template: `
       <div class="pv-page">
         <PageHeader title="Account balances" back="/more" />
-        <van-skeleton title :row="4" v-if="loading" style="margin:12px" />
-        <template v-else>
-          <div v-if="err" class="psv-owner-card">
-            <div class="psv-owner-card__ico">🏦</div>
-            <div class="psv-owner-card__t">Unavailable</div>
-            <div class="psv-owner-card__s">{{ err }}</div>
-          </div>
+        <van-pull-refresh v-model="refreshing" @refresh="load">
+          <van-skeleton title :row="4" v-if="loading" style="margin:12px 16px" />
           <template v-else>
-            <div class="psv-readonly">🔒 Read-only — cash position shown for reference only</div>
-            <van-cell-group inset style="margin-top:8px">
-              <van-cell v-for="a in accounts" :key="a.key" :title="(a.icon ? a.icon + ' ' : '') + a.label" :label="a.type">
-                <template #value><span class="pv-amount">{{ fKs(a.balance) }} Ks</span></template>
-              </van-cell>
-              <van-cell v-if="!accounts.length" title="No accounts" />
-            </van-cell-group>
+            <div v-if="blocked" class="psv-owner-card">
+              <div class="psv-owner-card__ico">🔒</div>
+              <div class="psv-owner-card__t">Owner-only</div>
+              <div class="psv-owner-card__s">Owner-only — ask the owner to view these account balances.</div>
+            </div>
+            <van-empty v-else-if="err" image="error" :description="err" />
+            <template v-else>
+              <div class="psv-readonly">🔒 Read-only — balances shown for reference only</div>
+              <div class="psv-acc-grid">
+                <div v-for="a in accounts" :key="a.label" class="psv-acc-card">
+                  <div class="psv-acc-card__top">
+                    <span class="psv-acc-card__ico">{{ a.icon }}</span>
+                    <span class="psv-acc-card__label">{{ a.label }}</span>
+                    <span v-if="a.owner_only" class="psv-soon" style="margin-left:auto">Owner only</span>
+                    <span v-else class="psv-acc-card__type">{{ a.type || 'Account' }}</span>
+                  </div>
+                  <div class="psv-acc-card__bal psv-tabnum">{{ fKs(a.balance) }} <span class="psv-acc-card__unit">Ks</span></div>
+                  <div class="psv-acc-card__meta">{{ a.last ? ('Updated ' + fmtWhen(a.last)) : (a.owner_only ? 'Owner account' : 'Shop account') }}</div>
+                </div>
+              </div>
+              <van-empty v-if="!accounts.length" image="search" description="No accounts to show" />
+              <div class="psv-note" style="text-align:center">
+                {{ isAdmin ? 'All accounts — owner-only accounts are marked.' : 'Shop accounts only. Owner-only accounts need the owner.' }}
+              </div>
+            </template>
           </template>
-        </template>
+        </van-pull-refresh>
       </div>
     `,
     setup() {
-      const accounts = ref([]); const loading = ref(true); const err = ref("");
+      const accounts = ref([]); const loading = ref(true); const refreshing = ref(false);
+      const blocked = ref(false); const err = ref(""); const role = ref("");
+      const isAdmin = computed(() => String(role.value || "").toLowerCase() === "admin");
+      function mapRows(rows, fallbackOwnerOnly) {
+        return (rows || []).map((r) => {
+          const label = r.label || r.name || r.account || "Account";
+          return {
+            key: label, label: label, icon: accIcon(label),
+            type: r.type || (r.owner_only ? "Owner-only" : ""),
+            balance: Number(r.balance) || 0,
+            owner_only: !!(r.owner_only || r.ownerOnly || fallbackOwnerOnly),
+            last: r.last_movement || r.last_updated || null,
+          };
+        });
+      }
       async function load() {
-        loading.value = true;
-        // Role-aware read-only balances: staff get the 4 shop accounts
-        // (Cash, WavePay, KPay, AYA Pay); admin/owner additionally see
-        // ACM's Acc + KBZ Bank, flagged owner_only in the response.
-        // (NOT /api/dashboard/finance/balances — that returns 401 for staff and
-        //  PSV.api then force-logs-out the whole app.)
+        loading.value = true; err.value = ""; blocked.value = false;
+        // Role-aware endpoint — the server decides which accounts a token may see
+        // (staff → 4 shop accounts, admin → all 6 with owner_only flags).
+        // We render exactly what comes back; no client-side role guessing.
         try {
-          const d = PSV.unwrap(await PSV.api("/api/accounts/balances"));
-          let rows = (d && d.accounts) || [];
-          if (!rows.length) rows = [].concat((d && d.operating) || [], (d && d.capital) || []);
-          accounts.value = rows.map((r) => {
-            const label = r.label || r.name || r.account || "Account";
-            return { key: label, label: label + (r.owner_only ? " (owner)" : ""),
-                     type: r.owner_only ? "Owner-only" : (r.type || ""),
-                     balance: Number(r.balance) || 0 };
-          });
-          err.value = "";
+          const d = PSV.unwrap(await PSV.api("/api/accounts/balances")) || {};
+          role.value = d.role || role.value;
+          let rows = d.accounts || [];
+          if (!rows.length) rows = [].concat(d.operating || [], d.capital || []);
+          accounts.value = mapRows(rows);
         } catch (e) {
-          // Fallback: legacy owner-only endpoint (admin / service key only).
-          try {
-            const d = PSV.unwrap(await PSV.api("/api/finance/account-balances"));
-            const arr = [].concat((d && d.operating) || [], (d && d.capital) || []);
-            accounts.value = arr.map((x) => ({ key: x.name, label: x.name, type: x.type || x.notes || "", balance: Number(x.balance) || 0 }));
-            err.value = "";
-          } catch (e2) {
-            accounts.value = [];
-            const m = String((e2 && e2.message) || (e && e.message) || "");
-            err.value = (isOwnerBlock(e2) || /401|unauthor|user not found/i.test(m)) ? "Account balances need a dashboard (owner/staff) login." : m;
+          const m = String((e && e.message) || e || "");
+          // 403 → the role is not allowed this view at all.
+          if (isOwnerBlock(e) || /403|owner|admin|not permitted|401|unauthor|user not found/i.test(m)) {
+            blocked.value = true; accounts.value = []; return;
           }
-        }
-        finally { loading.value = false; }
+          try {
+            const t = PSV.unwrap(await PSV.api("/api/accounts/transferable")) || {};
+            role.value = t.role || role.value;
+            accounts.value = mapRows(t.accounts || []);
+          } catch (e2) {
+            try {
+              const f = PSV.unwrap(await PSV.api("/api/finance/account-balances")) || {};
+              accounts.value = mapRows([].concat(f.operating || [], f.capital || []), true);
+            } catch (e3) {
+              accounts.value = [];
+              err.value = String((e3 && e3.message) || m || "Could not load balances — pull to refresh");
+            }
+          }
+        } finally { loading.value = false; refreshing.value = false; }
       }
       onMounted(load);
-      return { accounts, loading, err, fKs };
+      return { accounts, loading, refreshing, blocked, err, role, isAdmin, load, fKs, fmtWhen };
     },
   };
 
@@ -4595,6 +4706,96 @@
     },
   };
 
+  // ── VIEW: Transfer history (WAVE 6) ─────────────────────
+  // Rows: date/time · from → to · amount · staff · ref — newest first.
+  // Source: GET /api/accounts/transfers?limit=50 (admin: all, staff: own only).
+  // The scope chip reflects the role the server scopes by, so a staff token never
+  // implies they can see other staff's transfers.
+  const TransferHistory = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Transfer history" back="/more" />
+        <van-pull-refresh v-model="refreshing" @refresh="load">
+          <van-skeleton title :row="5" v-if="loading" style="margin:12px 16px" />
+          <template v-else>
+            <div v-if="unavailable" class="psv-owner-card">
+              <div class="psv-owner-card__ico">🧾</div>
+              <div class="psv-owner-card__t">Not available yet</div>
+              <div class="psv-owner-card__s">{{ unavailable }}</div>
+              <button class="psv-btn psv-btn--ghost psv-btn--block" style="margin-top:14px" @click="load">Retry</button>
+            </div>
+            <van-empty v-else-if="err" image="error" :description="err" />
+            <template v-else>
+              <div class="psv-scope" :class="isAdmin ? 'psv-scope--all' : 'psv-scope--mine'">
+                <span class="psv-scope__ico">{{ isAdmin ? '🏦' : '👤' }}</span>
+                <span class="psv-scope__t">{{ isAdmin ? 'All staff transfers' : 'Your transfers only' }}</span>
+                <span class="psv-scope__n">{{ rows.length }}</span>
+              </div>
+              <van-empty v-if="!rows.length" image="search" description="No transfers yet" />
+              <div v-else class="psv-th-list">
+                <div v-for="t in rows" :key="t.id || t.ref" class="psv-th-row">
+                  <div class="psv-th-row__top">
+                    <span class="psv-th-row__flow">
+                      <span class="psv-th-row__ico">{{ iconOf(t.from_account) }}</span>
+                      <b>{{ t.from_account }}</b>
+                      <span class="psv-th-row__arrow">→</span>
+                      <span class="psv-th-row__ico">{{ iconOf(t.to_account) }}</span>
+                      <b>{{ t.to_account }}</b>
+                    </span>
+                    <span class="psv-th-row__amt psv-tabnum">{{ fKs(t.amount) }} Ks</span>
+                  </div>
+                  <div class="psv-th-row__meta">
+                    <span>{{ fmtWhen(t.created_at) }}</span>
+                    <span v-if="t.staff_name">· {{ t.staff_name }}</span>
+                    <span class="psv-th-row__ref">· {{ t.ref }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="psv-note" style="text-align:center">{{ isAdmin ? 'Showing every account transfer.' : 'Showing transfers you created.' }}</div>
+            </template>
+          </template>
+        </van-pull-refresh>
+      </div>
+    `,
+    setup() {
+      const rows = ref([]); const loading = ref(true); const refreshing = ref(false);
+      const err = ref(""); const unavailable = ref(""); const role = ref("");
+      const isAdmin = computed(() => String(role.value || "").toLowerCase() === "admin");
+      function normalize(list) {
+        const arr = Array.isArray(list) ? list.slice() : [];
+        // Newest first (defensive: never trust server ordering).
+        arr.sort((a, b) => {
+          const ta = Date.parse(a && a.created_at) || 0, tb = Date.parse(b && b.created_at) || 0;
+          if (tb !== ta) return tb - ta;
+          return (Number(b && b.id) || 0) - (Number(a && a.id) || 0);
+        });
+        return arr.map((t) => ({
+          id: t.id, ref: t.ref || "-",
+          from_account: t.from_account || "?", to_account: t.to_account || "?",
+          amount: Number(t.amount) || 0,
+          staff_name: t.staff_name || "", created_at: t.created_at || "",
+        }));
+      }
+      async function load() {
+        loading.value = true; err.value = ""; unavailable.value = "";
+        try {
+          const d = PSV.unwrap(await PSV.api("/api/accounts/transfers?limit=50")) || {};
+          role.value = d.role || d.scope || role.value || String((PSV.getStaff() || {}).role || "");
+          rows.value = normalize(d.transfers || d.rows || (Array.isArray(d) ? d : []));
+        } catch (e) {
+          const m = String((e && e.message) || e || "");
+          rows.value = [];
+          if (/not found|404|405|not available|not implemented/i.test(m)) unavailable.value = "Transfer history is not available yet — please try again shortly.";
+          else if (isOwnerBlock(e) || /403|owner|admin|401|unauthor|not permitted/i.test(m)) unavailable.value = "Owner-only — ask the owner.";
+          else err.value = m || "Could not load transfer history — pull to refresh";
+        } finally { loading.value = false; refreshing.value = false; }
+      }
+      onMounted(load);
+      return { rows, loading, refreshing, err, unavailable, role, isAdmin, load, fKs, fmtWhen, iconOf: (n) => accIcon(n) };
+    },
+  };
+
   // ── VIEW: Gift / Free card (WAVE 3) ─────────────────────
   const GiftCard = {
     components: { PageHeader },
@@ -4713,6 +4914,7 @@
     router.register("/balances", Balances);
     router.register("/account-balances", AccountBalances);
     router.register("/transfer", TransferScreen);
+    router.register("/transfer-history", TransferHistory);
     router.register("/gift-card", GiftCard);
     router.register("/rank-bonus", RankBonus);
   }
@@ -5378,6 +5580,30 @@
     app.component("NotificationsScreen", NotificationsScreen);
     app.component("AccountBalances", AccountBalances);
     app.component("TransferScreen", TransferScreen);
+    app.component("TransferHistory", TransferHistory);
+
+    // WAVE 6 — Android back closes the top overlay first, then navigates.
+    // Every Vant popup / action-sheet / dialog exposes a `show` prop; while one is
+    // open we register a closer so router.back() dismisses it before stepping back.
+    // (ActionSheet and Dialog render a Popup internally, so `van-popup` covers all.)
+    try {
+      const OVERLAY_COMPONENTS = { "van-popup": 1, "van-action-sheet": 1, "van-dialog": 1 };
+      app.mixin({
+        created() {
+          const nm = this.$options && this.$options.name;
+          if (!nm || !OVERLAY_COMPONENTS[nm]) return;
+          if (!this.$props || !("show" in this.$props)) return;
+          const self = this;
+          const closer = function () {
+            try { self.$emit("update:show", false); } catch (_e) { return false; }
+            return true;
+          };
+          this.$watch(function () { return self.show; }, function (v) {
+            if (v) router.pushOverlay(closer); else router.popOverlay(closer);
+          }, { immediate: true, flush: "sync" });
+        },
+      });
+    } catch (_e) { /* overlays still work; back just navigates */ }
 
     app.mount("#app");
     router.start();

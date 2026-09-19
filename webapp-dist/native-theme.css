@@ -728,3 +728,11 @@ html.psv-native .psv-pick__meta { color: var(--psv-gold-2); background: rgba(240
 html.psv-native .psv-pick__check { color: var(--psv-gold); }
 html.psv-native .psv-pick__chev { color: var(--psv-text-dim); }
 html.psv-native .psv-pick__empty { color: var(--psv-text-dim); }
+
+/* WAVE 6 — transfer history (premium) */
+html.psv-native .psv-scope { border-color: var(--psv-border); background: rgba(148,163,184,.06); color: var(--psv-text); }
+html.psv-native .psv-scope__n { background: rgba(240,180,41,.14); color: var(--psv-gold-2); }
+html.psv-native .psv-th-list { background: var(--psv-surface); border-color: var(--psv-border); border-radius: var(--psv-r-lg); box-shadow: var(--psv-shadow); }
+html.psv-native .psv-th-row { border-bottom-color: var(--psv-border); }
+html.psv-native .psv-th-row__amt { color: var(--psv-gold); }
+html.psv-native .psv-th-row__arrow, html.psv-native .psv-th-row__meta { color: var(--psv-text-dim); }
