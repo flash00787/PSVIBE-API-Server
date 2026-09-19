@@ -24,17 +24,36 @@
   // the access+refresh pair in localStorage. This is a deliberate, scoped exception:
   // the Telegram path stays memory-only (XSS-safer) and never touches these keys.
   const AUTH_KEY = "psvibe.staff.auth";
+  // ── Native-shell JWT mirror (FCM integration) ───────────
+  // The ALREADY-DISTRIBUTED Android shell (psv-native-bridge.js) reads the
+  // bearer token for its device-registration call from localStorage
+  // 'psv_jwt' (fallback 'psv_token'). We mirror the plain access token there
+  // so push registration works WITHOUT an APK rebuild. 'psvibe.staff.auth'
+  // remains the single source of truth; these keys are a convenience mirror
+  // and are cleared on logout / forced-logout / refresh-failure.
+  const SHELL_JWT_KEY = "psv_jwt";
+  const SHELL_JWT_FALLBACK = "psv_token";
+  function _syncShellJwt() {
+    try {
+      if (isWebLogin && jwt) localStorage.setItem(SHELL_JWT_KEY, jwt);
+      else { localStorage.removeItem(SHELL_JWT_KEY); localStorage.removeItem(SHELL_JWT_FALLBACK); }
+    } catch (_e) {}
+  }
   function _persistAuth() {
     if (!isWebLogin) return;
     try { localStorage.setItem(AUTH_KEY, JSON.stringify({ access: jwt, refresh: refreshTok, staff: staff })); } catch (_e) {}
+    _syncShellJwt();
   }
-  function _clearStored() { try { localStorage.removeItem(AUTH_KEY); } catch (_e) {} }
+  function _clearStored() {
+    try { localStorage.removeItem(AUTH_KEY); } catch (_e) {}
+    try { localStorage.removeItem(SHELL_JWT_KEY); localStorage.removeItem(SHELL_JWT_FALLBACK); } catch (_e) {}
+  }
   function _loadStored() {
     try {
       const raw = localStorage.getItem(AUTH_KEY);
       if (!raw) return false;
       const o = JSON.parse(raw);
-      if (o && o.access) { jwt = o.access; refreshTok = o.refresh || null; staff = o.staff || staff; isWebLogin = true; return true; }
+      if (o && o.access) { jwt = o.access; refreshTok = o.refresh || null; staff = o.staff || staff; isWebLogin = true; _syncShellJwt(); return true; }
     } catch (_e) {}
     return false;
   }
@@ -143,7 +162,7 @@
               jwt = d.access_token;
               refreshTok = d.refresh_token || refreshTok;
               if (d.user) staff = { name: d.user.name || d.user.username, id: d.user.username || null, role: d.user.role || "" };
-              _persistAuth();
+              _persistAuth(); // also re-mirrors 'psv_jwt' for the native shell
               return true;
             }
           }
@@ -178,6 +197,7 @@
     staff = { name: u.name || u.username || username, id: u.username || null, role: u.role || "staff", username: u.username || username };
     isWebLogin = true;
     if (remember === false) _clearStored(); else _persistAuth();
+    _syncShellJwt(); // mirror access token for the native shell (FCM registration), even when "remember me" is off
     return staff;
   }
 

@@ -6,6 +6,7 @@ Adds:
   DELETE /api/staff/devices/{id}     — remove a registered device (admin only)
   GET    /api/staff/app/version      — PUBLIC — APK version manifest (served from staff-app-dist/version.json)
   POST   /api/staff/push/test        — send a test FCM push to all registered devices (admin only)
+  POST   /api/staff/push/internal    — service-to-service push for the sales bot (X-Internal-Key)
 
 The staff_devices table is created idempotently on first use.
 Static APK + download page are mounted separately in app.py at /staff-app/.
@@ -13,8 +14,9 @@ Static APK + download page are mounted separately in app.py at /staff-app/.
 import json
 import logging
 import os
+import secrets
 
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Depends, Body, Header, HTTPException
 
 from auth import get_staff_or_dashboard_user, require_admin
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute
@@ -130,6 +132,48 @@ async def app_version():
     except Exception as e:
         logger.warning(f"version.json read failed: {e}")
     return _DEFAULT_VERSION
+
+
+@router.post("/push/internal")
+async def push_internal(body: dict = Body(...), x_internal_key: str = Header(None, alias="X-Internal-Key")):
+    """Service-to-service push (sales bot → API).
+
+    Auth: shared secret in the ``X-Internal-Key`` header, read from
+    ``PSVIBE_INTERNAL_PUSH_KEY`` in /etc/psvibe/secrets.env.
+    Body: {type, title, body, booking_id?, usernames?, console_id?, minutes_left?, member_id?, when?}
+    """
+    expected = (os.environ.get("PSVIBE_INTERNAL_PUSH_KEY") or "").strip()
+    provided = (x_internal_key or "").strip()
+    if not expected or not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Invalid internal key")
+
+    ptype = str(body.get("type") or "generic")
+    title = body.get("title")
+    text = body.get("body")
+    usernames = body.get("usernames")
+    try:
+        import fcm
+        if ptype == "session_reminder":
+            result = fcm.push_session_reminder(
+                console_id=body.get("console_id"),
+                minutes_left=body.get("minutes_left"),
+                member_id=body.get("member_id"),
+                title=title, body=text, usernames=usernames,
+            )
+        elif ptype == "booking_reminder":
+            result = fcm.push_booking_reminder(
+                booking_id=body.get("booking_id"), when=body.get("when"),
+                title=title, body=text, usernames=usernames,
+            )
+        else:
+            data = {"type": ptype, "title": str(title or ""), "body": str(text or "")}
+            if body.get("booking_id") is not None:
+                data["booking_id"] = str(body.get("booking_id"))
+            result = fcm.send_to_staff(title or "PS VIBE", text or "", data=data, usernames=usernames)
+        return {"success": True, "data": result}
+    except Exception as e:
+        logger.error(f"POST /staff/push/internal error: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @router.post("/push/test")

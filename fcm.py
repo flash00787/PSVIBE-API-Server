@@ -16,20 +16,25 @@ push_booking_reminder(booking_id, when=None, ...) -> dict
     Documented builders for the two reminder payloads. Data payload shape:
     {"type": "session_reminder"|"booking_reminder", "booking_id": ..., "title": ..., "body": ..., ...}
 
-WIRING TODO (sales-bot is OUT OF SCOPE for the API repo — hook these later):
-  1. Session reminders  → /opt/psvibe/sales-bot/bot/handlers/session_reminder.py
-       * ``_remind_loop``  — where it builds "⏰ <b>Session Reminder!</b>" (~L332)
-         and sends via ``bot.send_message`` (~L359); call
-         ``fcm.push_session_reminder(cid, minutes_left=..., member_id=...)``.
-       * ``_send_session_reminder`` (~L417) — same, for the one-shot path.
-  2. Booking reminders  → /opt/psvibe/sales-bot/bot/handlers/admin_bookings.py
-       * after a booking is approved (~L626-641) next to
-         ``_post_n8n_booking_reminder`` / ``_sbk_advance_reminder``; call
-         ``fcm.push_booking_reminder(bk_id, when=...)``.
-  3. Advance reminder task → /opt/psvibe/sales-bot/bot/handlers/booking.py
-       * ``_sbk_advance_reminder`` (the 30-min-before fallback).
-  4. API-side DB timer sync → /opt/psvibe/api/routes/booking_routes.py and
-       the ``bookings/mark-bot-reminder`` / ``webhook/booking-reminder`` paths.
+WIRED (2026-09-19, Staff App Stage 4) — push is ADDITIVE next to each Telegram send,
+and every call site is wrapped in try/except so a push failure can never break a
+reminder or a booking flow:
+  1. Session reminders (sales bot) → /opt/psvibe/sales-bot/bot/handlers/session_reminder.py
+       * ``_remind_loop`` and ``_send_session_reminder`` call the module-level helper
+         ``_push_staff_app("session_reminder", ...)``, which POSTs to the API at
+         ``/api/staff/push/internal`` (X-Internal-Key) because the bot has no
+         firebase-admin. The API then calls ``push_session_reminder`` below.
+  2. Session reminders (API-side timer fallback) → /opt/psvibe/api/session_timer.py
+       * ``_session_timer_task`` calls ``fcm.push_session_reminder(...)`` right after
+         its ``_send_telegram`` timer alert.
+  3. Booking reminders (API-side, restart-proof) → /opt/psvibe/api/booking_reminder.py
+       * ``_send_reminder_notification`` calls ``fcm.push_booking_reminder(...)`` next
+         to the 30-min-before admin Telegram send.
+  NOTE: the bot's ``_sbk_advance_reminder`` fallback (booking.py) is DISABLED (returns
+  immediately — n8n/API own booking reminders), so no push hook is needed there.
+  NOTE: Android channel id MUST stay ``psvibe_sessions`` — that is the channel the
+  APK (assets/psv-native-bridge.js, CHANNEL_ID) creates at high importance. A wrong
+  channel id means Android 8+ silently drops the notification.
 """
 import logging
 import os
@@ -146,7 +151,7 @@ def send_to_staff(title: str, body: str, data: Optional[Dict[str, Any]] = None,
             data=norm_data,
             android=messaging.AndroidConfig(
                 priority="high",
-                notification=messaging.AndroidNotification(channel_id="psvibe_staff", default_sound=True),
+                notification=messaging.AndroidNotification(channel_id="psvibe_sessions", default_sound=True),
             ),
         )
         resp = messaging.send_each_for_multicast(msg, app=app)

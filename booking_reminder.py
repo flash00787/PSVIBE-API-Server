@@ -181,6 +181,22 @@ def _send_reminder_notification(rem: dict) -> None:
     except Exception as e:
         logger.error("booking_reminder send: %s", e)
 
+    # 📲 Staff App FCM push (ADDITIVE — never break the reminder if push fails).
+    #    Wired 2026-09-19 (Staff App Stage 4). Fire-and-forget, same event as the
+    #    Telegram send above: 30-min-before booking reminder → staff devices.
+    try:
+        import fcm
+        fcm.push_booking_reminder(
+            booking_id=bk_id,
+            when=f"{date_str} {time_str}",
+            body=(
+                f"Booking #{bk_id} — {name} | {console_id} ({console_type}) "
+                f"{date_str} {time_str} ({dur} mins)"
+            ),
+        )
+    except Exception as _push_err:
+        logger.warning("booking_reminder: FCM push failed (non-critical): %s", _push_err)
+
     # 📱 Also notify customer if they have a Telegram chat ID
     if tg_chat and CUSTOMER_BOT_TOKEN:
         try:

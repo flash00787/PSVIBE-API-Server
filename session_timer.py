@@ -262,6 +262,24 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
             else:
                 _send_telegram(STAFF_NOTIFY_CHAT, text, keyboard)
             logger.info(f"Timer reminder sent for booking {booking_id} (fire={fire_count}, remaining={remaining} min)")
+
+            # 📲 Staff App FCM push (ADDITIVE — must never break the timer loop).
+            #    Wired 2026-09-19 (Staff App Stage 4): mirrors the Telegram timer alert.
+            try:
+                import fcm
+                _push_body = (
+                    f"Console {console_id}: session ending in {remaining} min"
+                    if remaining > 0 else
+                    f"Console {console_id}: session {max(1, abs(remaining))} min overdue"
+                )
+                fcm.push_session_reminder(
+                    console_id=console_id,
+                    minutes_left=(remaining if remaining > 0 else 0),
+                    member_id=bk_name,
+                    body=_push_body,
+                )
+            except Exception as _push_err:
+                logger.warning(f"session_timer: FCM push failed (non-critical): {_push_err}")
             
             # Stop repeating if session no longer active
             chk = _mysql_query("SELECT status FROM console_bookings WHERE id=%s", (booking_id,))

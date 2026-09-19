@@ -16,13 +16,21 @@
   const PSV = window.PSV;
   const tg = PSV.getTg();
 
+  // ── App vs Telegram mode ────────────────────────────────
+  // App (standalone Android/WebView) mode = no Telegram initData. Mirrors the
+  // inline head script in index.html. All premium styling is scoped under
+  // html.psv-native, so the Telegram Mini App look is untouched.
+  const NATIVE = !(tg && tg.initData);
+  const TABS_TG = ["/", "/sales", "/members", "/bookings", "/more"];
+  const TABS_NATIVE = ["/", "/sales", "/bookings", "/print", "/me"];
+
   // ── Theme sync ──────────────────────────────────────────
   function applyTheme() {
     const scheme = (tg && tg.colorScheme) || "dark";
     const root = document.documentElement;
     root.classList.toggle("dark", scheme === "dark");
     root.setAttribute("data-theme", scheme);
-    const accent = (tg && tg.themeParams && tg.themeParams.button_color) || "#6366f1";
+    const accent = (tg && tg.themeParams && tg.themeParams.button_color) || ((tg && tg.initData) ? "#6366f1" : "#f0b429");
     root.style.setProperty("--van-primary-color", accent);
   }
   applyTheme();
@@ -116,8 +124,16 @@
             <div class="pv-tagline">Play The Game. Share The VIBE!</div>
           </div>
         </div>
-        <div class="pv-header" style="padding-top:0;padding-bottom:8px">
-          <div>
+        <div class="pv-header psv-home-greet" style="padding-top:0;padding-bottom:8px">
+          <div v-if="nativeMode" class="psv-home-id">
+            <div class="psv-avatar psv-avatar--lg">{{ initials }}</div>
+            <div>
+              <div class="pv-hello">Welcome 👋</div>
+              <div class="pv-staff-name">{{ staffName }}</div>
+              <div v-if="webLogin" class="pv-account-role">{{ staffRole }}</div>
+            </div>
+          </div>
+          <div v-else>
             <div class="pv-hello">Welcome 👋</div>
             <div class="pv-staff-name">{{ staffName }}</div>
             <div v-if="webLogin" class="pv-account-role">{{ staffRole }}</div>
@@ -131,7 +147,13 @@
         <van-skeleton title :row="3" v-if="loading" style="margin:12px 14px" />
 
         <template v-else>
-          <div class="pv-stats">
+          <div v-if="nativeMode" class="pv-stats pv-stats--premium">
+            <div class="pv-stat pv-stat--accent"><div class="pv-stat__value">{{ fKs(summary.todayRevenue) }}</div><div class="pv-stat__label">Today's Sales (Ks)</div></div>
+            <div class="pv-stat pv-stat--ok"><div class="pv-stat__value">{{ summary.activeConsoles }}</div><div class="pv-stat__label">Active Sessions</div></div>
+            <div class="pv-stat"><div class="pv-stat__value">{{ summary.bookings }}</div><div class="pv-stat__label">Bookings</div></div>
+            <div class="pv-stat pv-stat--warn"><div class="pv-stat__value">{{ summary.pendingDeposits }}</div><div class="pv-stat__label">Pending Deposits</div></div>
+          </div>
+          <div v-else class="pv-stats">
             <div class="pv-stat pv-stat--accent"><div class="pv-stat__value">{{ fKs(summary.todayRevenue) }}</div><div class="pv-stat__label">Today's Revenue (Ks)</div></div>
             <div class="pv-stat pv-stat--teal"><div class="pv-stat__value">{{ summary.activeConsoles }}</div><div class="pv-stat__label">Active Consoles</div></div>
             <div class="pv-stat"><div class="pv-stat__value">{{ summary.todaySales }}</div><div class="pv-stat__label">Today's Sales</div></div>
@@ -139,9 +161,9 @@
           </div>
 
           <div class="pv-section-title">Quick Actions</div>
-          <div class="pv-actions">
+          <div class="pv-actions" :class="{ 'pv-actions--premium': nativeMode }">
             <div class="pv-action" @click="go('/sales')"><div class="pv-action__icon">💰</div><div class="pv-action__label">New Sale</div></div>
-            <div class="pv-action" @click="openTopup"><div class="pv-action__icon">➕</div><div class="pv-action__label">Top Up</div></div>
+            <div class="pv-action" @click="openTopupEntry"><div class="pv-action__icon">➕</div><div class="pv-action__label">Top Up</div></div>
             <div class="pv-action" @click="go('/bookings')"><div class="pv-action__icon">📅</div><div class="pv-action__label">New Booking</div></div>
             <div class="pv-action" @click="go('/consoles')"><div class="pv-action__icon">🕹️</div><div class="pv-action__label">Consoles</div></div>
             <div class="pv-action" @click="go('/inventory')"><div class="pv-action__icon">📦</div><div class="pv-action__label">Inventory</div></div>
@@ -201,7 +223,9 @@
       const staffRole = ref(PSV.getStaff().role || "");
       function doLogout() { PSV.logout(); showToast("Logged out", "success"); }
       const loading = ref(true);
-      const summary = reactive({ todayRevenue: 0, activeConsoles: 0, todaySales: 0, totalMembers: 0 });
+      const summary = reactive({ todayRevenue: 0, activeConsoles: 0, todaySales: 0, totalMembers: 0, bookings: 0, pendingDeposits: 0 });
+      const nativeMode = NATIVE;
+      const initials = computed(() => String(staffName.value || "?").trim().slice(0, 2).toUpperCase());
       const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay"];
       const topup = reactive({ picker: false, dlg: false, q: "", members: [], member_id: "", member_name: "", member_tier: "", amount: 0, splits: [], payPicker: false, payAmountPicker: false, pendingMethod: "", payAmountInput: null, payColumns: PAY_METHODS.map((p) => ({ text: p, value: p })), base_rate: 10000, bonus_table: [], master_threshold: 300000, immortal_threshold: 1000000, member_total_spend: 0, busy: false });
       const topupTier = computed(() => topup.member_tier || "Warrior");
@@ -229,6 +253,8 @@
       }
 
       function go(path) { haptic("light"); router.push(path); }
+      // In app mode the Top Up tile opens the premium Deposit screen; Telegram keeps the dialog.
+      function openTopupEntry() { if (NATIVE) { haptic("light"); router.push("/deposit"); } else { openTopup(); } }
 
       const topupFiltered = computed(() => {
         const q = topup.q.trim().toLowerCase();
@@ -342,10 +368,19 @@
             summary.todayRevenue = s.total_net ?? s.total_revenue ?? s.total ?? 0;
           }
         }
+        if (NATIVE) {
+          try {
+            const bd = PSV.unwrap(await PSV.api("/api/bookings?status="));
+            const arr = Array.isArray(bd) ? bd : (bd && bd.bookings) || [];
+            const today = PSV.todayMMT();
+            summary.bookings = arr.filter((b) => !(b.date || b.booking_date) || String(b.date || b.booking_date).slice(0, 10) === today).length;
+            summary.pendingDeposits = arr.filter((b) => ["paid", "pending"].includes(String(b.deposit_status || "").toLowerCase())).length;
+          } catch (_e) {}
+        }
         loading.value = false;
       }
       onMounted(load);
-      return { staffName, webLogin, staffRole, doLogout, loading, summary, fKs, go, load, topup, topupFiltered, topupTier, topupPaid, topupRemaining, topupPreview, calcTopupBonus, openTopup, pickTopup, confirmTopup, topupOpenPay, topupPickPay, topupConfirmSplit, topupRemoveSplit };
+      return { staffName, webLogin, staffRole, doLogout, loading, summary, nativeMode, initials, fKs, go, load, topup, topupFiltered, topupTier, topupPaid, topupRemaining, topupPreview, calcTopupBonus, openTopup, openTopupEntry, pickTopup, confirmTopup, topupOpenPay, topupPickPay, topupConfirmSplit, topupRemoveSplit };
     },
   };
 
@@ -1031,6 +1066,7 @@
               balance: wallet_deduct > 0 ? ("Wallet −" + wallet_deduct + " mins") : "",
             };
             voucherOpen.value = true;
+            try { window.PSVLastVoucher = { raw: lastVoucher.value }; } catch (_e) {}
             showToast("Saved ✓ " + vno + (wallet_deduct > 0 ? (" · Wallet −" + wallet_deduct + "m") : ""), "success");
             form.voucher_no = PSV.genVoucherNo(); form.member_id = ""; form.member_search = ""; form.console_id = "";
             form.game_name = ""; form.mins = 0; form.base_rate = 0; form.multiplier = 1; form.game_amt = 0;
@@ -2271,6 +2307,9 @@
     router.register("/members/register", MemberRegister);
     router.register("/bookings", Bookings);
     router.register("/more", More);
+    router.register("/print", PrintScreen);
+    router.register("/me", MeScreen);
+    router.register("/deposit", Deposit);
     router.register("/consoles", Consoles);
     router.register("/food-orders", FoodOrders);
     router.register("/inventory", Inventory);
@@ -2337,6 +2376,262 @@
     },
   };
 
+  // ══════════════════════════════════════════════════════
+  //  APP-MODE (standalone) premium screens
+  //  Styling lives in native-theme.css under html.psv-native.
+  //  All API paths reuse the existing endpoints — UI only.
+  // ══════════════════════════════════════════════════════
+  const DEPOSIT_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay"];
+
+  // ── VIEW: Deposit (app mode top-up) ─────────────────────
+  const Deposit = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Deposit" back="/" />
+        <div class="psv-pad">
+          <div class="psv-field-card">
+            <div class="psv-field-label">Member</div>
+            <div class="psv-field psv-field--tap" @click="openPicker">
+              <span v-if="member.id" class="psv-field__value">{{ member.name }} <span class="psv-field__sub">· {{ member.id }}</span></span>
+              <span v-else class="psv-field__ph">Search member…</span>
+              <van-icon name="arrow" />
+            </div>
+          </div>
+
+          <div class="psv-field-card">
+            <div class="psv-field-label">Amount (Ks)</div>
+            <input v-model.number="amount" class="psv-input" type="number" inputmode="numeric" placeholder="0" />
+            <div class="psv-chips">
+              <button v-for="q in quick" :key="q" type="button" class="psv-chip" @click="amount = q">{{ fKs(q) }}</button>
+            </div>
+          </div>
+
+          <div class="psv-field-card">
+            <div class="psv-field-label">Payment method</div>
+            <div class="psv-chips">
+              <button v-for="m in methods" :key="m" type="button" class="psv-chip" :class="{ 'psv-chip--on': method === m }" @click="method = m">{{ m }}</button>
+            </div>
+          </div>
+
+          <div class="psv-card psv-receipt">
+            <div class="psv-receipt__title">Receipt preview</div>
+            <div class="psv-row"><span>Member</span><b>{{ member.name || '—' }}</b></div>
+            <div class="psv-row"><span>Amount</span><b class="psv-tabnum">{{ fKs(amount) }} Ks</b></div>
+            <div class="psv-row"><span>Method</span><b>{{ method }}</b></div>
+            <div class="psv-row psv-receipt__total"><span>Credit</span><b class="psv-tabnum">{{ fKs(amount) }} Ks</b></div>
+          </div>
+
+          <button class="psv-btn psv-btn--primary psv-btn--block" :disabled="busy || !member.id || !(Number(amount) > 0)" @click="submit">
+            <span v-if="!busy">Confirm Deposit</span><span v-else>Processing…</span>
+          </button>
+        </div>
+
+        <van-popup v-model:show="picker" position="bottom" round style="max-height:70vh">
+          <div class="psv-sheet">
+            <div class="psv-sheet__handle"></div>
+            <van-search v-model="q" placeholder="Search name / phone / ID" />
+            <div class="psv-sheet__body">
+              <div v-if="!filtered.length" class="psv-empty">No members found</div>
+              <div v-for="m in filtered" :key="m.id" class="psv-list-row" @click="pick(m)">
+                <div class="psv-avatar">{{ initials(m.name || m.id) }}</div>
+                <div class="psv-list-row__main"><div class="psv-list-row__title">{{ m.name || m.id }}</div><div class="psv-list-row__sub">ID {{ m.id }} · {{ m.phone || '-' }}</div></div>
+                <van-icon name="arrow" />
+              </div>
+            </div>
+          </div>
+        </van-popup>
+      </div>
+    `,
+    setup() {
+      const picker = ref(false);
+      const q = ref("");
+      const members = ref([]);
+      const member = reactive({ id: "", name: "" });
+      const amount = ref(0);
+      const method = ref("Cash");
+      const busy = ref(false);
+      const quick = [10000, 20000, 50000, 100000];
+      const filtered = computed(() => {
+        const s = q.value.trim().toLowerCase();
+        if (!s) return members.value;
+        return members.value.filter((m) => (((m.name || "") + " " + (m.id || "") + " " + (m.phone || "")).toLowerCase().includes(s)));
+      });
+      function initials(s) { return String(s || "?").trim().slice(0, 2).toUpperCase(); }
+      async function openPicker() {
+        haptic("light"); picker.value = true;
+        if (!members.value.length) {
+          try { const d = PSV.unwrap(await PSV.api("/api/fetch_members?limit=300")); members.value = (d && d.members) || []; }
+          catch (e) { showToast("Load failed: " + e.message, "fail"); }
+        }
+      }
+      function pick(m) { member.id = m.id; member.name = m.name || m.id; picker.value = false; haptic("light"); }
+      async function submit() {
+        const amt = Number(amount.value) || 0;
+        if (!member.id || amt <= 0 || busy.value) return;
+        busy.value = true; haptic("medium");
+        try {
+          const res = PSV.unwrap(await PSV.api("/api/topup/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: member.id, amount: amt, payment_method: method.value, staff_name: PSV.getStaff().name, client_ref: PSV.genClientRef() }) }));
+          if (res && res.duplicate) showToast("Already applied — " + (res.balance_mins ?? "?") + " mins", "warning");
+          else showToast("Deposit done ✓ balance " + (res.balance_mins ?? "?"), "success");
+          amount.value = 0; member.id = ""; member.name = "";
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
+        finally { busy.value = false; }
+      }
+      return { picker, q, members, member, amount, method, busy, quick, filtered, methods: DEPOSIT_METHODS, initials, openPicker, pick, submit, fKs };
+    },
+  };
+
+  // ── VIEW: Print / 80mm voucher preview (app mode) ───────
+  const PrintScreen = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Print" back="/" />
+        <div class="psv-pad">
+          <div class="psv-card psv-printer">
+            <div class="psv-printer__row">
+              <div class="psv-printer__dot" :class="{ 'is-on': connected }"></div>
+              <div class="psv-list-row__main">
+                <div class="psv-list-row__title">{{ connected ? (printerName || 'Printer') : 'No printer connected' }}</div>
+                <div class="psv-list-row__sub">{{ statusText }}</div>
+              </div>
+              <button class="psv-chip" type="button" @click="checkStatus">Check</button>
+            </div>
+          </div>
+
+          <div class="psv-section-title">80mm voucher preview</div>
+          <div class="psv-paper">
+            <img v-if="png" :src="png" alt="voucher preview" class="psv-paper__img" />
+            <div v-else class="psv-skeleton" style="height:360px"></div>
+          </div>
+
+          <div class="psv-btn-row">
+            <button class="psv-btn psv-btn--ghost" @click="testPrint">Test print</button>
+            <button class="psv-btn psv-btn--primary" :disabled="printing" @click="doPrint">{{ printing ? 'Printing…' : 'Print voucher' }}</button>
+          </div>
+        </div>
+      </div>
+    `,
+    setup() {
+      const png = ref("");
+      const printing = ref(false);
+      const connected = ref(false);
+      const printerName = ref("");
+      const statusText = ref("Tap Check to query the printer");
+      const sample = {
+        voucher_no: PSV.genVoucherNo(),
+        date: PSV.todayMMT(), time: "18:30",
+        staff: PSV.getStaff().name || "Staff",
+        member: "M-0001",
+        items: [ { name: "Game time (60m)", qty: 1, price: 10000 }, { name: "Chicken noodle", qty: 2, price: 4000 } ],
+        total: 18000, payment: "Cash", balance: "1,240 mins",
+      };
+      function currentVoucher() { return (window.PSVLastVoucher && window.PSVLastVoucher.raw) || sample; }
+      async function render() {
+        try { png.value = await PSV.renderVoucherPng(currentVoucher()); }
+        catch (_e) { png.value = ""; }
+      }
+      function plugin() { const c = window.Capacitor; return c && c.Plugins && c.Plugins.PSVPrinter; }
+      async function checkStatus() {
+        const P = plugin();
+        if (!P) { statusText.value = "Native printer unavailable (web preview mode)"; connected.value = false; return; }
+        try { const s = await P.status(); connected.value = !!(s && s.connected); printerName.value = (s && (s.name || s.address)) || ""; statusText.value = connected.value ? "Connected" : "Disconnected"; }
+        catch (_e) { statusText.value = "Status error"; }
+      }
+      async function testPrint() {
+        const P = plugin();
+        if (!P || !P.testPrint) { showToast("Test print needs the native app", "warning"); return; }
+        try { await P.testPrint(); showToast("Test page sent ✓", "success"); } catch (_e) { showToast("Test failed", "fail"); }
+      }
+      async function doPrint() {
+        printing.value = true; haptic("medium");
+        try { await PSV.printVoucher(currentVoucher()); } finally { printing.value = false; }
+      }
+      onMounted(() => { render(); checkStatus(); });
+      return { png, printing, connected, printerName, statusText, checkStatus, testPrint, doPrint };
+    },
+  };
+
+  // ── VIEW: Me (app mode) ─────────────────────────────────
+  const MeScreen = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Me" back="/" />
+        <div class="psv-pad">
+          <div class="psv-card psv-profile">
+            <div class="psv-avatar psv-avatar--lg">{{ initials }}</div>
+            <div class="psv-list-row__main">
+              <div class="psv-profile__name">{{ staff.name || 'Staff' }}</div>
+              <span class="psv-account-role">{{ staff.role || 'staff' }}</span>
+            </div>
+          </div>
+
+          <div class="psv-section-title">Shift</div>
+          <div class="psv-card psv-rows">
+            <div class="psv-row"><span>Today</span><b class="psv-tabnum">{{ fKs(summary.minsToday) }} mins</b></div>
+            <div class="psv-row"><span>Sales today</span><b class="psv-tabnum">{{ summary.salesToday }}</b></div>
+            <div class="psv-row"><span>Status</span><b>{{ attendance.status }}</b></div>
+          </div>
+
+          <div class="psv-section-title">Settings</div>
+          <div class="psv-card psv-list">
+            <div class="psv-list-row">
+              <div class="psv-list-row__main"><div class="psv-list-row__title">Notifications</div><div class="psv-list-row__sub">Session & booking reminders</div></div>
+              <van-switch v-model="notify" size="22" @change="onNotify" />
+            </div>
+            <div class="psv-list-row" @click="goPrint">
+              <div class="psv-list-row__main"><div class="psv-list-row__title">Printer settings</div><div class="psv-list-row__sub">80mm Bluetooth printer</div></div>
+              <van-icon name="arrow" />
+            </div>
+          </div>
+
+          <div class="psv-section-title">About</div>
+          <div class="psv-card psv-list">
+            <div class="psv-row"><span>App version</span><b>{{ appVersion }}</b></div>
+            <div class="psv-list-row" @click="checkUpdate">
+              <div class="psv-list-row__main"><div class="psv-list-row__title">Check for updates</div><div class="psv-list-row__sub">{{ updateText }}</div></div>
+              <van-icon name="arrow" />
+            </div>
+          </div>
+
+          <button class="psv-btn psv-btn--danger psv-btn--block" @click="logout">Log out</button>
+          <div class="psv-foot">PS VIBE Staff · Play The Game. Share The VIBE!</div>
+        </div>
+      </div>
+    `,
+    setup() {
+      const staff = reactive({ name: PSV.getStaff().name || "", role: PSV.getStaff().role || "" });
+      const initials = computed(() => String(staff.name || "?").trim().slice(0, 2).toUpperCase());
+      const notify = ref(true);
+      const appVersion = ref("1.0.0");
+      const updateText = ref("Up to date");
+      const summary = reactive({ minsToday: 0, salesToday: 0 });
+      const attendance = reactive({ status: "Not checked in" });
+      function goPrint() { haptic("light"); router.push("/print"); }
+      function load() {
+        try {
+          const info = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.PSVShell;
+          if (info && info.getAppInfo) { info.getAppInfo().then((a) => { if (a && a.versionName) appVersion.value = a.versionName; }).catch(() => {}); }
+        } catch (_e) {}
+        PSV.api("/api/sales/list-today").then((r) => { const d = PSV.unwrap(r); if (Array.isArray(d)) { summary.salesToday = d.length; summary.minsToday = d.reduce((a, x) => a + (Number(x.mins) || 0), 0); } }).catch(() => {});
+      }
+      async function checkUpdate() {
+        try {
+          const r = await fetch("/staff-app/version.json", { cache: "no-store" });
+          if (r.ok) { const v = await r.json(); updateText.value = "Latest " + (v.version || "?"); }
+          else updateText.value = "Up to date";
+        } catch (_e) { updateText.value = "Up to date"; }
+        haptic("light");
+      }
+      function onNotify() { haptic("light"); showToast(notify.value ? "Notifications on" : "Notifications off", "success"); }
+      function logout() { haptic("medium"); PSV.logout(); showToast("Logged out", "success"); }
+      onMounted(load);
+      return { staff, initials, notify, appVersion, updateText, summary, attendance, goPrint, checkUpdate, onNotify, logout, fKs };
+    },
+  };
+
   const App = {
     components: { LoginScreen },
     template: `
@@ -2345,24 +2640,33 @@
       </div>
       <div v-else>
         <component :is="activeView" />
-        <van-tabbar v-model="tab" active-color="#818cf8" inactive-color="#64748b" :safe-area-inset-bottom="true" class="app-tabbar">
+        <van-tabbar v-if="!nativeMode" v-model="tab" active-color="#818cf8" inactive-color="#64748b" :safe-area-inset-bottom="true" class="app-tabbar">
           <van-tabbar-item name="/" icon="wap-home-o">Home</van-tabbar-item>
           <van-tabbar-item name="/sales" icon="balance-list-o">Sales</van-tabbar-item>
           <van-tabbar-item name="/members" icon="friends-o">Members</van-tabbar-item>
           <van-tabbar-item name="/bookings" icon="calendar-o">Bookings</van-tabbar-item>
           <van-tabbar-item name="/more" icon="apps-o">More</van-tabbar-item>
         </van-tabbar>
+        <van-tabbar v-else v-model="tab" class="app-tabbar psv-tabbar" active-color="var(--psv-gold)" inactive-color="var(--psv-text-dim)" :safe-area-inset-bottom="true" :border="false">
+          <van-tabbar-item name="/" icon="wap-home-o">Home</van-tabbar-item>
+          <van-tabbar-item name="/sales" icon="shopping-cart-o">Sale</van-tabbar-item>
+          <van-tabbar-item name="/bookings" icon="calendar-o">Booking</van-tabbar-item>
+          <van-tabbar-item name="/print" icon="printer">Print</van-tabbar-item>
+          <van-tabbar-item name="/me" icon="user-o">Me</van-tabbar-item>
+        </van-tabbar>
       </div>
     `,
     setup() {
       const activeView = computed(() => router.routes[router.current.value] || Home);
+      const validTabs = NATIVE ? TABS_NATIVE : TABS_TG;
+      const fallbackTab = NATIVE ? "/me" : "/more";
       const tab = computed({
-        get: () => (["/", "/sales", "/members", "/bookings", "/more"].includes(router.current.value) ? router.current.value : "/more"),
+        get: () => (validTabs.includes(router.current.value) ? router.current.value : fallbackTab),
         set: (v) => { if (v && v !== router.current.value) { haptic("light"); router.push(v); } },
       });
       const needLogin = computed(() => authGate.value);
       function onLoggedIn() { authGate.value = false; haptic("light"); }
-      return { activeView, tab, needLogin, onLoggedIn };
+      return { activeView, tab, needLogin, onLoggedIn, nativeMode: NATIVE };
     },
   };
 
@@ -2387,6 +2691,9 @@
     app.component("MemberRegister", MemberRegister);
     app.component("Bookings", Bookings);
     app.component("More", More);
+    app.component("Deposit", Deposit);
+    app.component("PrintScreen", PrintScreen);
+    app.component("MeScreen", MeScreen);
     app.component("Consoles", Consoles);
     app.component("FoodOrders", FoodOrders);
     app.component("Inventory", Inventory);
