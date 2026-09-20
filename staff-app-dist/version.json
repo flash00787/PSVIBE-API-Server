@@ -1,9 +1,9 @@
 {
-  "version": "1.3.6",
-  "version_code": 18,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.3.6.apk",
+  "version": "1.3.7",
+  "version_code": 19,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.3.7.apk",
   "size": 5124905,
-  "sha256": "720cad65f25f2e8e1441d75191e2b7007da81c83d8562bbd0abf03d5c888d064",
+  "sha256": "bbe5f5f8a9b8ff48b91f3fe9c2647023b6c81efe134b1ebdbcf618199dbf77ed",
   "released_at": "2026-09-20",
-  "notes": "v1.3.6 (code 18): fixes v1.3.5 which shipped WITHOUT the Lexend font (the download redirected and left a 0-byte file) \u2014 the bundled Lexend variable TTF is now really inside the APK, English/number lines print in Lexend, Myanmar lines keep Noto Sans Myanmar; font dots -2px (title 52 / wide 38 / body 30); receipt top/bottom padding reduced to 10 dots; pre-cut feed 6 LF."
+  "notes": "v1.3.7 (code 19): tighter receipt per owner 15:19 \u2014 leading/trailing empty voucher lines are dropped, top/bottom padding 10 -> 6 dots, and the pre-cut feed reduced 6 -> 4 LF (~15mm) because the bottom still had too much blank paper."
 }
