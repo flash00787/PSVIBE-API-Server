@@ -437,7 +437,11 @@
     const L = [];
     const hr = () => L.push({ text: "--------------------------------", size: 14, align: "center" });
     const nf = (n) => (Number(n) || 0).toLocaleString("en-US");
-    L.push({ text: "PS VIBE", bold: true, size: 36, align: "center" });
+    // Real PS VIBE logo (the one WITH the wordmark) printed as an image at the top of the
+    // receipt (owner 2026-09-20 15:23). nativeSkip keeps a text header for any build or
+    // fallback path that cannot render image lines.
+    L.push({ img: "asset:print/psvibe-logo.png", size: 340, align: "center" });
+    L.push({ text: "PS VIBE", bold: true, size: 36, align: "center", nativeSkip: true });
     L.push({ text: "Play The Game. Share The VIBE!", size: 13, align: "center" });
     L.push({ text: "PS5 Gaming Lounge", size: 13, align: "center" });
     L.push({ text: "", size: 6 });

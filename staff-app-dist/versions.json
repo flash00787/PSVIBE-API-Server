@@ -1,8 +1,19 @@
 {
-  "latest": "1.3.7",
-  "latest_code": 19,
-  "updated_at": "2026-09-20T15:20:08Z",
+  "latest": "1.3.8",
+  "latest_code": 20,
+  "updated_at": "2026-09-20T15:25:43Z",
   "versions": [
+    {
+      "version": "1.3.8",
+      "version_code": 20,
+      "arch": "universal",
+      "file": "psvibe-staff-1.3.8.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.3.8.apk",
+      "size": 5128986,
+      "sha256": "0ffbf2e50f7e13785af590c44e717136301de10169913b79dd112371f801e3cd",
+      "released_at": "2026-09-20",
+      "notes": "v1.3.8 (code 20): the receipt header now prints the REAL PS VIBE logo (the artwork that includes the wordmark) as an image \u2014 bundled at assets/print/psvibe-logo.png (auto-cropped, black on white, 632x168), drawn centred at the top of the voucher. The native renderer gained image-line support ({img, size, align}) for asset:/data: sources, with a text fallback for builds that cannot render images."
+    },
     {
       "version": "1.3.7",
       "version_code": 19,
