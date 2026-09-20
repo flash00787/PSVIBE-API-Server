@@ -3233,17 +3233,13 @@
             <span class="psv-menu-head__ico">{{ g.emoji }}</span>
             <span class="psv-menu-head__my">{{ g.en }}</span>
           </div>
-          <div class="psv-card psv-list psv-menu-list">
-            <div v-for="it in g.items" :key="it.en" class="psv-menu-item" :class="{ 'is-soon': effTag(it) }" @click="tap(it)">
-              <span class="psv-menu-item__ico">{{ it.icon }}</span>
-              <div class="psv-menu-item__main">
-                <div class="psv-menu-item__my">{{ it.en }}</div>
-                <div class="psv-menu-item__en">{{ it.sub }}</div>
-              </div>
-              <span v-if="badge(it)" class="psv-menu-badge">{{ badge(it) > 99 ? '99+' : badge(it) }}</span>
-              <span v-if="it.tag" class="psv-soon">{{ it.tag }}</span>
-              <span v-else-if="effTag(it) === 'Owner only'" class="psv-soon">Owner only</span>
-              <van-icon v-else name="arrow" />
+          <div class="psv-menu-grid">
+            <div v-for="it in g.items" :key="it.en" class="psv-menu-tile"
+                 :class="{ 'is-soon': effTag(it) }" @click="tap(it)">
+              <span class="psv-menu-tile__ico">{{ it.icon }}</span>
+              <span class="psv-menu-tile__t">{{ it.en }}</span>
+              <span v-if="badge(it)" class="psv-menu-tile__badge">{{ badge(it) > 99 ? '99+' : badge(it) }}</span>
+              <span v-else-if="effTag(it) === 'Owner only'" class="psv-menu-tile__lock">🔒</span>
             </div>
           </div>
         </div>
