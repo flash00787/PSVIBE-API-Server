@@ -32,7 +32,7 @@
   var PSV_BUILD = "w24print";
   // Real app build number — shown in the More menu footer (was hardcoded "build 34" before,
   // which misled diagnosis). Bump together with android versionCode.
-  var APP_BUILD = "46";
+  var APP_BUILD = "47";
   function psvBuildSelfHeal() {
     try {
       fetch(_u("/webapp/?_b=" + Date.now()), { cache: "no-store" })

@@ -6052,9 +6052,11 @@
             else { throw e0; }
           }
           const url = (r && r.photo_url) || "";
-          try { PSV.setLocalAvatar(""); } catch (_e4) {}      // server copy wins now
+          // Keep the phone copy as a fallback (the login response can arrive without photo_url);
+          // the version bump below still forces the fresh image to render.
+          try { PSV.bumpAvatar(); } catch (_e4) {}
           try { PSV.bumpAvatar(); } catch (_e5) {}            // bust the WebView image cache
-          photo.value = "";                                    // render via PSV.avatarSrc() (versioned)
+          photo.value = url;                                   // show it right away (versioned by avatarSrc)
           staff.photo_url = url;
           try { PSV.getStaff().photo_url = url; } catch (_e2) {}
           showToast("Profile picture updated ✓", "success");
@@ -6096,7 +6098,8 @@
           // Primary: the normal /api/* path with JSON + Authorization — exactly how every other
           // working call in this app talks to the server (the /auth/* POSTs were the anomaly).
           try {
-            await PSV.apiDirect("/api/profile/password", { current_password: pwCur.value, new_password: pwNew.value });
+            await PSV.apiDirect("/api/profile/password", { token: (PSV.apiToken ? PSV.apiToken() : ""),
+              current_password: pwCur.value, new_password: pwNew.value });
             done = true;
           } catch (e0) {
             lastErr = e0;

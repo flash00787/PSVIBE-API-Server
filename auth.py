@@ -119,6 +119,18 @@ class RefreshRequest(BaseModel):
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return _verify_pw(plain_password, hashed_password)
 
+def _photo_url_for(username: str) -> str:
+    """photo_url read directly from the DB — the credentials cache is built once and can be
+    stale (owner 2026-09-21: after a re-login the avatar disappeared because the cached user
+    row had no photo_url)."""
+    try:
+        from mysql_db import query_one as _q1
+        row = _q1("SELECT photo_url FROM dashboard_users WHERE username = %s", (username,)) or {}
+        return (row.get("photo_url") or "") if isinstance(row, dict) else ""
+    except Exception:
+        return ""
+
+
 def get_user(username: str) -> Optional[Dict[str, Any]]:
     user = get_credentials().get(username)
     if user:
@@ -225,7 +237,7 @@ def register_auth_routes(app):
                 "username": user["username"],
                 "role": user["role"],
                 "name": user["name"],
-                "photo_url": user.get("photo_url") or ""
+                "photo_url": _photo_url_for(user["username"])
             }
         )
 
@@ -249,7 +261,7 @@ def register_auth_routes(app):
                 "username": user["username"],
                 "role": user["role"],
                 "name": user["name"],
-                "photo_url": user.get("photo_url") or ""
+                "photo_url": _photo_url_for(user["username"])
             }
         )
 
@@ -259,7 +271,7 @@ def register_auth_routes(app):
             "username": user["username"],
             "role": user["role"],
             "name": user["name"],
-            "photo_url": user.get("photo_url") or ""
+            "photo_url": _photo_url_for(user["username"])
         }
 
     # ── Owner/staff profile (owner 2026-09-20 17:22: change password + upload picture) ──

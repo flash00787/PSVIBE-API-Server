@@ -1,8 +1,19 @@
 {
-  "latest": "1.6.4",
-  "latest_code": 46,
-  "updated_at": "2026-09-20T18:10:49Z",
+  "latest": "1.6.5",
+  "latest_code": 47,
+  "updated_at": "2026-09-20T18:22:16Z",
   "versions": [
+    {
+      "version": "1.6.5",
+      "version_code": 47,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.5.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.5.apk",
+      "size": 5076196,
+      "sha256": "24abb43915f67e8b8eeec499f9f4332a29b361f5982bdee25fc7de9aba6de76e",
+      "released_at": "2026-09-20",
+      "notes": "v1.6.5 (code 47): avatar no longer disappears \u2014 /auth/login, /auth/refresh and /auth/me now read photo_url straight from the DB (the cached user row could be stale) and the app keeps its phone-local copy as a fallback; the password call also sends the token in the body."
+    },
     {
       "version": "1.6.4",
       "version_code": 46,
