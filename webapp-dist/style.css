@@ -390,8 +390,8 @@ html, body {
 .psv-tl-pad { padding: 12px 14px; }
 .psv-tl-empty__sub { margin-top: 6px; font-size: 12px; }
 .psv-tl-wrap { padding: 10px 0 6px; }
-.psv-tl-scroll { overflow: auto; max-height: calc(100vh - 300px); min-height: 220px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; border-top: 1px solid var(--pv-card-border); border-bottom: 1px solid var(--pv-card-border); background: var(--pv-card-bg); }
-.psv-tl-inner { display: grid; grid-template-columns: 120px 960px; width: 1080px; }
+.psv-tl-scroll { overflow: auto; max-height: min(calc(100vh - 300px), calc(100dvh - 300px)); min-height: 220px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-x pan-y; scroll-padding-bottom: 8px; border-top: 1px solid var(--pv-card-border); border-bottom: 1px solid var(--pv-card-border); background: var(--pv-card-bg); }
+.psv-tl-inner { position: relative; display: grid; grid-template-columns: 120px 960px; width: 1080px; }
 .psv-tl-corner { position: sticky; left: 0; top: 0; z-index: 4; background: var(--van-background-2); border-right: 1px solid var(--pv-card-border); border-bottom: 1px solid var(--pv-card-border); padding: 10px 6px; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--pv-muted); text-align: center; }
 .psv-tl-head-hours { position: sticky; top: 0; z-index: 3; display: flex; background: var(--van-background-2); border-bottom: 1px solid var(--pv-card-border); }
 .psv-tl-hour { width: 64px; flex: 0 0 64px; padding: 10px 0; text-align: center; font-size: 10.5px; font-weight: 700; color: var(--pv-muted); border-right: 1px solid var(--pv-card-border); }
@@ -402,9 +402,12 @@ html, body {
 .psv-tl-label__util.is-hi { color: #ef4444; }
 .psv-tl-label__util.is-mid { color: #f59e0b; }
 .psv-tl-label__util.is-lo { color: #10b981; }
-.psv-tl-track { position: relative; min-height: 48px; border-bottom: 1px solid var(--pv-card-border); }
-.psv-tl-gl { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--pv-card-border); opacity: .6; }
-.psv-tl-now { position: absolute; top: 0; bottom: 0; width: 2px; background: #ef4444; z-index: 3; pointer-events: none; }
+.psv-tl-track { position: relative; min-height: 48px; border-bottom: 1px solid var(--pv-card-border); background-image: repeating-linear-gradient(90deg, var(--pv-card-border) 0 1px, transparent 1px 64px); background-image: repeating-linear-gradient(90deg, color-mix(in srgb, var(--pv-card-border) 60%, transparent) 0 1px, transparent 1px 64px); }
+/* WAVE 6 smoothness — ONE now-line overlay for the whole grid (was one per console row).
+   Sits above the tracks (z 2) but below the sticky console column (label z 2, later in DOM)
+   and the sticky hour header (z 3). Glides between 15s ticks; never blocks taps. */
+.psv-tl-line { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: #ef4444; z-index: 2; pointer-events: none; transition: transform 15s linear; }
+.psv-tl-now { position: absolute; top: 0; bottom: 0; width: 2px; background: #ef4444; z-index: 3; pointer-events: none; transition: left 15s linear; }
 .psv-tl-now__tag { position: absolute; top: -1px; left: 50%; transform: translateX(-50%); background: #ef4444; color: #fff; font-size: 8.5px; font-weight: 800; padding: 0 3px; border-radius: 3px; }
 .psv-tl-block { position: absolute; top: 5px; bottom: 5px; z-index: 1; display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 0 6px; border-radius: 8px; border: 1px solid transparent; overflow: hidden; text-align: left; font: inherit; cursor: pointer; min-width: 34px; }
 .psv-tl-block:active { filter: brightness(1.15); }

@@ -1959,21 +1959,20 @@
           <div v-else class="psv-tl-wrap">
             <div class="psv-tl-scroll" ref="scroller">
               <div class="psv-tl-inner">
+                <div v-if="showNow" class="psv-tl-line" :style="{ transform: 'translateX(' + nowLinePx + 'px)' }"></div>
                 <div class="psv-tl-corner">Console</div>
                 <div class="psv-tl-head-hours">
                   <div class="psv-tl-hour" v-for="h in gridHours" :key="h">{{ hourLabel(h) }}</div>
                   <div class="psv-tl-hour psv-tl-hour--end">{{ closeHourLabel }}</div>
                   <div v-if="showNow" class="psv-tl-now" :style="{ left: nowPx + 'px' }"><span class="psv-tl-now__tag">NOW</span></div>
                 </div>
-                <template v-for="c in consoles" :key="c.id">
+                <template v-for="r in tlRows" :key="r.id">
                   <div class="psv-tl-label">
-                    <span class="psv-tl-label__id">{{ c.id }}</span>
-                    <span v-if="utilOf(c.id) > 0" class="psv-tl-label__util" :class="utilTone(c.id)">{{ utilOf(c.id) }}%</span>
+                    <span class="psv-tl-label__id">{{ r.id }}</span>
+                    <span v-if="r.utilPct > 0" class="psv-tl-label__util" :class="r.utilTone">{{ r.utilPct }}%</span>
                   </div>
                   <div class="psv-tl-track">
-                    <div class="psv-tl-gl" v-for="h in gridLines" :key="h" :style="{ left: hourPx(h) + 'px' }"></div>
-                    <div v-if="showNow" class="psv-tl-now" :style="{ left: nowPx + 'px' }"></div>
-                    <button v-for="b in blocksOf(c.id)" :key="b.id" class="psv-tl-block" :class="['is-' + tone(b.status), { 'is-narrow': isNarrow(b) }]" :style="blockStyle(b)" @click="pick(b)">
+                    <button v-for="b in r.blocks" :key="b.id" class="psv-tl-block" :class="['is-' + tone(b.status), { 'is-narrow': isNarrow(b) }]" :style="blockStyle(b)" @click="pick(b)">
                       <span class="psv-tl-block__name">{{ b.customerName || b.memberId || 'Guest' }}</span>
                       <span class="psv-tl-block__time">{{ blockTime(b) }}</span>
                     </button>
@@ -1997,8 +1996,8 @@
       const scroller = ref(null);
       const clock = ref(Date.now());
       const gridHours = TL_GRID_HOURS;
-      const gridLines = TL_GRID_HOURS.concat([TL_CLOSE_HOUR]);
       const trackW = (TL_CLOSE_HOUR - TL_OPEN_HOUR + 1) * TL_HOUR_W;
+      const TL_LABEL_W = 120; // sticky console-column width (matches grid-template-columns)
       const openHourLabel = tlHourLabel(TL_OPEN_HOUR);
       const closeHourLabel = tlHourLabel(TL_CLOSE_HOUR);
       let fetchId = 0;
@@ -2020,6 +2019,20 @@
         return ((mins - TL_OPEN_HOUR * 60) / 60) * TL_HOUR_W;
       });
       const showNow = computed(() => isToday.value && nowPx.value >= 0 && nowPx.value <= trackW);
+      // x of the single overlay now-line inside .psv-tl-inner (label column + hour offset)
+      const nowLinePx = computed(() => TL_LABEL_W + nowPx.value);
+      // WAVE 6 smoothness — per-console row metadata computed ONCE per data change
+      // (Map keyed by console id). No O(rows x bookings) filtering during the 15s clock tick.
+      const tlMeta = computed(() => {
+        const m = new Map();
+        for (const c of consoles.value) {
+          const blocks = blocksOf(c.id);
+          const utilPct = utilOf(c.id);
+          m.set(c.id, { blocks: blocks, utilPct: utilPct, utilTone: utilPct > 70 ? "is-hi" : (utilPct > 40 ? "is-mid" : "is-lo") });
+        }
+        return m;
+      });
+      const tlRows = computed(() => consoles.value.map((c) => Object.assign({ id: c.id }, tlMeta.value.get(c.id))));
 
       function hourPx(h) { return (h - TL_OPEN_HOUR) * TL_HOUR_W; }
       function hourLabel(h) { return tlHourLabel(h); }
@@ -2087,12 +2100,45 @@
         load();
       }
       function scrollToNow() {
-        if (jumped) return;
+        if (jumped) return;                 // user already scrolled / already handled this day
         const el = scroller.value;
         if (!el) return;
         jumped = true;
-        const target = showNow.value ? Math.max(0, nowPx.value - el.clientWidth * 0.6) : 0;
-        try { el.scrollLeft = target; } catch (_e) {}
+        const view = el.clientWidth;
+        const lineX = showNow.value ? nowLinePx.value : 0;
+        const target = showNow.value ? Math.max(0, lineX - view * 0.6) : 0;
+        // Only move when the now-line is NOT already comfortably in view.
+        const cur = Math.max(0, el.scrollLeft);
+        const comfortable = showNow.value && lineX >= cur + view * 0.15 && lineX <= cur + view * 0.85;
+        if (comfortable) return;
+        // Fire after paint (double rAF) so the smooth scroll starts on a settled frame.
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () {
+            const e2 = scroller.value;
+            if (!e2) return;
+            let ok = false;
+            try {
+              ok = typeof e2.scrollTo === "function" && ("scrollBehavior" in document.documentElement.style);
+              if (ok) e2.scrollTo({ left: target, behavior: "smooth" });
+            } catch (_e) { ok = false; }
+            if (!ok) { try { e2.scrollLeft = target; } catch (_e2) {} }
+          });
+        });
+      }
+      // Keep the grid the ONLY vertical scroller: bound its height to the space left
+      // between its own top and the fixed tabbar (+ the footer line under it), so the
+      // page itself never scrolls and the last console row is never cut off.
+      function sizeScroller() {
+        const el = scroller.value;
+        if (!el) return;
+        const top = el.getBoundingClientRect().top + (window.scrollY || 0);
+        const tb = document.querySelector(".van-tabbar");
+        const tabH = tb ? tb.getBoundingClientRect().height : 0;
+        const foot = el.parentElement ? el.parentElement.querySelector(".psv-tl-foot") : null;
+        const footH = foot ? foot.getBoundingClientRect().height : 0;
+        const avail = Math.floor(window.innerHeight - top - tabH - footH - 12);
+        if (avail > 0) el.style.maxHeight = Math.max(200, avail) + "px";
+        else el.style.maxHeight = "";
       }
       async function load() {
         const _id = ++fetchId;
@@ -2127,22 +2173,29 @@
           if (_id === fetchId) {
             loading.value = false;
             refreshing.value = false;
-            nextTick(() => scrollToNow());
+            nextTick(() => { sizeScroller(); scrollToNow(); });
           }
         }
       }
+      const onResize = () => { sizeScroller(); };
       onMounted(() => {
         load();
-        tick = setInterval(() => { clock.value = Date.now(); }, 60000);
+        // 15s tick → the single now-line glides (transition: transform 15s linear)
+        // instead of jumping once a minute.
+        tick = setInterval(() => { clock.value = Date.now(); }, 15000);
         window.addEventListener("psv:retry", load);
+        window.addEventListener("resize", onResize);
+        window.addEventListener("orientationchange", onResize);
       });
       onUnmounted(() => {
         if (tick) clearInterval(tick);
         window.removeEventListener("psv:retry", load);
+        window.removeEventListener("resize", onResize);
+        window.removeEventListener("orientationchange", onResize);
       });
-      return { embedded: props.embedded, refreshing, day, bookings, consoles, loading, err, scroller, gridHours, gridLines,
+      return { embedded: props.embedded, refreshing, day, bookings, consoles, loading, err, scroller, gridHours, tlRows, nowLinePx,
         isToday, isTomorrow, dayLabel, nowPx, showNow, openHourLabel, closeHourLabel,
-        hourPx, hourLabel, tone, blocksOf, blockStyle, isNarrow, blockTime, range, utilOf, utilTone, pick, goToday, goTomorrow, step, load };
+        hourPx, hourLabel, tone, blockStyle, isNarrow, blockTime, range, pick, goToday, goTomorrow, step, load };
     },
   };
 
