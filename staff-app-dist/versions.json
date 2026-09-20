@@ -1,8 +1,19 @@
 {
-  "latest": "1.6.3",
-  "latest_code": 45,
-  "updated_at": "2026-09-20T17:55:39Z",
+  "latest": "1.6.4",
+  "latest_code": 46,
+  "updated_at": "2026-09-20T18:10:49Z",
   "versions": [
+    {
+      "version": "1.6.4",
+      "version_code": 46,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.4.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.4.apk",
+      "size": 5076124,
+      "sha256": "3bcff633ff6abb0fd7bf876547697b1c908232d98cce9f9eb1e03bca333f9cc4",
+      "released_at": "2026-09-20",
+      "notes": "v1.6.4 (code 46): profile password/photo calls now use a direct transport with no 401-refresh wrapper, so the toast shows the TRUE status (e.g. 401 Session expired \u2014 log out and sign in again, or the real server detail) instead of a generic network error raised by the refresh path."
+    },
     {
       "version": "1.6.3",
       "version_code": 45,

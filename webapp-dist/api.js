@@ -32,7 +32,7 @@
   var PSV_BUILD = "w24print";
   // Real app build number — shown in the More menu footer (was hardcoded "build 34" before,
   // which misled diagnosis). Bump together with android versionCode.
-  var APP_BUILD = "45";
+  var APP_BUILD = "46";
   function psvBuildSelfHeal() {
     try {
       fetch(_u("/webapp/?_b=" + Date.now()), { cache: "no-store" })
@@ -273,6 +273,47 @@
     return body;
   }
   function apiToken() { return jwt || ""; }
+
+  /**
+   * Direct POST with NO 401-recovery / retry wrapper, so the screen sees the TRUE outcome.
+   * (The profile calls kept showing "Network error" because api() answers a 401 by refreshing
+   *  through /auth/*, and that refresh failed on the device — hiding the real status.)
+   */
+  async function apiDirect(path, obj) {
+    const headers = { "Content-Type": "application/json" };
+    if (jwt) headers["Authorization"] = "Bearer " + jwt;
+    let resp;
+    try { resp = await fetch(_u(path), { method: "POST", headers: headers, body: JSON.stringify(obj || {}) }); }
+    catch (e) { throw new Error("Network error — " + path); }
+    let body = null;
+    try { body = await resp.json(); } catch (_e) { body = null; }
+    if (!resp.ok) {
+      const detail = (body && (body.detail || body.error)) || "";
+      const msg = (resp.status === 401)
+        ? "Session expired (401) — log out and sign in again"
+        : (detail || ("HTTP " + resp.status));
+      const err = new Error(msg);
+      err.status = resp.status;
+      throw err;
+    }
+    return body;
+  }
+  /** Same as apiDirect but for multipart uploads. */
+  async function uploadDirect(path, formData) {
+    const headers = {};
+    if (jwt) headers["Authorization"] = "Bearer " + jwt;
+    let resp;
+    try { resp = await fetch(_u(path), { method: "POST", headers: headers, body: formData }); }
+    catch (e) { throw new Error("Network error — " + path); }
+    let body = null;
+    try { body = await resp.json(); } catch (_e) { body = null; }
+    if (!resp.ok) {
+      const detail = (body && (body.detail || body.error)) || "";
+      const msg = (resp.status === 401) ? "Session expired (401) — log out and sign in again" : (detail || ("HTTP " + resp.status));
+      const err = new Error(msg); err.status = resp.status; throw err;
+    }
+    return body;
+  }
 
   function retryNow() { invalidate(); _emit("psv:retry", {}); }
 
@@ -858,6 +899,8 @@
     apiOrigin: function () { return API_ORIGIN; },
     appBuild: APP_BUILD,
     apiPlain: apiPlain,
+    apiDirect: apiDirect,
+    uploadDirect: uploadDirect,
     uploadPlain: uploadPlain,
     apiToken: apiToken,
     avatarSrc: avatarSrc,

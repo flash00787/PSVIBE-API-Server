@@ -6042,7 +6042,11 @@
         if (f.size > 2 * 1024 * 1024) { showToast("Image must be smaller than 2 MB", "warning"); return; }
         try {
           let r = null;
-          try { r = await _upPhoto("/api/profile/photo", f); }
+          try {
+            const _fd = new FormData();
+            _fd.append("file", f);
+            r = await PSV.uploadDirect("/api/profile/photo", _fd);
+          }
           catch (e0) {
             if (/network/i.test(String(e0 && e0.message))) { r = await _upPhoto("https://ps-vibe.com/auth/profile/photo", f); }
             else { throw e0; }
@@ -6092,8 +6096,7 @@
           // Primary: the normal /api/* path with JSON + Authorization — exactly how every other
           // working call in this app talks to the server (the /auth/* POSTs were the anomaly).
           try {
-            await PSV.api("/api/profile/password", { method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ current_password: pwCur.value, new_password: pwNew.value }) });
+            await PSV.apiDirect("/api/profile/password", { current_password: pwCur.value, new_password: pwNew.value });
             done = true;
           } catch (e0) {
             lastErr = e0;
