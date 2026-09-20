@@ -502,8 +502,61 @@
     }
   }
 
+  // ── Authenticated binary fetch → object URL (proof images) ──
+  // Same Bearer + 401-refresh path as api(); returns a blob: URL that an <img>
+  // can load. Cached per path so re-opening a sheet does not refetch.
+  const _blobCache = Object.create(null); // path → { url, ts }
+  async function blobUrl(path, options) {
+    const hit = _blobCache[path];
+    if (hit) return hit.url;
+    const opts = options || {};
+    const headers = Object.assign({}, opts.headers || {});
+    if (jwt) headers["Authorization"] = "Bearer " + jwt;
+
+    let resp;
+    try {
+      resp = await fetch(path, Object.assign({}, opts, { headers }));
+    } catch (e) {
+      throw new Error("Network error — check your internet connection");
+    }
+    if (resp.status === 401) {
+      const wasWeb = isWebLogin;
+      const ok = await _recoverAuth();
+      if (ok) {
+        headers["Authorization"] = "Bearer " + jwt;
+        resp = await fetch(path, Object.assign({}, opts, { headers }));
+      } else {
+        throw new Error(wasWeb ? "Session expired — please sign in again" : "Session expired — please reopen from the Telegram bot");
+      }
+    }
+    if (!resp.ok) {
+      let msg = "HTTP " + resp.status;
+      try {
+        const ct = (resp.headers.get("content-type") || "").toLowerCase();
+        if (ct.indexOf("json") >= 0) {
+          const b = await resp.json();
+          msg = (b && (b.detail || b.error)) || msg;
+          if (msg && typeof msg === "object") msg = msg.error || JSON.stringify(msg);
+        }
+      } catch (_e) {}
+      throw new Error(msg);
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    _blobCache[path] = { url: url, ts: Date.now() };
+    return url;
+  }
+  function revokeBlob(key) {
+    const hit = _blobCache[key];
+    if (hit) {
+      try { URL.revokeObjectURL(hit.url); } catch (_e) {}
+      delete _blobCache[key];
+    }
+  }
+
   window.PSV = {
     api, apiCached, invalidate, retryNow, unwrap, authenticate, isAuthed, getStaff, getTg,
+    blobUrl, revokeBlob,
     login, logout, loadStoredAuth, usesWebLogin,
     renderVoucherPng, printVoucher,
     genClientRef, genVoucherNo, fmtKs, todayMMT, monthMMT, toast, haptic,

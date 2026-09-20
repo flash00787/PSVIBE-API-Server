@@ -1,7 +1,7 @@
 """PS VIBE API — Booking & Receipt Routes."""
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Body
 from config import MMT_HOURS, MMT_MINUTES
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
 import mysql.connector as _mc
 from helpers import _mysql_get_setting, _mysql_get_settings_dict, ok, error_response, success_response, _parse_pm_and_inject, rate_limit_10pm, rate_limit_5pm, rate_limit_30pm, insert_cash_movement_if_absent
@@ -1177,6 +1177,116 @@ async def api_get_booking(booking_id: int, request: Request, auth=Depends(verify
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── GET /api/bookings/{booking_id}/deposit/proof — stream the transfer screenshot ──
+# console_bookings.deposit_ref holds EITHER an http(s) URL OR a Telegram file_id
+# (saved by the CUSTOMER bot, so the id is scoped to CUSTOMER_BOT_TOKEN).  An
+# <img src> can never load a bare file_id, so we resolve it here, server-side,
+# and stream the bytes.  The bot token is NEVER written to the response, logs,
+# or any error message.
+_DEPOSIT_PROOF_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads", "deposits")
+_DEPOSIT_PROOF_TTL = 24 * 3600          # re-download after 24h (Telegram file paths expire)
+_DEPOSIT_PROOF_MAX = 8 * 1024 * 1024    # soft cap (8 MB) — deposit screenshots are small
+_IMG_CT_BY_EXT = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                  ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def _proof_ct(ext: str) -> str:
+    return _IMG_CT_BY_EXT.get((ext or "").lower(), "image/jpeg")
+
+
+@router.get("/bookings/{booking_id}/deposit/proof", tags=["Deposits"],
+            summary="Stream a booking's deposit proof image (staff-only) [MySQL]")
+async def api_booking_deposit_proof(booking_id: int, request: Request, auth=Depends(verify_api_key)):
+    """Stream the deposit-payment proof (transfer screenshot) for one booking.
+
+    The ref is only served to trusted staff/service callers
+    (``staff_audit.can_view_payment_ref``); the bot token used to resolve a
+    Telegram ``file_id`` never appears in the response, logs, or errors."""
+    if not staff_audit.can_view_payment_ref(request):
+        raise HTTPException(status_code=403, detail="Not allowed to view payment proof")
+    try:
+        row = _mysql_query_one(
+            "SELECT id, deposit_ref, deposit_ref_type FROM console_bookings WHERE id=%s",
+            (booking_id,))
+    except Exception:
+        raise HTTPException(status_code=503, detail="Proof temporarily unavailable — please retry")
+    if not row:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    ref = (row.get("deposit_ref") or "").strip()
+    rtype = (row.get("deposit_ref_type") or "").strip().lower()
+    if not ref:
+        raise HTTPException(status_code=404, detail="No deposit proof on this booking")
+    if rtype not in ("image", "both"):
+        raise HTTPException(status_code=404, detail="This booking has no image proof")
+
+    _hdr = {"Cache-Control": "private, max-age=300"}
+
+    # (a) Plain http(s) URL → stream it through (no redirect, no token leakage).
+    if re.match(r"^https?://", ref, re.I):
+        try:
+            _rq = urllib.request.Request(ref, headers={"User-Agent": "PSVIBE/1.0"})
+            with urllib.request.urlopen(_rq, timeout=10) as _up:
+                body = _up.read(_DEPOSIT_PROOF_MAX)
+                ctype = (_up.headers.get_content_type() or "image/jpeg")
+        except Exception:
+            logger.warning("deposit proof URL fetch failed (booking %s)", booking_id)
+            raise HTTPException(status_code=502, detail="Could not load the proof — please retry")
+        if not str(ctype).startswith("image/"):
+            ctype = "image/jpeg"
+        return Response(content=body, media_type=ctype, headers=_hdr)
+
+    # (b) Telegram file_id → getFile (CUSTOMER bot token) → download → cache.
+    token = os.environ.get("CUSTOMER_BOT_TOKEN") or os.environ.get("BOT_TOKEN") or ""
+    if not token:
+        raise HTTPException(status_code=503, detail="Proof service is not configured")
+
+    # Serve a fresh cached copy when present (cache dir is outside every static mount).
+    try:
+        for _fn in os.listdir(_DEPOSIT_PROOF_DIR):
+            if _fn.startswith("bk%d." % booking_id):
+                _cp = os.path.join(_DEPOSIT_PROOF_DIR, _fn)
+                if os.path.isfile(_cp) and (datetime.now().timestamp() - os.path.getmtime(_cp)) < _DEPOSIT_PROOF_TTL:
+                    try:
+                        with open(_cp, "rb") as _f:
+                            return Response(content=_f.read(),
+                                            media_type=_proof_ct(os.path.splitext(_fn)[1]), headers=_hdr)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    import urllib.parse as _uparse
+    try:
+        _gu = ("https://api.telegram.org/bot" + token + "/getFile?file_id="
+               + _uparse.quote(ref, safe=""))
+        with urllib.request.urlopen(_gu, timeout=10) as _gf:
+            _info = json.load(_gf)
+        _fp = ((_info or {}).get("result") or {}).get("file_path") if (_info and _info.get("ok")) else ""
+        if not _fp:
+            raise HTTPException(status_code=404, detail="Proof image is no longer available on Telegram")
+        _ext = os.path.splitext(_fp)[1].lower()
+        if _ext not in _IMG_CT_BY_EXT:
+            _ext = ".jpg"
+        _du = "https://api.telegram.org/file/bot" + token + "/" + _fp
+        with urllib.request.urlopen(_du, timeout=10) as _df:
+            body = _df.read(_DEPOSIT_PROOF_MAX)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning("deposit proof download failed (booking %s)", booking_id)
+        raise HTTPException(status_code=502, detail="Could not load the proof — please retry")
+
+    # Best-effort cache write — never fails the request.
+    try:
+        os.makedirs(_DEPOSIT_PROOF_DIR, exist_ok=True)
+        with open(os.path.join(_DEPOSIT_PROOF_DIR, "bk%d%s" % (booking_id, _ext)), "wb") as _cf:
+            _cf.write(body)
+    except Exception:
+        pass
+    return Response(content=body, media_type=_proof_ct(_ext), headers=_hdr)
 
 
 # ── Shared booking-list helpers (Staff App Wave 4: status=open + /api/timeline) ──

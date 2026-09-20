@@ -2311,11 +2311,25 @@
           <div class="psv-sheet__body">
             <div class="psv-sheet-title">👁 Deposit Proof — BK#{{ proof.booking_id }}</div>
             <div v-if="proof.restricted" class="psv-card"><div class="psv-field-label">Restricted</div><div style="font-size:13px;line-height:1.6">Proof is not available for your role. Ask an owner / admin to view it.</div></div>
-            <img v-else-if="proof.isImg" :src="proof.ref" class="psv-proof-img" />
+            <template v-else-if="proof.isImg">
+              <div v-if="proof.imgLoading" class="psv-proof-spin"><span class="psv-proof-spin__c"></span><span class="psv-proof-spin__t">SS ဖွင့်နေသည်…</span></div>
+              <img v-else-if="proof.imgUrl" :src="proof.imgUrl" class="psv-proof-img" @click="maybeProofFull" />
+              <div v-else class="psv-card">
+                <div class="psv-field-label">SS ဖွင့်လို့ မရပါ — ပြန်စမ်းပါ</div>
+                <div v-if="proof.imgError" style="font-size:12px;color:var(--pv-muted);margin-top:4px;word-break:break-all">{{ proof.imgError }}</div>
+                <button class="psv-btn psv-btn--ghost psv-btn--block" style="margin-top:8px" @click="loadProof">ပြန်စမ်းပါ</button>
+                <div style="font-size:12px;color:var(--pv-muted);margin-top:10px;word-break:break-all">Ref: {{ proof.ref }}</div>
+              </div>
+            </template>
             <div v-else class="psv-card"><div class="psv-field-label">Ref / details</div><div style="font-size:14px;word-break:break-all">{{ proof.ref }}</div></div>
             <button class="psv-btn psv-btn--primary psv-btn--block" style="margin-top:12px" @click="proofOpen = false">Close</button>
           </div>
         </van-popup>
+
+        <!-- Deposit proof — full-screen viewer (native shell only) -->
+        <div v-if="proofFull" class="psv-proof-full" @click="proofFull = false">
+          <img :src="proof.imgUrl" class="psv-proof-full__img" />
+        </div>
 
         <!-- New booking (kept from previous pass) -->
         <van-popup v-model:show="newOpen" position="bottom" round class="psv-sheet" :style="{ height: '92vh' }">
@@ -2350,7 +2364,8 @@
       const reasonNote = ref("");
       const reasonTarget = ref(null);
       const proofOpen = ref(false);
-      const proof = reactive({ ref: "", isImg: false, booking_id: "", restricted: false });
+      const proofFull = ref(false);
+      const proof = reactive({ ref: "", isImg: false, booking_id: "", restricted: false, imgUrl: "", imgKey: "", imgLoading: false, imgError: "" });
 
       const chipMeta = computed(() => CHIPS.find((c) => c.id === chip.value) || CHIPS[1]);
       const chipHint = computed(() => chipMeta.value.hint);
@@ -2532,10 +2547,34 @@
           router.push("/sales");
         } catch (e) { showToast("Failed: " + e.message, "fail"); }
       }
+      function resetProofImg() {
+        if (proof.imgKey) { try { PSV.revokeBlob(proof.imgKey); } catch (_e) {} }
+        proof.imgUrl = ""; proof.imgKey = ""; proof.imgLoading = false; proof.imgError = "";
+        proofFull.value = false;
+      }
+      async function loadProof() {
+        const id = proof.booking_id;
+        if (!id) return;
+        proof.imgLoading = true; proof.imgError = "";
+        try {
+          const p = "/api/bookings/" + id + "/deposit/proof";
+          const url = await PSV.blobUrl(p);
+          if (!proofOpen.value) { try { PSV.revokeBlob(p); } catch (_e) {} return; }
+          proof.imgKey = p; proof.imgUrl = url; proof.imgError = "";
+        } catch (e) {
+          proof.imgUrl = ""; proof.imgError = (e && e.message) || "failed";
+        } finally { proof.imgLoading = false; }
+      }
+      function maybeProofFull() {
+        // Full-screen viewer is a native-shell affordance only (Telegram stays as-is).
+        try { if (!document.documentElement.classList.contains("psv-native")) return; } catch (_e) { return; }
+        if (proof.imgUrl) { proofFull.value = true; haptic("light"); }
+      }
       function showProof(b) {
         const ref = depRef(b);
         // New booking objects carry can_view_proof; when false the ref is redacted.
         const canView = (b.can_view_proof == null) ? !!ref : !!b.can_view_proof;
+        resetProofImg();
         proof.booking_id = b.id;
         if (!canView || !ref) { proof.ref = ""; proof.isImg = false; proof.restricted = true; proofOpen.value = true; haptic("light"); return; }
         proof.ref = ref;
@@ -2544,6 +2583,7 @@
         proof.restricted = false;
         proofOpen.value = true;
         haptic("light");
+        if (proof.isImg) loadProof();
       }
 
       function openReason(mode, b) { reasonMode.value = mode; reasonPick.value = ""; reasonNote.value = ""; reasonTarget.value = b; reasonOpen.value = true; haptic("light"); }
@@ -2592,12 +2632,13 @@
         const pid = pendingBooking.value;
         if (pid) { pendingBooking.value = null; await openById(pid); }
       });
-      onUnmounted(() => window.removeEventListener("psv:retry", load));
+      onUnmounted(() => { window.removeEventListener("psv:retry", load); resetProofImg(); });
       watch(pendingBooking, async (pid) => { if (pid) { pendingBooking.value = null; await openById(pid); } });
+      watch(proofOpen, (open) => { if (!open) resetProofImg(); });
 
       return { chips: CHIPS, chip, chipHint, emptyText, rows, loading, refreshing, busy, detail, detailOpen, newOpen,
         view, setView, onPickTimeline,
-        reasonOpen, reasonMode, reasonPick, reasonNote, reasonList, proofOpen, proof,
+        reasonOpen, reasonMode, reasonPick, reasonNote, reasonList, proofOpen, proof, proofFull, loadProof, maybeProofFull,
         bkStatus, depositText, depRef, cardActions, detailActions, setChip, goNew, onSaved, load, openDetail, runAction, confirmReason, fmt12h };
     },
   };
