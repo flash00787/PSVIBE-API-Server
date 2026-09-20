@@ -113,7 +113,7 @@ async def get_revenue_trend(days: int = Query(7, ge=1, le=30), user: dict = Depe
         rows = _mysql_query("""
             SELECT DATE(created_at) as dt, COALESCE(SUM(amount), 0) as total
             FROM sales_daily
-            WHERE sale_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            WHERE sale_date >= DATE_SUB(DATE(NOW() + INTERVAL 390 MINUTE), INTERVAL %s DAY)
               AND notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%'
             GROUP BY dt
             ORDER BY dt ASC
@@ -3530,7 +3530,7 @@ async def get_deposit_overview(
                 SELECT COALESCE(SUM(deposit_amount),0) as total
                 FROM console_bookings
                 WHERE deposit_status = 'forfeited'
-                  AND DATE(COALESCE(cancelled_at, created_at)) >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
+                  AND DATE(COALESCE(cancelled_at, created_at)) >= DATE_FORMAT(DATE(NOW() + INTERVAL 390 MINUTE), '%%Y-%%m-01')
             """)
         this_month_forfeited = float(forfeited_row["total"]) if forfeited_row else 0.0
 
@@ -3547,7 +3547,7 @@ async def get_deposit_overview(
                 SELECT COALESCE(SUM(deposit_amount),0) as total
                 FROM console_bookings
                 WHERE deposit_status = 'refunded'
-                  AND DATE(created_at) >= DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
+                  AND DATE(created_at) >= DATE_FORMAT(DATE(NOW() + INTERVAL 390 MINUTE), '%%Y-%%m-01')
             """)
         this_month_refunded = float(refunded_row["total"]) if refunded_row else 0.0
 

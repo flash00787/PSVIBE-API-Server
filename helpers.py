@@ -167,3 +167,76 @@ def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, st
             )
             _logger.info("Cash movement inject: %s +%.0f Ks (%s, category=%s)", account, val, note, category)
 
+
+
+# ── Sale-time game resolution (sales_daily.game_name / game_id) ──────────────
+# 2026-09-20: sales_daily.game_name + game_id are populated AT SALE TIME. A sale
+# row links to a game via (in priority order): explicit hint → console_sessions
+# by session_id → the booking's latest session → the console's active session →
+# console_status.current_game. game_id is the matching console_games.id.
+# NOTE the collation trap: console_games.* is utf8mb4_unicode_ci while
+# console_sessions/sales_daily are utf8mb4_0900_ai_ci, so the join needs an
+# explicit COLLATE on BOTH sides. Never raises — returns (None, None, None).
+def resolve_sale_game(console_id, session_id=None, booking_id=None, game_name_hint=None):
+    """Return (game_name, game_id, session_id) for a sale row; NULLs when unknown."""
+    sid = None
+    gname = (game_name_hint or "").strip()
+    try:
+        # Normalise a caller-supplied session id.
+        if session_id not in (None, "", "0", 0):
+            try:
+                sid = int(session_id)
+            except (TypeError, ValueError):
+                sid = None
+
+        row = None
+        if not gname:
+            if sid:
+                row = _mysql_query_one(
+                    "SELECT id, game_name FROM console_sessions WHERE id=%s", (sid,))
+            elif booking_id not in (None, "", 0, "0"):
+                row = _mysql_query_one(
+                    "SELECT id, game_name FROM console_sessions WHERE booking_id=%s "
+                    "ORDER BY id DESC LIMIT 1", (booking_id,))
+            if row:
+                sid = row.get("id") or sid
+                gname = (row.get("game_name") or "").strip()
+
+        # Fallback: the console's current (active) session.
+        if not gname and console_id:
+            row = _mysql_query_one(
+                "SELECT id, game_name FROM console_sessions WHERE console_id=%s "
+                "AND status='active' ORDER BY id DESC LIMIT 1", (console_id,))
+            if row:
+                sid = sid or row.get("id")
+                gname = (row.get("game_name") or "").strip()
+
+        # Last resort: console_status.current_game (no session id attached).
+        if not gname and console_id:
+            cs = _mysql_query_one(
+                "SELECT current_game FROM console_status WHERE console_id=%s", (console_id,))
+            if cs:
+                gname = (cs.get("current_game") or "").strip()
+
+        if not gname or gname == "-":
+            return (None, None, sid)
+
+        # Map (console_id, title) → console_games.id with explicit COLLATE both sides.
+        gid = None
+        if console_id:
+            try:
+                cg = _mysql_query_one(
+                    "SELECT cg.id FROM console_games cg "
+                    "WHERE cg.console_id = %s COLLATE utf8mb4_unicode_ci "
+                    "AND cg.game_title = %s COLLATE utf8mb4_unicode_ci "
+                    "ORDER BY cg.id DESC LIMIT 1",
+                    (console_id, gname))
+                if cg:
+                    gid = int(cg["id"])
+            except Exception as _e:
+                _logger.warning("resolve_sale_game: game_id lookup failed: %s", _e)
+        return (gname, gid, sid)
+    except Exception as _e:
+        _logger.warning("resolve_sale_game failed console=%s session=%s booking=%s: %s",
+                        console_id, session_id, booking_id, _e)
+        return (None, None, None)

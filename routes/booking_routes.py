@@ -4,7 +4,7 @@ from config import MMT_HOURS, MMT_MINUTES
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
 import mysql.connector as _mc
-from helpers import _mysql_get_setting, _mysql_get_settings_dict, ok, error_response, success_response, _parse_pm_and_inject, rate_limit_10pm, rate_limit_5pm, rate_limit_30pm, insert_cash_movement_if_absent
+from helpers import _mysql_get_setting, _mysql_get_settings_dict, ok, error_response, success_response, _parse_pm_and_inject, rate_limit_10pm, rate_limit_5pm, rate_limit_30pm, insert_cash_movement_if_absent, resolve_sale_game
 from field_utils import normalize_list
 from deps import verify_api_key, verify_webhook_secret
 import staff_audit
@@ -901,7 +901,7 @@ async def api_update_booking_status(booking_id: int, req: dict, request: Request
                 ) or {}
                 _dep_status = _dep_bk.get('deposit_status') or ''
                 _app_cur.execute(
-                    f"UPDATE console_bookings SET status=%s, cancelled_at=NOW(), "
+                    f"UPDATE console_bookings SET status=%s, cancelled_at=DATE_ADD(NOW(), INTERVAL 390 MINUTE), "
                     f"deposit_status=CASE WHEN %s='verified' THEN 'forfeited' WHEN %s='paid' THEN 'none' ELSE deposit_status END, "
                     f"staff_name=COALESCE(NULLIF(%s, ''), staff_name), notes=COALESCE(NULLIF(%s, ''), notes) "
                     f"WHERE id=%s AND status IN {_allowed_from}",
@@ -1541,7 +1541,7 @@ async def api_get_bookings(request: Request, status: str = "", member_id: str = 
         # Server-side filter: cancelled bookings — forfeited deposits show all day, regular only 2 hours
         if status == "cancelled":
             sql += " AND " if where_clauses else " WHERE "
-            sql += "(cb.deposit_status = 'forfeited' OR cb.cancelled_at >= NOW() - INTERVAL 2 HOUR)"
+            sql += "(cb.deposit_status = 'forfeited' OR cb.cancelled_at >= DATE_ADD(NOW(), INTERVAL 390 MINUTE) - INTERVAL 2 HOUR)"
         sql += " ORDER BY cb.booking_date DESC, COALESCE(cs.actual_start, cb.planned_start) DESC"
         rows = _mysql_query(sql, tuple(params)) if params else _mysql_query(sql)
         if not rows:
@@ -2140,7 +2140,7 @@ async def api_booking_cancel(req: dict, request: Request, auth=Depends(verify_ap
             # Auto-forfeit deposit ONLY if verified when cancelling (Boss policy 2026-07-31);
             # unverified ('paid') -> void to 'none' (NOT revenue, no cash movement)
             _cancel_cur.execute(
-                "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
+                "UPDATE console_bookings SET status='cancelled', cancelled_at=DATE_ADD(NOW(), INTERVAL 390 MINUTE), "
                 "deposit_status=CASE WHEN deposit_status='verified' THEN 'forfeited' WHEN deposit_status='paid' THEN 'none' ELSE deposit_status END, "
                 "notes=COALESCE(%s, notes), staff_name=COALESCE(NULLIF(%s, ''), staff_name) "
                 "WHERE id=%s AND status NOT IN ('Active','Done')",
@@ -2871,7 +2871,7 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
                 _will_forfeit = _pre and _pre.get('deposit_status', '') == 'verified'
                 
                 _mysql_exec(
-                    "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
+                    "UPDATE console_bookings SET status='cancelled', cancelled_at=DATE_ADD(NOW(), INTERVAL 390 MINUTE), "
                     "deposit_status=CASE WHEN deposit_status='verified' THEN 'forfeited' WHEN deposit_status='paid' THEN 'none' ELSE deposit_status END, "
                     "notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: no-show') WHERE id=%s AND deposit_status <> 'forfeited'",
                     (bk_id,)
@@ -2931,7 +2931,7 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
             bk_id = row['id']
             try:
                 _mysql_exec(
-                    "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), "
+                    "UPDATE console_bookings SET status='cancelled', cancelled_at=DATE_ADD(NOW(), INTERVAL 390 MINUTE), "
                     "notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: deposit timeout (15min)') "
                     "WHERE id=%s AND status='pending'",
                     (bk_id,)
@@ -2987,7 +2987,7 @@ def _auto_cancel_expired_pending():
             for row in (rows or []):
                 try:
                     _mysql_exec(
-                        "UPDATE console_bookings SET status='cancelled', cancelled_at=NOW(), notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: expired pending') WHERE id=%s AND status='pending'",
+                        "UPDATE console_bookings SET status='cancelled', cancelled_at=DATE_ADD(NOW(), INTERVAL 390 MINUTE), notes=CONCAT(COALESCE(notes,''), ' | Auto-cancelled: expired pending') WHERE id=%s AND status='pending'",
                         (row['id'],)
                     )
                     cancelled += 1
@@ -3447,10 +3447,14 @@ async def api_deposit_settle(booking_id: int, req: dict, auth=Depends(verify_api
         phone = row.get("phone", "") or ""
         member_ref = member_id if member_id else (phone if phone else "Guest")
         
+        # ── Game attribution (2026-09-20): populate game_name + game_id at sale time ──
+        _game_name, _game_id, _session_id = resolve_sale_game(
+            row.get("console_id", ""), booking_id=booking_id)
+
         sales_id = _mysql_exec(
             "INSERT INTO sales_daily (branch_id, sale_date, console_id, member_id, "
-            "amount, gross, discount, net, staff_name, customer_name, payment_method, notes, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+            "amount, gross, discount, net, staff_name, customer_name, payment_method, notes, created_at, session_id, game_name, game_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s)",
             (
                 1,  # branch_id
                 today_str,
@@ -3463,7 +3467,10 @@ async def api_deposit_settle(booking_id: int, req: dict, auth=Depends(verify_api
                 staff_name,
                 staff_name,
                 pm_str,
-                f"Deposit settle - Booking #{booking_id}"
+                f"Deposit settle - Booking #{booking_id}",
+                _session_id,
+                _game_name,
+                _game_id
             )
         )
         

@@ -1185,7 +1185,7 @@ async def api_reports_daily_v2(auth=Depends(verify_api_key)):
             "members_served": 0,
         }
         try:
-            rows = _mysql_query("SELECT amount, payment_method, member_id FROM sales_daily WHERE sale_date = CURDATE()")
+            rows = _mysql_query("SELECT amount, payment_method, member_id FROM sales_daily WHERE sale_date = DATE(NOW() + INTERVAL 390 MINUTE)")
             members_set = set()
             for r in rows:
                 amt = int(float(r["amount"] or 0))
@@ -1202,7 +1202,7 @@ async def api_reports_daily_v2(auth=Depends(verify_api_key)):
         except Exception as e:
             logger.warning("report-data sales error: %s", e)
         try:
-            rows = _mysql_query("SELECT console_id FROM console_bookings WHERE booking_date = CURDATE()")
+            rows = _mysql_query("SELECT console_id FROM console_bookings WHERE booking_date = DATE(NOW() + INTERVAL 390 MINUTE)")
             for r in rows:
                 cid = (r["console_id"] or "").strip()
                 if cid:

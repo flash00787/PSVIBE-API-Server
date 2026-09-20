@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Request
 from fastapi.responses import JSONResponse
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
-from helpers import _mysql_get_setting, ok, error_response, _parse_pm_and_inject, insert_cash_movement_if_absent
+from helpers import _mysql_get_setting, ok, error_response, _parse_pm_and_inject, insert_cash_movement_if_absent, resolve_sale_game
 from deps import verify_api_key
 from auth import get_current_user, get_staff_or_dashboard_user
 from models import GenericResponse
@@ -668,10 +668,17 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
             if _mw and _mw.get("member_name"):
                 customer_name = _mw["member_name"]
 
+        # ── Game attribution (2026-09-20): populate game_name + game_id at sale time ──
+        # Resolved from an explicit hint / the linked session / the console's current
+        # game. NULLs when unknown — the insert must never break on a missing game.
+        _game_name, _game_id, _session_id = resolve_sale_game(
+            console_id, session_id=req.get("session_id"),
+            booking_id=booking_id, game_name_hint=req.get("game_name"))
+
         _mysql_exec(
-            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, customer_name, payment_method, notes, client_ref) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (voucher_no, sale_date, console_id, member_id, game_amt, gross, discount, net_total, staff, customer_name, payment_method, combined_notes, client_ref)
+            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, customer_name, payment_method, notes, client_ref, session_id, game_name, game_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (voucher_no, sale_date, console_id, member_id, game_amt, gross, discount, net_total, staff, customer_name, payment_method, combined_notes, client_ref, _session_id, _game_name, _game_id)
         )
 
         # Deduct wallet balance for member sales

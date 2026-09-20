@@ -1,4 +1,5 @@
 """PS VIBE API — inventory_fifo module."""
+import os
 import mysql.connector
 import json
 import uuid
