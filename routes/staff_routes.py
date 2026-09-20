@@ -57,7 +57,8 @@ async def dashboard_opex_list(
 
 
 @router.post("/dashboard/opex")
-async def dashboard_opex_add(body: dict = {}, user: dict = Depends(get_current_user)):
+async def dashboard_opex_add(body: dict = {}, user: dict = Depends(require_admin_clean)):
+    """Add an operating expense (owner/admin only — owner 2026-09-20 17:00 "admin = owner")."""
     from mysql_db import execute as _me
     from datetime import datetime, timedelta
     _mmt = timedelta(hours=6, minutes=30)

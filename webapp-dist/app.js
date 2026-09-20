@@ -3194,7 +3194,7 @@
     ] },
     { id: "report", emoji: "📊", en: "Reports", tone: "teal", items: [
       { en: "Today's summary", sub: "Daily totals", icon: "📊", path: "/reports" },
-      { en: "Operating expenses (OPEX)", sub: "Owner only", icon: "💸", tag: "Owner only" },
+      { en: "Operating expenses (OPEX)", sub: "Owner / admin managed", icon: "💸", path: "/opex", tag: "Owner only", ownerOnly: true },
       { en: "Account balance", sub: "Cash position (read-only)", icon: "🏦", path: "/balances" },
     ] },
     { id: "accounts", emoji: "🏦", en: "Accounts", tone: "gold", items: [
@@ -4278,16 +4278,108 @@
     },
   };
 
-  // ── VIEW: OPEX ──────────────────────────────────────────
+  // ── VIEW: OPEX (owner / admin — owner 2026-09-20 17:00: "admin ကို owner permission") ──
   const Opex = {
     components: { PageHeader },
     template: `
       <div class="pv-page">
         <PageHeader title="OPEX" back="/more" />
-        <van-notice-bar wrapable text="Owner only — OPEX is managed from the dashboard" left-icon="info-o" />
+        <van-skeleton title :row="3" v-if="loading" style="margin:12px" />
+        <template v-else>
+          <div v-if="locked" class="psv-owner-card">
+            <div class="psv-owner-card__ico">🔒</div>
+            <div class="psv-owner-card__t">Owner / admin only</div>
+            <div class="psv-owner-card__s">Operating expenses are managed by the owner (admin) account.</div>
+            <div v-if="err" class="psv-owner-card__m">{{ err }}</div>
+          </div>
+          <template v-else>
+            <div class="pv-header" style="padding-top:0">
+              <div>
+                <div class="pv-hello">💸 {{ list.length }} entries · {{ fKs(total) }} Ks</div>
+                <div class="pv-staff-name">This month</div>
+              </div>
+              <van-button size="small" type="primary" icon="plus" @click="openAdd">Add</van-button>
+            </div>
+            <van-empty v-if="!list.length" description="No expenses this month" />
+            <van-cell-group v-else inset>
+              <van-cell v-for="o in list" :key="o.id"
+                        :title="o.category + (o.description ? ' · ' + o.description : '')"
+                        :label="(o.expense_date || '') + ' · ' + (o.payment_method || '') + (o.recorded_by ? ' · ' + o.recorded_by : '')">
+                <template #value><span class="pv-amount">{{ fKs(o.amount) }} Ks</span></template>
+              </van-cell>
+            </van-cell-group>
+            <van-popup v-model:show="addOpen" position="bottom" round>
+              <div style="padding:14px 16px">
+                <div style="font-weight:700;margin-bottom:8px">Add expense</div>
+                <van-field v-model="form.category" label="Category" placeholder="Water / Internet / Staff Salary" />
+                <van-field v-model="form.description" label="Note" placeholder="optional" />
+                <van-field v-model.number="form.amount" type="number" label="Amount (Ks)" placeholder="0" />
+                <van-field :model-value="form.payment_method" label="Payment" is-link readonly @click="payPicker=true" />
+                <div style="display:flex;gap:8px;margin-top:12px">
+                  <van-button block plain @click="addOpen=false">Cancel</van-button>
+                  <van-button block type="primary" :loading="saving" :disabled="!canSave" @click="save">Save</van-button>
+                </div>
+              </div>
+            </van-popup>
+            <PSVPicker :show="payPicker" title="Payment method"
+                       :items="payColumns.map((c) => ({ value: c.value, label: c.text }))"
+                       :model-value="form.payment_method"
+                       @update:show="(v) => { payPicker = v; }"
+                       @confirm="(v) => { form.payment_method = v; payPicker = false; }" />
+          </template>
+        </template>
       </div>
     `,
-    setup() { return {}; },
+    setup() {
+      const PAY = ["Cash", "KPay", "WavePay", "AYA Pay"];
+      const payColumns = PAY.map((p) => ({ text: p, value: p }));
+      const _role = String((PSV.getStaff() || {}).role || "").trim().toLowerCase();
+      const knownStaff = ["staff", "cashier", "manager", "viewer", "operator"].indexOf(_role) >= 0;
+      const locked = ref(false);
+      const loading = ref(true);
+      const err = ref("");
+      const list = ref([]);
+      const addOpen = ref(false);
+      const payPicker = ref(false);
+      const saving = ref(false);
+      const form = reactive({ category: "", description: "", amount: 0, payment_method: "Cash" });
+      const total = computed(() => list.value.reduce((a, o) => a + (Number(o.amount) || 0), 0));
+      const canSave = computed(() => !!String(form.category || "").trim() && Number(form.amount) > 0);
+      async function load() {
+        loading.value = true;
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/dashboard/opex"));
+          list.value = (d && (d.data || d)) || [];
+          locked.value = false;
+        } catch (e) {
+          locked.value = true;
+          err.value = String((e && e.message) || e);
+        } finally { loading.value = false; }
+      }
+      function openAdd() {
+        form.category = ""; form.description = ""; form.amount = 0; form.payment_method = "Cash";
+        addOpen.value = true; haptic("light");
+      }
+      async function save() {
+        if (!canSave.value) return;
+        saving.value = true;
+        try {
+          await PSV.api("/api/dashboard/opex", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ category: form.category, description: form.description,
+                                   amount: Number(form.amount), payment_method: form.payment_method,
+                                   expense_date: PSV.todayMMT() }),
+          });
+          addOpen.value = false;
+          showToast("Expense added ✓", "success");
+          try { PSV.invalidate("/api/dashboard/opex"); } catch (_e) {}
+          await load();
+        } catch (e) { showToast(String((e && e.message) || "Failed"), "fail"); }
+        finally { saving.value = false; }
+      }
+      onMounted(load);
+      return { loading, locked, err, list, total, addOpen, payPicker, payColumns, saving, form, canSave, openAdd, save, fKs };
+    },
   };
 
   // ── VIEW: Staff ─────────────────────────────────────────
