@@ -431,6 +431,7 @@
             <div v-if="webLogin" class="pv-account-role">{{ staffRole }}</div>
           </div>
           <div style="display:flex;align-items:center;gap:14px">
+            <van-icon name="setting-o" size="22" style="cursor:pointer" @click="go('/me')" aria-label="Profile" />
             <div class="psv-bell" @click="goNotifications" aria-label="Notifications">
               <van-icon name="bell" size="22" />
               <span v-if="unread > 0" class="psv-bell__badge">{{ unread > 99 ? '99+' : unread }}</span>
@@ -3295,7 +3296,7 @@
       function logout() { haptic("medium"); PSV.logout(); showToast("Signed out", "success"); }
       const buildInfo = computed(() => {
         const r = String((staff && staff.role) || "-") || "-";
-        return "PS VIBE · build 34 · role: " + r;
+        return "PS VIBE · build " + (PSV.appBuild || "?") + " · role: " + r;
       });
       return { groups: MENU_GROUPS, staff, initials, tap, logout, badge, lowStock, isAdmin, ownerBadge, effTag, buildInfo };
     },
@@ -6006,33 +6007,58 @@
         return (PSV.apiOrigin ? PSV.apiOrigin() : "") + photo.value;
       });
       function pickPhoto() { haptic("light"); try { if (fileEl.value) fileEl.value.click(); } catch (_e) {} }
+      async function _upPhoto(url, f) {
+        const fd = new FormData();
+        fd.append("file", f);
+        return await PSV.upload(url, fd);
+      }
       async function onPhoto(e) {
         const f = e && e.target && e.target.files && e.target.files[0];
         if (!f) return;
         if (f.size > 2 * 1024 * 1024) { showToast("Image must be smaller than 2 MB", "warning"); return; }
         try {
-          const fd = new FormData();
-          fd.append("file", f);
-          const r = await PSV.upload("/auth/profile/photo", fd);
+          let r = null;
+          try {
+            r = await _upPhoto("/auth/profile/photo", f);
+          } catch (e1) {
+            if (/network/i.test(String(e1 && e1.message))) {
+              r = await _upPhoto("https://ps-vibe.com/auth/profile/photo", f);
+            } else { throw e1; }
+          }
           const url = (r && r.photo_url) || "";
           photo.value = url; staff.photo_url = url;
           try { PSV.getStaff().photo_url = url; } catch (_e2) {}
           showToast("Profile picture updated ✓", "success");
-        } catch (err) { showToast(String((err && err.message) || "Upload failed"), "fail"); }
+        } catch (err) { showToast("Upload failed: " + String((err && err.message) || "error"), "fail"); }
         finally { try { e.target.value = ""; } catch (_e3) {} }
       }
       const pwOpen = ref(false), pwCur = ref(""), pwNew = ref(""), pwNew2 = ref(""), pwSaving = ref(false);
       const pwOk = computed(() => !!pwCur.value && String(pwNew.value).length >= 6 && pwNew.value === pwNew2.value);
       function openPw() { pwCur.value = ""; pwNew.value = ""; pwNew2.value = ""; pwOpen.value = true; haptic("light"); }
+      // Owner 2026-09-20 17:39: "Network error" — the phone reached no server. Fall back to the
+      // explicit absolute origin when the first attempt fails at the network layer, and report
+      // exactly what failed so a screenshot is enough to diagnose.
+      async function _changePw(url) {
+        return await PSV.api(url, { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ current_password: pwCur.value, new_password: pwNew.value }) });
+      }
       async function savePw() {
         if (!pwOk.value) { showToast("Check the fields (min 6 chars, both must match)", "warning"); return; }
         pwSaving.value = true;
         try {
-          await PSV.api("/auth/change-password", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ current_password: pwCur.value, new_password: pwNew.value }) });
+          try {
+            await _changePw("/auth/change-password");
+          } catch (e1) {
+            if (/network/i.test(String(e1 && e1.message))) {
+              await _changePw("https://ps-vibe.com/auth/change-password");
+            } else { throw e1; }
+          }
           pwOpen.value = false;
           showToast("Password changed ✓", "success");
-        } catch (e) { showToast(String((e && e.message) || "Failed"), "fail"); }
+        } catch (e) {
+          const m = String((e && e.message) || "Failed");
+          showToast("Password change failed: " + m, "fail");
+        }
         finally { pwSaving.value = false; }
       }
       const notify = ref(true);

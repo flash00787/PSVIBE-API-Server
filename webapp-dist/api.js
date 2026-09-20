@@ -30,6 +30,9 @@
   // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
   // with the ?v= query on every deploy.
   var PSV_BUILD = "w24print";
+  // Real app build number — shown in the More menu footer (was hardcoded "build 34" before,
+  // which misled diagnosis). Bump together with android versionCode.
+  var APP_BUILD = "41";
   function psvBuildSelfHeal() {
     try {
       fetch(_u("/webapp/?_b=" + Date.now()), { cache: "no-store" })
@@ -801,6 +804,7 @@
   window.PSV = {
     api, apiCached, invalidate, retryNow, upload, unwrap, authenticate, isAuthed, getStaff, getTg,
     apiOrigin: function () { return API_ORIGIN; },
+    appBuild: APP_BUILD,
     blobUrl, revokeBlob,
     login, logout, loadStoredAuth, usesWebLogin,
     renderVoucherPng, printVoucher, setPaperWidth, getPaperWidth: paperWidth, setPrintDensity,

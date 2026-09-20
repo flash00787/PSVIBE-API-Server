@@ -1,8 +1,19 @@
 {
-  "latest": "1.5.8",
-  "latest_code": 40,
-  "updated_at": "2026-09-20T17:24:33Z",
+  "latest": "1.5.9",
+  "latest_code": 41,
+  "updated_at": "2026-09-20T17:41:10Z",
   "versions": [
+    {
+      "version": "1.5.9",
+      "version_code": 41,
+      "arch": "universal",
+      "file": "psvibe-staff-1.5.9.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.9.apk",
+      "size": 5074200,
+      "sha256": "40a10f5af46c054e56ae5b9052d78bd13c2d6f8c1326c83bed410b27db04cdb5",
+      "released_at": "2026-09-20",
+      "notes": "v1.5.9 (code 41): diagnostics + fixes \u2014 the More footer now shows the REAL build number (it was hardcoded 'build 34'); the Home header got a gear icon that opens the profile (/me); and both Change password and Profile picture now retry once against the explicit https://ps-vibe.com origin when the first attempt fails at the network layer, reporting the exact failure in the toast."
+    },
     {
       "version": "1.5.8",
       "version_code": 40,
