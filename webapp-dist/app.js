@@ -2074,16 +2074,20 @@
         if (TL_LIVE.indexOf(k) >= 0) return true;                 // live session
         if (tlIsForfeit(b)) return true;                          // forfeit (capped to 1 h in minutesOf)
         if (TL_UPCOMING.indexOf(k) >= 0) {
-          const st = tlMin(b.timeSlot || b.startTime);            // confirmed → only while UPCOMING
-          return st != null && st >= tlNowMin();
+          // Confirmed / pending_check_in (owner 2026-09-20 11:43: "confirmed upcoming bookings မပြဘူး"):
+          // keep the booking visible until its WINDOW ENDS, not merely until its start time — a
+          // confirmed 18:00-19:00 booking must still show at 18:12 (staff may not have checked in yet).
+          const r = minutesOf(b);
+          if (!r) { const st = tlMin(b.timeSlot || b.startTime || b.start_time); return st != null && st >= tlNowMin(); }
+          return r.end >= tlNowMin();
         }
         return false;
       }
       function minutesOf(b) {
-        const st = tlMin(b.timeSlot || b.startTime);
+        const st = tlMin(b.timeSlot || b.startTime || b.start_time || b.time_slot || b.planned_start);
         if (st == null) return null;
-        const dur = Number(b.durationMins) || 0;
-        const et = tlMin(b.endTime);
+        const dur = Number(b.durationMins || b.duration_mins || b.planned_duration_mins) || 0;
+        const et = tlMin(b.endTime || b.end_time || b.planned_end);
         let end = dur > 0 ? (st + dur) : (et != null ? et : st + 60);
         if (end <= st) end = st + 60;
         // Owner spec: a forfeited booking shows as a 1-hour block only (it never played).
@@ -2106,13 +2110,13 @@
         const r = minutesOf(b);
         if (!r) return "—";
         if (isNarrow(b)) return tlFmt(r.st);
-        const openEnd = !(Number(b.durationMins) > 0) && tlMin(b.endTime) == null;
+        const openEnd = !(Number(b.durationMins || b.duration_mins || b.planned_duration_mins) > 0) && tlMin(b.endTime || b.end_time || b.planned_end) == null;
         return tlFmt(r.st) + "–" + (openEnd ? "Open" : tlFmt(r.end));
       }
       function range(b) {
         const r = minutesOf(b);
         if (!r) return "—";
-        const openEnd = !(Number(b.durationMins) > 0) && tlMin(b.endTime) == null;
+        const openEnd = !(Number(b.durationMins || b.duration_mins || b.planned_duration_mins) > 0) && tlMin(b.endTime || b.end_time || b.planned_end) == null;
         return tlFmt(r.st) + "–" + (openEnd ? "Open" : tlFmt(r.end));
       }
       function utilOf(cid) {

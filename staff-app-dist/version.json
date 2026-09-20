@@ -1,9 +1,9 @@
 {
-  "version": "1.2.5",
-  "version_code": 8,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.5.apk",
-  "size": 4731600,
-  "sha256": "e779089eb181d662f2132447f5703f2aa752fcdc75c38036511bb9fa07e6094e",
+  "version": "1.2.6",
+  "version_code": 9,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.6.apk",
+  "size": 4731596,
+  "sha256": "0a09646f1b43534870fa657cc44ea46c08b51e206ab508d457b72198077c15b3",
   "released_at": "2026-09-20",
-  "notes": "Timeline spec v2 (Active+confirmed upcoming, forfeit 1h, 1-screen fit)"
+  "notes": "Timeline: confirmed upcoming bookings stay visible until the window ends (owner fix 11:43) + food itemised on vouchers + member wallet deduct detail + \u1005\u1019\u103e\u1010\u103a (no timer) start option"
 }

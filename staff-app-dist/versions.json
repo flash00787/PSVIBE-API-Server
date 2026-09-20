@@ -1,8 +1,19 @@
 {
-  "latest": "1.2.5",
-  "latest_code": 8,
-  "updated_at": "2026-09-20T10:41:10Z",
+  "latest": "1.2.6",
+  "latest_code": 9,
+  "updated_at": "2026-09-20T11:46:01Z",
   "versions": [
+    {
+      "version": "1.2.6",
+      "version_code": 9,
+      "arch": "universal",
+      "file": "psvibe-staff-1.2.6.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.6.apk",
+      "size": 4731596,
+      "sha256": "0a09646f1b43534870fa657cc44ea46c08b51e206ab508d457b72198077c15b3",
+      "released_at": "2026-09-20",
+      "notes": "Timeline: confirmed upcoming bookings stay visible until the window ends (owner fix 11:43) + food itemised on vouchers + member wallet deduct detail + \u1005\u1019\u103e\u1010\u103a (no timer) start option"
+    },
     {
       "version": "1.2.5",
       "version_code": 8,
