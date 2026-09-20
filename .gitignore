@@ -15,3 +15,4 @@ dashboard-dist/
 server.log.*
 uploads/tournaments/*.jpg
 uploads/tournaments/*.png
+uploads/deposits/
