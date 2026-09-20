@@ -203,6 +203,22 @@
     if (hit) { fetchFresh().catch(function () {}); return Promise.resolve(hit.data); } // stale → instant
     return fetchFresh();
   }
+  /** Multipart upload (profile picture etc.) — same auth + origin handling as api(). */
+  async function upload(path, formData) {
+    const headers = {};
+    if (jwt) headers["Authorization"] = "Bearer " + jwt;
+    let resp;
+    try { resp = await fetch(_u(path), { method: "POST", headers: headers, body: formData }); }
+    catch (e) { throw new Error("Network error — check your internet connection"); }
+    let body = null;
+    try { body = await resp.json(); } catch (_e) { body = null; }
+    if (!resp.ok) {
+      const m = (body && (body.detail || body.error)) || ("Upload failed (" + resp.status + ")");
+      throw new Error(m);
+    }
+    return body;
+  }
+
   function retryNow() { invalidate(); _emit("psv:retry", {}); }
 
   // ── Low-level API call ──────────────────────────────────
@@ -370,7 +386,7 @@
     jwt = body.access_token;
     refreshTok = body.refresh_token || null;
     const u = body.user || {};
-    staff = { name: u.name || u.username || username, id: u.username || null, role: u.role || "staff", username: u.username || username };
+    staff = { name: u.name || u.username || username, id: u.username || null, role: u.role || "staff", username: u.username || username, photo_url: u.photo_url || "" };
     isWebLogin = true;
     if (remember === false) _clearStored(); else _persistAuth();
     _syncShellJwt(); // mirror access token for the native shell (FCM registration), even when "remember me" is off
@@ -783,7 +799,7 @@
   }
 
   window.PSV = {
-    api, apiCached, invalidate, retryNow, unwrap, authenticate, isAuthed, getStaff, getTg,
+    api, apiCached, invalidate, retryNow, upload, unwrap, authenticate, isAuthed, getStaff, getTg,
     apiOrigin: function () { return API_ORIGIN; },
     blobUrl, revokeBlob,
     login, logout, loadStoredAuth, usesWebLogin,

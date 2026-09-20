@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import UploadFile, File, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import bcrypt
 from pydantic import BaseModel
@@ -37,12 +37,13 @@ def _get_credentials_from_db() -> Dict[str, Dict[str, str]]:
     try:
         from mysql_db import query as _q
         rows = _q(
-            "SELECT username, password_hash, role, display_name FROM dashboard_users WHERE is_active = 1"
+            "SELECT username, password_hash, role, display_name, photo_url FROM dashboard_users WHERE is_active = 1"
         )
         creds = {}
         for row in rows:
             creds[row["username"]] = {
                 "password_hash": row["password_hash"],
+                "photo_url": (row.get("photo_url") if isinstance(row, dict) else None) or "",
                 "role": row["role"],
                 "name": row.get("display_name") or row["username"],
             }
@@ -223,7 +224,8 @@ def register_auth_routes(app):
             user={
                 "username": user["username"],
                 "role": user["role"],
-                "name": user["name"]
+                "name": user["name"],
+                "photo_url": user.get("photo_url") or ""
             }
         )
 
@@ -246,7 +248,8 @@ def register_auth_routes(app):
             user={
                 "username": user["username"],
                 "role": user["role"],
-                "name": user["name"]
+                "name": user["name"],
+                "photo_url": user.get("photo_url") or ""
             }
         )
 
@@ -255,8 +258,44 @@ def register_auth_routes(app):
         return {
             "username": user["username"],
             "role": user["role"],
-            "name": user["name"]
+            "name": user["name"],
+            "photo_url": user.get("photo_url") or ""
         }
+
+    # ── Owner/staff profile (owner 2026-09-20 17:22: change password + upload picture) ──
+    @app.post("/auth/change-password")
+    async def change_password(body: dict = {}, user: dict = Depends(get_current_user)):
+        from mysql_db import query_one as _q1, execute as _me
+        cur = str((body or {}).get("current_password") or "")
+        new = str((body or {}).get("new_password") or "")
+        if len(new) < 6:
+            raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+        row = _q1("SELECT password_hash FROM dashboard_users WHERE username = %s", (user["username"],))
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not verify_password(cur, row["password_hash"]):
+            raise HTTPException(status_code=400, detail="Current password is wrong")
+        _me("UPDATE dashboard_users SET password_hash = %s WHERE username = %s", (hash_password(new), user["username"]))
+        return {"success": True}
+
+    @app.post("/auth/profile/photo")
+    async def upload_profile_photo(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+        from mysql_db import execute as _me
+        import os as _os
+        ext = _os.path.splitext(file.filename or "")[1].lower()
+        if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+            raise HTTPException(status_code=400, detail="Only PNG/JPG/WEBP images are allowed")
+        data = await file.read()
+        if not data or len(data) > 2 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Image must be smaller than 2 MB")
+        d = _os.path.join(_os.path.dirname(__file__), "uploads", "avatars")
+        _os.makedirs(d, exist_ok=True)
+        fn = str(user["username"]).replace("/", "_") + ext
+        with open(_os.path.join(d, fn), "wb") as f:
+            f.write(data)
+        url = "/uploads/avatars/" + fn
+        _me("UPDATE dashboard_users SET photo_url = %s WHERE username = %s", (url, user["username"]))
+        return {"success": True, "photo_url": url}
 
     @app.get("/dashboard.html")
     async def serve_dashboard_html():

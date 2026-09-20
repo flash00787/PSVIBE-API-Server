@@ -1,8 +1,19 @@
 {
-  "latest": "1.5.7",
-  "latest_code": 39,
-  "updated_at": "2026-09-20T17:18:53Z",
+  "latest": "1.5.8",
+  "latest_code": 40,
+  "updated_at": "2026-09-20T17:24:33Z",
   "versions": [
+    {
+      "version": "1.5.8",
+      "version_code": 40,
+      "arch": "universal",
+      "file": "psvibe-staff-1.5.8.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.8.apk",
+      "size": 5073792,
+      "sha256": "3707c7bd8fd26c9f70e94414762d16ca448a93fcbe7925a9c89ec4f91934cde8",
+      "released_at": "2026-09-20",
+      "notes": "v1.5.8 (code 40): editable profile \u2014 Me screen gains a Profile section (upload a profile picture via /auth/profile/photo, change password via /auth/change-password) with the avatar shown in the profile card, and the Log out button now has breathing room (18px spacer + margin) in both the Me screen and the Menu."
+    },
     {
       "version": "1.5.7",
       "version_code": 39,

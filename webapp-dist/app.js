@@ -3244,7 +3244,8 @@
             </div>
           </div>
         </div>
-        <button class="psv-btn psv-btn--danger psv-btn--block" @click="logout">🚪 Log out</button>
+        <div style="height:18px"></div>
+        <button class="psv-btn psv-btn--danger psv-btn--block" style="margin-top:6px" @click="logout">🚪 Log out</button>
         <div class="psv-foot">PS VIBE Staff · Play The Game. Share The VIBE!</div>
       </div>
     `,
@@ -5912,12 +5913,29 @@
         <PageHeader title="Me" back="/" />
         <div class="psv-pad">
           <div class="psv-card psv-profile">
-            <div class="psv-avatar psv-avatar--lg">{{ initials }}</div>
+            <div class="psv-avatar psv-avatar--lg" style="overflow:hidden">
+              <img v-if="photoSrc" :src="photoSrc" alt="" style="width:100%;height:100%;object-fit:cover" />
+              <template v-else>{{ initials }}</template>
+            </div>
             <div class="psv-list-row__main">
               <div class="psv-profile__name">{{ staff.name || 'Staff' }}</div>
               <span class="psv-account-role">{{ staff.role || 'staff' }}</span>
             </div>
           </div>
+
+          <div class="psv-section-title">Profile</div>
+          <div class="psv-card psv-list">
+            <div class="psv-list-row" @click="pickPhoto">
+              <div class="psv-list-row__main"><div class="psv-list-row__title">Profile picture</div><div class="psv-list-row__sub">{{ photoSrc ? 'Tap to change' : 'Upload a picture' }}</div></div>
+              <van-icon name="photograph" />
+            </div>
+            <div class="psv-list-row" @click="openPw">
+              <div class="psv-list-row__main"><div class="psv-list-row__title">Change password</div><div class="psv-list-row__sub">Update your sign-in password</div></div>
+              <van-icon name="arrow" />
+            </div>
+            <div class="psv-row"><span>Username</span><b>{{ staff.username || '-' }}</b></div>
+          </div>
+          <input ref="fileEl" type="file" accept="image/*" style="display:none" @change="onPhoto" />
 
           <div class="psv-section-title">Shift</div>
           <div class="psv-card psv-rows">
@@ -5956,14 +5974,67 @@
             </div>
           </div>
 
-          <button class="psv-btn psv-btn--danger psv-btn--block" @click="logout">Log out</button>
-          <div class="psv-foot">PS VIBE Staff · Play The Game. Share The VIBE!</div>
+          <van-popup v-model:show="pwOpen" position="bottom" round>
+            <div style="padding:14px 16px">
+              <div style="font-weight:700;margin-bottom:8px">Change password</div>
+              <van-field v-model="pwCur" type="password" label="Current" placeholder="current password" />
+              <van-field v-model="pwNew" type="password" label="New" placeholder="min 6 characters" />
+              <van-field v-model="pwNew2" type="password" label="Confirm" placeholder="repeat new password" />
+              <div style="display:flex;gap:8px;margin-top:12px">
+                <van-button block plain @click="pwOpen=false">Cancel</van-button>
+                <van-button block type="primary" :loading="pwSaving" :disabled="!pwOk" @click="savePw">Save</van-button>
+              </div>
+            </div>
+          </van-popup>
+
+          <div style="height:18px"></div>
+          <button class="psv-btn psv-btn--danger psv-btn--block" style="margin-top:6px" @click="logout">Log out</button>
+          <div class="psv-foot">PS VIBE · {{ staff.name }} ({{ staff.role }})</div>
         </div>
       </div>
     `,
     setup() {
-      const staff = reactive({ name: PSV.getStaff().name || "", role: PSV.getStaff().role || "" });
+      const staff = reactive({ name: PSV.getStaff().name || "", role: PSV.getStaff().role || "",
+                               username: PSV.getStaff().username || "", photo_url: PSV.getStaff().photo_url || "" });
       const initials = computed(() => String(staff.name || "?").trim().slice(0, 2).toUpperCase());
+      // Owner 2026-09-20 17:22: editable profile — upload a picture + change the password.
+      const fileEl = ref(null);
+      const photo = ref(staff.photo_url || "");
+      const photoSrc = computed(() => {
+        if (!photo.value) return "";
+        if (/^https?:/i.test(photo.value)) return photo.value;
+        return (PSV.apiOrigin ? PSV.apiOrigin() : "") + photo.value;
+      });
+      function pickPhoto() { haptic("light"); try { if (fileEl.value) fileEl.value.click(); } catch (_e) {} }
+      async function onPhoto(e) {
+        const f = e && e.target && e.target.files && e.target.files[0];
+        if (!f) return;
+        if (f.size > 2 * 1024 * 1024) { showToast("Image must be smaller than 2 MB", "warning"); return; }
+        try {
+          const fd = new FormData();
+          fd.append("file", f);
+          const r = await PSV.upload("/auth/profile/photo", fd);
+          const url = (r && r.photo_url) || "";
+          photo.value = url; staff.photo_url = url;
+          try { PSV.getStaff().photo_url = url; } catch (_e2) {}
+          showToast("Profile picture updated ✓", "success");
+        } catch (err) { showToast(String((err && err.message) || "Upload failed"), "fail"); }
+        finally { try { e.target.value = ""; } catch (_e3) {} }
+      }
+      const pwOpen = ref(false), pwCur = ref(""), pwNew = ref(""), pwNew2 = ref(""), pwSaving = ref(false);
+      const pwOk = computed(() => !!pwCur.value && String(pwNew.value).length >= 6 && pwNew.value === pwNew2.value);
+      function openPw() { pwCur.value = ""; pwNew.value = ""; pwNew2.value = ""; pwOpen.value = true; haptic("light"); }
+      async function savePw() {
+        if (!pwOk.value) { showToast("Check the fields (min 6 chars, both must match)", "warning"); return; }
+        pwSaving.value = true;
+        try {
+          await PSV.api("/auth/change-password", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ current_password: pwCur.value, new_password: pwNew.value }) });
+          pwOpen.value = false;
+          showToast("Password changed ✓", "success");
+        } catch (e) { showToast(String((e && e.message) || "Failed"), "fail"); }
+        finally { pwSaving.value = false; }
+      }
       const notify = ref(true);
       const appVersion = ref("1.0.0");
       const updateText = ref("Up to date");
@@ -6020,7 +6091,7 @@
       function onNotify() { haptic("light"); showToast(notify.value ? "Notifications on" : "Notifications off", "success"); }
       function logout() { haptic("medium"); PSV.logout(); showToast("Logged out", "success"); }
       onMounted(load);
-      return { staff, initials, notify, appVersion, updateText, summary, attendance, attBusy, checkIn, checkOut, goPrint, goNotifications, checkUpdate, onNotify, logout, fKs };
+      return { staff, initials, notify, appVersion, updateText, summary, attendance, attBusy, checkIn, checkOut, goPrint, goNotifications, checkUpdate, onNotify, logout, fKs, fileEl, photo, photoSrc, pickPhoto, onPhoto, pwOpen, pwCur, pwNew, pwNew2, pwSaving, pwOk, openPw, savePw };
     },
   };
 
