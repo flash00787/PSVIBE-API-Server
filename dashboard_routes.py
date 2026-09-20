@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 
 from auth import get_current_user
-from helpers import insert_cash_movement_if_absent
+from helpers import insert_cash_movement_if_absent, _parse_pm_and_inject
 from console_status import sync_console_status as _sync_console_status
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
 
@@ -1454,6 +1454,30 @@ async def dashboard_create_topup(req: dict, user: dict = Depends(get_current_use
             )
         except Exception:
             pass  # non-critical: members table may not exist
+
+        # ── Money-side records (2026-09-20 gap fix) ─────────────────────────
+        # This endpoint used to log ONLY topup_log + balances, so dashboard-made
+        # top-ups had no cash_movements row and no sales_daily mirror → their
+        # records were incomplete and the audit trail diverged from the staff-app /
+        # bot path (member_routes). Mirror it exactly: cash in with
+        # category='topup' + a sales_daily row flagged is_topup=1 (never counted as
+        # game income). Wallet MINS adjustments (amount 0) stay untouched.
+        if float(amount) > 0:
+            _tp_note = f"Topup {mins_added} mins" + (f" — {notes}" if notes else "")
+            try:
+                _parse_pm_and_inject(amount, payment_method, _tp_note, staff_name, category="topup")
+            except Exception as _e:
+                logger.warning(f"dashboard topup cash_movements failed: {_e}")
+            try:
+                _mysql_execute(
+                    "INSERT INTO sales_daily (sale_date, member_id, amount, gross, net, payment_method, notes, staff_name, customer_name, is_topup) "
+                    "VALUES (CURDATE(), %s, %s, %s, %s, %s, %s, %s, %s, 1)",
+                    (member_id, amount, amount, amount, payment_method,
+                     f"Topup {mins_added} mins", staff_name,
+                     member.get("member_name") or staff_name),
+                )
+            except Exception as _e:
+                logger.warning(f"dashboard topup sales_daily failed: {_e}")
 
         return {
             "success": True,
