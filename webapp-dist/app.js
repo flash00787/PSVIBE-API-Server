@@ -3204,7 +3204,7 @@
     ] },
     { id: "me", emoji: "🕒", en: "Me & staff", tone: "dim", items: [
       { en: "Attendance in / out", sub: "Shift check-in", icon: "🕐", path: "/attendance" },
-      { en: "Salary advance", sub: "Owner-only request", icon: "💰", path: "/salary", tag: "Owner only" },
+      { en: "Salary advance", sub: "Owner-only request", icon: "💰", path: "/salary", tag: "Owner only", ownerOnly: true },
       { en: "Staff list", sub: "View staff", icon: "👥", path: "/staff" },
       { en: "Notifications", sub: "Alerts & reminders", icon: "🔔", path: "/notifications" },
       { en: "Settings & profile", sub: "Account settings", icon: "⚙️", path: "/me" },
@@ -3228,7 +3228,7 @@
             <span class="psv-menu-head__my">{{ g.en }}</span>
           </div>
           <div class="psv-card psv-list psv-menu-list">
-            <div v-for="it in g.items" :key="it.en" class="psv-menu-item" :class="{ 'is-soon': it.tag }" @click="tap(it)">
+            <div v-for="it in (isAdmin ? g.items : g.items.filter(function (x) { return !x.ownerOnly; }))" :key="it.en" class="psv-menu-item" :class="{ 'is-soon': it.tag }" @click="tap(it)">
               <span class="psv-menu-item__ico">{{ it.icon }}</span>
               <div class="psv-menu-item__main">
                 <div class="psv-menu-item__my">{{ it.en }}</div>
@@ -3264,8 +3264,14 @@
       function tap(it) {
         haptic("light");
         if (it.action === "logout") { logout(); return; }
+        // Owner 2026-09-20 16:50 ("Staff role မှာ salary advance ကို ပိတ်ထားပါ", admin = owner):
+        // owner-only rows must be blocked BEFORE the path branch, otherwise the guard never
+        // runs (staff used to land on the Salary screen).
+        if (it.tag === "Owner only" && !isAdmin.value) {
+          showToast("🔒 " + (it.en || "Owner only") + " — owner only, ask an admin", "text");
+          return;
+        }
         if (it.path) { router.push(it.path); return; }
-        if (it.tag === "Owner only") { showToast("🔒 " + it.en + " — owner only, ask an admin", "text"); return; }
         if (it.tag) { showToast("⏳ " + it.en + " — coming soon", "text"); return; }
       }
       function logout() { haptic("medium"); PSV.logout(); showToast("Signed out", "success"); }
@@ -4444,11 +4450,15 @@
       </div>
     `,
     setup() {
-      const loading = ref(true);
-      const ownerOnly = ref(false);
-      const serverMsg = ref("");
+      // Owner 2026-09-20 16:50: salary advance is owner-only (admin = owner) — the staff role
+      // gets a locked card and never even calls the endpoint (the API is already 403 for them).
+      const isAdminRole = String((PSV.getStaff() || {}).role || "").toLowerCase() === "admin";
+      const loading = ref(!isAdminRole);
+      const ownerOnly = ref(!isAdminRole);
+      const serverMsg = ref(isAdminRole ? "" : "Salary advance is owner-only (admin). Ask the owner to action it.");
       const advances = ref([]);
       async function load() {
+        if (!isAdminRole) { loading.value = false; ownerOnly.value = true; return; }
         loading.value = true;
         try {
           const d = PSV.unwrap(await PSV.apiCached("/api/dashboard/salary/advances"));

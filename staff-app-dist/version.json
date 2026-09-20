@@ -1,9 +1,9 @@
 {
-  "version": "1.4.9",
-  "version_code": 31,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.9.apk",
-  "size": 5070308,
-  "sha256": "6d0a6268311d3cb5add131b44149cb12ec920e3ec03e636763dbfae5016b635d",
+  "version": "1.5.0",
+  "version_code": 32,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.0.apk",
+  "size": 5070636,
+  "sha256": "ca2eb4d5ce5e74a8d8cb43fc507147e15a134ebe43ce718689f34768faaba4d9",
   "released_at": "2026-09-20",
-  "notes": "v1.4.9 (code 31): brand polish \u2014 Home and the login screen now show the real PS VIBE logo artwork (with the wordmark, gold on the dark theme); the launcher icon is the text-free symbol (navy tile + gold mark, adaptive foreground/background updated); app name is now PS VIBE."
+  "notes": "v1.5.0 (code 32): salary advance is owner-only \u2014 the owner-only menu guard now blocks BEFORE navigation (it used to open the Salary screen anyway), owner-only rows are hidden from non-admin staff menus, and the Salary screen itself is role-gated on the client so the staff role only sees a locked card and never calls the endpoint (the API was already admin-only/403)."
 }
