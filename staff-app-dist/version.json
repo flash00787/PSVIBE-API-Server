@@ -1,9 +1,9 @@
 {
-  "version": "1.4.0",
-  "version_code": 22,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.0.apk",
-  "size": 5129642,
-  "sha256": "6cb136745f84671e094871ce3e50b08dff775bf59d140839d50aaf623840475e",
+  "version": "1.4.1",
+  "version_code": 23,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.1.apk",
+  "size": 5129878,
+  "sha256": "93e5253de812b03851d0b8682b266a2f77bc79809fe02b9db1c8526b3c3ee19c",
   "released_at": "2026-09-20",
-  "notes": "v1.4.0 (code 22): member-card voucher \u2014 for wallet plays the receipt now shows the GAME MINUTES and 'Game amount: 0 Ks (card)' instead of the game price, plus a MEMBER BALANCE breakdown (before / deducted / after) parsed from the sale notes; Paid shows 'Member card (mins)' and the cash TOTAL stays the net amount."
+  "notes": "v1.4.1 (code 23): Stock in / Sales dropdowns \u2014 the big wheel pickers (van-picker with tall rows, no search) are replaced by the compact searchable PSVPicker sheet: item picker in Stock In, payment pickers in Stock In / New Sale / Top-up and the game picker in New Sale. Tap a row to select, search box auto-appears for long lists."
 }

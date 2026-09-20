@@ -1,8 +1,19 @@
 {
-  "latest": "1.4.0",
-  "latest_code": 22,
-  "updated_at": "2026-09-20T15:58:42Z",
+  "latest": "1.4.1",
+  "latest_code": 23,
+  "updated_at": "2026-09-20T16:03:37Z",
   "versions": [
+    {
+      "version": "1.4.1",
+      "version_code": 23,
+      "arch": "universal",
+      "file": "psvibe-staff-1.4.1.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.1.apk",
+      "size": 5129878,
+      "sha256": "93e5253de812b03851d0b8682b266a2f77bc79809fe02b9db1c8526b3c3ee19c",
+      "released_at": "2026-09-20",
+      "notes": "v1.4.1 (code 23): Stock in / Sales dropdowns \u2014 the big wheel pickers (van-picker with tall rows, no search) are replaced by the compact searchable PSVPicker sheet: item picker in Stock In, payment pickers in Stock In / New Sale / Top-up and the game picker in New Sale. Tap a row to select, search box auto-appears for long lists."
+    },
     {
       "version": "1.4.0",
       "version_code": 22,

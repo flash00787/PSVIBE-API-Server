@@ -430,9 +430,10 @@
             </div>
           </div>
         </van-dialog>
-        <van-popup v-model:show="topup.payPicker" position="bottom" round>
-          <van-picker :columns="topup.payColumns" @confirm="topupPickPay" @cancel="topup.payPicker=false" />
-        </van-popup>
+        <PSVPicker v-model:show="topup.payPicker" title="Payment method"
+                   :items="topup.payColumns.map((c) => ({ value: c.value, label: c.text }))"
+                   :model-value="topup.pendingMethod"
+                   @confirm="(v) => topupPickPay({ selectedOptions: [{ value: v }] })" />
         <van-popup v-model:show="topup.payAmountPicker" position="bottom" round>
           <div style="padding:14px 16px">
             <div style="font-weight:600;margin-bottom:10px">Amount for {{ topup.pendingMethod }} <span style="color:var(--pv-muted);font-weight:400">(remaining {{ fKs(topupRemaining) }} Ks)</span></div>
@@ -1010,9 +1011,10 @@
         </van-popup>
 
         <!-- Game Picker -->
-        <van-popup v-model:show="gamePicker" position="bottom" round>
-          <van-picker :columns="gameColumns" @confirm="pickGame" @cancel="gamePicker=false" />
-        </van-popup>
+        <PSVPicker v-model:show="gamePicker" title="Select game"
+                   :items="gameColumns.map((c) => ({ value: c.value, label: c.text }))"
+                   :model-value="form.game_name"
+                   @confirm="(v) => pickGame({ selectedOptions: [{ value: v }] })" />
 
         <!-- Food Picker (grouped category -> items -> stepper) -->
         <van-popup v-model:show="foodPicker" position="bottom" round style="max-height:80vh">
@@ -1036,9 +1038,10 @@
         </van-popup>
 
         <!-- Payment Method Picker -->
-        <van-popup v-model:show="payPicker" position="bottom" round>
-          <van-picker :columns="payColumns" @confirm="pickPayMethod" @cancel="payPicker=false" />
-        </van-popup>
+        <PSVPicker v-model:show="payPicker" title="Payment method"
+                   :items="payColumns.map((c) => ({ value: c.value, label: c.text }))"
+                   :model-value="pendingMethod"
+                   @confirm="(v) => pickPayMethod({ selectedOptions: [{ value: v }] })" />
 
         <!-- Split Amount Input -->
         <van-popup v-model:show="payAmountPicker" position="bottom" round>
@@ -3803,12 +3806,15 @@
             </div>
           </van-tab>
         </van-tabs>
-        <van-popup v-model:show="payPicker" position="bottom" round>
-          <van-picker :columns="payColumns" @confirm="pickPay" @cancel="payPicker=false" />
-        </van-popup>
-        <van-popup :show="rowItemPickerShow" position="bottom" round @update:show="(v) => { if (!v) rowItemPicker = null; }">
-          <van-picker :columns="itemColumns" @confirm="pickRowItem" @cancel="rowItemPicker=null" />
-        </van-popup>
+        <PSVPicker v-model:show="payPicker" title="Payment method"
+                   :items="payColumns.map((c) => ({ value: c.value, label: c.text }))"
+                   :model-value="form.payment_method"
+                   @confirm="(v) => pickPay({ selectedOptions: [{ value: v }] })" />
+        <PSVPicker :show="rowItemPickerShow" title="Select item"
+                   :items="itemColumns.map((c) => ({ value: c.value, label: c.text }))"
+                   :model-value="(rows[rowItemPicker] || {}).item_name || ''"
+                   @update:show="(v) => { if (!v) rowItemPicker = null; }"
+                   @confirm="(v) => pickRowItem({ selectedOptions: [{ value: v }] })" />
       </div>
     `,
     setup() {
@@ -5955,7 +5961,10 @@
       });
     } catch (_e) { /* overlays still work; back just navigates */ }
 
-    app.mount("#app");
+    // Global compact picker (owner 2026-09-20 16:01: the big wheel pickers in Stock in /
+  // Sales were inconvenient) — searchable bottom sheet, tap to select.
+  app.component("PSVPicker", PSVPicker);
+  app.mount("#app");
     router.start();
 
     if (tg) { tg.ready(); tg.expand(); }
