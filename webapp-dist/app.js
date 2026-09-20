@@ -412,7 +412,7 @@
       <div class="pv-page">
         <div class="pv-header">
           <div>
-            <div class="pv-brand">PS <span class="vibe">VIBE</span></div>
+            <img class="pv-brand-logo" src="psvibe-logo-ui.png" alt="PS VIBE" style="height:34px;display:block" />
             <div class="pv-tagline">Play The Game. Share The VIBE!</div>
           </div>
         </div>
@@ -1100,33 +1100,11 @@
         <div style="padding:14px 16px">
         <div style="padding:14px 16px">
           <van-button type="primary" block :loading="submitting" @click="submit">Save Sale</van-button>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <van-button block plain type="warning" icon="records" @click="saveDraft">Save as draft</van-button>
-            <van-button v-if="saleDrafts.length" block plain type="primary" @click="gotoDrafts">
-              All drafts ({{ saleDrafts.length }})
-            </van-button>
-          </div>
+          <van-button block plain type="warning" icon="records" style="margin-top:8px" @click="saveDraft">Save as draft</van-button>
           <div style="margin-top:8px;color:var(--pv-muted);font-size:11px;line-height:1.5">
-            Draft = voucher မဖြတ်သေးဘဲ သိမ်းထားသည် · ပိုက်ဆံ ရှင်းချိန် Drafts → Restore → Save Sale
+            Draft = voucher မဖြတ်သေးဘဲ သိမ်းထားသည် · ပိုက်ဆံ ရှင်းချိန် Sales → Drafts tab → Restore → Save Sale
           </div>
         </div>
-
-        <!-- 💾 Sale drafts (owner 2026-09-20 16:20: voucher issued, money settled later) -->
-        <van-popup v-model:show="draftOpen" position="bottom" round style="max-height:70vh">
-          <div style="padding:14px 16px 4px;font-weight:700">💾 Saved sale drafts</div>
-          <div style="max-height:60vh;overflow:auto;padding:0 12px 16px">
-            <van-empty v-if="!saleDrafts.length" description="No drafts" />
-            <div v-for="d in saleDrafts" :key="d.id"
-                 style="background:var(--pv-card);border-radius:10px;padding:10px 12px;margin-top:8px">
-              <div style="font-weight:600">{{ d.label }}</div>
-              <div style="color:var(--pv-muted);font-size:12px;margin-top:2px">Saved {{ d.at }}</div>
-              <div style="display:flex;gap:8px;margin-top:8px">
-                <van-button size="small" type="primary" @click="restoreDraft(d)">Restore</van-button>
-                <van-button size="small" plain type="danger" @click="deleteDraft(d.id)">Delete</van-button>
-              </div>
-            </div>
-          </div>
-        </van-popup>
 
         <!-- Member Picker -->
         <van-popup v-model:show="memberPicker" position="bottom" round>
@@ -5425,7 +5403,7 @@
     template: `
       <div class="pv-login">
         <div class="pv-login__hero">
-          <div class="pv-login__logo">PS <span class="vibe">VIBE</span></div>
+          <img class="pv-login__brandlogo" src="psvibe-logo-ui.png" alt="PS VIBE" style="height:46px;display:block;margin:0 auto" />
           <div class="pv-login__tag">Play The Game. Share The VIBE!</div>
         </div>
         <div class="pv-login__card">
@@ -5444,7 +5422,7 @@
           </van-form>
           <div class="pv-login__hint">Sign in with the staff account created by the owner in the PS VIBE dashboard.</div>
         </div>
-        <div class="pv-login__foot">PS VIBE Staff · v1.0.0</div>
+        <div class="pv-login__foot">PS VIBE · Staff App</div>
       </div>
     `,
     setup(_, { emit }) {

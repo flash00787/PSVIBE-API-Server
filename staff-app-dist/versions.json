@@ -1,8 +1,30 @@
 {
-  "latest": "1.4.7",
-  "latest_code": 29,
-  "updated_at": "2026-09-20T16:36:40Z",
+  "latest": "1.4.9",
+  "latest_code": 31,
+  "updated_at": "2026-09-20T16:44:21Z",
   "versions": [
+    {
+      "version": "1.4.9",
+      "version_code": 31,
+      "arch": "universal",
+      "file": "psvibe-staff-1.4.9.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.9.apk",
+      "size": 5070308,
+      "sha256": "6d0a6268311d3cb5add131b44149cb12ec920e3ec03e636763dbfae5016b635d",
+      "released_at": "2026-09-20",
+      "notes": "v1.4.9 (code 31): brand polish \u2014 Home and the login screen now show the real PS VIBE logo artwork (with the wordmark, gold on the dark theme); the launcher icon is the text-free symbol (navy tile + gold mark, adaptive foreground/background updated); app name is now PS VIBE."
+    },
+    {
+      "version": "1.4.8",
+      "version_code": 30,
+      "arch": "universal",
+      "file": "psvibe-staff-1.4.8.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.8.apk",
+      "size": 5133974,
+      "sha256": "82eb094f1689703ef4003067ec0f116d9f50446299c4f62abae19ea0f0d66eb9",
+      "released_at": "2026-09-20",
+      "notes": "v1.4.8 (code 30): removed the redundant All drafts button and the in-form drafts popup from New Sale now that drafts have their own Sales tab and the Draft vouchers screen; Save as draft stays and the hint points at Sales -> Drafts tab."
+    },
     {
       "version": "1.4.7",
       "version_code": 29,
