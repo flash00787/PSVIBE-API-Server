@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """
 Financial Validation Script — runs daily via cron, only alerts when issues found.
@@ -28,7 +29,7 @@ def api_get(url, token):
 
 
 def login():
-    payload = json.dumps({"username": "admin", "password": "admin123"}).encode()
+    payload = json.dumps({"username": os.environ.get("DASH_USER", "admin"), "password": os.environ.get("DASH_PASS", "")}).encode()
     req = urllib.request.Request(
         f"{API_BASE}/auth/login", data=payload,
         headers={"Content-Type": "application/json"}
