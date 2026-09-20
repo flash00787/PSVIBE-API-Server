@@ -1,8 +1,19 @@
 {
-  "latest": "1.5.1",
-  "latest_code": 33,
-  "updated_at": "2026-09-20T16:53:42Z",
+  "latest": "1.5.2",
+  "latest_code": 34,
+  "updated_at": "2026-09-20T16:58:02Z",
   "versions": [
+    {
+      "version": "1.5.2",
+      "version_code": 34,
+      "arch": "universal",
+      "file": "psvibe-staff-1.5.2.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.2.apk",
+      "size": 5071052,
+      "sha256": "04248ad4d91c8bedbcc69ef7a343422d617aac817dbd9117d4360d4734f98cbc",
+      "released_at": "2026-09-20",
+      "notes": "v1.5.2 (code 34): diagnostics + the v1.5.1 role fix \u2014 the More menu now prints the running build and the account role (so a screenshot identifies the installed version), and the Salary locked card shows the API status (e.g. 403 owner-only) when it cannot load."
+    },
     {
       "version": "1.5.1",
       "version_code": 33,

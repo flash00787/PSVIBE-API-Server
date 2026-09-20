@@ -3215,6 +3215,7 @@
   const MoreMenu = {
     template: `
       <div class="psv-pad psv-menu-body">
+        <div style="text-align:center;color:var(--pv-muted);font-size:11px;padding:6px 0 2px">{{ buildInfo }}</div>
         <div class="psv-card psv-profile">
           <div class="psv-avatar psv-avatar--lg">{{ initials }}</div>
           <div class="psv-list-row__main">
@@ -3282,7 +3283,11 @@
         if (it.tag) { showToast("⏳ " + it.en + " — coming soon", "text"); return; }
       }
       function logout() { haptic("medium"); PSV.logout(); showToast("Signed out", "success"); }
-      return { groups: MENU_GROUPS, staff, initials, tap, logout, badge, lowStock, isAdmin, ownerBadge };
+      const buildInfo = computed(() => {
+        const r = String((staff && staff.role) || "-") || "-";
+        return "PS VIBE · build 34 · role: " + r;
+      });
+      return { groups: MENU_GROUPS, staff, initials, tap, logout, badge, lowStock, isAdmin, ownerBadge, buildInfo };
     },
   };
 
@@ -4445,6 +4450,7 @@
             <div class="psv-owner-card__t">Owner only</div>
             <div class="psv-owner-card__s">Requesting or approving a salary advance needs the owner (admin) account. Ask an admin to action it from the dashboard.</div>
             <div v-if="serverMsg" class="psv-owner-card__m">{{ serverMsg }}</div>
+            <div v-if="apiStatus" class="psv-owner-card__m" style="opacity:.75">API: {{ apiStatus }}</div>
           </div>
           <template v-else>
             <van-notice-bar wrapable text="Read-only — advances are settled by an admin" left-icon="info-o" />
@@ -4465,6 +4471,7 @@
       const loading = ref(true);
       const ownerOnly = ref(false);
       const serverMsg = ref("");
+      const apiStatus = ref("");
       const advances = ref([]);
       async function load() {
         loading.value = true;
@@ -4475,12 +4482,14 @@
         } catch (e) {
           const msg = String((e && e.message) || "");
           // 403 → owner-only; 401 → dashboard account required (same wall).
+          const _st = (e && (e.status || e.code)) || (/owner|admin|403/i.test(msg) ? 403 : "");
+          apiStatus.value = _st ? String(_st) + " (owner-only)" : msg;
           if (isOwnerBlock(e) || /401|unauthor|user not found/i.test(msg)) { ownerOnly.value = true; serverMsg.value = msg; }
           else { ownerOnly.value = true; serverMsg.value = msg; }
         } finally { loading.value = false; }
       }
       onMounted(load);
-      return { loading, ownerOnly, serverMsg, advances, fKs };
+      return { loading, ownerOnly, serverMsg, apiStatus, advances, fKs };
     },
   };
 
