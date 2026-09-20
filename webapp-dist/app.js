@@ -735,6 +735,24 @@
               </van-cell-group>
             </van-pull-refresh>
           </van-tab>
+                  <van-tab title="Drafts">
+            <van-empty v-if="!draftsTab.length" description="No draft vouchers" />
+            <div v-else style="padding:8px 12px 24px">
+              <div v-for="d in draftsTab" :key="d.id"
+                   style="background:var(--pv-card);border-radius:12px;padding:12px;margin-top:10px">
+                <div style="display:flex;justify-content:space-between;gap:8px">
+                  <div style="flex:1">
+                    <div style="font-weight:700">{{ d.label }}</div>
+                    <div style="color:var(--pv-muted);font-size:12px;margin-top:2px">Saved {{ d.at }}</div>
+                  </div>
+                  <van-icon name="cross" style="color:var(--pv-danger);padding:4px" @click="removeDraftTab(d.id)" />
+                </div>
+                <div style="margin-top:10px">
+                  <van-button size="small" type="primary" icon="play-circle-o" @click="restoreDraftTab(d)">Restore &amp; finish</van-button>
+                </div>
+              </div>
+            </div>
+          </van-tab>
         </van-tabs>
 
         <!-- Sale detail bottom sheet -->
@@ -908,6 +926,28 @@
       }
       onMounted(loadToday);
       function onSaved() { tab.value = 1; loadToday(); }
+      // Owner 2026-09-20 16:35: drafts next to Today as their own tab.
+      const draftsTab = ref([]);
+      function loadDraftsTab() {
+        try { draftsTab.value = JSON.parse(localStorage.getItem(SALE_DRAFT_KEY) || "[]") || []; }
+        catch (_e) { draftsTab.value = []; }
+        return draftsTab.value;
+      }
+      function removeDraftTab(id) {
+        loadDraftsTab();
+        draftsTab.value = draftsTab.value.filter(function (x) { return x.id !== id; });
+        try { localStorage.setItem(SALE_DRAFT_KEY, JSON.stringify(draftsTab.value)); } catch (_e) {}
+        haptic("light"); showToast("Draft removed", "success");
+      }
+      function restoreDraftTab(d) {
+        try { PSV.pendingSaleDraft = d; } catch (_e) {}
+        tab.value = 0;
+        haptic("medium");
+        nextTick(function () { try { window.dispatchEvent(new Event("psv:draft")); } catch (_e) {} });
+        showToast("Draft loaded into New Sale ✓", "success");
+      }
+      watch(tab, function (v) { if (v === 2) loadDraftsTab(); });
+      onMounted(loadDraftsTab);
 
       // Build the van-cell label: member · time, plus food / discount detail lines.
       function labelFor(s) {
@@ -924,7 +964,7 @@
         if (Number(s.discount) > 0) lines.push("Discount: " + fKs(s.discount) + " Ks");
         return lines.join('\n');
       }
-      return { tab, today, loadingToday, refreshing, fKs, loadToday, onSaved, labelFor,
+      return { tab, draftsTab, removeDraftTab, restoreDraftTab, today, loadingToday, refreshing, fKs, loadToday, onSaved, labelFor,
                detailSale, detailOpen, openDetail, closeDetail, memberLabel, memberNameLabel, foodTotal, foodLabel, printingDetail, doPrintDetail };
     },
   };
@@ -1250,6 +1290,24 @@
         try { localStorage.setItem(DRAFT_KEY, JSON.stringify(saleDrafts.value)); } catch (_e) {}
       }
       function openDrafts() { loadDrafts(); draftOpen.value = true; haptic("light"); }
+      // Owner 2026-09-20 16:35: "Save as draft နှိပ်လိုက်လည်း voucher က reset မကျသွားဘူး" —
+      // parking a draft now clears the form (fresh voucher no) so the next sale starts clean.
+      function resetSale() {
+        try {
+          form.member_search = ""; form.member_id = ""; form.console_id = ""; form.game_name = "";
+          form.mins = 0; form.game_amt = 0; form.base_rate = 0; form.multiplier = 1.0;
+          form.food_items = ""; form.food_total = 0; form.discount = 0;
+          form.payment_method = "Cash"; form.payment_splits = []; form.adjust = 0;
+          form.voucher_no = PSV.genVoucherNo();
+          foodLines.value = [];
+          recomputeFood();
+          clearWalletMember();
+          depositRedeem.value = null; depositApplied.value = false;
+          clearPromo();
+          coupon.code = ""; coupon.applied = false; coupon.discount = 0; coupon.minutes = 0; coupon.message = "";
+          serverCalc.value = null;
+        } catch (_e) {}
+      }
       function gotoDrafts() { haptic("light"); router.push("/drafts"); }
       let restoredDraftId = null;
       function saveDraft() {
@@ -1271,7 +1329,8 @@
         persistDrafts();
         draftOpen.value = false;
         haptic("medium");
-        showToast("Draft saved ✓ (" + saleDrafts.value.length + ")", "success");
+        resetSale();
+        showToast("Draft saved ✓ (" + saleDrafts.value.length + ") — form cleared", "success");
       }
       function restoreDraft(d) {
         if (!d) return;
@@ -1611,13 +1670,15 @@
         }
       }
       onMounted(() => { loadRefs().then(() => scheduleCalc()); loadPromos(); loadActiveBookings(); });
-      // Draft opened from the dedicated Draft vouchers screen (owner 2026-09-20 16:23).
-      onMounted(() => {
+      // Draft opened from the Draft vouchers screen / the Sales Drafts tab.
+      function applyPendingDraft() {
         try {
           const pd = PSV.pendingSaleDraft;
           if (pd) { PSV.pendingSaleDraft = null; restoreDraft(pd); }
         } catch (_e) {}
-      });
+      }
+      onMounted(() => { applyPendingDraft(); window.addEventListener("psv:draft", applyPendingDraft); });
+      onUnmounted(() => { window.removeEventListener("psv:draft", applyPendingDraft); });
       // 🚩 WAVE 2: proactive in-session detection + verified-deposit lookup on picks
       async function probeDeposits() {
         try {
@@ -1880,7 +1941,7 @@
       }
 
       return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs, depositRedeem, clearRedeem,
-        saleDrafts, draftOpen, saveDraft, restoreDraft, deleteDraft, openDrafts, gotoDrafts,
+        saleDrafts, draftOpen, saveDraft, restoreDraft, deleteDraft, openDrafts, gotoDrafts, resetSale,
                // ── WAVE 2: promo / coupon / discount / deposit / in-session guard ──
                sessionWarn, depositApplied, depositAppliedAmt, applyDeposit, promos, promoOpen, promo, promoText, openPromo, pickPromo, clearPromo, focOpen, focItem, pickFoc, coupon, applyCoupon, clearCoupon, calcStatus, discountLines, subtotalKs, totalDiscountKs, payableBeforeDeposit, rawCash, scheduleCalc };
     },

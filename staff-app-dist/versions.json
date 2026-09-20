@@ -1,8 +1,19 @@
 {
-  "latest": "1.4.6",
-  "latest_code": 28,
-  "updated_at": "2026-09-20T16:31:40Z",
+  "latest": "1.4.7",
+  "latest_code": 29,
+  "updated_at": "2026-09-20T16:36:40Z",
   "versions": [
+    {
+      "version": "1.4.7",
+      "version_code": 29,
+      "arch": "universal",
+      "file": "psvibe-staff-1.4.7.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.7.apk",
+      "size": 5134190,
+      "sha256": "738f248f96dd262b6058074859492088e925f7290b7a5ad08dc85537cbf37fca",
+      "released_at": "2026-09-20",
+      "notes": "v1.4.7 (code 29): Save as draft now clears the form (fresh voucher no, empty member/console/game/food/splits/promo) so the next sale starts clean; and Draft vouchers got their own tab in the Sales screen right next to Today (list + Restore & finish + delete)."
+    },
     {
       "version": "1.4.6",
       "version_code": 28,

@@ -1,9 +1,9 @@
 {
-  "version": "1.4.6",
-  "version_code": 28,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.6.apk",
-  "size": 5133614,
-  "sha256": "3781aeb41047433277b2762a7480d9ddee21c2976ab068ec5886dcc81d684641",
+  "version": "1.4.7",
+  "version_code": 29,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.7.apk",
+  "size": 5134190,
+  "sha256": "738f248f96dd262b6058074859492088e925f7290b7a5ad08dc85537cbf37fca",
   "released_at": "2026-09-20",
-  "notes": "v1.4.6 (code 28): Stock In item picker now lists EVERY inventory item (API /fetch_food_menu?all=1) \u2014 out-of-stock items such as \u101c\u103b\u103e\u102c\u1019\u102e\u1038\u1010\u1031\u102c\u1000\u103a were hidden because the menu endpoint only returned quantity>0 items in a fixed category list; the sales food menu is unchanged."
+  "notes": "v1.4.7 (code 29): Save as draft now clears the form (fresh voucher no, empty member/console/game/food/splits/promo) so the next sale starts clean; and Draft vouchers got their own tab in the Sales screen right next to Today (list + Restore & finish + delete)."
 }
