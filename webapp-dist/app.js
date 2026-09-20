@@ -1927,6 +1927,10 @@
           <div class="psv-tl-datenav">
             <button class="psv-chip" :class="{ 'psv-chip--on': isToday }" @click="goToday">📅 Today</button>
             <button class="psv-chip" :class="{ 'psv-chip--on': isTomorrow }" @click="goTomorrow">➡ Tomorrow</button>
+            <!-- 2026-09-20 (owner: "Timeline ပွနေတယ်"): cancelled/rejected bookings used to be
+                 drawn as grey blocks, which double-stacked the grid (C-01 had 2 cancelled at the
+                 same hour). They do not occupy a console, so hide them by default with a toggle. -->
+            <button class="psv-chip" :class="{ 'psv-chip--on': showDead }" @click="showDead = !showDead">{{ showDead ? '🚫 Cancelled shown' : '🚫 Cancelled hidden' }}</button>
             <div class="psv-tl-datebar">
               <button class="psv-tl-arrow" aria-label="Previous day" @click="step(-1)">‹</button>
               <span class="psv-tl-datelbl">{{ dayLabel }}</span>
@@ -1994,6 +1998,7 @@
       const refreshing = ref(false);
       const err = ref("");
       const scroller = ref(null);
+      const showDead = ref(false);   // hide cancelled/rejected/no-show blocks by default
       const clock = ref(Date.now());
       const gridHours = TL_GRID_HOURS;
       const trackW = (TL_CLOSE_HOUR - TL_OPEN_HOUR + 1) * TL_HOUR_W;
@@ -2040,7 +2045,7 @@
       function cidOf(b) { return String(b.consoleId || b.console_id || b.consoleType || "").trim(); }
       function blocksOf(cid) {
         const key = String(cid).trim();
-        return bookings.value.filter((b) => cidOf(b) === key);
+        return bookings.value.filter((b) => cidOf(b) === key && (showDead.value || TL_DEAD.indexOf(bkKey(b.status)) < 0));
       }
       function minutesOf(b) {
         const st = tlMin(b.timeSlot || b.startTime);
@@ -2222,7 +2227,7 @@
         window.removeEventListener("resize", onResize);
         window.removeEventListener("orientationchange", onResize);
       });
-      return { embedded: props.embedded, refreshing, day, bookings, consoles, loading, err, scroller, gridHours, tlRows, nowLinePx,
+      return { embedded: props.embedded, refreshing, day, bookings, consoles, loading, err, scroller, showDead, gridHours, tlRows, nowLinePx,
         isToday, isTomorrow, dayLabel, nowPx, showNow, openHourLabel, closeHourLabel,
         hourPx, hourLabel, tone, blockStyle, isNarrow, blockTime, range, pick, goToday, goTomorrow, step, load };
     },
