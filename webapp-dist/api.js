@@ -462,9 +462,18 @@
       L.push({ text: "(no items)", size: 14, align: "center" });
     }
     hr();
+    // Owner 2026-09-20 15:57: member-card plays show a full wallet-balance breakdown
+    // (before / deducted / after) instead of a one-line wallet remark.
+    if (data.wallet && (data.wallet.before || data.wallet.ded || data.wallet.after)) {
+      hr();
+      L.push({ text: "MEMBER BALANCE (min)", bold: true, size: 15, align: "center" });
+      L.push({ text: "Balance before : " + nf(data.wallet.before) + " min", size: 15 });
+      L.push({ text: "Deducted       : -" + nf(data.wallet.ded) + " min", bold: true, size: 15 });
+      L.push({ text: "Balance after  : " + nf(data.wallet.after) + " min", bold: true, size: 15 });
+    }
     L.push({ text: "TOTAL: " + nf(data.total) + " Ks", bold: true, size: 20, align: "right" });
     if (data.payment) L.push({ text: "Paid: " + data.payment, size: 15 });
-    if (data.balance) L.push({ text: "💳 " + data.balance, size: 15 });
+    if (data.balance && !data.wallet) L.push({ text: "💳 " + data.balance, size: 15 });
     if (data.notes) L.push({ text: "Note: " + data.notes, size: 14 });
     hr();
     L.push({ text: "Thank you! Please come again", size: 14, align: "center" });

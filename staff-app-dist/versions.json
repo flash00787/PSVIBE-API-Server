@@ -1,8 +1,19 @@
 {
-  "latest": "1.3.9",
-  "latest_code": 21,
-  "updated_at": "2026-09-20T15:27:58Z",
+  "latest": "1.4.0",
+  "latest_code": 22,
+  "updated_at": "2026-09-20T15:58:42Z",
   "versions": [
+    {
+      "version": "1.4.0",
+      "version_code": 22,
+      "arch": "universal",
+      "file": "psvibe-staff-1.4.0.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.0.apk",
+      "size": 5129642,
+      "sha256": "6cb136745f84671e094871ce3e50b08dff775bf59d140839d50aaf623840475e",
+      "released_at": "2026-09-20",
+      "notes": "v1.4.0 (code 22): member-card voucher \u2014 for wallet plays the receipt now shows the GAME MINUTES and 'Game amount: 0 Ks (card)' instead of the game price, plus a MEMBER BALANCE breakdown (before / deducted / after) parsed from the sale notes; Paid shows 'Member card (mins)' and the cash TOTAL stays the net amount."
+    },
     {
       "version": "1.3.9",
       "version_code": 21,

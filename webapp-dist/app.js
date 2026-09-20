@@ -722,7 +722,26 @@
       async function doPrintDetail() {
         const s = detailSale.value; if (!s) return;
         const items = [];
-        if (Number(s.amount)) items.push({ name: "🎮 Game time", qty: 1, price: Number(s.amount) });
+        // ── Member-card play (owner 2026-09-20 15:57) ─────────────────────────────
+        // A member play is billed to the member wallet: sales_daily.net = 0 (no cash due)
+        // and the notes carry "Mins: 55 | BaseRate: 10000 | Wallet: -55 mins (bal 620 -> 565)".
+        // Per the owner the voucher must then show ONLY the game minutes + "Game amount: 0 Ks"
+        // and a clear wallet-balance breakdown instead of the game price.
+        const _notes = s.notes || "";
+        const _wm = /Wallet:\s*-([\d.]+)\s*mins\s*\(bal\s*([\d.]+)\s*->\s*([\d.]+)\)/.exec(_notes);
+        const _wallet = _wm ? { ded: Number(_wm[1]), before: Number(_wm[2]), after: Number(_wm[3]) } : null;
+        const _mm = /Mins:\s*([\d.]+)/.exec(_notes);
+        const _gameMins = _mm ? Number(_mm[1]) : 0;
+        const _mid = String(s.member_id == null ? "" : s.member_id).trim();
+        const _isGuest = (_mid === "" || _mid === "0" || _mid === "-" || /guest/i.test(_mid));
+        const isMemberPlay = !_isGuest && Number(s.amount) > 0 && (!!_wallet || Number(s.net) === 0);
+        if (isMemberPlay) {
+          items.push({ name: "🎮 Game (member card)", plain: true });
+          items.push({ name: "   Game mins   : " + (_gameMins ? _gameMins + " min" : "-"), plain: true });
+          items.push({ name: "   Game amount : 0 Ks  (card)", plain: true });
+        } else if (Number(s.amount)) {
+          items.push({ name: "🎮 Game time", qty: 1, price: Number(s.amount) });
+        }
         const ft = Number(s.gross) - Number(s.amount);
         if (ft > 0) {
           // 2026-09-20 (owner: "Voucher မှာ food detail မပါဘူး"): itemise the food instead of
@@ -760,8 +779,11 @@
             member: memberLabel.value,
             items: items,
             total: Number(s.net) || 0,
-            balance: (function () { const w = /Wallet:\s*(-\d+\s*mins[^|]*)/.exec(s.notes || ""); return w ? w[1].trim() : ""; })(),
-            payment: s.payment_method || "",
+            balance: _wallet ? ("-" + _wallet.ded + " mins (bal " + _wallet.before + " -> " + _wallet.after + ")") : "",
+            wallet: _wallet,
+            gameMins: _gameMins,
+            memberPlay: isMemberPlay,
+            payment: isMemberPlay ? "Member card (mins)" : (s.payment_method || ""),
             notes: Number(s.discount) > 0 ? ("Discount " + fKs(s.discount) + " Ks") : "",
           });
         } finally { printingDetail.value = false; }
