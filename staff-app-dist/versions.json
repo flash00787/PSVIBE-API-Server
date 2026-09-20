@@ -1,8 +1,19 @@
 {
-  "latest": "1.4.1",
-  "latest_code": 23,
-  "updated_at": "2026-09-20T16:03:37Z",
+  "latest": "1.4.2",
+  "latest_code": 24,
+  "updated_at": "2026-09-20T16:07:52Z",
   "versions": [
+    {
+      "version": "1.4.2",
+      "version_code": 24,
+      "arch": "universal",
+      "file": "psvibe-staff-1.4.2.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.2.apk",
+      "size": 5130610,
+      "sha256": "2e1f4523253fe6270f29126f398c1dfb2cde20e492d569030451a0a50bb9564a",
+      "released_at": "2026-09-20",
+      "notes": "v1.4.2 (code 24): speed \u2014 the read path now caches. apiCached upgraded to stale-while-revalidate with a localStorage-persisted store (instant first paint after an app restart) and any successful write invalidates the cache. 101 read call sites switched from PSV.api to PSV.apiCached (slow-changing lists cache 2-10 min, the rest 15 s); realtime/auth endpoints stay uncached."
+    },
     {
       "version": "1.4.1",
       "version_code": 23,

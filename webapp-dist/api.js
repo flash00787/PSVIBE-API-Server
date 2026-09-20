@@ -141,36 +141,67 @@
   // parallel status calls). Identical concurrent GETs now share ONE promise;
   // results are cached for CACHE_TTL so quick tab switches cost zero requests.
   const CACHE_TTL = 15000;
-  const _cache = Object.create(null);   // key → { ts, data }
-  const _inflight = Object.create(null); // key → Promise
+  const CACHE_STORE = "psv_cache_v1";
+  const _cache = Object.create(null);      // key → { ts, data }
+  const _inflight = Object.create(null);   // key → Promise
+  let _persist = Object.create(null);      // survives app restarts (instant first paint)
+  try { _persist = JSON.parse(localStorage.getItem(CACHE_STORE) || "{}") || Object.create(null); } catch (_e) { _persist = Object.create(null); }
 
   function _cacheKey(path, options) {
     const m = String((options && options.method) || "GET").toUpperCase();
     return m + " " + path;
   }
+  function _persistSave() {
+    try {
+      const keys = Object.keys(_persist);
+      if (keys.length > 80) {   // keep the store tiny
+        keys.sort(function (a, b) { return ((_persist[a] || {}).ts || 0) - ((_persist[b] || {}).ts || 0); });
+        for (let i = 0; i < keys.length - 80; i++) delete _persist[keys[i]];
+      }
+      localStorage.setItem(CACHE_STORE, JSON.stringify(_persist));
+    } catch (_e) { /* quota / private mode — memory cache still works */ }
+  }
   function invalidate(prefix) {
     const p = prefix || "";
     for (const k in _cache) { if (!p || k.indexOf(p) >= 0) delete _cache[k]; }
+    for (const k in _persist) { if (!p || k.indexOf(p) >= 0) delete _persist[k]; }
+    if (!p) { try { localStorage.removeItem(CACHE_STORE); } catch (_e) {} }
+    else { _persistSave(); }
   }
+  /**
+   * Cached GET with stale-while-revalidate (owner 2026-09-20 16:06: "loading အရမ်းကြာနေတယ်").
+   *  - fresh hit  → resolved from memory (zero requests)
+   *  - stale hit  → resolved IMMEDIATELY with the last known data, refreshed in the background
+   *                 (a "psv:data" event fires when the fresh payload lands)
+   *  - no hit     → normal request
+   * Persisted entries survive an app restart, so the first screen paint is instant.
+   * Non-GET calls are passed straight through to api().
+   */
   function apiCached(path, options, ttlMs) {
     const opts = options || {};
     const m = String(opts.method || "GET").toUpperCase();
     if (m !== "GET" && m !== "HEAD") return api(path, options);
     const key = _cacheKey(path, opts);
     const ttl = ttlMs == null ? CACHE_TTL : ttlMs;
-    const hit = _cache[key];
-    if (hit && (Date.now() - hit.ts) < ttl) return Promise.resolve(hit.data);
-    if (_inflight[key]) return _inflight[key];
-    const pr = api(path, options).then(function (data) {
-      _cache[key] = { ts: Date.now(), data: data };
-      delete _inflight[key];
-      return data;
-    }, function (err) {
-      delete _inflight[key];
-      throw err;
-    });
-    _inflight[key] = pr;
-    return pr;
+    const hit = _cache[key] || _persist[key] || null;
+
+    const fetchFresh = function () {
+      if (_inflight[key]) return _inflight[key];
+      const pr = api(path, options).then(function (data) {
+        _cache[key] = { ts: Date.now(), data: data };
+        _persist[key] = _cache[key];
+        _persistSave();
+        delete _inflight[key];
+        try { _emit("psv:data", { path: path, key: key }); } catch (_e) {}
+        return data;
+      }, function (err) { delete _inflight[key]; throw err; });
+      _inflight[key] = pr;
+      return pr;
+    };
+
+    if (hit && (Date.now() - hit.ts) < ttl) return Promise.resolve(hit.data);   // fresh
+    if (hit) { fetchFresh().catch(function () {}); return Promise.resolve(hit.data); } // stale → instant
+    return fetchFresh();
   }
   function retryNow() { invalidate(); _emit("psv:retry", {}); }
 
@@ -231,9 +262,12 @@
     const method = String(opts.method || "GET").toUpperCase();
     const canRetry = method === "GET" || method === "HEAD";
     let attempt = 0;
+    const _isWrite = method !== "GET" && method !== "HEAD";
     for (;;) {
       try {
-        return await _raw(path, opts);
+        const out = await _raw(path, opts);
+        if (_isWrite) invalidate();   // owner 2026-09-20: never serve a stale list after a write
+        return out;
       } catch (err) {
         if (err && err.rateLimited) {
           if (canRetry && attempt < BACKOFF_MS.length) {

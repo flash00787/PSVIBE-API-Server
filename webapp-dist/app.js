@@ -214,7 +214,7 @@
   window.PSVOpenNotification = function (id) {
     try {
       if (id != null && id !== "") {
-        PSV.api("/api/staff/notifications/" + encodeURIComponent(String(id)) + "/read", { method: "POST" }).catch(function () {});
+        PSV.apiCached("/api/staff/notifications/" + encodeURIComponent(String(id)) + "/read", { method: "POST" }).catch(function () {});
       }
     } catch (_e) {}
     try { haptic("light"); router.push("/notifications"); } catch (_e2) {}
@@ -495,7 +495,7 @@
         haptic("light");
         topup.q = ""; topup.picker = true;
         if (!topup.members.length) {
-          try { const d = PSV.unwrap(await PSV.api("/api/fetch_members?limit=300")); topup.members = (d && d.members) || []; }
+          try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_members?limit=300")); topup.members = (d && d.members) || []; }
           catch (e) { showToast("Load failed: " + e.message, "fail"); topup.picker = false; }
         }
       }
@@ -504,9 +504,9 @@
         if (topup._configLoaded) return;
         topup._configLoaded = true;
         const [base, bonus, thresh] = await Promise.allSettled([
-          PSV.api("/api/fetch_base_rate"),
-          PSV.api("/api/fetch_bonus_table"),
-          PSV.api("/api/fetch_rank_thresholds"),
+          PSV.apiCached("/api/fetch_base_rate", {}, 600000),
+          PSV.apiCached("/api/fetch_bonus_table", {}, 600000),
+          PSV.apiCached("/api/fetch_rank_thresholds", {}, 600000),
         ]);
         if (base.status === "fulfilled") { const v = Number(PSV.unwrap(base.value)); if (!isNaN(v) && v > 0) topup.base_rate = v; }
         if (bonus.status === "fulfilled") { const b = PSV.unwrap(bonus.value); if (Array.isArray(b) && b.length) topup.bonus_table = b; }
@@ -523,7 +523,7 @@
         loadTopupConfigOnce();
         (async () => {
           try {
-            const d = PSV.unwrap(await PSV.api("/api/fetch_member_data/" + encodeURIComponent(m.id)));
+            const d = PSV.unwrap(await PSV.apiCached("/api/fetch_member_data/" + encodeURIComponent(m.id)));
             if (d) {
               topup.member_total_spend = Number(d.net_spend ?? d.total_spend ?? 0) || 0;
               if (d.rank_raw) topup.member_tier = d.rank_raw;
@@ -545,7 +545,7 @@
         const pm = active.length ? active.map((s) => `${s.method}:${s.amount}`).join("|") : ("Cash:" + amt);
         topup.busy = true; haptic("medium");
         try {
-          const res = PSV.unwrap(await PSV.api("/api/topup/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: topup.member_id, amount: amt, payment_method: pm, staff_name: PSV.getStaff().name, client_ref: PSV.genClientRef() }) }));
+          const res = PSV.unwrap(await PSV.apiCached("/api/topup/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: topup.member_id, amount: amt, payment_method: pm, staff_name: PSV.getStaff().name, client_ref: PSV.genClientRef() }) }));
           if (res && res.duplicate) showToast("Already applied — " + (res.balance_mins ?? "?") + " mins", "warning");
           else {
             const base = res && res.base_mins != null ? res.base_mins : topupPreview.value.base;
@@ -1178,7 +1178,7 @@
         return p.notes || "Promotion";
       }
       function loadPromos() {
-        PSV.api("/api/promotions/active-list").then((r) => {
+        PSV.apiCached("/api/promotions/active-list", {}, 120000).then((r) => {
           if (r && r.success === false) { promos.value = []; return; }
           const d = PSV.unwrap(r); promos.value = (d && d.promotions) || [];
         }).catch(() => {});
@@ -1200,7 +1200,7 @@
         if (!code || coupon.applied) return;
         coupon.checking = true; coupon.message = "";
         try {
-          const r = await PSV.api("/api/coupons/validate", { method: "POST", headers: HJSON, body: JSON.stringify({ code: code }) });
+          const r = await PSV.apiCached("/api/coupons/validate", { method: "POST", headers: HJSON, body: JSON.stringify({ code: code }) });
           if (r && r.success === false) throw new Error(r.error || "Coupon is not valid");
           const d = PSV.unwrap(r); const c = (d && d.coupon) || {};
           if (!c.code) throw new Error("Coupon not found");
@@ -1248,7 +1248,7 @@
       async function runCalc() {
         calcStatus.value = "loading";
         try {
-          const r = await PSV.api("/api/promotions/calc", { method: "POST", headers: HJSON, body: JSON.stringify(cartForCalc()) });
+          const r = await PSV.apiCached("/api/promotions/calc", { method: "POST", headers: HJSON, body: JSON.stringify(cartForCalc()) });
           if (r && r.success === false) { serverCalc.value = null; calcStatus.value = "error"; return; }
           const d = PSV.unwrap(r);
           serverCalc.value = d || null;
@@ -1259,7 +1259,7 @@
       // ── In-session guard (staff mistake prevention) ─────────────────────
       const activeBookings = ref([]);
       async function loadActiveBookings() {
-        try { const d = PSV.unwrap(await PSV.api("/api/bookings?status=Active")); activeBookings.value = (d && d.bookings) || []; }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/bookings?status=Active")); activeBookings.value = (d && d.bookings) || []; }
         catch (_e) { activeBookings.value = []; }
       }
       const sessionWarn = computed(() => {
@@ -1272,7 +1272,7 @@
       });
       async function ensureNoActiveSession() {
         try {
-          const d = PSV.unwrap(await PSV.api("/api/bookings?status=Active"));
+          const d = PSV.unwrap(await PSV.apiCached("/api/bookings?status=Active"));
           const list = (d && d.bookings) || [];
           const cid = String(form.console_id || "").trim().toLowerCase();
           const mid = String(form.member_id || "").trim().toLowerCase();
@@ -1411,10 +1411,10 @@
 
       async function loadRefs() {
         const [m, c, g, f] = await Promise.allSettled([
-          PSV.api("/api/fetch_members?limit=300"),
-          PSV.api("/api/fetch_console_status"),
-          PSV.api("/api/fetch_games"),
-          PSV.api("/api/fetch_food_menu"),
+          PSV.apiCached("/api/fetch_members?limit=300"),
+          PSV.apiCached("/api/fetch_console_status"),
+          PSV.apiCached("/api/fetch_games", {}, 300000),
+          PSV.apiCached("/api/fetch_food_menu", {}, 300000),
         ]);
         if (m.status === "fulfilled") { const d = PSV.unwrap(m.value); members.value = (d && d.members) || []; }
         if (c.status === "fulfilled") { const d = PSV.unwrap(c.value); consolesList.value = (d && d.consoles) || []; }
@@ -1437,7 +1437,7 @@
             if (cc) pickConsole(cc); else form.console_id = pending.console_id;
           }
           if (pending.booking_id) {
-            PSV.api("/api/food-cart/booking/" + encodeURIComponent(pending.booking_id)).then((res) => {
+            PSV.apiCached("/api/food-cart/booking/" + encodeURIComponent(pending.booking_id)).then((res) => {
               const d2 = PSV.unwrap(res);
               const items = (d2 && d2.items) || [];
               items.forEach((it) => {
@@ -1459,8 +1459,8 @@
         try {
           if (depositRedeem.value) return; // already flagged from the Booking screen
           const arrs = await Promise.all([
-            PSV.api("/api/bookings?status=confirmed"),
-            PSV.api("/api/bookings?status=checked_in"),
+            PSV.apiCached("/api/bookings?status=confirmed"),
+            PSV.apiCached("/api/bookings?status=checked_in"),
           ]);
           let list = [];
           arrs.forEach((r) => { const d = PSV.unwrap(r); list = list.concat((d && d.bookings) || []); });
@@ -1486,7 +1486,7 @@
         wallet.settle = true;
         wallet.balance = Number(fallback) || 0;
         walletLoading.value = true;
-        PSV.api("/api/fetch_wallet_mins/" + encodeURIComponent(member_id)).then((r) => {
+        PSV.apiCached("/api/fetch_wallet_mins/" + encodeURIComponent(member_id)).then((r) => {
           const v = Number(PSV.unwrap(r));
           if (!isNaN(v)) wallet.balance = v;
           computeWalletSettle();
@@ -1524,7 +1524,7 @@
         if (cbid && (cstatus === "active" || cstatus === "checked_in")) {
           (async () => {
             try {
-              const ex = await PSV.api("/api/food-cart/booking/" + encodeURIComponent(cbid));
+              const ex = await PSV.apiCached("/api/food-cart/booking/" + encodeURIComponent(cbid));
               const d2 = PSV.unwrap(ex);
               const items = (d2 && d2.items) || [];
               items.forEach((it) => {
@@ -1542,8 +1542,8 @@
         (async () => {
           try {
             const [rateRes, multRes] = await Promise.allSettled([
-              PSV.api("/api/fetch_base_rate"),
-              PSV.api("/api/fetch_console_multiplier/" + encodeURIComponent(cid)),
+              PSV.apiCached("/api/fetch_base_rate", {}, 600000),
+              PSV.apiCached("/api/fetch_console_multiplier/" + encodeURIComponent(cid)),
             ]);
             if (rateRes.status === "fulfilled") { const v = Number(PSV.unwrap(rateRes.value)); if (!isNaN(v)) form.base_rate = v; }
             if (multRes.status === "fulfilled") { const v = Number(PSV.unwrap(multRes.value)); if (!isNaN(v)) form.multiplier = v; else form.multiplier = 1.0; }
@@ -1640,7 +1640,7 @@
             booking_id: (depositApplied.value && depositRedeem.value) ? depositRedeem.value.booking_id : "",
             client_ref: saleRef,
           };
-          const res = PSV.unwrap(await PSV.api("/api/sales/record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }));
+          const res = PSV.unwrap(await PSV.apiCached("/api/sales/record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }));
           // 🎟️ Reflect the server's coupon redemption (authoritative).
           if (coupon.applied && res && res.coupon_redeem) {
             const cm = res.coupon_redeem;
@@ -1658,7 +1658,7 @@
                 const qty = Number(fl.qty) || 0;
                 const price = Number(fl.price) || 0;
                 if (!name || qty <= 0) continue;
-                await PSV.api("/api/stock-out/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item_name: name, qty, unit_cost: price, total_cost: qty * price, staff: PSV.getStaff().name, notes: "Voucher: " + vno }) });
+                await PSV.apiCached("/api/stock-out/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item_name: name, qty, unit_cost: price, total_cost: qty * price, staff: PSV.getStaff().name, notes: "Voucher: " + vno }) });
               }
             } catch (soe) { console.warn("stock-out log warning:", soe); }
             // 🧾 Voucher snapshot for on-screen preview + 80mm thermal print
@@ -1773,7 +1773,7 @@
 
       async function load() {
         loading.value = true;
-        try { const d = PSV.unwrap(await PSV.api("/api/fetch_members?limit=300")); members.value = (d && d.members) || []; }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_members?limit=300")); members.value = (d && d.members) || []; }
         catch (e) { showToast("Load failed: " + e.message, "fail"); members.value = []; }
         finally { loading.value = false; }
       }
@@ -1785,8 +1785,8 @@
         detail.balance = m.wallet_balance ?? m.liability_mins ?? 0; detail.show = true;
         try {
           const [data, wallet] = await Promise.allSettled([
-            PSV.api("/api/fetch_member_data/" + encodeURIComponent(m.id)),
-            PSV.api("/api/fetch_wallet_mins/" + encodeURIComponent(m.id)),
+            PSV.apiCached("/api/fetch_member_data/" + encodeURIComponent(m.id)),
+            PSV.apiCached("/api/fetch_wallet_mins/" + encodeURIComponent(m.id)),
           ]);
           if (data.status === "fulfilled") { const d = PSV.unwrap(data.value); if (d) { detail.net_spend = d.net_spend ?? 0; detail.rank = d.rank_raw ?? "-"; detail.referral = d.referral_code ?? ""; if (d.wallet_mins != null) detail.balance = d.wallet_mins; } }
           if (wallet.status === "fulfilled") { detail.balance = PSV.unwrap(wallet.value) ?? detail.balance; }
@@ -1806,15 +1806,15 @@
         try {
           if (dlg.mode === "topup") {
             const amt = Number(dlg.amount) || 0;
-            const res = PSV.unwrap(await PSV.api("/api/topup/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: mid, amount: amt, mins_added: amt, payment_method: "Cash", staff_name: PSV.getStaff().name, client_ref: PSV.genClientRef() }) }));
+            const res = PSV.unwrap(await PSV.apiCached("/api/topup/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: mid, amount: amt, mins_added: amt, payment_method: "Cash", staff_name: PSV.getStaff().name, client_ref: PSV.genClientRef() }) }));
             if (res && res.duplicate) showToast("Already applied — " + (res.balance_mins ?? "?") + " mins", "warning");
             else showToast("Top-up done ✓ " + (res.balance_mins ?? "?") + " mins", "success");
           } else if (dlg.mode === "deduct") {
             const mins = Number(dlg.amount) || 0;
-            const res = PSV.unwrap(await PSV.api("/api/wallet/deduct", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: mid, deduct_mins: mins, total_mins: mins }) }));
+            const res = PSV.unwrap(await PSV.apiCached("/api/wallet/deduct", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: mid, deduct_mins: mins, total_mins: mins }) }));
             showToast("Deducted ✓ " + (res.balance_after ?? "?"), "success");
           } else {
-            const res = PSV.unwrap(await PSV.api("/api/save_referral_code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: mid, referral_code: dlg.code }) }));
+            const res = PSV.unwrap(await PSV.apiCached("/api/save_referral_code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: mid, referral_code: dlg.code }) }));
             showToast("Referral saved ✓", "success");
           }
           load();
@@ -1857,14 +1857,14 @@
       const form = reactive({ member_id: "", name: "", phone: "", initial_mins: 0, amount: 0, kpay: 0, cash: 0, referral_code: "", is_gift: false, pin: "" });
       const submitting = ref(false);
       function onGiftToggle(v) { haptic("light"); if (v) { form.amount = 0; form.kpay = 0; form.cash = 0; } }
-      async function nextId() { try { const id = PSV.unwrap(await PSV.api("/api/next_member_id")); if (id) form.member_id = String(id); } catch (_e) {} }
+      async function nextId() { try { const id = PSV.unwrap(await PSV.apiCached("/api/next_member_id")); if (id) form.member_id = String(id); } catch (_e) {} }
       onMounted(nextId);
       async function submit() {
         submitting.value = true; haptic("medium");
         try {
           const payload = { member_id: form.member_id, name: form.name, phone: form.phone, staff: PSV.getStaff().name, initial_mins: form.initial_mins, amount: form.amount, kpay: form.kpay, cash: form.cash, mins_added: form.initial_mins, referral_code: form.referral_code };
           if (form.is_gift) { payload.is_gift = true; payload.pin = form.pin; }  // PIN is never logged
-          const raw = await PSV.api("/api/members/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+          const raw = await PSV.apiCached("/api/members/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
           if (raw && raw.success === false) throw new Error(raw.error || "Register failed");
           const res = PSV.unwrap(raw);
           showToast("Saved ✓ " + (res && res.member_id ? res.member_id : ""), "success");
@@ -2602,7 +2602,7 @@
 
       async function fetchOne(id) {
         try {
-          const d = PSV.unwrap(await PSV.api("/api/bookings/" + encodeURIComponent(id)));
+          const d = PSV.unwrap(await PSV.apiCached("/api/bookings/" + encodeURIComponent(id)));
           return (d && d.booking) || null;
         } catch (_e) { return null; }
       }
@@ -2632,7 +2632,7 @@
         if (!okc) return;
         busy.value = b.id;
         try {
-          await PSV.api("/api/bookings/" + b.id + "/status", { method: "PATCH", headers: HJSON, body: JSON.stringify({ status: "confirmed", staffName: psvStaffName() }) });
+          await PSV.apiCached("/api/bookings/" + b.id + "/status", { method: "PATCH", headers: HJSON, body: JSON.stringify({ status: "confirmed", staffName: psvStaffName() }) });
           haptic("medium"); showToast("Approved ✓", "success");
           await afterMutation(b.id, { status: "confirmed" });
         } catch (e) { showToast("Failed: " + e.message, "fail"); }
@@ -2643,7 +2643,7 @@
         if (!okc) return;
         busy.value = b.id;
         try {
-          await PSV.api("/api/bookings/checkin", { method: "POST", headers: HJSON, body: JSON.stringify({ id: b.id, staff_name: psvStaffName() }) });
+          await PSV.apiCached("/api/bookings/checkin", { method: "POST", headers: HJSON, body: JSON.stringify({ id: b.id, staff_name: psvStaffName() }) });
           haptic("medium"); showToast("Checked in 🎟", "success");
           await afterMutation(b.id, { status: "checked_in" });
         } catch (e) { showToast("Failed: " + e.message, "fail"); }
@@ -2655,7 +2655,7 @@
         if (!okc) return;
         busy.value = b.id;
         try {
-          await PSV.api("/api/bookings/" + b.id + "/deposit/verify", { method: "PATCH", headers: HJSON, body: JSON.stringify({ verified_by: psvStaffName() }) });
+          await PSV.apiCached("/api/bookings/" + b.id + "/deposit/verify", { method: "PATCH", headers: HJSON, body: JSON.stringify({ verified_by: psvStaffName() }) });
           haptic("medium"); showToast("Deposit verified 💰", "success");
           await afterMutation(b.id, { deposit_status: "verified", status: "confirmed" });
         } catch (e) { showToast("Failed: " + e.message, "fail"); }
@@ -2663,7 +2663,7 @@
       }
       async function doRedeem(b) {
         try {
-          const d = PSV.unwrap(await PSV.api("/api/bookings/" + b.id + "/deposit/pre-redeem", { method: "POST" }));
+          const d = PSV.unwrap(await PSV.apiCached("/api/bookings/" + b.id + "/deposit/pre-redeem", { method: "POST" }));
           const amt = Number((d && d.deposit_amount) || 0);
           if (!amt) { showToast("No verified deposit", "warning"); return; }
           try { PSV.pendingDepositRedeem = { booking_id: b.id, amount: amt, method: (d && d.deposit_method) || "", ts: Date.now() }; } catch (_e) {}
@@ -2728,11 +2728,11 @@
         busy.value = b.id;
         try {
           if (isReject) {
-            await PSV.api("/api/bookings/" + b.id + "/status", { method: "PATCH", headers: HJSON, body: JSON.stringify({ status: "rejected", staffNote: label, staffName: psvStaffName() }) });
+            await PSV.apiCached("/api/bookings/" + b.id + "/status", { method: "PATCH", headers: HJSON, body: JSON.stringify({ status: "rejected", staffNote: label, staffName: psvStaffName() }) });
             showToast("Rejected ❌", "success");
             await afterMutation(b.id, { status: "rejected" });
           } else {
-            await PSV.api("/api/bookings/cancel", { method: "POST", headers: HJSON, body: JSON.stringify({ id: b.id, booking_id: b.id, reason: label, staff_name: psvStaffName() }) });
+            await PSV.apiCached("/api/bookings/cancel", { method: "POST", headers: HJSON, body: JSON.stringify({ id: b.id, booking_id: b.id, reason: label, staff_name: psvStaffName() }) });
             showToast("Cancelled ⛔", "success");
             await afterMutation(b.id, { status: "cancelled" });
           }
@@ -2871,7 +2871,7 @@
       });
       async function loadMembers() {
         if (members.value.length) return;
-        try { const d = PSV.unwrap(await PSV.api("/api/fetch_members?limit=300")); members.value = (d && d.members) || []; } catch (_e) { members.value = []; }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_members?limit=300")); members.value = (d && d.members) || []; } catch (_e) { members.value = []; }
       }
       function openMember() { if (!members.value.length) loadMembers(); memberPicker.value = true; haptic("light"); }
       function pickMember(m) { form.member_id = m.id || m.member_id; if (!form.customer_name && m.name) form.customer_name = m.name; memberPicker.value = false; }
@@ -2884,7 +2884,7 @@
       function pickGameVal(val) { form.game_name = String(val == null ? "" : val); gamePicker.value = false; }
       function clearMember() { form.member_id = ""; }
       async function loadConsoles() {
-        try { const d = PSV.unwrap(await PSV.api("/api/fetch_console_status")); consoles.value = (d && d.consoles) || []; } catch (_e) {}
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_console_status")); consoles.value = (d && d.consoles) || []; } catch (_e) {}
       }
       onMounted(loadConsoles);
       function openConsole() { if (!consoles.value.length) loadConsoles(); consolePicker.value = true; haptic("light"); }
@@ -2892,7 +2892,7 @@
       function pickDep({ selectedOptions }) { form.deposit_method = selectedOptions[0].value; depPicker.value = false; }
       async function loadGames() {
         if (gamesList.value.length) return;
-        try { const d = PSV.unwrap(await PSV.api("/api/fetch_games")); gamesList.value = Array.isArray(d) ? d : (d && d.games) || []; } catch (_e) { gamesList.value = []; }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_games", {}, 300000)); gamesList.value = Array.isArray(d) ? d : (d && d.games) || []; } catch (_e) { gamesList.value = []; }
       }
       function openGame() { if (!gamesList.value.length) loadGames(); gamePicker.value = true; haptic("light"); }
       function pickGame({ selectedOptions }) { form.game_name = selectedOptions[0].value; gamePicker.value = false; }
@@ -2912,7 +2912,7 @@
           if (form.add_deposit && (!form.deposit_amount || Number(form.deposit_amount) <= 0)) { showToast("Please enter a valid deposit amount", "warning"); return; }
           const body = { customer_name: form.customer_name, member_id: form.member_id, console_id: form.console_id, game_name: form.game_name, booking_date: form.booking_date, start_time: form.start_time, duration_mins: form.duration_mins, notes: form.notes };
           if (form.add_deposit) { body.add_deposit = true; body.deposit_amount = form.deposit_amount; body.deposit_method = form.deposit_method; }
-          const res = PSV.unwrap(await PSV.api("/api/bookings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
+          const res = PSV.unwrap(await PSV.apiCached("/api/bookings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
           showToast("Booking saved ✓" + (res && res.booking_id ? " BK#" + res.booking_id : ""), "success");
           form.customer_name = ""; form.member_id = ""; form.console_id = ""; form.game_name = ""; form.start_time = ""; form.duration_mins = 60; form.add_deposit = false; form.deposit_amount = 0; form.notes = "";
           emit("saved");
@@ -3049,7 +3049,7 @@
       const lowStock = ref(0);
       async function loadBadges() {
         try {
-          const arr = PSV.unwrap(await PSV.api("/api/dashboard/inventory/alerts"));
+          const arr = PSV.unwrap(await PSV.apiCached("/api/dashboard/inventory/alerts"));
           lowStock.value = Array.isArray(arr) ? arr.length : Number((arr && arr.total) || 0);
         } catch (_e) { lowStock.value = 0; }
       }
@@ -3282,7 +3282,7 @@
 
       async function load() {
         loading.value = true;
-        try { const d = PSV.unwrap(await PSV.api("/api/fetch_console_status")); list.value = (d && d.consoles) || []; }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_console_status")); list.value = (d && d.consoles) || []; }
         catch (e) { showToast("Load failed: " + e.message, "fail"); list.value = []; }
         finally { loading.value = false; refreshing.value = false; }
       }
@@ -3296,7 +3296,7 @@
       // resolve the booking's console, open its Start Session sheet and preselect it.
       async function openBindFromQuery(bindId) {
         try {
-          const d = PSV.unwrap(await PSV.api("/api/bookings/" + encodeURIComponent(bindId)));
+          const d = PSV.unwrap(await PSV.apiCached("/api/bookings/" + encodeURIComponent(bindId)));
           const bk = (d && d.booking) || null;
           if (!bk) { showToast("Booking #" + bindId + " not found", "fail"); return; }
           const cid = bk.console_id || "";
@@ -3412,7 +3412,7 @@
         foodShow.value = true;
         haptic("light");
         try {
-          const d = PSV.unwrap(await PSV.api("/api/fetch_food_menu"));
+          const d = PSV.unwrap(await PSV.apiCached("/api/fetch_food_menu", {}, 300000));
           foodMenu.value = d || {};
         } catch (e) { /* menu loads lazily; picker shows what it has */ }
         // 🍔 ADD-only flow: do NOT prefill existing items (staff might accidentally
@@ -3420,7 +3420,7 @@
         const bid = c && c.booking_id;
         if (bid) {
           try {
-            const ex = PSV.unwrap(await PSV.api("/api/food-cart/booking/" + encodeURIComponent(bid)));
+            const ex = PSV.unwrap(await PSV.apiCached("/api/food-cart/booking/" + encodeURIComponent(bid)));
             const items = (ex && ex.items) || [];
             if (items && items.length) {
               foodNote.value = items.length + " items already ordered — pick more and tap Save to add";
@@ -3464,7 +3464,7 @@
             return;
           }
           // 🔄 ADD mode — merge onto existing cart (existing rows preserved, new items added)
-          const res = PSV.unwrap(await PSV.api("/api/food-cart/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ booking_id: String(bid), mode: "add", items: foodSel.value.map((x) => ({ item_name: x.name, quantity: x.qty, unit_price: x.price })) }) }));
+          const res = PSV.unwrap(await PSV.apiCached("/api/food-cart/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ booking_id: String(bid), mode: "add", items: foodSel.value.map((x) => ({ item_name: x.name, quantity: x.qty, unit_price: x.price })) }) }));
           const total = (res && res.total) || foodSel.value.reduce((s, x) => s + (Number(x.qty)||0) * (Number(x.price)||0), 0);
           showToast("Added " + foodSel.value.length + " item(s) = " + PSV.fmtKs(total) + " Ks — charged at session end", "success");
           foodShow.value = false;
@@ -3490,7 +3490,7 @@
         if (!bid) { showToast("No booking for this console", "fail"); return; }
         haptic("heavy");
         try {
-          await PSV.api("/api/end_booking/" + encodeURIComponent(bid), { method: "PUT" });
+          await PSV.apiCached("/api/end_booking/" + encodeURIComponent(bid), { method: "PUT" });
           // 🧾 Open Sales voucher prefilled with session data (mirror bot launch_session_sale)
           PSV.pendingSessionSale = {
             console_id: endDlg.console_id,
@@ -3509,7 +3509,7 @@
         // member dropdown options
         if (!startMemberCols.value.length) {
           try {
-            const d = PSV.unwrap(await PSV.api("/api/fetch_members?limit=300"));
+            const d = PSV.unwrap(await PSV.apiCached("/api/fetch_members?limit=300"));
             const ms = (d && d.members) || [];
             startMembers.value = ms;
             startMemberCols.value = [{ text: "Guest (Walk-in)", value: "Guest" }].concat(ms.map((m) => ({ text: (m.name || m.id) + (m.id && m.name && m.id !== m.name ? "  (" + m.id + ")" : ""), value: m.id || m.name })));
@@ -3518,7 +3518,7 @@
         // game dropdown options
         if (!startGameCols.value.length) {
           try {
-            const d = PSV.unwrap(await PSV.api("/api/fetch_games"));
+            const d = PSV.unwrap(await PSV.apiCached("/api/fetch_games", {}, 300000));
             const gs = (d && d.games) || [];
             startGames.value = gs;
             startGameCols.value = gs.filter((g) => g.game_title).map((g) => ({ text: g.game_title, value: g.game_title }));
@@ -3528,7 +3528,7 @@
         const c = activeConsole.value;
         if (!c) return;
         try {
-          const d = PSV.unwrap(await PSV.api("/api/get-confirmed-booking?console_id=" + encodeURIComponent(c.console_id || c.id)));
+          const d = PSV.unwrap(await PSV.apiCached("/api/get-confirmed-booking?console_id=" + encodeURIComponent(c.console_id || c.id)));
           const cands = (d && (d.bookings || (d.booking ? [d.booking] : []))) || [];
           startBind.bookings = cands;
           startBind.selId = null;
@@ -3596,7 +3596,7 @@
         if (!cid || !extra || extra <= 0) { showToast("Enter extra minutes", "warning"); return; }
         haptic("medium");
         try {
-          const res = PSV.unwrap(await PSV.api("/api/bookings/extend-duration", {
+          const res = PSV.unwrap(await PSV.apiCached("/api/bookings/extend-duration", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ console_id: cid, extra_mins: extra }),
@@ -3621,7 +3621,7 @@
           // booking, so if the chosen candidate is still 'confirmed' we check it in
           // first (POST /api/bookings/checkin creates the checked_in row) then start.
           if (bid && cand && !isCheckedIn(cand)) {
-            await PSV.api("/api/bookings/checkin", {
+            await PSV.apiCached("/api/bookings/checkin", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ id: bid, staff_name: PSV.getStaff().name }),
@@ -3713,7 +3713,7 @@
       async function load() {
         loading.value = true;
         try {
-          const d = PSV.unwrap(await PSV.api("/api/food-orders/active"));
+          const d = PSV.unwrap(await PSV.apiCached("/api/food-orders/active"));
           const data = (d && d.data) || (Array.isArray(d) ? d : []);
           list.value = data || [];
         } catch (e) { showToast("Load failed: " + e.message, "fail"); list.value = []; }
@@ -3742,13 +3742,13 @@
         saving.value = true;
         try {
           if (!editSel.value.length) {
-            await PSV.api("/api/food-cart/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ booking_id: String(s.booking_id), items: [] }) });
+            await PSV.apiCached("/api/food-cart/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ booking_id: String(s.booking_id), items: [] }) });
             showToast("Food order cleared", "success");
             editShow.value = false;
             load();
             return;
           }
-          const res = PSV.unwrap(await PSV.api("/api/food-cart/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ booking_id: String(s.booking_id), items: editSel.value.map((x) => ({ item_name: x.name, quantity: x.qty, unit_price: x.price })) }) }));
+          const res = PSV.unwrap(await PSV.apiCached("/api/food-cart/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ booking_id: String(s.booking_id), items: editSel.value.map((x) => ({ item_name: x.name, quantity: x.qty, unit_price: x.price })) }) }));
           const total = (res && res.total) || editSel.value.reduce((s2, x) => s2 + (Number(x.qty) || 0) * (Number(x.price) || 0), 0);
           showToast(editSel.value.length + " items = " + PSV.fmtKs(total) + " Ks — charged at session end", "success");
           editShow.value = false;
@@ -3842,7 +3842,7 @@
       function addRow() { rows.value.push({ item_name: "", custom_name: "", quantity: 0, unit_cost: 0, isNew: false }); haptic("light"); }
       async function loadStock() {
         loading.value = true;
-        try { const d = PSV.unwrap(await PSV.api("/api/dashboard/inventory")); stock.value = Array.isArray(d) ? d : (d && d.items) || []; }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/dashboard/inventory")); stock.value = Array.isArray(d) ? d : (d && d.items) || []; }
         catch (e) { stock.value = []; }
         finally { loading.value = false; refreshing.value = false; }
       }
@@ -3874,7 +3874,7 @@
         if (!items.length) { showToast("Select at least one item with qty", "fail"); return; }
         submitting.value = true; haptic("medium");
         try {
-          const res = PSV.unwrap(await PSV.api("/api/stock/in/batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items, payment_method: form.payment_method, staff_name: PSV.getStaff().name }) }));
+          const res = PSV.unwrap(await PSV.apiCached("/api/stock/in/batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items, payment_method: form.payment_method, staff_name: PSV.getStaff().name }) }));
           showToast("Stock-in done ✓ " + (res && res.batch_id ? res.batch_id : "") + " · " + items.length + " item(s)", "success");
           rows.value = [{ item_name: "", custom_name: "", quantity: 0, unit_cost: 0, isNew: false }];
           loadStock();
@@ -3928,8 +3928,8 @@
       async function load() {
         loading.value = true;
         const [st, al] = await Promise.allSettled([
-          PSV.api("/api/dashboard/stats"),
-          PSV.api("/api/dashboard/inventory/alerts"),
+          PSV.apiCached("/api/dashboard/stats"),
+          PSV.apiCached("/api/dashboard/inventory/alerts"),
         ]);
         stats.value = st.status === "fulfilled" ? (PSV.unwrap(st.value) || null) : null;
         lowStock.value = al.status === "fulfilled" ? (PSV.unwrap(al.value) || []) : [];
@@ -3984,13 +3984,13 @@
         today.check_out = row.check_out ? String(row.check_out).slice(11, 16) : "";
       }
       async function loadToday() {
-        try { const d = PSV.unwrap(await PSV.api("/api/attendance/today?staff_name=" + encodeURIComponent(staffName.value))); _applyRow(d && d.today); }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/attendance/today?staff_name=" + encodeURIComponent(staffName.value))); _applyRow(d && d.today); }
         catch (_e) {}
       }
       async function checkin(status) {
         haptic("medium");
         try {
-          const d = PSV.unwrap(await PSV.api("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staffName.value, status }) }));
+          const d = PSV.unwrap(await PSV.apiCached("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staffName.value, status }) }));
           _applyRow(d && d.today);
           showToast("Checked in ✓", "success");
         } catch (e) { showToast("Error: " + e.message, "fail"); }
@@ -3998,14 +3998,14 @@
       async function checkout() {
         haptic("medium");
         try {
-          const d = PSV.unwrap(await PSV.api("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staffName.value, status: "check-out" }) }));
+          const d = PSV.unwrap(await PSV.apiCached("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staffName.value, status: "check-out" }) }));
           _applyRow(d && d.today);
           showToast("Checked out ✓", "success");
         } catch (e) { showToast("Error: " + e.message, "fail"); }
       }
       onMounted(loadToday);
       async function loadAdvances() {
-        try { const d = PSV.unwrap(await PSV.api("/api/fetch_salary_advances/" + month.value)); advances.value = (d && d.advances) || []; }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_salary_advances/" + month.value)); advances.value = (d && d.advances) || []; }
         catch (e) { advances.value = []; }
         advancesLoaded.value = true;
       }
@@ -4043,7 +4043,7 @@
       const loading = ref(true);
       async function load() {
         loading.value = true;
-        try { const d = PSV.unwrap(await PSV.api("/api/fetch_staff")); list.value = Array.isArray(d) ? d : []; }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_staff", {}, 300000)); list.value = Array.isArray(d) ? d : []; }
         catch (e) { list.value = []; }
         finally { loading.value = false; }
       }
@@ -4076,10 +4076,10 @@
       async function load() {
         loading.value = true;
         try {
-          let d = PSV.unwrap(await PSV.api("/api/fetch_game_library"));
+          let d = PSV.unwrap(await PSV.apiCached("/api/fetch_game_library"));
           list.value = Array.isArray(d) ? d : (d && d.games) || [];
           if (!list.value.length) {
-            d = PSV.unwrap(await PSV.api("/api/fetch_games"));
+            d = PSV.unwrap(await PSV.apiCached("/api/fetch_games", {}, 300000));
             list.value = Array.isArray(d) ? d : (d && d.games) || [];
           }
         } catch (e) { list.value = []; }
@@ -4132,8 +4132,8 @@
       async function load() {
         loading.value = true;
         try {
-          let d = PSV.unwrap(await PSV.api("/api/fetch_food_menu"));
-          if (d == null || (typeof d === "object" && !Array.isArray(d) && !Object.keys(d).length)) d = PSV.unwrap(await PSV.api("/api/fetch_food_prices"));
+          let d = PSV.unwrap(await PSV.apiCached("/api/fetch_food_menu", {}, 300000));
+          if (d == null || (typeof d === "object" && !Array.isArray(d) && !Object.keys(d).length)) d = PSV.unwrap(await PSV.apiCached("/api/fetch_food_prices"));
           list.value = flattenFood(d);
         } catch (e) { list.value = []; }
         finally { loading.value = false; }
@@ -4163,7 +4163,7 @@
       const loading = ref(true);
       async function load() {
         loading.value = true;
-        try { const d = PSV.unwrap(await PSV.api("/api/promotions/active")); list.value = (d && (d.promotions || d)) || []; }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/promotions/active")); list.value = (d && (d.promotions || d)) || []; }
         catch (e) { list.value = []; }
         finally { loading.value = false; }
       }
@@ -4204,7 +4204,7 @@
       async function load() {
         loading.value = true;
         try {
-          const d = PSV.unwrap(await PSV.api("/api/dashboard/salary/advances"));
+          const d = PSV.unwrap(await PSV.apiCached("/api/dashboard/salary/advances"));
           advances.value = (d && (d.advances || d)) || [];
           ownerOnly.value = false;
         } catch (e) {
@@ -4294,7 +4294,7 @@
       const active = computed(() => list.value.filter((c) => String(c.status || "").toLowerCase() === "active"));
       async function load() {
         loading.value = true;
-        try { const d = PSV.unwrap(await PSV.api("/api/fetch_console_status")); list.value = (d && d.consoles) || []; }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_console_status")); list.value = (d && d.consoles) || []; }
         catch (e) { showToast("Load failed: " + e.message, "fail"); list.value = []; }
         finally { loading.value = false; refreshing.value = false; }
       }
@@ -4399,7 +4399,7 @@
       async function openPicker() {
         haptic("light"); picker.value = true;
         if (!stock.value.length) {
-          try { const d = PSV.unwrap(await PSV.api("/api/dashboard/inventory")); stock.value = Array.isArray(d) ? d : ((d && d.items) || []); }
+          try { const d = PSV.unwrap(await PSV.apiCached("/api/dashboard/inventory")); stock.value = Array.isArray(d) ? d : ((d && d.items) || []); }
           catch (e) { showToast("Load failed: " + e.message, "fail"); }
         }
       }
@@ -4409,7 +4409,7 @@
         if (!item.id || n <= 0 || busy.value) return;
         busy.value = true; haptic("medium");
         try {
-          const r = asOk(await PSV.api("/api/dashboard/stock-out", { method: "POST", headers: HJSON, body: JSON.stringify({ item_id: item.id, quantity: n, unit_price: item.unit_price, notes: reason.value, staff_name: PSV.getStaff().name }) }));
+          const r = asOk(await PSV.apiCached("/api/dashboard/stock-out", { method: "POST", headers: HJSON, body: JSON.stringify({ item_id: item.id, quantity: n, unit_price: item.unit_price, notes: reason.value, staff_name: PSV.getStaff().name }) }));
           const data = PSV.unwrap(r);
           const nq = data && data.new_quantity;
           showToast("Stock-out recorded ✓" + (nq != null ? (" · new qty " + nq) : ""), "success");
@@ -4443,7 +4443,7 @@
       const list = ref([]); const loading = ref(true); const refreshing = ref(false);
       async function load() {
         loading.value = true;
-        try { const d = PSV.unwrap(await PSV.api("/api/dashboard/inventory/alerts")); list.value = Array.isArray(d) ? d : ((d && d.items) || []); }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/dashboard/inventory/alerts")); list.value = Array.isArray(d) ? d : ((d && d.items) || []); }
         catch (e) { showToast("Load failed: " + e.message, "fail"); list.value = []; }
         finally { loading.value = false; refreshing.value = false; }
       }
@@ -4498,7 +4498,7 @@
       function variance(it) { const e = entry(it); if (e === "" || e == null) return null; return Number(it.system_qty) - Number(e); }
       async function load() {
         loading.value = true;
-        try { const d = PSV.unwrap(await PSV.api("/api/dashboard/stock-check")); items.value = (d && d.items) || []; date.value = (d && d.date) || PSV.todayMMT(); }
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/dashboard/stock-check")); items.value = (d && d.items) || []; date.value = (d && d.date) || PSV.todayMMT(); }
         catch (e) { showToast("Load failed: " + e.message, "fail"); items.value = []; }
         finally { loading.value = false; }
       }
@@ -4509,7 +4509,7 @@
         if (!payload.length) { showToast("Enter at least one count", "warning"); return; }
         busy.value = true; haptic("medium");
         try {
-          asOk(await PSV.api("/api/dashboard/stock-check", { method: "POST", headers: HJSON, body: JSON.stringify({ date: date.value, items: payload, checked_by: PSV.getStaff().name }) }));
+          asOk(await PSV.apiCached("/api/dashboard/stock-check", { method: "POST", headers: HJSON, body: JSON.stringify({ date: date.value, items: payload, checked_by: PSV.getStaff().name }) }));
           showToast("Saved " + payload.length + " count(s) ✓", "success");
           Object.keys(counts).forEach((k) => delete counts[k]);
           load();
@@ -4580,7 +4580,7 @@
         // (staff → 4 shop accounts, admin → all 6 with owner_only flags).
         // We render exactly what comes back; no client-side role guessing.
         try {
-          const d = PSV.unwrap(await PSV.api("/api/accounts/balances")) || {};
+          const d = PSV.unwrap(await PSV.apiCached("/api/accounts/balances")) || {};
           role.value = d.role || role.value;
           let rows = d.accounts || [];
           if (!rows.length) rows = [].concat(d.operating || [], d.capital || []);
@@ -4592,12 +4592,12 @@
             blocked.value = true; accounts.value = []; return;
           }
           try {
-            const t = PSV.unwrap(await PSV.api("/api/accounts/transferable")) || {};
+            const t = PSV.unwrap(await PSV.apiCached("/api/accounts/transferable")) || {};
             role.value = t.role || role.value;
             accounts.value = mapRows(t.accounts || []);
           } catch (e2) {
             try {
-              const f = PSV.unwrap(await PSV.api("/api/finance/account-balances")) || {};
+              const f = PSV.unwrap(await PSV.apiCached("/api/finance/account-balances")) || {};
               accounts.value = mapRows([].concat(f.operating || [], f.capital || []), true);
             } catch (e3) {
               accounts.value = [];
@@ -4666,10 +4666,10 @@
         try {
           // Canonical owner-only endpoint. Falls back to the /api/accounts/balances alias.
           let d = null;
-          try { d = PSV.unwrap(await PSV.api("/api/finance/account-balances")); }
+          try { d = PSV.unwrap(await PSV.apiCached("/api/finance/account-balances")); }
           catch (e1) {
             if (isOwnerBlock(e1)) throw e1;
-            d = PSV.unwrap(await PSV.api("/api/accounts/balances"));
+            d = PSV.unwrap(await PSV.apiCached("/api/accounts/balances"));
           }
           let rows = (d && d.accounts) || [];
           if (!rows.length) rows = [].concat((d && d.operating) || [], (d && d.capital) || []);
@@ -4845,7 +4845,7 @@
       async function load() {
         loading.value = true; loadErr.value = "";
         try {
-          const raw = await PSV.api("/api/accounts/transferable");
+          const raw = await PSV.apiCached("/api/accounts/transferable");
           const d = PSV.unwrap(raw) || {};
           const list = Array.isArray(d) ? d : (d.accounts || []);
           accounts.value = list.map((a) => {
@@ -4907,7 +4907,7 @@
           note: note.value || "", staff_name: (PSV.getStaff() || {}).name || "", client_ref: clientRef.value,
         };
         try {
-          const raw = await PSV.api("/api/accounts/transfer", { method: "POST", headers: HJSON, body: JSON.stringify(payload) });
+          const raw = await PSV.apiCached("/api/accounts/transfer", { method: "POST", headers: HJSON, body: JSON.stringify(payload) });
           const d = PSV.unwrap(raw) || {};
           const bl = d.balances || {};
           const fromBal = (bl[from.value] != null) ? bl[from.value] : (d.from_balance != null ? d.from_balance : fromAfter.value);
@@ -5010,7 +5010,7 @@
       async function load() {
         loading.value = true; err.value = ""; unavailable.value = "";
         try {
-          const d = PSV.unwrap(await PSV.api("/api/accounts/transfers?limit=50")) || {};
+          const d = PSV.unwrap(await PSV.apiCached("/api/accounts/transfers?limit=50")) || {};
           role.value = d.role || d.scope || role.value || String((PSV.getStaff() || {}).role || "");
           rows.value = normalize(d.transfers || d.rows || (Array.isArray(d) ? d : []));
         } catch (e) {
@@ -5049,13 +5049,13 @@
     setup() {
       const form = reactive({ member_id: "", name: "", phone: "", initial_mins: 0, pin: "" });
       const busy = ref(false);
-      async function nextId() { try { const id = PSV.unwrap(await PSV.api("/api/next_member_id")); if (id) form.member_id = String(id); } catch (_e) {} }
+      async function nextId() { try { const id = PSV.unwrap(await PSV.apiCached("/api/next_member_id")); if (id) form.member_id = String(id); } catch (_e) {} }
       onMounted(nextId);
       async function submit() {
         busy.value = true; haptic("medium");
         try {
           // PIN lives only in this request body — never persisted or logged.
-          asOk(await PSV.api("/api/members/register", { method: "POST", headers: HJSON, body: JSON.stringify({ member_id: form.member_id, name: form.name, phone: form.phone, staff: PSV.getStaff().name, initial_mins: form.initial_mins, mins_added: form.initial_mins, amount: 0, is_gift: true, pin: form.pin }) }));
+          asOk(await PSV.apiCached("/api/members/register", { method: "POST", headers: HJSON, body: JSON.stringify({ member_id: form.member_id, name: form.name, phone: form.phone, staff: PSV.getStaff().name, initial_mins: form.initial_mins, mins_added: form.initial_mins, amount: 0, is_gift: true, pin: form.pin }) }));
           showToast("Gift card issued ✓ " + form.member_id, "success");
           form.name = ""; form.phone = ""; form.initial_mins = 0; nextId();
         } catch (e) {
@@ -5103,7 +5103,7 @@
       const thresholds = reactive({ master_threshold: 0, immortal_threshold: 0 });
       async function load() {
         loading.value = true;
-        const [b, t] = await Promise.allSettled([PSV.api("/api/fetch_bonus_table"), PSV.api("/api/fetch_rank_thresholds")]);
+        const [b, t] = await Promise.allSettled([PSV.apiCached("/api/fetch_bonus_table", {}, 600000), PSV.apiCached("/api/fetch_rank_thresholds", {}, 600000)]);
         rows.value = b.status === "fulfilled" ? (PSV.unwrap(b.value) || []) : [];
         if (t.status === "fulfilled") { const d = PSV.unwrap(t.value) || {}; thresholds.master_threshold = d.master_threshold || 0; thresholds.immortal_threshold = d.immortal_threshold || 0; }
         loading.value = false;
@@ -5313,7 +5313,7 @@
       async function openPicker() {
         haptic("light"); picker.value = true;
         if (!members.value.length) {
-          try { const d = PSV.unwrap(await PSV.api("/api/fetch_members?limit=300")); members.value = (d && d.members) || []; }
+          try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_members?limit=300")); members.value = (d && d.members) || []; }
           catch (e) { showToast("Load failed: " + e.message, "fail"); }
         }
       }
@@ -5362,7 +5362,7 @@
         busy.value = true; haptic("medium");
         const _mName = member.name || member.id; const _mId = member.id; const _mMethod = method.value;
         try {
-          const res = PSV.unwrap(await PSV.api("/api/topup/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: _mId, amount: amt, payment_method: _mMethod, staff_name: PSV.getStaff().name, client_ref: PSV.genClientRef() }) }));
+          const res = PSV.unwrap(await PSV.apiCached("/api/topup/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ member_id: _mId, amount: amt, payment_method: _mMethod, staff_name: PSV.getStaff().name, client_ref: PSV.genClientRef() }) }));
           if (res && res.duplicate) showToast("Already applied — " + (res.balance_mins ?? "?") + " mins", "warning");
           else showToast("Deposit done ✓ balance " + (res.balance_mins ?? "?"), "success");
           // 🧾 Auto-offer the top-up receipt
@@ -5599,7 +5599,7 @@
       // 🕐 Attendance: today's row + check-in / check-out (Wave 2 contract)
       async function loadAttendance() {
         try {
-          const d = PSV.unwrap(await PSV.api("/api/attendance/today?staff_name=" + encodeURIComponent(staff.name || "")));
+          const d = PSV.unwrap(await PSV.apiCached("/api/attendance/today?staff_name=" + encodeURIComponent(staff.name || "")));
           const row = (d && d.today) || null;
           if (!row) { attendance.status = "Not checked in"; attendance.check_in = ""; attendance.check_out = ""; attendance.open = false; return; }
           const st = String(row.status || "").toLowerCase();
@@ -5612,7 +5612,7 @@
       async function checkIn() {
         if (attBusy.value) return; attBusy.value = true; haptic("medium");
         try {
-          await PSV.api("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staff.name, status: "Present" }) });
+          await PSV.apiCached("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staff.name, status: "Present" }) });
           showToast("Checked in ✓", "success"); await loadAttendance();
         } catch (e) { showToast("Check-in failed: " + e.message, "fail"); }
         finally { attBusy.value = false; }
@@ -5620,7 +5620,7 @@
       async function checkOut() {
         if (attBusy.value) return; attBusy.value = true; haptic("medium");
         try {
-          await PSV.api("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staff.name, status: "check-out" }) });
+          await PSV.apiCached("/api/save_attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staff_name: staff.name, status: "check-out" }) });
           showToast("Checked out ✓", "success"); await loadAttendance();
         } catch (e) { showToast("Check-out failed: " + e.message, "fail"); }
         finally { attBusy.value = false; }
@@ -5630,7 +5630,7 @@
           const info = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.PSVShell;
           if (info && info.getAppInfo) { info.getAppInfo().then((a) => { if (a && a.versionName) appVersion.value = a.versionName; }).catch(() => {}); }
         } catch (_e) {}
-        PSV.api("/api/sales/list-today").then((r) => { const d = PSV.unwrap(r); if (Array.isArray(d)) { summary.salesToday = d.length; summary.minsToday = d.reduce((a, x) => a + (Number(x.mins) || 0), 0); } }).catch(() => {});
+        PSV.apiCached("/api/sales/list-today").then((r) => { const d = PSV.unwrap(r); if (Array.isArray(d)) { summary.salesToday = d.length; summary.minsToday = d.reduce((a, x) => a + (Number(x.mins) || 0), 0); } }).catch(() => {});
         loadAttendance();
       }
       async function checkUpdate() {
@@ -5732,7 +5732,7 @@
       async function load() {
         loading.value = true;
         try {
-          const d = PSV.unwrap(await PSV.api("/api/staff/notifications?limit=50"));
+          const d = PSV.unwrap(await PSV.apiCached("/api/staff/notifications?limit=50"));
           items.value = (d && d.items) || [];
           unread.value = Number((d && d.unread) || 0) || 0;
         } catch (_e) { items.value = []; unread.value = 0; }
@@ -5742,7 +5742,7 @@
         if (!n || n.read_at) return;
         n.read_at = new Date().toISOString();
         unread.value = Math.max(0, unread.value - 1);
-        try { await PSV.api("/api/staff/notifications/" + n.id + "/read", { method: "POST" }); } catch (_e) {}
+        try { await PSV.apiCached("/api/staff/notifications/" + n.id + "/read", { method: "POST" }); } catch (_e) {}
       }
       function openNotif(n) {
         haptic("light");
@@ -5755,7 +5755,7 @@
       }
       async function readAll() {
         haptic("light");
-        try { await PSV.api("/api/staff/notifications/read-all", { method: "POST" }); } catch (_e) {}
+        try { await PSV.apiCached("/api/staff/notifications/read-all", { method: "POST" }); } catch (_e) {}
         items.value.forEach((n) => { if (!n.read_at) n.read_at = new Date().toISOString(); });
         unread.value = 0;
         showToast("All marked read", "success");
