@@ -153,7 +153,7 @@ def calc_fifo(conn, year_month=None, cumulative=False):
 
 
 if __name__ == "__main__":
-    conn = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+    conn = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_ROOT_PASSWORD", ""), database="psvibe_api")
     result = calc_fifo(conn)
     conn.close()
     print(f"COGS: {result['cogs']} Ks")

@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 MYSQL_HOST: str = os.environ.get("MYSQL_HOST", "127.0.0.1")
 MYSQL_PORT: int = int(os.environ.get("MYSQL_PORT", "3306"))
 MYSQL_USER: str = os.environ.get("MYSQL_USER", "psvibe_user")
-MYSQL_PASSWORD: str = os.environ.get("MYSQL_PASSWORD", "PsVibe@User2024!")
+MYSQL_PASSWORD: str = os.environ.get("MYSQL_PASSWORD", "")
 MYSQL_DATABASE: str = os.environ.get("MYSQL_DATABASE", "psvibe_api")
 
 POOL_SIZE: int = int(os.environ.get("MYSQL_POOL_SIZE", "5"))

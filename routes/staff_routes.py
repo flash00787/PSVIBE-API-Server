@@ -863,7 +863,7 @@ async def dashboard_generate_salary(req: dict, user: dict = Depends(get_current_
         food_revenue = float(food_rev_row["t"] or 0)
         try:
             import stock_fifo, pymysql
-            _sfc = pymysql.connect(host='127.0.0.1', user='root', password='PsVibe@MySQL2024!', database='psvibe_api')
+            _sfc = pymysql.connect(host='127.0.0.1', user='root', password=os.environ.get('MYSQL_ROOT_PASSWORD', ''), database='psvibe_api')
             _sfr = stock_fifo.calc_fifo(_sfc, month)
             _sfc.close()
             food_cogs = _sfr["cogs"]

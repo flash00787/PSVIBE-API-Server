@@ -10,7 +10,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-pytest-123456789")
 os.environ.setdefault("MYSQL_HOST", "127.0.0.1")
 os.environ.setdefault("MYSQL_USER", "psvibe_user")
-os.environ.setdefault("MYSQL_PASSWORD", "PsVibe@User2024!")
+# tests read creds from the live secrets file — never hardcode
+try:
+    with open("/etc/psvibe/secrets.env") as _sf:
+        for _ln in _sf:
+            if _ln.startswith("MYSQL_PASSWORD="):
+                os.environ.setdefault("MYSQL_PASSWORD", _ln.split("=", 1)[1].strip())
+except Exception:
+    pass
 os.environ.setdefault("MYSQL_DATABASE", "psvibe_api")
 os.environ.setdefault("API_SECRET_KEY", "test-api-key-pytest")
 os.environ.setdefault("BOT_TOKEN", "12345:test")

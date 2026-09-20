@@ -285,7 +285,7 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
         food_rev = float(frows[0]["t"] or 0) if frows else 0
         import stock_fifo, pymysql
         try:
-            _sfc = pymysql.connect(host=os.environ.get("MYSQL_HOST", "127.0.0.1"), user=os.environ.get("MYSQL_USER", "psvibe_user"), password=os.environ.get("MYSQL_PASSWORD", "PsVibe@User2024!"), database=os.environ.get("MYSQL_DATABASE", "psvibe_api"))
+            _sfc = pymysql.connect(host=os.environ.get("MYSQL_HOST", "127.0.0.1"), user=os.environ.get("MYSQL_USER", "psvibe_user"), password=os.environ.get("MYSQL_PASSWORD", ""), database=os.environ.get("MYSQL_DATABASE", "psvibe_api"))
             _sfr = stock_fifo.calc_fifo(_sfc, ym)
             _sfc.close()
             cogs = _sfr["cogs"]
@@ -305,7 +305,7 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
         from fifo_wallet import get_all_fifo
         import pymysql
         try:
-            _fc = pymysql.connect(host=os.environ.get("MYSQL_HOST", "127.0.0.1"), user=os.environ.get("MYSQL_USER", "psvibe_user"), password=os.environ.get("MYSQL_PASSWORD", "PsVibe@User2024!"), database=os.environ.get("MYSQL_DATABASE", "psvibe_api"))
+            _fc = pymysql.connect(host=os.environ.get("MYSQL_HOST", "127.0.0.1"), user=os.environ.get("MYSQL_USER", "psvibe_user"), password=os.environ.get("MYSQL_PASSWORD", ""), database=os.environ.get("MYSQL_DATABASE", "psvibe_api"))
             _fr = get_all_fifo(_fc, ym); _fc.close()
         except Exception:
             _fr = {"consumed": 0}

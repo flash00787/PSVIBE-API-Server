@@ -744,6 +744,24 @@ try:
                 return resp
             return HTMLResponse("<h1>Dashboard not built</h1>", status_code=404)
 
+        # Alias kept for older docs/bookmarks (`PROJECT_STRUCTURE.md` still lists
+        # https://ps-vibe.com/dashboard/) — same SPA as `/`, assets included.
+        @app.get("/dashboard")
+        @app.get("/dashboard/")
+        @app.get("/dashboard/{rest:path}")
+        async def serve_dashboard_alias(rest: str = ""):
+            if rest.startswith("assets/"):
+                fpath = os.path.join(dashboard_dir, rest)
+                if os.path.isfile(fpath):
+                    return FileResponse(fpath)
+                return Response(status_code=404)
+            idx = os.path.join(dashboard_dir, "index.html")
+            if os.path.isfile(idx):
+                resp = FileResponse(idx, media_type="text/html")
+                resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                return resp
+            return HTMLResponse("<h1>Dashboard not built</h1>", status_code=404)
+
         # ═══════════════════════════════════════
         #  TELEGRAM MINI APP (Phase 1 — read-only)
         # ═══════════════════════════════════════

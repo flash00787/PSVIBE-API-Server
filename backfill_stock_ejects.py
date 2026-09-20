@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 DB_CONFIG = {
     "host": "127.0.0.1",
     "user": "root",
-    "password": "PsVibe@MySQL2024!",
+    "password": os.environ.get("MYSQL_ROOT_PASSWORD", ""),
     "database": "psvibe_api",
     "charset": "utf8mb4",
 }

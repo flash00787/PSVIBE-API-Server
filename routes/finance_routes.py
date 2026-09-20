@@ -308,7 +308,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
         import pymysql
         from fifo_wallet import get_all_fifo
         try:
-            _fifo_conn = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+            _fifo_conn = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_ROOT_PASSWORD", ""), database="psvibe_api")
             _fifo_result = get_all_fifo(_fifo_conn)
             _fifo_conn.close()
         except Exception:
@@ -564,13 +564,13 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         # --- FOOD COGS from stock FIFO (cumulative-monthly: cum_cur − cum_prev) ---
         import stock_fifo, pymysql
         # Cumulative COGS up to current month end
-        _sfc = pymysql.connect(host='127.0.0.1', user='root', password='PsVibe@MySQL2024!', database='psvibe_api')
+        _sfc = pymysql.connect(host='127.0.0.1', user='root', password=os.environ.get('MYSQL_ROOT_PASSWORD', ''), database='psvibe_api')
         _sfr = stock_fifo.calc_fifo(_sfc, ym, cumulative=True)
         _sfc.close()
         cogs_cum = _sfr["cogs"]
         # Subtract cumulative COGS up to previous month end (= this month only)
         _prev_ym = f"{year:04d}-{month-1:02d}" if month > 1 else f"{year-1:04d}-12"
-        _sfc2 = pymysql.connect(host='127.0.0.1', user='root', password='PsVibe@MySQL2024!', database='psvibe_api')
+        _sfc2 = pymysql.connect(host='127.0.0.1', user='root', password=os.environ.get('MYSQL_ROOT_PASSWORD', ''), database='psvibe_api')
         _sfr2 = stock_fifo.calc_fifo(_sfc2, _prev_ym, cumulative=True)
         _sfc2.close()
         prev_cogs = _sfr2["cogs"]
@@ -588,13 +588,13 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         from fifo_wallet import get_all_fifo
         import pymysql
         try:
-            _fc = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+            _fc = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_ROOT_PASSWORD", ""), database="psvibe_api")
             _fr = get_all_fifo(_fc, ym); _fc.close()
             # Calculate monthly wallet consumption (not cumulative)
             wallet_consumed_cum = float(_fr.get("consumed", 0))
             # Get previous month cumulative
             prev_ym = f"{year:04d}-{month-1:02d}" if month > 1 else f"{year-1:04d}-12"
-            _fc2 = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+            _fc2 = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_ROOT_PASSWORD", ""), database="psvibe_api")
             _fr2 = get_all_fifo(_fc2, prev_ym); _fc2.close()
             prev_cum = float(_fr2.get("consumed", 0))
             wallet_consumed = max(0.0, wallet_consumed_cum - prev_cum)
@@ -679,7 +679,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
     try:
         from fifo_wallet import get_all_fifo
         try:
-            _fc = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+            _fc = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_ROOT_PASSWORD", ""), database="psvibe_api")
             _fr = get_all_fifo(_fc); _fc.close()
         except Exception:
             _fr = {"liability": 0}
@@ -833,7 +833,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
 
         # Inventory Value via FIFO
         import stock_fifo, pymysql
-        _sf2 = pymysql.connect(host='127.0.0.1', user='root', password='PsVibe@MySQL2024!', database='psvibe_api')
+        _sf2 = pymysql.connect(host='127.0.0.1', user='root', password=os.environ.get('MYSQL_ROOT_PASSWORD', ''), database='psvibe_api')
         _inv = stock_fifo.calc_fifo(_sf2)
         _sf2.close()
         inventory_value = _inv['inventory_value']
@@ -843,7 +843,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Liabilities — proper FIFO wallet calculation (same as finance/balances)
         from fifo_wallet import get_all_fifo
         try:
-            _flc = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+            _flc = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_ROOT_PASSWORD", ""), database="psvibe_api")
             # Use month filter for historical balance sheets; None = all-time (current)
             _month_key = f"{year:04d}-{month:02d}" if year and month else None
             _fr2 = get_all_fifo(_flc, _month_key)
@@ -1294,13 +1294,13 @@ async def calculate_profit_distribution(
     
     # Wallet consumed: monthly = cumulative − prev_month cumulative (ALIGNED with PNL)
     try:
-        _fc = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+        _fc = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_ROOT_PASSWORD", ""), database="psvibe_api")
         _fr = __import__("fifo_wallet").get_all_fifo(_fc, ym)
         _fc.close()
         wal_cum = float(_fr.get("consumed", 0))
         # Subtract previous month cumulative
         _prev_ym = f"{year:04d}-{month-1:02d}" if month > 1 else f"{year-1:04d}-12"
-        _fc2 = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+        _fc2 = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_ROOT_PASSWORD", ""), database="psvibe_api")
         _fr2 = __import__("fifo_wallet").get_all_fifo(_fc2, _prev_ym)
         _fc2.close()
         prev_wal = float(_fr2.get("consumed", 0))
@@ -1330,13 +1330,13 @@ async def calculate_profit_distribution(
     
     # ── 3. COGS — food stock FIFO (cumulative-monthly, ALIGNED with PNL) ──
     try:
-        _sfc = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+        _sfc = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_ROOT_PASSWORD", ""), database="psvibe_api")
         _sfr = stock_fifo.calc_fifo(_sfc, ym, cumulative=True)
         _sfc.close()
         cogs_cum = _sfr["cogs"]
         # Subtract previous month cumulative
         _prev_ym = f"{year:04d}-{month-1:02d}" if month > 1 else f"{year-1:04d}-12"
-        _sfc2 = pymysql.connect(host="127.0.0.1", user="root", password="PsVibe@MySQL2024!", database="psvibe_api")
+        _sfc2 = pymysql.connect(host="127.0.0.1", user="root", password=os.environ.get("MYSQL_ROOT_PASSWORD", ""), database="psvibe_api")
         _sfr2 = stock_fifo.calc_fifo(_sfc2, _prev_ym, cumulative=True)
         _sfc2.close()
         prev_cogs = _sfr2["cogs"]

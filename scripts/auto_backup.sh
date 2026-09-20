@@ -1,4 +1,10 @@
 #!/bin/bash
+
+# ── DB credentials: read from the shared secrets file (never hardcode) ──
+if [ -z "${MYSQL_PASSWORD:-}" ] && [ -f /etc/psvibe/secrets.env ]; then
+  set -a; . /etc/psvibe/secrets.env; set +a
+fi
+
 # =============================================================================
 # PS VIBE — MySQL Auto Backup Script
 # =============================================================================
@@ -9,14 +15,14 @@
 # MySQL Credentials: from psvibe-mysql Docker container
 # Database: psvibe_api
 # User: psvibe_user
-# Password: PsVibe@User2024!
+# Password: ${MYSQL_PASSWORD:-}
 # =============================================================================
 set -euo pipefail
 
 BACKUP_DIR="/backups"
 DB_NAME="psvibe_api"
 DB_USER="psvibe_user"
-DB_PASS="PsVibe@User2024!"
+DB_PASS="${MYSQL_PASSWORD:-}"
 CONTAINER="psvibe-mysql"
 DATE_STAMP="$(date +%F)"
 BACKUP_FILE="${BACKUP_DIR}/psvibe_${DATE_STAMP}.sql.gz"
