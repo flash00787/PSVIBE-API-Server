@@ -1,8 +1,19 @@
 {
-  "latest": "1.2.1",
-  "latest_code": 4,
-  "updated_at": "2026-09-20T09:08:29Z",
+  "latest": "1.2.2",
+  "latest_code": 5,
+  "updated_at": "2026-09-20T09:44:43Z",
   "versions": [
+    {
+      "version": "1.2.2",
+      "version_code": 5,
+      "arch": "universal",
+      "file": "psvibe-staff-1.2.2.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.2.apk",
+      "size": 4715212,
+      "sha256": "aa372420eb93db40399d3a9e81fa89ac60c08b07315da58598d37770d68f3644",
+      "released_at": "2026-09-20",
+      "notes": "Printer pairing UI + web cache-bust entry URL (print fix)"
+    },
     {
       "version": "1.2.1",
       "version_code": 4,

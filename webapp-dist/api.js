@@ -10,6 +10,30 @@
 (function () {
   "use strict";
 
+  // ── Web-build self-heal (2026-09-20) ────────────────────────────────────────
+  // The Android WebView can keep serving a cached app.js after a server deploy, so a
+  // fix looks like it "didn't work" on the phone. On boot, compare the build marker in
+  // the freshly fetched index.html with the marker this bundle was built with; when the
+  // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
+  // with the ?v= query on every deploy.
+  var PSV_BUILD = "w15print";
+  function psvBuildSelfHeal() {
+    try {
+      fetch("/webapp/?_b=" + Date.now(), { cache: "no-store" })
+        .then(function (r) { return r.text(); })
+        .then(function (t) {
+          var m = t.match(/psv-build"\s+content="([^"]+)"/);
+          if (!m || !m[1] || m[1] === PSV_BUILD) return;
+          var u = new URL(location.href);
+          if (u.searchParams.get("_v") === m[1]) return;   // already tried this build
+          u.searchParams.set("_v", m[1]);
+          location.replace(u.toString());
+        })
+        .catch(function () {});
+    } catch (_e) {}
+  }
+  try { psvBuildSelfHeal(); } catch (_e) {}
+
   // ── Telegram WebApp handle ──────────────────────────────
   const tg = window.Telegram && window.Telegram.WebApp;
 
