@@ -1,8 +1,19 @@
 {
-  "latest": "1.5.6",
-  "latest_code": 38,
-  "updated_at": "2026-09-20T17:13:41Z",
+  "latest": "1.5.7",
+  "latest_code": 39,
+  "updated_at": "2026-09-20T17:18:53Z",
   "versions": [
+    {
+      "version": "1.5.7",
+      "version_code": 39,
+      "arch": "universal",
+      "file": "psvibe-staff-1.5.7.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.7.apk",
+      "size": 5072536,
+      "sha256": "b43c75ef1c959ba5627c0ad8280e5163cadbd1aa127f0e53c0cdfc4d70c4d451",
+      "released_at": "2026-09-20",
+      "notes": "v1.5.7 (code 39): menu tile grid polish \u2014 4 columns with real card backgrounds/borders and 2-line clamped labels so tiles line up evenly, tighter spacing between categories, and empty categories are never rendered (the odd leftover tile no longer leaves a big void)."
+    },
     {
       "version": "1.5.6",
       "version_code": 38,

@@ -1,9 +1,9 @@
 {
-  "version": "1.5.6",
-  "version_code": 38,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.6.apk",
-  "size": 5072428,
-  "sha256": "b274e1919a477c1bcf61a4edc6cf05c2a7eb53167721cb29d6f2e42b245dd203",
+  "version": "1.5.7",
+  "version_code": 39,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.7.apk",
+  "size": 5072536,
+  "sha256": "b43c75ef1c959ba5627c0ad8280e5163cadbd1aa127f0e53c0cdfc4d70c4d451",
   "released_at": "2026-09-20",
-  "notes": "v1.5.6 (code 38): the Menu is now a compact tile grid grouped by category (like the Home quick actions) instead of long row lists \u2014 far less scrolling; the owner lock marker and any badge are kept on the tiles."
+  "notes": "v1.5.7 (code 39): menu tile grid polish \u2014 4 columns with real card backgrounds/borders and 2-line clamped labels so tiles line up evenly, tighter spacing between categories, and empty categories are never rendered (the odd leftover tile no longer leaves a big void)."
 }

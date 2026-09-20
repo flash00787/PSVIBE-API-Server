@@ -3228,7 +3228,8 @@
             <span class="psv-account-role">{{ staff.role || 'staff' }}</span>
           </div>
         </div>
-        <div v-for="g in groups" :key="g.id" class="psv-menu-group" :class="'psv-tone-' + g.tone">
+        <div v-for="g in groups" :key="g.id" class="psv-menu-group" :class="'psv-tone-' + g.tone"
+             v-show="g.items && g.items.length">
           <div class="psv-menu-head">
             <span class="psv-menu-head__ico">{{ g.emoji }}</span>
             <span class="psv-menu-head__my">{{ g.en }}</span>
