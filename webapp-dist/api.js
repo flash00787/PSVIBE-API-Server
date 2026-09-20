@@ -472,6 +472,16 @@
     const plugin = cap && cap.Plugins && cap.Plugins.PSVPrinter;
     if (plugin && typeof plugin.printImage === "function") {
       try {
+        // The webapp has no pairing step of its own, but the native plugin REQUIRES an
+        // active connection (requireConnection) — without this the print silently fell
+        // back to "saving image instead". Connect to the saved printer first (2026-09-20).
+        try {
+          const saved = JSON.parse(localStorage.getItem("psv_printer") || "null");
+          const st = plugin.status ? await plugin.status().catch(function () { return null; }) : null;
+          if (saved && saved.address && !(st && st.connected)) {
+            await plugin.connect({ address: saved.address, mode: "auto" });
+          }
+        } catch (_connErr) { /* fall through — printImage will report if unusable */ }
         await plugin.printImage({ base64: base64 });
         toast("Voucher sent to printer ✓", "success");
         return true;

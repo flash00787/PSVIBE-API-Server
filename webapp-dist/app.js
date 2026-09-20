@@ -5289,6 +5289,27 @@
             </div>
           </div>
 
+          <div class="psv-btn-row">
+            <button class="psv-btn psv-btn--primary" type="button" @click="choosePrinter">{{ connecting ? 'Working…' : (connected ? '🔗 Change printer' : '🔗 Choose printer') }}</button>
+          </div>
+
+          <van-popup v-model:show="pickerOpen" position="bottom" round :style="{ maxHeight: '70vh' }">
+            <div class="psv-pad">
+              <div class="psv-section-title">Paired Bluetooth printers</div>
+              <div v-if="!printers.length" class="psv-list-row__sub" style="padding:8px 0">
+                No paired printers found. Pair the printer in Android Settings → Bluetooth first, then tap Choose printer again.
+              </div>
+              <div v-for="p in printers" :key="p.address" class="psv-list-row" @click="connectPrinter(p)">
+                <div class="psv-list-row__main">
+                  <div class="psv-list-row__title">{{ p.name }}</div>
+                  <div class="psv-list-row__sub">{{ p.address }} · {{ p.type || 'bt' }}</div>
+                </div>
+                <van-icon name="arrow" />
+              </div>
+              <button class="psv-btn psv-btn--ghost psv-btn--block" style="margin-top:10px" @click="pickerOpen=false">Close</button>
+            </div>
+          </van-popup>
+
           <div class="psv-section-title">80mm voucher preview</div>
           <div class="psv-paper">
             <img v-if="png" :src="png" alt="voucher preview" class="psv-paper__img" />
@@ -5308,6 +5329,14 @@
       const connected = ref(false);
       const printerName = ref("");
       const statusText = ref("Tap Check to query the printer");
+      // Printer pairing (2026-09-20 fix): the plugin REQUIRES an explicit connect()
+      // before printImage/testPrint — without it every print silently fell back to
+      // "saving image instead". These refs drive the Choose-printer picker.
+      const printers = ref([]);
+      const pickerOpen = ref(false);
+      const connecting = ref(false);
+      const SAVED_KEY = "psv_printer";
+      function savedPrinter() { try { return JSON.parse(localStorage.getItem(SAVED_KEY) || "null"); } catch (_e) { return null; } }
       const sample = {
         voucher_no: PSV.genVoucherNo(),
         date: PSV.todayMMT(), time: "18:30",
@@ -5337,8 +5366,44 @@
         printing.value = true; haptic("medium");
         try { await PSV.printVoucher(currentVoucher()); } finally { printing.value = false; }
       }
-      onMounted(() => { render(); checkStatus(); });
-      return { png, printing, connected, printerName, statusText, checkStatus, testPrint, doPrint };
+      async function choosePrinter() {
+        const P = plugin();
+        if (!P || !P.listPrinters) { showToast("Printer needs the native app", "warning"); return; }
+        connecting.value = true;
+        try {
+          const res = await P.listPrinters();
+          printers.value = (res && res.printers) || [];
+          pickerOpen.value = true;
+        } catch (e) { showToast((e && e.message) || "Could not list printers", "fail"); }
+        finally { connecting.value = false; }
+      }
+      async function connectPrinter(p) {
+        const P = plugin();
+        if (!P || !P.connect) { showToast("Connect needs the native app", "warning"); return; }
+        connecting.value = true;
+        statusText.value = "Connecting to " + (p.name || p.address) + "…";
+        try {
+          await P.connect({ address: p.address, mode: "auto" });
+          try { localStorage.setItem(SAVED_KEY, JSON.stringify({ address: p.address, name: p.name || p.address })); } catch (_e) {}
+          pickerOpen.value = false;
+          showToast("Printer connected ✓", "success");
+          await checkStatus();
+        } catch (e) { statusText.value = "Connect failed"; showToast((e && e.message) || "Connect failed", "fail"); }
+        finally { connecting.value = false; }
+      }
+      // Re-connect to the saved printer on entry so Print works without re-picking.
+      async function autoConnect() {
+        const P = plugin();
+        const s = savedPrinter();
+        if (!P || !P.connect || !s || !s.address) return;
+        try {
+          const st = P.status ? await P.status().catch(function () { return null; }) : null;
+          if (!st || !st.connected) await P.connect({ address: s.address, mode: "auto" });
+        } catch (_e) {}
+      }
+      onMounted(() => { render(); checkStatus(); autoConnect().then(checkStatus); });
+      return { png, printing, connected, printerName, statusText, checkStatus, testPrint, doPrint,
+        printers, pickerOpen, connecting, choosePrinter, connectPrinter };
     },
   };
 
