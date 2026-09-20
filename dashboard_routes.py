@@ -114,6 +114,7 @@ async def get_revenue_trend(days: int = Query(7, ge=1, le=30), user: dict = Depe
             SELECT DATE(created_at) as dt, COALESCE(SUM(amount), 0) as total
             FROM sales_daily
             WHERE sale_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+              AND notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%'
             GROUP BY dt
             ORDER BY dt ASC
         """, (days,))
@@ -3141,7 +3142,7 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
         """)
         rev = _mysql_query_one("""
             SELECT
-                COALESCE((SELECT SUM(amount) FROM sales_daily), 0) AS total_gaming_rev,
+                COALESCE((SELECT SUM(amount) FROM sales_daily WHERE notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%'), 0) AS total_gaming_rev,
                 COALESCE((SELECT SUM(quantity * unit_price) FROM food_cart), 0) AS total_food_rev,
                 COALESCE((SELECT SUM(amount) FROM topup_log), 0) AS total_topup_rev
         """)
@@ -3196,7 +3197,7 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
             LEFT JOIN (
                 SELECT DATE_FORMAT(sale_date, '%%Y-%%m') AS m, SUM(amount) AS gaming_rev,
                        COUNT(*) AS session_count, SUM(0) AS play_mins
-                FROM sales_daily GROUP BY m
+                FROM sales_daily WHERE notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%' GROUP BY m
             ) s ON s.m = d.month
             LEFT JOIN (
                 SELECT DATE_FORMAT(created_at, '%%Y-%%m') AS m, SUM(quantity * unit_price) AS food_rev

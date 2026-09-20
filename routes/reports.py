@@ -34,10 +34,17 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
         )
         active_players = active_players["cnt"] if active_players else 0
 
+        # Game amount ONLY — exclude member topup / new-member mirror rows (they belong to topup_income)
         today_revenue = _mysql_query_one(
-            "SELECT COALESCE(SUM(net), 0) as total FROM sales_daily WHERE sale_date >= %s", (today + " 00:00:00",)
+            "SELECT COALESCE(SUM(net), 0) as total FROM sales_daily WHERE sale_date >= %s "
+            "AND notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%'", (today + " 00:00:00",)
         )
         today_revenue = float(today_revenue["total"]) if today_revenue else 0.0
+        # Topup income (separate line; source of truth = topup_log)
+        today_topup = _mysql_query_one(
+            "SELECT COALESCE(SUM(amount), 0) as total FROM topup_log WHERE topup_date >= %s", (today + " 00:00:00",)
+        )
+        today_topup = float(today_topup["total"]) if today_topup else 0.0
 
         total_members = _mysql_query_one("SELECT COUNT(*) as cnt FROM member_wallets WHERE member_id IS NOT NULL AND member_id != ''")
         total_members = total_members["cnt"] if total_members else 0
@@ -79,7 +86,9 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
             "data": {
                 "today_bookings": today_bookings,
                 "active_players": active_players,
-                "today_revenue": today_revenue,
+                "today_revenue": today_revenue,  # game amount only (topup excluded)
+                "today_topup_income": today_topup,
+                "today_collected": today_revenue + today_topup,
                 "total_members": total_members,
                 "sales_count": sales_count,
                 "sales_by_staff": sales_by_staff,
@@ -92,7 +101,7 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
         logger.error(f"Dashboard stats error: {e}")
         return {"success": True, "data": {
             "today_bookings": 0, "active_players": 0,
-            "today_revenue": 0, "total_members": 0,
+            "today_revenue": 0, "today_topup_income": 0, "today_collected": 0, "total_members": 0,
             "sales_count": 0, "sales_by_staff": [], "food_sales": 0,
             "low_stock": [], "low_stock_count": 0,
         }}

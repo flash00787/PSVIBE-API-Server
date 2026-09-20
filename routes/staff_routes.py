@@ -834,10 +834,11 @@ async def dashboard_generate_salary(req: dict, user: dict = Depends(get_current_
         import json as _json
         tiers = _json.loads(tier_cfg["config_value"]) if tier_cfg else {}
 
-        # ── SHOP-WIDE total play hours ──
+        # ── SHOP-WIDE total play hours (game sessions only — exclude topup/new-member mirror rows) ──
         shop_row = _mysql_query_one(
             "SELECT COALESCE(SUM(CAST(REGEXP_REPLACE(IFNULL(notes,''), '.*Mins?:? *([0-9]+).*', '$1') AS UNSIGNED)), 0) AS total_mins "
-            "FROM sales_daily WHERE DATE_FORMAT(sale_date, '%%Y-%%m') = %s",
+            "FROM sales_daily WHERE DATE_FORMAT(sale_date, '%%Y-%%m') = %s "
+            "AND notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%'",
             (month,)
         )
         shop_total_mins = int(shop_row["total_mins"] or 0)

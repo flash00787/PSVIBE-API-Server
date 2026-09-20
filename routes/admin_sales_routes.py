@@ -308,9 +308,13 @@ async def api_sales_list_today(auth=Depends(verify_api_key)):
             "LEFT JOIN member_wallets w ON w.member_id = sd.member_id AND sd.member_id NOT IN ('', '0', '0 (Guest)', '-', 'Guest') "
             "WHERE sd.sale_date >= %s ORDER BY sd.sale_date DESC, sd.id DESC LIMIT 200", (_mmt_today_start,))
         total_row = _mysql_query_one(
-            "SELECT COALESCE(SUM(net), 0) AS total FROM sales_daily WHERE sale_date >= %s", (_mmt_today_start,))
+            "SELECT COALESCE(SUM(CASE WHEN notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%' THEN net ELSE 0 END), 0) AS total, "
+            "COALESCE(SUM(CASE WHEN notes LIKE 'Topup%%' OR notes LIKE 'New member%%' THEN net ELSE 0 END), 0) AS topup_total "
+            "FROM sales_daily WHERE sale_date >= %s", (_mmt_today_start,))
         total_net = float(total_row["total"]) if total_row else 0.0
-        return ok({"records": rows, "total_net": total_net, "count": len(rows), "date": _mmt_today})
+        topup_net = float(total_row["topup_total"]) if total_row else 0.0
+        return ok({"records": rows, "total_net": total_net, "topup_net": topup_net,
+                   "total_collected": total_net + topup_net, "count": len(rows), "date": _mmt_today})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

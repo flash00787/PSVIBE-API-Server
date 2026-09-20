@@ -27,7 +27,8 @@ bks = query("""
 
 # Sales
 sales = query("""
-    SELECT COALESCE(SUM(net),0) as total_sales,
+    SELECT COALESCE(SUM(CASE WHEN notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%' THEN net ELSE 0 END),0) as total_sales,
+           COALESCE(SUM(CASE WHEN notes LIKE 'Topup%%' OR notes LIKE 'New member%%' THEN net ELSE 0 END),0) as topup_sales,
            COUNT(*) as transactions
     FROM sales_daily WHERE DATE(sale_date) = %s
 """, (today,))
@@ -45,7 +46,9 @@ for b in (bks or []):
 # Sales  
 if sales:
     s = sales[0]
-    lines.append(f"\n💰 <b>Sales:</b> {s['total_sales']:,} Ks ({s['transactions']} txns)")
+    lines.append(f"\n💰 <b>Game Sales:</b> {s['total_sales']:,} Ks ({s['transactions']} txns)")
+    lines.append(f"💳 <b>Top-up:</b> {s['topup_sales']:,} Ks")
+    lines.append(f"📈 <b>Total Collected:</b> {s['total_sales'] + s['topup_sales']:,} Ks")
 
 # Consoles
 if consoles:
