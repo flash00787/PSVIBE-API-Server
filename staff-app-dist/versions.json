@@ -1,8 +1,19 @@
 {
-  "latest": "1.3.8",
-  "latest_code": 20,
-  "updated_at": "2026-09-20T15:25:43Z",
+  "latest": "1.3.9",
+  "latest_code": 21,
+  "updated_at": "2026-09-20T15:27:58Z",
   "versions": [
+    {
+      "version": "1.3.9",
+      "version_code": 21,
+      "arch": "universal",
+      "file": "psvibe-staff-1.3.9.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.3.9.apk",
+      "size": 5128986,
+      "sha256": "f5967ab2efa09fee0847f34501b04c1c93dc96399cf35b2a646dbb2c8490c043",
+      "released_at": "2026-09-20",
+      "notes": "v1.3.9 (code 21): FIX \u2014 the logo did not print because the blank-line trimmer treated the image line (which has no text) as a blank line and dropped it; image lines now count as content. The PS VIBE logo (with the wordmark, 632x168 black on white) prints centred at 340 dots at the top of the voucher."
+    },
     {
       "version": "1.3.8",
       "version_code": 20,
