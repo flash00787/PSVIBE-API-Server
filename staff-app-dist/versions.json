@@ -1,8 +1,19 @@
 {
-  "latest": "1.6.2",
-  "latest_code": 44,
-  "updated_at": "2026-09-20T17:46:44Z",
+  "latest": "1.6.3",
+  "latest_code": 45,
+  "updated_at": "2026-09-20T17:55:39Z",
   "versions": [
+    {
+      "version": "1.6.3",
+      "version_code": 45,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.3.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.3.apk",
+      "size": 5075820,
+      "sha256": "73548e9ffa0f9af9cb134191fd8e38e3035d9d26e8a4f5de8732781fb9cf3003",
+      "released_at": "2026-09-20",
+      "notes": "v1.6.3 (code 45): profile picture now refreshes \u2014 the uploaded file keeps the same name so the WebView showed the old image; the avatar URL is version-stamped (cache-bust) and the new photo shows immediately. Password change now reports the REAL error (wrong current password / min 6 chars) instead of hiding it behind the legacy-route network error, and the legacy /auth route is only retried on a network failure."
+    },
     {
       "version": "1.6.2",
       "version_code": 44,

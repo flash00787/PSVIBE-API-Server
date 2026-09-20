@@ -6043,9 +6043,15 @@
         try {
           let r = null;
           try { r = await _upPhoto("/api/profile/photo", f); }
-          catch (e0) { r = await _upPhoto("https://ps-vibe.com/auth/profile/photo", f); }
+          catch (e0) {
+            if (/network/i.test(String(e0 && e0.message))) { r = await _upPhoto("https://ps-vibe.com/auth/profile/photo", f); }
+            else { throw e0; }
+          }
           const url = (r && r.photo_url) || "";
-          photo.value = url; staff.photo_url = url;
+          try { PSV.setLocalAvatar(""); } catch (_e4) {}      // server copy wins now
+          try { PSV.bumpAvatar(); } catch (_e5) {}            // bust the WebView image cache
+          photo.value = "";                                    // render via PSV.avatarSrc() (versioned)
+          staff.photo_url = url;
           try { PSV.getStaff().photo_url = url; } catch (_e2) {}
           showToast("Profile picture updated ✓", "success");
         } catch (err) {
@@ -6089,10 +6095,14 @@
             await PSV.api("/api/profile/password", { method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ current_password: pwCur.value, new_password: pwNew.value }) });
             done = true;
-          } catch (e0) { lastErr = e0; }
-          if (!done) {
-            try { await _changePw("https://ps-vibe.com/auth/change-password"); done = true; }
-            catch (e1) { lastErr = e1; }
+          } catch (e0) {
+            lastErr = e0;
+            // Only retry the legacy route when the failure was at the network layer; a real
+            // answer (400 wrong current password, 401, …) must be shown as-is.
+            if (/network/i.test(String(e0 && e0.message))) {
+              try { await _changePw("https://ps-vibe.com/auth/change-password"); done = true; }
+              catch (e1) { lastErr = e1; }
+            }
           }
           if (!done) throw (lastErr || new Error("failed"));
           pwOpen.value = false;

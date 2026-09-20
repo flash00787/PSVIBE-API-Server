@@ -32,7 +32,7 @@
   var PSV_BUILD = "w24print";
   // Real app build number — shown in the More menu footer (was hardcoded "build 34" before,
   // which misled diagnosis). Bump together with android versionCode.
-  var APP_BUILD = "44";
+  var APP_BUILD = "45";
   function psvBuildSelfHeal() {
     try {
       fetch(_u("/webapp/?_b=" + Date.now()), { cache: "no-store" })
@@ -232,12 +232,22 @@
     try {
       const st = staff || {};
       const su = st.photo_url || "";
-      if (su) return /^(https?:|data:)/i.test(su) ? su : (API_ORIGIN + su);
-      return localStorage.getItem(_avatarKey()) || "";
+      let url = su ? (/^(https?:|data:)/i.test(su) ? su : (API_ORIGIN + su)) : (localStorage.getItem(_avatarKey()) || "");
+      if (!url) return "";
+      if (url.slice(0, 5) === "data:") return url;
+      // Owner 2026-09-20 17:54: the upload worked but the phone kept showing the OLD picture —
+      // the file name never changes, so bust the WebView image cache with a version query.
+      let v = "";
+      try { v = localStorage.getItem(_avatarKey() + "_v") || ""; } catch (_e) {}
+      return url + (url.indexOf("?") >= 0 ? "&" : "?") + "v=" + (v || "1");
     } catch (_e) { return ""; }
   }
   function setLocalAvatar(dataUrl) {
     try { localStorage.setItem(_avatarKey(), dataUrl || ""); } catch (_e) {}
+    bumpAvatar();
+  }
+  function bumpAvatar() {
+    try { localStorage.setItem(_avatarKey() + "_v", String(Date.now())); } catch (_e) {}
   }
 
   /** CORS-simple POST (no Authorization header, text/plain body) — used by the profile calls
@@ -852,6 +862,7 @@
     apiToken: apiToken,
     avatarSrc: avatarSrc,
     setLocalAvatar: setLocalAvatar,
+    bumpAvatar: bumpAvatar,
     blobUrl, revokeBlob,
     login, logout, loadStoredAuth, usesWebLogin,
     renderVoucherPng, printVoucher, setPaperWidth, getPaperWidth: paperWidth, setPrintDensity,

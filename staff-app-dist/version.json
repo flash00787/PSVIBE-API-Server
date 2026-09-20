@@ -1,9 +1,9 @@
 {
-  "version": "1.6.2",
-  "version_code": 44,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.2.apk",
-  "size": 5075436,
-  "sha256": "3fb170fa6589409cedffcf6772ec7dbc27e0650a0fec01c6d8e391de169feecd",
+  "version": "1.6.3",
+  "version_code": 45,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.3.apk",
+  "size": 5075820,
+  "sha256": "73548e9ffa0f9af9cb134191fd8e38e3035d9d26e8a4f5de8732781fb9cf3003",
   "released_at": "2026-09-20",
-  "notes": "v1.6.2 (code 44): profile password + photo upload now call the normal /api/profile/* endpoints with JSON + Authorization (the same transport every other working call uses) with the /auth/* absolute URL as a fallback; the earlier text/plain attempt was rejected by our own content-type middleware (415), so it is no longer the primary path."
+  "notes": "v1.6.3 (code 45): profile picture now refreshes \u2014 the uploaded file keeps the same name so the WebView showed the old image; the avatar URL is version-stamped (cache-bust) and the new photo shows immediately. Password change now reports the REAL error (wrong current password / min 6 chars) instead of hiding it behind the legacy-route network error, and the legacy /auth route is only retried on a network failure."
 }
