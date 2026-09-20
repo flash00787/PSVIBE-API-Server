@@ -564,3 +564,7 @@ html, body {
 .psv-th-row__amt { font-size: 14px; font-weight: 900; white-space: nowrap; }
 .psv-th-row__meta { margin-top: 4px; font-size: 11.5px; color: var(--pv-muted, #94a3b8); display: flex; flex-wrap: wrap; gap: 4px; }
 .psv-th-row__ref { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; opacity: .85; }
+
+/* "စမှတ်" / duration chips — Start Session (2026-09-20 owner ask) */
+.psv-dchip{display:inline-block;padding:6px 12px;border-radius:999px;border:1px solid #2b3550;background:rgba(255,255,255,.04);color:#c9d2e3;font-size:13px;font-weight:600;cursor:pointer;user-select:none}
+.psv-dchip--on{background:#1f6feb;border-color:#1f6feb;color:#fff}

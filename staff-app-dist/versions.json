@@ -1,8 +1,19 @@
 {
-  "latest": "1.2.4",
-  "latest_code": 7,
-  "updated_at": "2026-09-20T10:00:27Z",
+  "latest": "1.2.5",
+  "latest_code": 8,
+  "updated_at": "2026-09-20T10:41:10Z",
   "versions": [
+    {
+      "version": "1.2.5",
+      "version_code": 8,
+      "arch": "universal",
+      "file": "psvibe-staff-1.2.5.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.5.apk",
+      "size": 4731600,
+      "sha256": "e779089eb181d662f2132447f5703f2aa752fcdc75c38036511bb9fa07e6094e",
+      "released_at": "2026-09-20",
+      "notes": "Timeline spec v2 (Active+confirmed upcoming, forfeit 1h, 1-screen fit)"
+    },
     {
       "version": "1.2.4",
       "version_code": 7,

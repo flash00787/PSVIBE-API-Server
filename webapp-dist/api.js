@@ -16,7 +16,7 @@
   // the freshly fetched index.html with the marker this bundle was built with; when the
   // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
   // with the ?v= query on every deploy.
-  var PSV_BUILD = "w18print";
+  var PSV_BUILD = "w20print";
   function psvBuildSelfHeal() {
     try {
       fetch("/webapp/?_b=" + Date.now(), { cache: "no-store" })
@@ -438,8 +438,8 @@
       for (const it of items) {
         const qty = Number(it.qty) || 0;
         const price = Number(it.price) || 0;
-        L.push({ text: (it.name || "-"), size: 15 });
-        L.push({ text: "   " + qty + " x " + nf(price) + " = " + nf(qty * price), size: 14, align: "right" });
+        L.push({ text: (it.name || "-"), size: it.plain ? 14 : 15, align: it.align || "left" });
+        if (!it.plain) L.push({ text: "   " + qty + " x " + nf(price) + " = " + nf(qty * price), size: 14, align: "right" });
       }
     } else {
       L.push({ text: "(no items)", size: 14, align: "center" });
@@ -447,7 +447,7 @@
     hr();
     L.push({ text: "TOTAL: " + nf(data.total) + " Ks", bold: true, size: 20, align: "right" });
     if (data.payment) L.push({ text: "Paid: " + data.payment, size: 15 });
-    if (data.balance) L.push({ text: "Balance: " + data.balance, size: 15 });
+    if (data.balance) L.push({ text: "💳 " + data.balance, size: 15 });
     if (data.notes) L.push({ text: "Note: " + data.notes, size: 14 });
     hr();
     L.push({ text: "Thank you! Please come again", size: 14, align: "center" });

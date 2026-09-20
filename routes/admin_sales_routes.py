@@ -648,8 +648,59 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
             extra_notes.append(f"BaseRate: {base_rate}")
         if multiplier and multiplier != 1.0:
             extra_notes.append(f"Multiplier: {multiplier}")
+        # ── Session food detail (2026-09-20) ──────────────────────────────────
+        # Food ordered DURING a session lives in food_cart (keyed by booking_id) and the
+        # app does not resend it with the sale, so the voucher + notes had no food detail.
+        # Pull it from food_cart when the client sent none but a food total is present.
+        if food_total > 0 and not food_items and booking_id:
+            try:
+                _fr = _mysql_query(
+                    "SELECT item_name, quantity, unit_price FROM food_cart WHERE booking_id=%s ORDER BY id",
+                    (booking_id,))
+                if _fr:
+                    food_items = [
+                        {"name": r.get("item_name") or "", "qty": float(r.get("quantity") or 0),
+                         "subtotal": float(r.get("quantity") or 0) * float(r.get("unit_price") or 0)}
+                        for r in _fr
+                    ]
+            except Exception as _e:
+                logger.warning("food_cart detail lookup failed (booking %s): %s", booking_id, _e)
+        # Store the food as a readable "item xQty, item xQty" list (the voucher parses this).
+        if isinstance(food_items, (list, tuple)):
+            _parts = []
+            for _it in food_items:
+                if isinstance(_it, dict):
+                    _nm = str(_it.get("name") or "").strip()
+                    _q = _it.get("qty") or 0
+                    if _nm:
+                        _parts.append((_nm + " x" + str(int(float(_q)))) if float(_q or 0) > 0 else _nm)
+                else:
+                    _p = str(_it).strip()
+                    if _p:
+                        _parts.append(_p)
+            food_items = ", ".join(_parts)
         if food_items:
             extra_notes.append(f"Food: {food_items}")
+        # ── Wallet balance deduction detail (owner ask 2026-09-20) ────────────
+        # Member card sales: record how many mins left the wallet + the balance before/after
+        # on the sale so the voucher and reports can show it in detail.
+        _wallet_deduct = int(req.get("wallet_deduct", 0) or 0)
+        _wallet_before = None
+        _wallet_after = None
+        _is_member_sale = bool(member_id) and str(member_id).strip() not in ("", "0", "0 (Guest)", "-", "Guest")
+        if _wallet_deduct > 0 and _is_member_sale:
+            try:
+                _wb = _mysql_query_one("SELECT COALESCE(balance_mins, 0) AS bal FROM member_wallets WHERE member_id=%s", (member_id,))
+                _wallet_before = int(float(_wb.get("bal") or 0)) if _wb else 0
+                _wallet_after = max(0, _wallet_before - _wallet_deduct)
+                _mysql_exec(
+                    "UPDATE member_wallets SET balance_mins=%s, total_used_mins = COALESCE(total_used_mins, 0) + %s WHERE member_id=%s",
+                    (_wallet_after, _wallet_deduct, member_id),
+                )
+                extra_notes.append(f"Wallet: -{_wallet_deduct} mins (bal {_wallet_before} -> {_wallet_after})")
+                logger.info("Wallet deducted: %s mins for member %s (%s -> %s)", _wallet_deduct, member_id, _wallet_before, _wallet_after)
+            except Exception as _we:
+                logger.warning("wallet deduct detail failed (member %s): %s", member_id, _we)
         combined_notes = notes
         if extra_notes:
             combined_notes = (notes + " | " if notes else "") + " | ".join(extra_notes)
@@ -681,14 +732,10 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
             (voucher_no, sale_date, console_id, member_id, game_amt, gross, discount, net_total, staff, customer_name, payment_method, combined_notes, client_ref, _session_id, _game_name, _game_id)
         )
 
-        # Deduct wallet balance for member sales
-        _wallet_deduct = int(req.get("wallet_deduct", 0))
-        if _wallet_deduct > 0 and member_id and member_id.strip() not in ("", "0 (Guest)", "-"):
-            _mysql_exec(
-                "UPDATE member_wallets SET balance_mins = GREATEST(0, COALESCE(balance_mins, 0) - %s), total_used_mins = COALESCE(total_used_mins, 0) + %s WHERE member_id=%s",
-                (_wallet_deduct, _wallet_deduct, member_id)
-            )
-            logger.info("Wallet deducted: %s mins for member %s (total_used +%s)", _wallet_deduct, member_id, _wallet_deduct)
+        # Wallet balance was already deducted BEFORE the insert (wallet detail block above) so
+        # the sale note could carry the before -> after balances. Never deduct twice here.
+        if _wallet_deduct > 0 and _is_member_sale:
+            logger.debug("wallet already deducted for voucher=%s member=%s", voucher_no, member_id)
 
         logger.info("Sales record saved: voucher=%s member=%s console=%s net=%s deposit_deducted=%s staff=%s", voucher_no, member_id, console_id, net_total, deposit_deducted, staff)
         return ok({
@@ -704,6 +751,9 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
             "breakdown": promo_breakdown,
             "coupon_redeem": coupon_redeem,
             "sale_ref": sale_ref,
+            "wallet_deduct": _wallet_deduct,
+            "wallet_balance_before": _wallet_before,
+            "wallet_balance_after": _wallet_after,
         })
     except Exception as e:
         logger.error(f"api_sales_record: {e}")

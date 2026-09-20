@@ -725,8 +725,18 @@
         if (Number(s.amount)) items.push({ name: "🎮 Game time", qty: 1, price: Number(s.amount) });
         const ft = Number(s.gross) - Number(s.amount);
         if (ft > 0) {
+          // 2026-09-20 (owner: "Voucher မှာ food detail မပါဘူး"): itemise the food instead of
+          // one lump line. The sale notes carry "Food: item x1, item x2" (the API now writes
+          // that from food_cart for session food), so split it into individual lines.
           let fi = s.notes || ""; const mm = /Food:\s*([^|]+)/.exec(fi); if (mm) fi = mm[1].trim();
-          items.push({ name: "🍜 " + (fi || "Food"), qty: 1, price: ft });
+          const parts = String(fi || "").split(/\s*,\s*/).map((x) => x.trim()).filter(Boolean);
+          if (parts.length > 1) {
+            items.push({ name: "🍜 Food:", plain: true });
+            parts.forEach((p) => items.push({ name: "   " + p, plain: true }));
+            items.push({ name: "   Food total", qty: 1, price: ft });
+          } else {
+            items.push({ name: "🍜 " + (parts[0] || "Food"), qty: 1, price: ft });
+          }
         }
         printingDetail.value = true;
         try {
@@ -738,6 +748,7 @@
             member: memberLabel.value,
             items: items,
             total: Number(s.net) || 0,
+            balance: (function () { const w = /Wallet:\s*(-\d+\s*mins[^|]*)/.exec(s.notes || ""); return w ? w[1].trim() : ""; })(),
             payment: s.payment_method || "",
             notes: Number(s.discount) > 0 ? ("Discount " + fKs(s.discount) + " Ks") : "",
           });
@@ -805,6 +816,8 @@
           if (m) foodItems = m[1].trim();
           lines.push("🍜 Food: " + foodItems + " (" + fKs(foodTotal) + " Ks)");
         }
+        const wm = /Wallet:\s*(-\d+\s*mins[^|]*)/.exec(s.notes || "");
+        if (wm) lines.push("💳 " + wm[1].trim());
         if (Number(s.discount) > 0) lines.push("Discount: " + fKs(s.discount) + " Ks");
         return lines.join('\n');
       }
@@ -1639,7 +1652,7 @@
               deposit: depFinal,
               cashDue: cashDueFinal,
               payment: vPay,
-              balance: wallet_deduct > 0 ? ("Wallet −" + wallet_deduct + " mins") : "",
+              balance: wallet_deduct > 0 ? ("Wallet −" + wallet_deduct + " mins" + (res && res.wallet_balance_after != null ? (" (bal " + res.wallet_balance_after + ")") : "")) : "",
               notes: "Subtotal: " + fKs(vSubtotal) + " Ks" + (serverDiscount > 0 ? (" | Discount: -" + fKs(serverDiscount) + " Ks") : "") + (depFinal > 0 ? (" | Deposit: -" + fKs(depFinal) + " Ks") : "") + (promo.title ? (" | Promo: " + promo.title) : "") + (coupon.applied ? (" | Coupon: " + coupon.code) : ""),
             };
             voucherOpen.value = true;
@@ -3058,6 +3071,10 @@
             </div>
             <van-field :model-value="startForm.member_name || 'Select member…'" label="Member Name" readonly is-link @click="startMemberPicker = true" />
             <van-field v-model.number="startForm.duration_mins" type="number" label="Minutes" placeholder="60" />
+            <div style="padding:2px 16px 8px;display:flex;gap:6px;flex-wrap:wrap">
+              <span v-for="d in startDurPresets" :key="d.v" class="psv-dchip" :class="{ 'psv-dchip--on': Number(startForm.duration_mins) === d.v }" @click="startForm.duration_mins = d.v">{{ d.l }}</span>
+            </div>
+            <div v-if="Number(startForm.duration_mins) === 0" style="padding:0 16px 8px;font-size:12px;color:#8a93a6">📌 စမှတ် = no timer — စတင်ချိန် ပဲ မှတ်၊ အချိန်စက် မလုပ် (ဆော့ပြီး end လုပ်ချိန်မှ တွက်)</div>
             <van-field :model-value="startForm.game_name || 'Select game…'" label="Game" readonly is-link @click="startGamePicker = true" />
           </div>
         </van-dialog>
@@ -3140,6 +3157,8 @@
       const activeConsole = ref(null);
       const startShow = ref(false);
       const startForm = reactive({ member_id: "", member_name: "", duration_mins: 60, game_name: "", linked_booking_id: null });
+      // "စမှတ်" = start marker only / no timer (duration 0 = API No Timer mode) — owner ask 2026-09-20
+      const startDurPresets = [{ v: 30, l: "30m" }, { v: 60, l: "60m" }, { v: 90, l: "90m" }, { v: 120, l: "120m" }, { v: 0, l: "📌 စမှတ် (no timer)" }];
       const startMemberPicker = ref(false);
       const startGamePicker = ref(false);
       const startMemberCols = ref([]);
@@ -3189,9 +3208,10 @@
         return "Confirmed — not checked in yet";
       }
       const startConfirmLabel = computed(() => {
+        const noTimer = Number(startForm.duration_mins) === 0;
         const b = startBind.bookings.find((x) => x.id === startBind.selId);
-        if (!b) return "Start";
-        return isCheckedIn(b) ? "Start with this booking" : "Check in & start";
+        const base = !b ? "Start" : (isCheckedIn(b) ? "Start with this booking" : "Check in & start");
+        return noTimer ? ("📌 စမှတ် · " + base) : base;
       });
       function isActive(c) { const s = String(c.status || "").toLowerCase(); return s === "active" || s === "checked_in"; }
       function fmtTime(v) {
@@ -3568,7 +3588,7 @@
         } catch (e) { showToast("Start failed: " + e.message, "fail"); }
       }
 
-      return { list, loading, refreshing, dotClass, isActive, fmtTime, load, sheetShow, sheetActions, openActions, onAction, xsess, doMove, doSwap, startShow, startForm, startMemberPicker, startGamePicker, startMemberCols, startGameCols, startMemberPickItems, startGamePickItems, startMemberSel, pickStartMemberVal, pickStartGameVal, nativeMode: NATIVE, startBind, endDlg, extendDlg, noop, submitStart, doEndSession, doExtend, loadStartOptions, pickStartMember, pickStartGame, selectBind, isCheckedIn, bindStatusLabel, startConfirmLabel, foodShow, foodConsole, foodNote, sessionFoodGroups, foodSel, sQty, sSetQty, foodSaving, saveSessionFood, openSessionFood, fKs };
+      return { list, loading, refreshing, dotClass, isActive, fmtTime, load, sheetShow, sheetActions, openActions, onAction, xsess, doMove, doSwap, startShow, startForm, startMemberPicker, startGamePicker, startMemberCols, startGameCols, startMemberPickItems, startGamePickItems, startMemberSel, pickStartMemberVal, pickStartGameVal, nativeMode: NATIVE, startBind, endDlg, extendDlg, noop, submitStart, doEndSession, doExtend, loadStartOptions, pickStartMember, pickStartGame, selectBind, isCheckedIn, bindStatusLabel, startConfirmLabel, startDurPresets, foodShow, foodConsole, foodNote, sessionFoodGroups, foodSel, sQty, sSetQty, foodSaving, saveSessionFood, openSessionFood, fKs };
     },
   };
 

@@ -1,9 +1,9 @@
 {
-  "version": "1.2.4",
-  "version_code": 7,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.4.apk",
+  "version": "1.2.5",
+  "version_code": 8,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.5.apk",
   "size": 4731600,
-  "sha256": "d63f912906d072c1e72dd68fcea59bfe2a26bd08a9eee40782c26b930fc9faad",
+  "sha256": "e779089eb181d662f2132447f5703f2aa752fcdc75c38036511bb9fa07e6094e",
   "released_at": "2026-09-20",
-  "notes": "Printer: longer feed before cut (footer was chopped)"
+  "notes": "Timeline spec v2 (Active+confirmed upcoming, forfeit 1h, 1-screen fit)"
 }
