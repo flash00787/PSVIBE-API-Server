@@ -1,9 +1,9 @@
 {
-  "version": "1.3.3",
-  "version_code": 15,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.3.3.apk",
+  "version": "1.3.4",
+  "version_code": 16,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.3.4.apk",
   "size": 5034487,
-  "sha256": "a1d7d8bfb1ff1072f9768d16853c478f41b2baf18927d3002d4acc5ace8703ed",
+  "sha256": "2040ac26ae5b8e4ab3ddb40ff28151b40444a84c3dab5cf2ea209d8bb5d367d4",
   "released_at": "2026-09-20",
-  "notes": "v1.3.3 (code 15): NEW raw ESC/POS voucher path (printVoucherRaw) \u2014 renders at exactly 576 dots (80mm) in-app and writes GS v 0 raster bands straight to the printer stream, so the DantSu library cannot scale or centre the receipt (root cause of the 384-dot / 48mm tiny prints). No paper-profile dependency, 12-line feed + auto-cut, toast reports 576 dots (80mm)."
+  "notes": "v1.3.4 (code 16): print fine-tuning after the raw ESC/POS path was confirmed good at 80mm \u2014 voucher dot metrics reduced ~10% (title 54 / wide 40 / body 32) because the owner found them a little too big, and the pre-cut feed cut from 12 LF to 6 LF (~22mm) because the auto-cut left too much blank paper below the receipt."
 }
