@@ -313,12 +313,12 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             _fifo_conn.close()
         except Exception:
             _fifo_result = {"liability": 0, "consumed": 0}
-        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date >= %s AND sale_date < %s", (_start, _end))
+        rows = _mq("SELECT payment_method, net, notes, is_topup FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date >= %s AND sale_date < %s", (_start, _end))
         income_by_account = {acc["key"]: 0.0 for acc in accounts}
         dep_total_per_account = {acc["key"]: 0.0 for acc in accounts}  # 🆕 track (dep) amounts
         for row in rows:
             note = (row.get("notes") or "")
-            if note.startswith("Topup") or note.startswith("New member"): continue
+            if int(row.get("is_topup") or 0): continue
             pm = (row.get("payment_method") or "").strip()
             net_amount = float(row.get("net") or 0)
             if net_amount <= 0: continue
@@ -403,7 +403,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             cash_abs_map[key] = cash_abs_map.get(key, 0) + float(row["abs_total"] or 0)
         # Map account keys to DB account names for cash_movements lookup
         # Subtract inject entries that overlap with topup (notes start with Topup or New member)
-        _bad_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Topup', CHAR(37)) OR note LIKE CONCAT('New member', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
+        _bad_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND category = 'topup' AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
         for _r in _bad_inject_rows:
             _k = "inject|" + _r["account"]
             if _k in cash_map:
@@ -547,14 +547,14 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
     ym = f"{year:04d}-{month:02d}"
     try:
         # --- GAME REVENUE: all sales_daily net (excl Topup/New member notes) ---
-        rev_rows = _mq("SELECT net, gross, discount, notes FROM sales_daily WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s AND gross > 0", (ym,))
+        rev_rows = _mq("SELECT net, gross, discount, notes, is_topup FROM sales_daily WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s AND gross > 0", (ym,))
         total_sales = 0.0; discounts = 0.0; topup_sales = 0.0
         for r in rev_rows:
             g = float(r.get("gross") or 0)
             n = float(r.get("net") or 0)
             notes = (r.get("notes") or "")
             discounts += float(r.get("discount") or 0)
-            if notes.startswith("Topup") or notes.startswith("New member"):
+            if int(r.get("is_topup") or 0):
                 topup_sales += n
             else:
                 total_sales += n
@@ -698,12 +698,12 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         total_ca = 0.0
 
         # --- Income from sales_daily (exact same logic as finance/balances) ---
-        rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date < %s", (_end,))
+        rows = _mq("SELECT payment_method, net, notes, is_topup FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date < %s", (_end,))
         income_by_account = {a["key"]: 0.0 for a in accounts}
         bs_dep_total_per_account = {a["key"]: 0.0 for a in accounts}  # 🆕 track (dep) amounts
         for row in rows:
             note = (row.get("notes") or "")
-            if note.startswith("Topup") or note.startswith("New member"): continue
+            if int(row.get("is_topup") or 0): continue
             pm = (row.get("payment_method") or "").strip()
             net_amount = float(row.get("net") or 0)
             if net_amount <= 0: continue
@@ -769,7 +769,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             t_in = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='transfer_in' AND created_at < %s", (*db_list, _end))["t"] or 0)
             # magnitude of money that LEFT each account (defensive to sign drift)
             t_out = float(_mqo(f"SELECT COALESCE(SUM(ABS(amount)),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='transfer_out' AND created_at < %s", (*db_list, _end))["t"] or 0)
-            inj = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='inject' AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
+            inj = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='inject' AND (category IS NULL OR category <> 'topup') AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
             ej = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='eject' AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
             dv = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='dividend' AND created_at < %s", (*db_list, _end))["t"] or 0)
 
@@ -858,7 +858,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Expenses = opex + food cogs + cumulative depreciation
         _sh = _mq("SELECT SUM(capital_contribution) as tc FROM shareholders")
         icap = float(_sh[0]["tc"] or 0) if _sh else 0
-        ti_excl_topup = float(_mqo("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE net>0 AND notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%'")["t"] or 0)
+        ti_excl_topup = float(_mqo("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE net>0 AND is_topup=0")["t"] or 0)
         te = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM opex")["t"] or 0)
         cost_of_sold = _inv['cogs']  # FIFO-based COGS
         wallet_consumed = float(_fr.get("consumed", 0))  # FIFO wallet consumed = recognized revenue
@@ -960,10 +960,10 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
             Returns (per-account dict with components, total, active_deposits)."""
             # Income: sales_daily by payment method (sale_date < cutoff) + topups
             income = {k: 0.0 for k in acct_keys}
-            rows = _mq("SELECT payment_method, net, notes FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date < %s", (cutoff,))
+            rows = _mq("SELECT payment_method, net, notes, is_topup FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date < %s", (cutoff,))
             for row in rows:
                 note = (row.get("notes") or "")
-                if note.startswith("Topup") or note.startswith("New member"):
+                if int(row.get("is_topup") or 0):
                     continue
                 pm = (row.get("payment_method") or "").strip()
                 net_amount = float(row.get("net") or 0)
@@ -1027,7 +1027,7 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                 t_in = float((_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='transfer_in' AND created_at < %s", (*db_list, cutoff)) or {}).get("t", 0) or 0)
                 # magnitude of money that LEFT each account (defensive to sign drift)
                 t_out = float((_mqo(f"SELECT COALESCE(SUM(ABS(amount)),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='transfer_out' AND created_at < %s", (*db_list, cutoff)) or {}).get("t", 0) or 0)
-                inj = float((_mqo(f"""SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='inject'
+                inj = float((_mqo(f"""SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='inject' AND (category IS NULL OR category <> 'topup')
                         AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37))
                           AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)))) AND created_at < %s""", (*db_list, cutoff)) or {}).get("t", 0) or 0)
                 ej = float((_mqo(f"""SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='eject'
@@ -1269,7 +1269,7 @@ async def calculate_profit_distribution(
     # ── 1. Revenue (ALIGNED with PNL) ──
     # Game revenue: sales_daily net, exclude Topup/New member notes
     rev_rows = _mq(
-        "SELECT net, gross, notes FROM sales_daily "
+        "SELECT net, gross, notes, is_topup FROM sales_daily "
         "WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s AND gross > 0",
         (ym,)
     )
@@ -1277,7 +1277,7 @@ async def calculate_profit_distribution(
     for r in rev_rows:
         n = float(r.get("net") or 0)
         notes = (r.get("notes") or "")
-        if notes.startswith("Topup") or notes.startswith("New member"):
+        if int(r.get("is_topup") or 0):
             continue
         total_sales += n
     

@@ -267,7 +267,7 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
     ym = m if m else f"{mmt.year}-{mmt.month:02d}"
     try:
         rev_rows = _mysql_query(
-            "SELECT net, gross, notes FROM sales_daily WHERE DATE_FORMAT(created_at, %s) = %s AND gross > 0",
+            "SELECT net, gross, notes, is_topup FROM sales_daily WHERE DATE_FORMAT(created_at, %s) = %s AND gross > 0",
             ("%Y-%m", ym))
         total_sales = 0.0; discounts = 0.0; topup_sales = 0.0
         for r in rev_rows:
@@ -275,7 +275,7 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
             n = float(r.get("net") or 0)
             notes = (r.get("notes") or "")
             discounts += (g - n)
-            if notes.startswith("Topup") or notes.startswith("New member"):
+            if int(r.get("is_topup") or 0):
                 topup_sales += n
             else:
                 total_sales += n

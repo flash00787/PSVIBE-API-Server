@@ -122,9 +122,14 @@ def insert_cash_movement_if_absent(movement_type: str, account: str, amount, not
         return False
 
 
-def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, staff_name: str) -> None:
+def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, staff_name: str, category=None) -> None:
     """Parse payment method string (e.g. 'KPay:31000|Cash:20000' or 'KPay:90000/Cash:0')
-    and inject cash_movements entries for each account."""
+    and inject cash_movements entries for each account.
+
+    Optional ``category`` (added 2026-09-20, flag migration): when given, the
+    cash_movements row is tagged with it (e.g. ``category='topup'`` for member
+    top-ups / new-member card sales). Default ``None`` preserves the previous
+    behaviour exactly — every other caller inserts a NULL category."""
     if not payment_method or float(total_amount) <= 0:
         return
     import re
@@ -157,8 +162,8 @@ def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, st
         account = acct_map.get(method.strip().lower().replace("  ", " "), method)
         if val > 0:
             _mysql_execute(
-                "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) VALUES (%s, %s, %s, %s, %s, NOW())",
-                ("inject", account, val, note, staff_name)
+                "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, category, created_at) VALUES (%s, %s, %s, %s, %s, %s, NOW())",
+                ("inject", account, val, note, staff_name, category)
             )
-            _logger.info("Cash movement inject: %s +%.0f Ks (%s)", account, val, note)
+            _logger.info("Cash movement inject: %s +%.0f Ks (%s, category=%s)", account, val, note, category)
 

@@ -838,7 +838,7 @@ async def dashboard_generate_salary(req: dict, user: dict = Depends(get_current_
         shop_row = _mysql_query_one(
             "SELECT COALESCE(SUM(CAST(REGEXP_REPLACE(IFNULL(notes,''), '.*Mins?:? *([0-9]+).*', '$1') AS UNSIGNED)), 0) AS total_mins "
             "FROM sales_daily WHERE DATE_FORMAT(sale_date, '%%Y-%%m') = %s "
-            "AND notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%'",
+            "AND is_topup = 0",
             (month,)
         )
         shop_total_mins = int(shop_row["total_mins"] or 0)

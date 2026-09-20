@@ -37,7 +37,7 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
         # Game amount ONLY — exclude member topup / new-member mirror rows (they belong to topup_income)
         today_revenue = _mysql_query_one(
             "SELECT COALESCE(SUM(net), 0) as total FROM sales_daily WHERE sale_date >= %s "
-            "AND notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%'", (today + " 00:00:00",)
+            "AND is_topup = 0", (today + " 00:00:00",)
         )
         today_revenue = float(today_revenue["total"]) if today_revenue else 0.0
         # Topup income (separate line; source of truth = topup_log)

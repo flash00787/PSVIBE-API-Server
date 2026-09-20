@@ -434,7 +434,7 @@ async def api_topup_log(req: dict, auth=Depends(verify_api_key)) -> JSONResponse
                 note = f"Topup {member_id} + {mins_added} mins"
                 if base_mins is not None:
                     note = f"Topup {mins_added} mins (base {base_mins} + bonus {bonus_mins})"
-                _parse_pm_and_inject(amount, pm, note, staff)
+                _parse_pm_and_inject(amount, pm, note, staff, category='topup')
             except Exception as _e:
                 logger.warning("Topup cash_movements failed: %s", _e)
         # ✅ Also create sales_daily record for topup
@@ -444,8 +444,8 @@ async def api_topup_log(req: dict, auth=Depends(verify_api_key)) -> JSONResponse
                 if base_mins is not None:
                     note = f"Topup {mins_added} mins (base {base_mins} + bonus {bonus_mins})"
                 _mysql_exec(
-                    "INSERT INTO sales_daily (sale_date, member_id, amount, gross, net, payment_method, notes, staff_name, customer_name) "
-                    "VALUES (CURDATE(), %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "INSERT INTO sales_daily (sale_date, member_id, amount, gross, net, payment_method, notes, staff_name, customer_name, is_topup) "
+                    "VALUES (CURDATE(), %s, %s, %s, %s, %s, %s, %s, %s, 1)",
                     (member_id, amount, amount, amount, pm, note, staff, staff))
             except Exception as _e:
                 logger.warning("Topup sales_daily failed: %s", _e)
@@ -528,15 +528,15 @@ async def api_member_register(req: dict, request: Request, auth=Depends(verify_a
         # 🆕 Record cash_movements for member registration income
         if float(amount) > 0:
             try:
-                _parse_pm_and_inject(amount, f"KPay:{kpay}/Cash:{cash}", f"New member {member_id} + {mins_added} mins", staff)
+                _parse_pm_and_inject(amount, f"KPay:{kpay}/Cash:{cash}", f"New member {member_id} + {mins_added} mins", staff, category='topup')
             except Exception as _e:
                 logger.warning("Reg cash_movements failed: %s", _e)
         # ✅ Also create sales_daily record for registration
         if float(amount) > 0:
             try:
                 _mysql_exec(
-                    "INSERT INTO sales_daily (sale_date, member_id, amount, gross, net, payment_method, notes, staff_name, customer_name) "
-                    "VALUES (CURDATE(), %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "INSERT INTO sales_daily (sale_date, member_id, amount, gross, net, payment_method, notes, staff_name, customer_name, is_topup) "
+                    "VALUES (CURDATE(), %s, %s, %s, %s, %s, %s, %s, %s, 1)",
                     (member_id, amount, amount, amount, f"KPay:{kpay}/Cash:{cash}", f"New member {member_id} + {mins_added} mins", staff, staff))
             except Exception as _e:
                 logger.warning("Reg sales_daily failed: %s", _e)

@@ -27,8 +27,8 @@ bks = query("""
 
 # Sales
 sales = query("""
-    SELECT COALESCE(SUM(CASE WHEN notes NOT LIKE 'Topup%%' AND notes NOT LIKE 'New member%%' THEN net ELSE 0 END),0) as total_sales,
-           COALESCE(SUM(CASE WHEN notes LIKE 'Topup%%' OR notes LIKE 'New member%%' THEN net ELSE 0 END),0) as topup_sales,
+    SELECT COALESCE(SUM(CASE WHEN is_topup=0 THEN net ELSE 0 END),0) as total_sales,
+           COALESCE(SUM(CASE WHEN is_topup=1 THEN net ELSE 0 END),0) as topup_sales,
            COUNT(*) as transactions
     FROM sales_daily WHERE DATE(sale_date) = %s
 """, (today,))
