@@ -2316,6 +2316,11 @@
         if (TL_LIVE.indexOf(k) >= 0) return true;                 // live session
         if (tlIsForfeit(b)) return true;                          // forfeit (capped to 1 h in minutesOf)
         if (TL_UPCOMING.indexOf(k) >= 0) {
+          // Owner 2026-09-20 17:07: the Timeline can display Tomorrow (or any picked date), but the
+          // window-end test below compares against the CURRENT wall clock — so a confirmed booking
+          // on a future day (e.g. tomorrow 13:00-14:00 at 17:07 today) looked "already over" and was
+          // hidden. Only TODAY is time-filtered; every other day shows its bookings as they are.
+          if (!isToday.value) return true;
           // Confirmed / pending_check_in (owner 2026-09-20 11:43: "confirmed upcoming bookings မပြဘူး"):
           // keep the booking visible until its WINDOW ENDS, not merely until its start time — a
           // confirmed 18:00-19:00 booking must still show at 18:12 (staff may not have checked in yet).
@@ -3204,7 +3209,7 @@
     ] },
     { id: "me", emoji: "🕒", en: "Me & staff", tone: "dim", items: [
       { en: "Attendance in / out", sub: "Shift check-in", icon: "🕐", path: "/attendance" },
-      { en: "Salary advance", sub: "Owner-only request", icon: "💰", path: "/salary", tag: "Owner only", ownerOnly: true },
+      { en: "Salary advance", sub: "Owner / admin managed", icon: "💰", path: "/salary", tag: "Owner only", ownerOnly: true },
       { en: "Staff list", sub: "View staff", icon: "👥", path: "/staff" },
       { en: "Notifications", sub: "Alerts & reminders", icon: "🔔", path: "/notifications" },
       { en: "Settings & profile", sub: "Account settings", icon: "⚙️", path: "/me" },
@@ -3229,7 +3234,7 @@
             <span class="psv-menu-head__my">{{ g.en }}</span>
           </div>
           <div class="psv-card psv-list psv-menu-list">
-            <div v-for="it in g.items" :key="it.en" class="psv-menu-item" :class="{ 'is-soon': it.tag }" @click="tap(it)">
+            <div v-for="it in g.items" :key="it.en" class="psv-menu-item" :class="{ 'is-soon': effTag(it) }" @click="tap(it)">
               <span class="psv-menu-item__ico">{{ it.icon }}</span>
               <div class="psv-menu-item__main">
                 <div class="psv-menu-item__my">{{ it.en }}</div>
@@ -3237,7 +3242,7 @@
               </div>
               <span v-if="badge(it)" class="psv-menu-badge">{{ badge(it) > 99 ? '99+' : badge(it) }}</span>
               <span v-if="it.tag" class="psv-soon">{{ it.tag }}</span>
-              <span v-else-if="ownerBadge(it)" class="psv-soon">Owner only</span>
+              <span v-else-if="effTag(it) === 'Owner only'" class="psv-soon">Owner only</span>
               <van-icon v-else name="arrow" />
             </div>
           </div>
@@ -3265,6 +3270,13 @@
       // Fail-open role check: only a role that is explicitly a shop-staff role blocks the row.
       // (api.js falls back to role "staff" when the login payload has no role, which must NOT
       // hide owner features from the real admin — the API 403 remains the real gate.)
+      // Owner 2026-09-20 17:03: an admin IS an owner, so the "Owner only" chip/lock must not be
+      // shown to admin accounts — only to an explicitly staff-ish role.
+      const effTag = (it) => {
+        if (!it || !it.tag) return "";
+        if (it.tag === "Owner only" && !isStaffRole.value) return "";
+        return it.tag;
+      };
       const isStaffRole = computed(() => {
         const r = String((staff && staff.role) || "").trim().toLowerCase();
         return ["staff", "cashier", "manager", "viewer", "operator"].indexOf(r) >= 0;
@@ -3287,7 +3299,7 @@
         const r = String((staff && staff.role) || "-") || "-";
         return "PS VIBE · build 34 · role: " + r;
       });
-      return { groups: MENU_GROUPS, staff, initials, tap, logout, badge, lowStock, isAdmin, ownerBadge, buildInfo };
+      return { groups: MENU_GROUPS, staff, initials, tap, logout, badge, lowStock, isAdmin, ownerBadge, effTag, buildInfo };
     },
   };
 

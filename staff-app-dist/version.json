@@ -1,9 +1,9 @@
 {
-  "version": "1.5.3",
-  "version_code": 35,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.3.apk",
-  "size": 5071928,
-  "sha256": "70d2f36f86c249b857e58c30bfe4618dafe0fcb9f29d59c48186f6d8eabbeda0",
+  "version": "1.5.5",
+  "version_code": 37,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.5.apk",
+  "size": 5072236,
+  "sha256": "70af7610ceb00fe4d92445dde48ed84c0f4775c2732c786d31bb29ffa24bd36e",
   "released_at": "2026-09-20",
-  "notes": "v1.5.3 (code 35): admin = owner permissions \u2014 OPEX is no longer a dead placeholder: the menu row opens a real owner/admin screen (this month's expenses + total + Add expense) and POST /dashboard/opex is now admin/owner-only server-side; staff keep the locked card."
+  "notes": "v1.5.5 (code 37): Timeline shows confirmed bookings on any picked day \u2014 the visibility test was comparing every booking against the CURRENT clock, so confirmed bookings on Tomorrow (or another date) were treated as already finished and hidden; only today is time-filtered now."
 }

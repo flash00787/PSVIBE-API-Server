@@ -1,8 +1,30 @@
 {
-  "latest": "1.5.3",
-  "latest_code": 35,
-  "updated_at": "2026-09-20T17:01:27Z",
+  "latest": "1.5.5",
+  "latest_code": 37,
+  "updated_at": "2026-09-20T17:08:30Z",
   "versions": [
+    {
+      "version": "1.5.5",
+      "version_code": 37,
+      "arch": "universal",
+      "file": "psvibe-staff-1.5.5.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.5.apk",
+      "size": 5072236,
+      "sha256": "70af7610ceb00fe4d92445dde48ed84c0f4775c2732c786d31bb29ffa24bd36e",
+      "released_at": "2026-09-20",
+      "notes": "v1.5.5 (code 37): Timeline shows confirmed bookings on any picked day \u2014 the visibility test was comparing every booking against the CURRENT clock, so confirmed bookings on Tomorrow (or another date) were treated as already finished and hidden; only today is time-filtered now."
+    },
+    {
+      "version": "1.5.4",
+      "version_code": 36,
+      "arch": "universal",
+      "file": "psvibe-staff-1.5.4.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.4.apk",
+      "size": 5072036,
+      "sha256": "631d1e69c9a7a53ae2d61ab65f3900726e0825ca7ce37b8395dd3a5b6cc9ab92",
+      "released_at": "2026-09-20",
+      "notes": "v1.5.4 (code 36): admin = owner in the menu too \u2014 the Owner-only chip/lock label is now role-aware (effTag) so an admin account no longer sees 'Owner only' or a greyed row on OPEX / Salary advance / Account Balances, while an explicit staff role still gets the lock; Salary advance wording is now 'Owner / admin managed'."
+    },
     {
       "version": "1.5.3",
       "version_code": 35,
