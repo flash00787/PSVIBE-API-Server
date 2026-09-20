@@ -16,7 +16,7 @@
   // the freshly fetched index.html with the marker this bundle was built with; when the
   // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
   // with the ?v= query on every deploy.
-  var PSV_BUILD = "w15print";
+  var PSV_BUILD = "w16print";
   function psvBuildSelfHeal() {
     try {
       fetch("/webapp/?_b=" + Date.now(), { cache: "no-store" })
@@ -459,13 +459,16 @@
   function renderVoucherPng(data) {
     return new Promise((resolve, reject) => {
       try {
-        const W = 576;
-        const PAD = 20;
+        // Paper-aware: 80mm -> 576px, 58mm -> 384px (matches the printer dot width).
+        // The design is authored at 576px; scale everything down so 58mm never overflows.
+        const W = paperWidth() === 58 ? 384 : 576;
+        const S = W / 576;
+        const PAD = Math.round(20 * S);
         const canvas = document.createElement("canvas");
         const ctx = canvas.getContext("2d");
         const lines = _voucherLines(data);
         let H = PAD * 2;
-        for (const ln of lines) H += (ln.size || 16) + 8;
+        for (const ln of lines) H += Math.round((ln.size || 16) * S) + Math.round(8 * S);
         canvas.width = W;
         canvas.height = Math.max(H, 160);
         ctx.fillStyle = "#ffffff";
@@ -474,12 +477,12 @@
         ctx.textBaseline = "top";
         let y = PAD;
         for (const ln of lines) {
-          const size = ln.size || 16;
+          const size = Math.max(8, Math.round((ln.size || 16) * S));
           ctx.font = (ln.bold ? "bold " : "") + size + "px 'Courier New', monospace";
           ctx.textAlign = ln.align || "left";
           const x = ln.align === "center" ? W / 2 : (ln.align === "right" ? W - PAD : PAD);
           ctx.fillText(String(ln.text == null ? "" : ln.text), x, y);
-          y += size + 8;
+          y += size + Math.round(8 * S);
         }
         resolve(canvas.toDataURL("image/png"));
       } catch (e) { reject(e); }
@@ -487,25 +490,74 @@
   }
 
   // Print a voucher: native Bluetooth plugin → share → download. Never throws.
+  // Preferred path = printVoucherText: sends the voucher as TEXT through the printer's own
+  // font (crisp, no 203dpi raster blur, auto-fits the paper). Falls back to printImage.
+  async function _ensurePrinterConnected(plugin) {
+    try {
+      const saved = JSON.parse(localStorage.getItem("psv_printer") || "null");
+      const st = plugin.status ? await plugin.status().catch(function () { return null; }) : null;
+      if (saved && saved.address && !(st && st.connected)) {
+        await plugin.connect({ address: saved.address, mode: "auto" });
+      }
+    } catch (_connErr) { /* fall through — the print call will report if unusable */ }
+  }
+
+  function paperWidth() {
+    try { return parseInt(localStorage.getItem("psv_paper_mm"), 10) === 58 ? 58 : 80; }
+    catch (_e) { return 80; }
+  }
+
+  // Persist + push the paper width to the native plugin (no-op in web preview).
+  async function setPaperWidth(mm) {
+    mm = (Number(mm) === 58) ? 58 : 80;
+    try { localStorage.setItem("psv_paper_mm", String(mm)); } catch (_e) {}
+    const cap = window.Capacitor;
+    const plugin = cap && cap.Plugins && cap.Plugins.PSVPrinter;
+    if (plugin && typeof plugin.setPaperWidth === "function") {
+      try { await plugin.setPaperWidth({ mm: mm }); } catch (_e) {}
+    }
+    return mm;
+  }
+
+  // Optional print darkness (0 = OFF, default). Native sends raw ESC/POS DC2 # n when >0.
+  async function setPrintDensity(level) {
+    level = Math.max(0, Math.min(8, Number(level) || 0));
+    try { localStorage.setItem("psv_print_density", String(level)); } catch (_e) {}
+    const cap = window.Capacitor;
+    const plugin = cap && cap.Plugins && cap.Plugins.PSVPrinter;
+    if (plugin && typeof plugin.setPrintDensity === "function") {
+      try { await plugin.setPrintDensity({ level: level }); } catch (_e) {}
+    }
+    return level;
+  }
+
   async function printVoucher(data) {
+    const cap = window.Capacitor;
+    const plugin = cap && cap.Plugins && cap.Plugins.PSVPrinter;
+
+    // ── Preferred: crisp native text path ──
+    if (plugin && typeof plugin.printVoucherText === "function") {
+      try {
+        await _ensurePrinterConnected(plugin);
+        if (typeof plugin.setPaperWidth === "function") {
+          try { await plugin.setPaperWidth({ mm: paperWidth() }); } catch (_e) {}
+        }
+        await plugin.printVoucherText({ lines: _voucherLines(data), cut: true });
+        toast("Voucher sent to printer ✓", "success");
+        return true;
+      } catch (e) {
+        // fall through to the image path below
+      }
+    }
+
+    // ── Fallback: raster image (older bundles / text path unavailable) ──
     let dataUrl;
     try { dataUrl = await renderVoucherPng(data); }
     catch (e) { toast("Voucher render failed: " + (e && e.message ? e.message : e), "fail"); return false; }
     const base64 = String(dataUrl).split(",")[1] || "";
-    const cap = window.Capacitor;
-    const plugin = cap && cap.Plugins && cap.Plugins.PSVPrinter;
     if (plugin && typeof plugin.printImage === "function") {
       try {
-        // The webapp has no pairing step of its own, but the native plugin REQUIRES an
-        // active connection (requireConnection) — without this the print silently fell
-        // back to "saving image instead". Connect to the saved printer first (2026-09-20).
-        try {
-          const saved = JSON.parse(localStorage.getItem("psv_printer") || "null");
-          const st = plugin.status ? await plugin.status().catch(function () { return null; }) : null;
-          if (saved && saved.address && !(st && st.connected)) {
-            await plugin.connect({ address: saved.address, mode: "auto" });
-          }
-        } catch (_connErr) { /* fall through — printImage will report if unusable */ }
+        await _ensurePrinterConnected(plugin);
         await plugin.printImage({ base64: base64 });
         toast("Voucher sent to printer ✓", "success");
         return true;
@@ -592,7 +644,7 @@
     api, apiCached, invalidate, retryNow, unwrap, authenticate, isAuthed, getStaff, getTg,
     blobUrl, revokeBlob,
     login, logout, loadStoredAuth, usesWebLogin,
-    renderVoucherPng, printVoucher,
+    renderVoucherPng, printVoucher, setPaperWidth, getPaperWidth: paperWidth, setPrintDensity,
     genClientRef, genVoucherNo, fmtKs, todayMMT, monthMMT, toast, haptic,
   };
 })();

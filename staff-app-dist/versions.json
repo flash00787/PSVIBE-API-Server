@@ -1,8 +1,19 @@
 {
-  "latest": "1.2.2",
-  "latest_code": 5,
-  "updated_at": "2026-09-20T09:44:43Z",
+  "latest": "1.2.3",
+  "latest_code": 6,
+  "updated_at": "2026-09-20T09:54:46Z",
   "versions": [
+    {
+      "version": "1.2.3",
+      "version_code": 6,
+      "arch": "universal",
+      "file": "psvibe-staff-1.2.3.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.3.apk",
+      "size": 4731596,
+      "sha256": "031d0540b727c43bf086e82ea8a1dea43266723055f06c41d7a4138cc83d862e",
+      "released_at": "2026-09-20",
+      "notes": "Printer quality v2: auto-cut + crisp text + 58/80mm + opt. density"
+    },
     {
       "version": "1.2.2",
       "version_code": 5,

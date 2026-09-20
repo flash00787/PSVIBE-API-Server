@@ -5293,6 +5293,12 @@
             <button class="psv-btn psv-btn--primary" type="button" @click="choosePrinter">{{ connecting ? 'Working…' : (connected ? '🔗 Change printer' : '🔗 Choose printer') }}</button>
           </div>
 
+          <div class="psv-section-title">Paper width</div>
+          <div class="psv-btn-row" style="gap:8px">
+            <button class="psv-chip" :class="{ 'psv-chip--on': paperMm === 80 }" type="button" @click="setWidth(80)">80mm</button>
+            <button class="psv-chip" :class="{ 'psv-chip--on': paperMm === 58 }" type="button" @click="setWidth(58)">58mm</button>
+          </div>
+
           <van-popup v-model:show="pickerOpen" position="bottom" round :style="{ maxHeight: '70vh' }">
             <div class="psv-pad">
               <div class="psv-section-title">Paired Bluetooth printers</div>
@@ -5310,7 +5316,7 @@
             </div>
           </van-popup>
 
-          <div class="psv-section-title">80mm voucher preview</div>
+          <div class="psv-section-title">{{ paperMm }}mm voucher preview</div>
           <div class="psv-paper">
             <img v-if="png" :src="png" alt="voucher preview" class="psv-paper__img" />
             <div v-else class="psv-skeleton" style="height:360px"></div>
@@ -5327,6 +5333,7 @@
       const png = ref("");
       const printing = ref(false);
       const connected = ref(false);
+      const paperMm = ref(PSV.getPaperWidth ? PSV.getPaperWidth() : 80);
       const printerName = ref("");
       const statusText = ref("Tap Check to query the printer");
       // Printer pairing (2026-09-20 fix): the plugin REQUIRES an explicit connect()
@@ -5366,6 +5373,13 @@
         printing.value = true; haptic("medium");
         try { await PSV.printVoucher(currentVoucher()); } finally { printing.value = false; }
       }
+      // Paper width chip — persists to localStorage (psv_paper_mm) + pushes to the native plugin.
+      async function setWidth(mm) {
+        paperMm.value = (Number(mm) === 58) ? 58 : 80;
+        try { if (PSV.setPaperWidth) await PSV.setPaperWidth(paperMm.value); } catch (_e) {}
+        render();
+        showToast(paperMm.value + "mm paper ✓", "success");
+      }
       async function choosePrinter() {
         const P = plugin();
         if (!P || !P.listPrinters) { showToast("Printer needs the native app", "warning"); return; }
@@ -5402,7 +5416,7 @@
         } catch (_e) {}
       }
       onMounted(() => { render(); checkStatus(); autoConnect().then(checkStatus); });
-      return { png, printing, connected, printerName, statusText, checkStatus, testPrint, doPrint,
+      return { png, printing, connected, printerName, statusText, checkStatus, testPrint, doPrint, paperMm, setWidth,
         printers, pickerOpen, connecting, choosePrinter, connectPrinter };
     },
   };
