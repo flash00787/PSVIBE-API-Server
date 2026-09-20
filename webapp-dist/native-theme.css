@@ -65,7 +65,7 @@ html.psv-native body {
   min-height: 100vh;
   -webkit-tap-highlight-color: transparent;
 }
-html.psv-native #app { padding-bottom: calc(var(--psv-tabbar-h, 56px) + var(--psv-sysnav-h, 0px) + 16px + env(safe-area-inset-bottom, 0px)); }
+html.psv-native #app { padding-bottom: calc(var(--psv-tabbar-h, 56px) + var(--psv-sysnav-h, 0px) + var(--psv-banner-h, 0px) + 16px + env(safe-area-inset-bottom, 0px)); }
 
 /* ══════════════════════════════════════════════════════
  *  LOGIN — the showcase screen

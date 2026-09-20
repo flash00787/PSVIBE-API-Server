@@ -55,7 +55,7 @@ html, body {
   /* Reserved bottom space = REAL tab-bar height (measured → --psv-tabbar-h) +
      Android system-nav overlap (--psv-sysnav-h) + 14px breathing room + iOS inset.
      So no page can hide its last row behind the fixed tab bar. */
-  padding-bottom: calc(var(--psv-tabbar-h, 50px) + var(--psv-sysnav-h, 0px) + 14px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(var(--psv-tabbar-h, 50px) + var(--psv-sysnav-h, 0px) + var(--psv-banner-h, 0px) + 14px + env(safe-area-inset-bottom, 0px));
 }
 
 /* ── Cards / surfaces ─────────────────────────────── */
@@ -393,7 +393,7 @@ html, body {
 .psv-tl-pad { padding: 12px 14px; }
 .psv-tl-empty__sub { margin-top: 6px; font-size: 12px; }
 .psv-tl-wrap { padding: 8px 0 4px; }
-.psv-tl-scroll { overflow: auto; max-height: min(calc(100vh - var(--psv-tabbar-h, 56px) - 244px), calc(100dvh - var(--psv-tabbar-h, 56px) - 244px)); min-height: 220px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-x pan-y; scroll-padding-bottom: 8px; border-top: 1px solid var(--pv-card-border); border-bottom: 1px solid var(--pv-card-border); background: var(--pv-card-bg); }
+.psv-tl-scroll { overflow: auto; max-height: min(calc(100vh - var(--psv-tabbar-h, 56px) - var(--psv-banner-h, 0px) - 244px), calc(100dvh - var(--psv-tabbar-h, 56px) - var(--psv-banner-h, 0px) - 244px)); min-height: 220px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-x pan-y; scroll-padding-bottom: 8px; border-top: 1px solid var(--pv-card-border); border-bottom: 1px solid var(--pv-card-border); background: var(--pv-card-bg); }
 .psv-tl-inner { position: relative; display: grid; grid-template-columns: 120px 960px; width: 1080px; }
 .psv-tl-corner { position: sticky; left: 0; top: 0; z-index: 4; background: var(--van-background-2); border-right: 1px solid var(--pv-card-border); border-bottom: 1px solid var(--pv-card-border); padding: 8px 6px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--pv-muted); text-align: center; }
 .psv-tl-head-hours { position: sticky; top: 0; z-index: 3; display: flex; background: var(--van-background-2); border-bottom: 1px solid var(--pv-card-border); }
@@ -568,3 +568,7 @@ html, body {
 /* "စမှတ်" / duration chips — Start Session (2026-09-20 owner ask) */
 .psv-dchip{display:inline-block;padding:6px 12px;border-radius:999px;border:1px solid #2b3550;background:rgba(255,255,255,.04);color:#c9d2e3;font-size:13px;font-weight:600;cursor:pointer;user-select:none}
 .psv-dchip--on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+
+/* Tight screens (short height + native update banner): drop the legend so 10 console rows
+   still fit one page (owner 2026-09-20 11:53). */
+.psv-tl-wrap.is-tight .psv-tl-legend { display: none !important; }

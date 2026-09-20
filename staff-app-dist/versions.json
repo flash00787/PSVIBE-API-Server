@@ -1,8 +1,19 @@
 {
-  "latest": "1.2.6",
-  "latest_code": 9,
-  "updated_at": "2026-09-20T11:46:01Z",
+  "latest": "1.2.7",
+  "latest_code": 10,
+  "updated_at": "2026-09-20T11:58:08Z",
   "versions": [
+    {
+      "version": "1.2.7",
+      "version_code": 10,
+      "arch": "universal",
+      "file": "psvibe-staff-1.2.7.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.7.apk",
+      "size": 4731596,
+      "sha256": "12fe5bab2ae1e9068fd5970105e41c2f6fbba022f0249a8a6100316bf73f1be4",
+      "released_at": "2026-09-20",
+      "notes": "Timeline: confirmed upcoming visible until window end + banner-aware one-screen fit; print: Burmese rendered as raster (no more ??), cost per item (@unit) on vouchers, footer feed 12 lines so the cutter no longer chops it"
+    },
     {
       "version": "1.2.6",
       "version_code": 9,

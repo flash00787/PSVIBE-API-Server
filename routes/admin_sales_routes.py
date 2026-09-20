@@ -673,7 +673,17 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                     _nm = str(_it.get("name") or "").strip()
                     _q = _it.get("qty") or 0
                     if _nm:
-                        _parts.append((_nm + " x" + str(int(float(_q)))) if float(_q or 0) > 0 else _nm)
+                        # Include the unit price so the voucher can show cost per item
+                        # (owner 2026-09-20 11:56): "name xQty @unit = subtotal".
+                        _sub = float(_it.get("subtotal") or 0)
+                        _unit = (_sub / float(_q)) if (float(_q or 0) > 0 and _sub > 0) else float(_it.get("unit_price") or _it.get("price") or 0)
+                        if float(_q or 0) > 0 and _unit > 0:
+                            _line_tot = _sub if _sub > 0 else _unit * float(_q)
+                            _parts.append("%s x%d @%d = %d" % (_nm, int(float(_q)), int(round(_unit)), int(round(_line_tot))))
+                        elif float(_q or 0) > 0:
+                            _parts.append("%s x%d" % (_nm, int(float(_q))))
+                        else:
+                            _parts.append(_nm)
                 else:
                     _p = str(_it).strip()
                     if _p:

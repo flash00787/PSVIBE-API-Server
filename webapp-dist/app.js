@@ -729,10 +729,22 @@
           // one lump line. The sale notes carry "Food: item x1, item x2" (the API now writes
           // that from food_cart for session food), so split it into individual lines.
           let fi = s.notes || ""; const mm = /Food:\s*([^|]+)/.exec(fi); if (mm) fi = mm[1].trim();
+          // Owner 2026-09-20 11:56: "cost per item တွေလည်း မပြထားဘူး". The notes carry
+          // "name xQty @unit = subtotal" (the API writes it), so print each line WITH its cost.
           const parts = String(fi || "").split(/\s*,\s*/).map((x) => x.trim()).filter(Boolean);
-          if (parts.length > 1) {
+          const parsed = parts.map((pp) => {
+            const m = /^(.*?)\s+x\s*(\d+)\s*(?:@\s*([\d,]+))?/.exec(pp);
+            if (!m) return { name: pp, qty: 0, unit: 0 };
+            return { name: String(m[1] || "").trim(), qty: Number(m[2]) || 0,
+                     unit: Number(String(m[3] || "0").replace(/,/g, "")) || 0 };
+          });
+          const priced = parsed.some((x) => x.unit > 0);
+          if (parsed.length > 1 || priced) {
             items.push({ name: "🍜 Food:", plain: true });
-            parts.forEach((p) => items.push({ name: "   " + p, plain: true }));
+            for (const x of parsed) {
+              if (x.unit > 0) items.push({ name: "   " + x.name, qty: x.qty || 1, price: x.unit });
+              else items.push({ name: "   " + (x.name || "Food") + (x.qty ? " x" + x.qty : ""), plain: true });
+            }
             items.push({ name: "   Food total", qty: 1, price: ft });
           } else {
             items.push({ name: "🍜 " + (parts[0] || "Food"), qty: 1, price: ft });
@@ -2193,12 +2205,25 @@
         const appEl = document.getElementById("app");
         const appPad = appEl ? (parseFloat(getComputedStyle(appEl).paddingBottom) || 0) : 0;
         const reserve = Math.max(tabH, appPad);
-        const avail = Math.floor(vpH - top - reserve - footH - 16);
+        let avail = Math.floor(vpH - top - reserve - footH - 16);
         const rows = Math.max(1, (tlRows.value || []).length);
         const head = el.querySelector(".psv-tl-head-hours");
         const headH = head ? Math.round(head.getBoundingClientRect().height) || 34 : 34;
         const MINH = 24, MAXH = 56;
-        const ideal = Math.floor((avail - headH) / rows);
+        let ideal = Math.floor((avail - headH) / rows);
+        // Short screens + the native update banner: hide the legend and re-measure once so the
+        // 10 console rows still fit one page (owner 2026-09-20 11:53).
+        const wrap = el.closest(".psv-tl-wrap") || el.parentElement;
+        if (wrap) {
+          const tight = ideal < MINH;
+          if (wrap.classList.contains("is-tight") !== tight) {
+            wrap.classList.toggle("is-tight", tight);
+            const r2 = el.getBoundingClientRect();
+            const top2 = r2.top + (window.scrollY || 0);
+            avail = Math.floor(vpH - top2 - reserve - footH - 16);
+            ideal = Math.floor((avail - headH) / rows);
+          }
+        }
         const fits = ideal >= MINH;
         const rowH = Math.max(MINH, Math.min(MAXH, ideal || MAXH));
         el.style.setProperty("--psv-tl-rowh", rowH + "px");
@@ -2256,12 +2281,16 @@
         // instead of jumping once a minute.
         tick = setInterval(() => { clock.value = Date.now(); }, 15000);
         window.addEventListener("psv:retry", load);
+        // Native update banner appears/disappears at any time (fixed bottom bar injected by the
+        // bridge) -> re-measure + re-fit so the last row never hides under it (2026-09-20 11:53).
+        window.addEventListener("psv:chrome", onResize);
         window.addEventListener("resize", onResize);
         window.addEventListener("orientationchange", onResize);
       });
       onUnmounted(() => {
         if (tick) clearInterval(tick);
         window.removeEventListener("psv:retry", load);
+        window.removeEventListener("psv:chrome", onResize);
         window.removeEventListener("resize", onResize);
         window.removeEventListener("orientationchange", onResize);
       });
@@ -5728,8 +5757,24 @@
         if (d > 0 && d < 140) sys = d;
       }
       document.documentElement.style.setProperty("--psv-sysnav-h", sys + "px");
+      // The native bridge pins #psv-update-banner at the bottom (position:fixed; bottom:0).
+      // Reserve its height or it covers the last rows of a tall grid (owner 2026-09-20 11:53:
+      // "Timeline က page တခုတည်းမပေါ်တော့ပြန်ဘူး").
+      const bnr = document.getElementById("psv-update-banner");
+      const bh = bnr ? Math.round(bnr.getBoundingClientRect().height) : 0;
+      document.documentElement.style.setProperty("--psv-banner-h", (bh > 0 ? bh : 0) + "px");
     } catch (_e) {}
   }
+
+  // Recompute the chrome whenever the native update banner appears/disappears so the
+  // #app bottom padding and the timeline fit react immediately (2026-09-20).
+  try {
+    const _bannerObs = new MutationObserver(function () {
+      psvSyncChrome();
+      try { window.dispatchEvent(new Event("psv:chrome")); } catch (_e) {}
+    });
+    _bannerObs.observe(document.body, { childList: true });
+  } catch (_e) {}
 
   const App = {
     components: { LoginScreen },

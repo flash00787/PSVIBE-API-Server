@@ -16,7 +16,7 @@
   // the freshly fetched index.html with the marker this bundle was built with; when the
   // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
   // with the ?v= query on every deploy.
-  var PSV_BUILD = "w21print";
+  var PSV_BUILD = "w22print";
   function psvBuildSelfHeal() {
     try {
       fetch("/webapp/?_b=" + Date.now(), { cache: "no-store" })
@@ -478,7 +478,13 @@
         let y = PAD;
         for (const ln of lines) {
           const size = Math.max(8, Math.round((ln.size || 16) * S));
-          ctx.font = (ln.bold ? "bold " : "") + size + "px 'Courier New', monospace";
+          // Per-line font stack: monospace keeps the ASCII layout aligned, the Myanmar
+          // fallbacks let the WebView draw Burmese glyphs (which are then rasterised).
+          const _mm = /[^\x00-\x7F]/.test(String(ln.text || ""));
+          const _fam = _mm
+            ? "'Noto Sans Myanmar','Myanmar Text','Padauk','Pyidaungsu','Zawgyi-One','Courier New',monospace"
+            : "'Courier New', monospace";
+          ctx.font = (ln.bold ? "bold " : "") + size + "px " + _fam;
           ctx.textAlign = ln.align || "left";
           const x = ln.align === "center" ? W / 2 : (ln.align === "right" ? W - PAD : PAD);
           ctx.fillText(String(ln.text == null ? "" : ln.text), x, y);
@@ -535,14 +541,20 @@
     const cap = window.Capacitor;
     const plugin = cap && cap.Plugins && cap.Plugins.PSVPrinter;
 
-    // ── Preferred: crisp native text path ──
-    if (plugin && typeof plugin.printVoucherText === "function") {
+    // Burmese (or any non-ASCII) cannot go through ESC/POS text — the native sanitizer maps
+    // it to "?" (owner 2026-09-20 11:56: "?? တွေပဲ ပေါ်နေတာ · mm font support မလုပ်တာနဲ့တူ").
+    // Detect it up-front and use the raster path so Myanmar glyphs actually print.
+    const _qLines = _voucherLines(data);
+    const _hasNonAscii = _qLines.some((l) => /[^\x00-\x7F]/.test(String((l && l.text) || "")));
+
+    // ── Preferred: crisp native text path (ASCII only) ──
+    if (plugin && typeof plugin.printVoucherText === "function" && !_hasNonAscii) {
       try {
         await _ensurePrinterConnected(plugin);
         if (typeof plugin.setPaperWidth === "function") {
           try { await plugin.setPaperWidth({ mm: paperWidth() }); } catch (_e) {}
         }
-        await plugin.printVoucherText({ lines: _voucherLines(data), cut: true });
+        await plugin.printVoucherText({ lines: _qLines, cut: true });
         toast("Voucher sent to printer ✓", "success");
         return true;
       } catch (e) {
