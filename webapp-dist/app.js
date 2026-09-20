@@ -1927,10 +1927,6 @@
           <div class="psv-tl-datenav">
             <button class="psv-chip" :class="{ 'psv-chip--on': isToday }" @click="goToday">📅 Today</button>
             <button class="psv-chip" :class="{ 'psv-chip--on': isTomorrow }" @click="goTomorrow">➡ Tomorrow</button>
-            <!-- 2026-09-20 (owner: "Timeline ပွနေတယ်"): cancelled/rejected bookings used to be
-                 drawn as grey blocks, which double-stacked the grid (C-01 had 2 cancelled at the
-                 same hour). They do not occupy a console, so hide them by default with a toggle. -->
-            <button class="psv-chip" :class="{ 'psv-chip--on': showDead }" @click="showDead = !showDead">{{ showDead ? '🚫 Cancelled shown' : '🚫 Cancelled hidden' }}</button>
             <div class="psv-tl-datebar">
               <button class="psv-tl-arrow" aria-label="Previous day" @click="step(-1)">‹</button>
               <span class="psv-tl-datelbl">{{ dayLabel }}</span>
@@ -1998,7 +1994,13 @@
       const refreshing = ref(false);
       const err = ref("");
       const scroller = ref(null);
-      const showDead = ref(false);   // hide cancelled/rejected/no-show blocks by default
+      // ── Timeline visibility (owner spec 2026-09-20) ────────────────────────
+      // Show ONLY:  • live sessions (active / checked_in)
+      //             • confirmed bookings that are still UPCOMING (start >= now MMT)
+      //             • forfeited-deposit bookings, drawn as a MAX 1 HOUR block
+      // Hide: done / cancelled / rejected / no-show / past-confirmed / pending.
+      const TL_LIVE = ["active", "checked_in"];
+      const TL_UPCOMING = ["confirmed", "pending_check_in"];
       const clock = ref(Date.now());
       const gridHours = TL_GRID_HOURS;
       const trackW = (TL_CLOSE_HOUR - TL_OPEN_HOUR + 1) * TL_HOUR_W;
@@ -2045,7 +2047,24 @@
       function cidOf(b) { return String(b.consoleId || b.console_id || b.consoleType || "").trim(); }
       function blocksOf(cid) {
         const key = String(cid).trim();
-        return bookings.value.filter((b) => cidOf(b) === key && (showDead.value || TL_DEAD.indexOf(bkKey(b.status)) < 0));
+        return bookings.value.filter((b) => cidOf(b) === key && tlVisible(b));
+      }
+      function tlIsForfeit(b) {
+        return String((b && (b.deposit_status || b.depositStatus)) || "").toLowerCase().trim() === "forfeited";
+      }
+      function tlNowMin() {
+        const d = new Date(clock.value + 6.5 * 3600000);
+        return d.getUTCHours() * 60 + d.getUTCMinutes();
+      }
+      function tlVisible(b) {
+        const k = bkKey(b.status);
+        if (TL_LIVE.indexOf(k) >= 0) return true;                 // live session
+        if (tlIsForfeit(b)) return true;                          // forfeit (capped to 1 h in minutesOf)
+        if (TL_UPCOMING.indexOf(k) >= 0) {
+          const st = tlMin(b.timeSlot || b.startTime);            // confirmed → only while UPCOMING
+          return st != null && st >= tlNowMin();
+        }
+        return false;
       }
       function minutesOf(b) {
         const st = tlMin(b.timeSlot || b.startTime);
@@ -2054,6 +2073,8 @@
         const et = tlMin(b.endTime);
         let end = dur > 0 ? (st + dur) : (et != null ? et : st + 60);
         if (end <= st) end = st + 60;
+        // Owner spec: a forfeited booking shows as a 1-hour block only (it never played).
+        if (tlIsForfeit(b) && end > st + 60) end = st + 60;
         return { st: st, end: end };
       }
       function blockStyle(b) {
@@ -2227,7 +2248,7 @@
         window.removeEventListener("resize", onResize);
         window.removeEventListener("orientationchange", onResize);
       });
-      return { embedded: props.embedded, refreshing, day, bookings, consoles, loading, err, scroller, showDead, gridHours, tlRows, nowLinePx,
+      return { embedded: props.embedded, refreshing, day, bookings, consoles, loading, err, scroller, gridHours, tlRows, nowLinePx,
         isToday, isTomorrow, dayLabel, nowPx, showNow, openHourLabel, closeHourLabel,
         hourPx, hourLabel, tone, blockStyle, isNarrow, blockTime, range, pick, goToday, goTomorrow, step, load };
     },
