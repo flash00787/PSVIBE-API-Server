@@ -129,13 +129,13 @@ def record_notification(ntype: str = "generic", title: Optional[str] = None,
             for u in names:
                 ids[u] = _e(
                     "INSERT INTO staff_notifications (username, type, title, body, booking_id, created_at) "
-                    "VALUES (%s, %s, %s, %s, %s, NOW())",
+                    "VALUES (%s, %s, %s, %s, %s, DATE_ADD(NOW(), INTERVAL 390 MINUTE))",
                     (u, _type, _title, _body, _bid),
                 )
         else:
             ids[None] = _e(
                 "INSERT INTO staff_notifications (username, type, title, body, booking_id, created_at) "
-                "VALUES (NULL, %s, %s, %s, %s, NOW())",
+                "VALUES (NULL, %s, %s, %s, %s, DATE_ADD(NOW(), INTERVAL 390 MINUTE))",
                 (_type, _title, _body, _bid),
             )
     except Exception as e:

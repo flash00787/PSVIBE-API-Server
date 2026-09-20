@@ -1,9 +1,9 @@
 {
-  "version": "1.2.0",
-  "version_code": 3,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.0.apk",
+  "version": "1.2.1",
+  "version_code": 4,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.1.apk",
   "size": 4714709,
-  "sha256": "1ca3bd5c4e13b301eda2a48caee65e88e126d6be71985c029589eafb8c969ff0",
+  "sha256": "c690aeaef8337d5be8d4c3a8574f48b7f82e39b8f91e3ed482b9dd97d91852c1",
   "released_at": "2026-09-20",
-  "notes": "In-app self-update: old app detects new version (start/resume/6h/refresh), 'Update now' downloads the APK inside the app with a progress bar, then opens the Android installer (falls back to browser download on old builds). Requires Android 'install unknown apps' permission."
+  "notes": "Update-flow test build (auto-download banner test)"
 }

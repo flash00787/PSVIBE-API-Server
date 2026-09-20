@@ -290,7 +290,7 @@ async def read_all_notifications(user: dict = Depends(get_staff_or_dashboard_use
     username = _notif_username(user)
     try:
         updated = _mysql_rowcount(
-            "UPDATE staff_notifications SET read_at = NOW() "
+            "UPDATE staff_notifications SET read_at = DATE_ADD(NOW(), INTERVAL 390 MINUTE) "
             "WHERE (username = %s OR username IS NULL) AND read_at IS NULL",
             (username,),
         )
@@ -325,7 +325,7 @@ async def read_notification(notification_id: int, user: dict = Depends(get_staff
     username = _notif_username(user)
     try:
         _mysql_rowcount(
-            "UPDATE staff_notifications SET read_at = NOW() "
+            "UPDATE staff_notifications SET read_at = DATE_ADD(NOW(), INTERVAL 390 MINUTE) "
             "WHERE id = %s AND (username = %s OR username IS NULL) AND read_at IS NULL",
             (notification_id, username),
         )
