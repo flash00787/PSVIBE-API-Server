@@ -1,9 +1,9 @@
 {
-  "version": "1.2.7",
-  "version_code": 10,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.7.apk",
-  "size": 4731596,
-  "sha256": "12fe5bab2ae1e9068fd5970105e41c2f6fbba022f0249a8a6100316bf73f1be4",
+  "version": "1.3.2",
+  "version_code": 14,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.3.2.apk",
+  "size": 5034255,
+  "sha256": "7304ee874ca5154a946652b6cd833fc651fef14ea104b92a6a2f34d69807a059",
   "released_at": "2026-09-20",
-  "notes": "Timeline: confirmed upcoming visible until window end + banner-aware one-screen fit; print: Burmese rendered as raster (no more ??), cost per item (@unit) on vouchers, footer feed 12 lines so the cutter no longer chops it"
+  "notes": "v1.3.2 (code 14): vouchers are PINNED to 80mm/576 dots on both the app side (printVoucherNative forces the 80mm profile) and the web side (setPaperWidth(80) + 576px raster canvas) so a stale 58mm profile can never shrink the receipt again (root cause of 'receipt too small / not 80mm'); native text metrics raised to title 60 / wide 44 / body 36 dots; print toast now reports the real dot width"
 }

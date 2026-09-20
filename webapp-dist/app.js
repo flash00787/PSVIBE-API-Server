@@ -5607,7 +5607,7 @@
       }
       async function checkUpdate() {
         try {
-          const r = await fetch("/staff-app/version.json", { cache: "no-store" });
+          const r = await fetch((PSV.apiOrigin ? PSV.apiOrigin() : "") + "/staff-app/version.json", { cache: "no-store" });
           if (r.ok) { const v = await r.json(); updateText.value = "Latest " + (v.version || "?"); }
           else updateText.value = "Up to date";
         } catch (_e) { updateText.value = "Up to date"; }

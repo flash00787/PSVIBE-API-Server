@@ -10,16 +10,29 @@
 (function () {
   "use strict";
 
+  // ── Bundled (self-contained) build support (2026-09-20, owner order: Android app only) ──
+  // When the UI ships INSIDE the APK the WebView origin is https://localhost, so a relative
+  // path like "/api/..." would hit the Capacitor fallback server (index.html), not the API.
+  // In that case prefix every request with the public origin. On the served web app
+  // (ps-vibe.com/webapp) API_ORIGIN is "" so nothing changes there.
+  var API_ORIGIN = "";
+  try {
+    if (location.hostname === "localhost" || location.protocol === "capacitor:") {
+      API_ORIGIN = "https://ps-vibe.com";
+    }
+  } catch (_e) {}
+  function _u(p) { return /^https?:/i.test(String(p)) ? p : (API_ORIGIN + p); }
+
   // ── Web-build self-heal (2026-09-20) ────────────────────────────────────────
   // The Android WebView can keep serving a cached app.js after a server deploy, so a
   // fix looks like it "didn't work" on the phone. On boot, compare the build marker in
   // the freshly fetched index.html with the marker this bundle was built with; when the
   // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
   // with the ?v= query on every deploy.
-  var PSV_BUILD = "w22print";
+  var PSV_BUILD = "w24print";
   function psvBuildSelfHeal() {
     try {
-      fetch("/webapp/?_b=" + Date.now(), { cache: "no-store" })
+      fetch(_u("/webapp/?_b=" + Date.now()), { cache: "no-store" })
         .then(function (r) { return r.text(); })
         .then(function (t) {
           var m = t.match(/psv-build"\s+content="([^"]+)"/);
@@ -168,7 +181,7 @@
 
     let resp;
     try {
-      resp = await fetch(path, Object.assign({}, options, { headers }));
+      resp = await fetch(_u(path), Object.assign({}, options, { headers }));
     } catch (e) {
       throw new Error("Network error — check your internet connection");
     }
@@ -180,7 +193,7 @@
       const ok = await _recoverAuth();
       if (ok) {
         headers["Authorization"] = "Bearer " + jwt;
-        resp = await fetch(path, Object.assign({}, options, { headers }));
+        resp = await fetch(_u(path), Object.assign({}, options, { headers }));
       } else {
         throw new Error(wasWeb ? "Session expired — please sign in again" : "Session expired — please reopen from the Telegram bot");
       }
@@ -280,7 +293,7 @@
       // Standalone path: try refresh once, else force back to login.
       if (refreshTok) {
         try {
-          const r = await fetch("/auth/refresh", {
+          const r = await fetch(_u("/auth/refresh"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ refresh_token: refreshTok }),
@@ -307,7 +320,7 @@
 
   // ── Standalone login / logout ───────────────────────────
   async function login(username, password, remember) {
-    const r = await fetch("/auth/login", {
+    const r = await fetch(_u("/auth/login"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: username, password: password }),
@@ -461,14 +474,30 @@
       try {
         // Paper-aware: 80mm -> 576px, 58mm -> 384px (matches the printer dot width).
         // The design is authored at 576px; scale everything down so 58mm never overflows.
-        const W = paperWidth() === 58 ? 384 : 576;
+        const W = 576; // vouchers are always 80mm — never shrink to the 58mm canvas
         const S = W / 576;
-        const PAD = Math.round(20 * S);
+        // Side margin: some 80mm printers have a printable width a little narrower than 576
+        // dots, which clipped the first/last characters (owner receipts 2026-09-20 14:43).
+        const PAD = Math.round(26 * S);
         const canvas = document.createElement("canvas");
         const ctx = canvas.getContext("2d");
         const lines = _voucherLines(data);
+        // The line `size` values were authored for the printer's OWN ESC/POS font (a normal
+        // line = 24 dots, wide = 32, big = 48). Rendering them 1:1 as canvas pixels made the
+        // raster voucher far smaller than the text version (owner 2026-09-20 14:38:
+        // "Voucher က size မမှန်တော့ပြန်ဘူး"). Map size -> printer dots so the raster matches.
+        const dp = (n) => {
+          const sz = Number(n) || 16;
+          if (sz >= 28) return 48;
+          if (sz >= 20) return 32;
+          if (sz >= 15) return 24;
+          return Math.max(16, Math.round(sz * 1.5));
+        };
         let H = PAD * 2;
-        for (const ln of lines) H += Math.round((ln.size || 16) * S) + Math.round(8 * S);
+        for (const ln of lines) {
+          const _n = Math.max(1, Math.ceil(String(ln.text || "").length / 40));
+          H += _n * (Math.round(dp(ln.size) * S) + Math.round(10 * S));
+        }
         canvas.width = W;
         canvas.height = Math.max(H, 160);
         ctx.fillStyle = "#ffffff";
@@ -477,7 +506,7 @@
         ctx.textBaseline = "top";
         let y = PAD;
         for (const ln of lines) {
-          const size = Math.max(8, Math.round((ln.size || 16) * S));
+          const size = Math.max(14, Math.round(dp(ln.size) * S));
           // Per-line font stack: monospace keeps the ASCII layout aligned, the Myanmar
           // fallbacks let the WebView draw Burmese glyphs (which are then rasterised).
           const _mm = /[^\x00-\x7F]/.test(String(ln.text || ""));
@@ -487,8 +516,22 @@
           ctx.font = (ln.bold ? "bold " : "") + size + "px " + _fam;
           ctx.textAlign = ln.align || "left";
           const x = ln.align === "center" ? W / 2 : (ln.align === "right" ? W - PAD : PAD);
-          ctx.fillText(String(ln.text == null ? "" : ln.text), x, y);
-          y += size + Math.round(8 * S);
+          // Wrap to the printable width so a long item name can never run off the paper.
+          const maxW = W - PAD * 2;
+          const words = String(ln.text == null ? "" : ln.text).split(" ");
+          let cur = "";
+          const flush = (t) => { if (t) { ctx.fillText(t, x, y); y += size + Math.round(10 * S); } };
+          if (maxW > 20) {
+            for (const wd of words) {
+              const cand = cur ? (cur + " " + wd) : wd;
+              if (cur && ctx.measureText(cand).width > maxW) { flush(cur); cur = wd; }
+              else cur = cand;
+            }
+            flush(cur);
+          } else {
+            ctx.fillText(String(ln.text || ""), x, y);
+            y += size + Math.round(10 * S);
+          }
         }
         resolve(canvas.toDataURL("image/png"));
       } catch (e) { reject(e); }
@@ -547,7 +590,29 @@
     const _qLines = _voucherLines(data);
     const _hasNonAscii = _qLines.some((l) => /[^\x00-\x7F]/.test(String((l && l.text) || "")));
 
-    // ── Preferred: crisp native text path (ASCII only) ──
+    // ── Preferred #1: native in-app Canvas render (self-contained APK, 2026-09-20) ──
+    // The bundled Android app draws the voucher with Android Canvas and prints it as a
+    // monochrome raster, so Myanmar + the full layout print correctly with NO web-side
+    // canvas and NO dependency on the served web app. Falls through when the plugin is absent.
+    if (plugin && typeof plugin.printVoucherNative === "function") {
+      try {
+        await _ensurePrinterConnected(plugin);
+        // VOUCHERS ARE ALWAYS 80mm (owner 2026-09-20). A stale 58mm profile made the whole
+        // raster print at 384 dots = 33% smaller ("အရမ်းသေး / 80mm မမှန်"). Never let the
+        // stored preference shrink a voucher.
+        if (typeof plugin.setPaperWidth === "function") {
+          try { await plugin.setPaperWidth({ mm: 80 }); } catch (_e) {}
+        }
+        const _r = await plugin.printVoucherNative({ lines: _qLines, cut: true });
+        const _w = (_r && _r.width) || 576;
+        toast("Voucher sent ✓ · " + _w + " dots (80mm)", "success");
+        return true;
+      } catch (e) {
+        // fall through to the text / raster paths below
+      }
+    }
+
+    // ── Preferred #2: crisp native text path (ASCII only) ──
     if (plugin && typeof plugin.printVoucherText === "function" && !_hasNonAscii) {
       try {
         await _ensurePrinterConnected(plugin);
@@ -613,7 +678,7 @@
 
     let resp;
     try {
-      resp = await fetch(path, Object.assign({}, opts, { headers }));
+      resp = await fetch(_u(path), Object.assign({}, opts, { headers }));
     } catch (e) {
       throw new Error("Network error — check your internet connection");
     }
@@ -622,7 +687,7 @@
       const ok = await _recoverAuth();
       if (ok) {
         headers["Authorization"] = "Bearer " + jwt;
-        resp = await fetch(path, Object.assign({}, opts, { headers }));
+        resp = await fetch(_u(path), Object.assign({}, opts, { headers }));
       } else {
         throw new Error(wasWeb ? "Session expired — please sign in again" : "Session expired — please reopen from the Telegram bot");
       }
@@ -654,6 +719,7 @@
 
   window.PSV = {
     api, apiCached, invalidate, retryNow, unwrap, authenticate, isAuthed, getStaff, getTg,
+    apiOrigin: function () { return API_ORIGIN; },
     blobUrl, revokeBlob,
     login, logout, loadStoredAuth, usesWebLogin,
     renderVoucherPng, printVoucher, setPaperWidth, getPaperWidth: paperWidth, setPrintDensity,

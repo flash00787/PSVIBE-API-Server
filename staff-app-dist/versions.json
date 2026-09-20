@@ -1,8 +1,52 @@
 {
-  "latest": "1.2.7",
-  "latest_code": 10,
-  "updated_at": "2026-09-20T11:58:08Z",
+  "latest": "1.3.2",
+  "latest_code": 14,
+  "updated_at": "2026-09-20T15:01:49Z",
   "versions": [
+    {
+      "version": "1.3.2",
+      "version_code": 14,
+      "arch": "universal",
+      "file": "psvibe-staff-1.3.2.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.3.2.apk",
+      "size": 5034255,
+      "sha256": "7304ee874ca5154a946652b6cd833fc651fef14ea104b92a6a2f34d69807a059",
+      "released_at": "2026-09-20",
+      "notes": "v1.3.2 (code 14): vouchers are PINNED to 80mm/576 dots on both the app side (printVoucherNative forces the 80mm profile) and the web side (setPaperWidth(80) + 576px raster canvas) so a stale 58mm profile can never shrink the receipt again (root cause of 'receipt too small / not 80mm'); native text metrics raised to title 60 / wide 44 / body 36 dots; print toast now reports the real dot width"
+    },
+    {
+      "version": "1.3.1",
+      "version_code": 13,
+      "arch": "universal",
+      "file": "psvibe-staff-1.3.1.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.3.1.apk",
+      "size": 5034067,
+      "sha256": "16d9e5ba765bdce8e444e348de500a4ae472971f9ee39fcf281f5256b3304512",
+      "released_at": "2026-09-20",
+      "notes": "v1.3.1: self-contained APK (UI bundled) + native voucher print pinned to 80mm/576-dot with enlarged metrics (title 56 / wide 40 / body 32), margin 26 + word wrap, 12-line feed + auto-cut; API calls from the bundled UI now use the public origin with CORS allowlisted for the Capacitor origins"
+    },
+    {
+      "version": "1.3.0",
+      "version_code": 12,
+      "arch": "universal",
+      "file": "psvibe-staff-1.3.0.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.3.0.apk",
+      "size": 5033751,
+      "sha256": "20c4f9f6a2739e9ac5c3bc58bdf747d4d2a81dae919cf7a347a760fe69840d98",
+      "released_at": "2026-09-20",
+      "notes": "Self-contained UI bundled in the APK (no remote web app) + native in-app voucher print (Android Canvas, Myanmar-safe). Receipt pinned to 80mm/576-dot; enlarged metrics body 32 / wide 40 / title 56, line spacing size+12. versionCode 12 / 1.3.0"
+    },
+    {
+      "version": "1.2.8",
+      "version_code": 11,
+      "arch": "universal",
+      "file": "psvibe-staff-1.2.8.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.2.8.apk",
+      "size": 4731600,
+      "sha256": "c4d1ebe65955393e0793f81290336043a2d80941f302c53bead871519e2d86c6",
+      "released_at": "2026-09-20",
+      "notes": "Voucher size fix: raster lines now map to the printer's native dot sizes (48/32/24) instead of 1:1 pixels, so Burmese vouchers print at the same size as the text path"
+    },
     {
       "version": "1.2.7",
       "version_code": 10,
