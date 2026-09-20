@@ -25,10 +25,18 @@ async def api_fetch_food_prices(auth=Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/fetch_food_menu", response_model=GenericResponse, tags=["Food"], summary="Fetch food menu grouped by category [MySQL]")
-async def api_fetch_food_menu(auth=Depends(verify_api_key)):
-    """Fetch food items grouped by category from inventory."""
+async def api_fetch_food_menu(all: int = 0, auth=Depends(verify_api_key)):
+    """Fetch food items grouped by category from inventory.
+
+    all=1 (owner 2026-09-20 16:30) returns EVERY inventory item regardless of stock level or
+    category, for the Stock In picker: an item that is out of stock (quantity 0) is exactly the
+    item staff need to stock in, so the quantity>0 / category filter must not apply there.
+    """
     try:
-        rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0 ORDER BY category, item_name", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
+        if int(all or 0) == 1:
+            rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory ORDER BY category, item_name")
+        else:
+            rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0 ORDER BY category, item_name", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
         result = {}
         for r in rows:
             cat = r["category"]

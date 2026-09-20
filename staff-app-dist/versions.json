@@ -1,8 +1,30 @@
 {
-  "latest": "1.4.4",
-  "latest_code": 26,
-  "updated_at": "2026-09-20T16:24:38Z",
+  "latest": "1.4.6",
+  "latest_code": 28,
+  "updated_at": "2026-09-20T16:31:40Z",
   "versions": [
+    {
+      "version": "1.4.6",
+      "version_code": 28,
+      "arch": "universal",
+      "file": "psvibe-staff-1.4.6.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.6.apk",
+      "size": 5133614,
+      "sha256": "3781aeb41047433277b2762a7480d9ddee21c2976ab068ec5886dcc81d684641",
+      "released_at": "2026-09-20",
+      "notes": "v1.4.6 (code 28): Stock In item picker now lists EVERY inventory item (API /fetch_food_menu?all=1) \u2014 out-of-stock items such as \u101c\u103b\u103e\u102c\u1019\u102e\u1038\u1010\u1031\u102c\u1000\u103a were hidden because the menu endpoint only returned quantity>0 items in a fixed category list; the sales food menu is unchanged."
+    },
+    {
+      "version": "1.4.5",
+      "version_code": 27,
+      "arch": "universal",
+      "file": "psvibe-staff-1.4.5.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.5.apk",
+      "size": 5133518,
+      "sha256": "997132ff3ee5e7ce435c273353f8811a42638218e794e539f869297f77ff517c",
+      "released_at": "2026-09-20",
+      "notes": "v1.4.5 (code 27): Guest is pinned to the top of the member picker; the Stock In item picker now lists the WHOLE food menu (not just items already in stock) grouped by food category (then existing stock items, then New Item) using the compact searchable picker with category headers."
+    },
     {
       "version": "1.4.4",
       "version_code": 26,

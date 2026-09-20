@@ -298,7 +298,10 @@
             <input class="psv-pick__input" type="search" v-model="q" placeholder="Search…" autocomplete="off" />
           </div>
           <div class="psv-pick__list">
-            <div v-for="it in filtered" :key="it.value" class="psv-pick__row"
+            <template v-for="(it, idx) in filtered" :key="it.value">
+            <div v-if="it.group && !q && (idx === 0 || filtered[idx - 1].group !== it.group)"
+                 class="psv-pick__grp">{{ it.group }}</div>
+            <div class="psv-pick__row"
                  :class="{ 'is-sel': it.value === sel, 'is-dim': it.disabled }" @click="choose(it)">
               <span v-if="it.avatar" class="psv-pick__av">{{ it.avatar }}</span>
               <span v-else class="psv-pick__ic">{{ it.icon || '•' }}</span>
@@ -312,6 +315,7 @@
               <span v-if="it.value === sel" class="psv-pick__check">✓</span>
               <van-icon v-else name="arrow" class="psv-pick__chev" />
             </div>
+            </template>
             <div v-if="!filtered.length" class="psv-pick__empty">
               <div class="psv-pick__emptyico">🔍</div>{{ emptyText }}
             </div>
@@ -1088,8 +1092,9 @@
         <van-popup v-model:show="memberPicker" position="bottom" round>
           <div style="padding:12px 16px 0"><van-search v-model="memberQuery" placeholder="Search name/phone" /></div>
           <div style="max-height:60vh;overflow:auto;padding-bottom:20px">
+            <!-- Owner 2026-09-20 16:26: Guest pinned to the top of the member list. -->
+            <van-cell title="🚶 Guest (no member card)" @click="pickGuest" style="font-weight:700" />
             <van-cell v-for="m in filteredMembers" :key="m.id" :title="m.name || m.id" :label="(m.phone||'-') + ' · ' + (m.wallet_balance ?? m.liability_mins ?? 0) + ' mins'" @click="pickMember(m)" />
-            <van-cell title="🚶 Guest" @click="pickGuest" />
           </div>
         </van-popup>
 
@@ -3973,7 +3978,7 @@
                    :model-value="form.payment_method"
                    @confirm="(v) => pickPay({ selectedOptions: [{ value: v }] })" />
         <PSVPicker :show="rowItemPickerShow" title="Select item"
-                   :items="itemColumns.map((c) => ({ value: c.value, label: c.text }))"
+                   :items="itemColumns"
                    :model-value="(rows[rowItemPicker] || {}).item_name || ''"
                    @update:show="(v) => { if (!v) rowItemPicker = null; }"
                    @confirm="(v) => pickRowItem({ selectedOptions: [{ value: v }] })" />
@@ -3991,11 +3996,52 @@
       const payColumns = PAY_METHODS.map((p) => ({ text: p, value: p }));
       const form = reactive({ payment_method: "Cash" });
       const rows = ref([{ item_name: "", custom_name: "", quantity: 0, unit_cost: 0, isNew: false }]);
-      const itemColumns = computed(() => [
-        ...stock.value.map((s) => ({ text: s.item_name, value: s.item_name })),
-        { text: "🆕 New Item…", value: "__new__" },
-      ]);
+      // Owner 2026-09-20 16:26: "stock in မှာ food list က အကုန် မမြင်ရဘူး / category အလိုက် ခွဲပေးပါ".
+      // The picker used to list only items already in stock. Now the whole food menu is listed
+      // first, grouped by its category, then any remaining stock-only items, then New Item.
+      const foodMenu = ref(null);
+      function loadFoodMenu() {
+        if (foodMenu.value) return;
+        // all=1: EVERY inventory item (not only the in-stock menu) so out-of-stock items like
+        // လျှာမီးတောက် can be picked when stocking in (owner 2026-09-20 16:30).
+        PSV.apiCached("/api/fetch_food_menu?all=1", {}, 300000).then((d) => {
+          const m = PSV.unwrap(d) || {};
+          foodMenu.value = m;
+        }).catch(() => { foodMenu.value = {}; });
+      }
+      const itemColumns = computed(() => {
+        const out = []; const seen = Object.create(null);
+        const m = foodMenu.value || {};
+        const groups = [];
+        if (Array.isArray(m)) {
+          groups.push({ cat: "Food", items: m.map((x) => (x && (x.item_name || x.name)) || x) });
+        } else {
+          for (const cat in m) {
+            const v = m[cat]; const names = [];
+            if (v && typeof v === "object" && !Array.isArray(v)) { for (const nm in v) names.push(nm); }
+            else if (Array.isArray(v)) { v.forEach((x) => names.push((x && (x.item_name || x.name)) || x)); }
+            if (names.length) groups.push({ cat: cat, items: names });
+          }
+        }
+        for (const g of groups) {
+          for (const nm of g.items) {
+            const n = String(nm || "").trim();
+            if (!n || seen[n]) continue;
+            seen[n] = 1;
+            out.push({ value: n, label: n, group: "🍜 " + g.cat });
+          }
+        }
+        for (const st of stock.value) {
+          const n = String(st.item_name || "").trim();
+          if (!n || seen[n]) continue;
+          seen[n] = 1;
+          out.push({ value: n, label: n, group: "📦 Stock (existing)" });
+        }
+        out.push({ value: "__new__", label: "🆕 New Item…", group: "➕ Add" });
+        return out;
+      });
       const rowItemPickerShow = computed(() => rowItemPicker.value !== null);
+      watch(rowItemPickerShow, (v) => { if (v) loadFoodMenu(); });
       // WAVE 5 UI fixes: valid-line count (was rows.length, which counted empty rows),
       // and a live total-cost line so staff can see the batch value before submitting.
       function rowValid(r) { return !!((r.isNew ? (r.custom_name || "").trim() : r.item_name) && Number(r.quantity) > 0); }
@@ -4008,7 +4054,7 @@
         catch (e) { stock.value = []; }
         finally { loading.value = false; refreshing.value = false; }
       }
-      onMounted(loadStock);
+      onMounted(() => { loadStock(); loadFoodMenu(); });
       function pickPay({ selectedOptions }) { form.payment_method = selectedOptions[0].value; payPicker.value = false; }
       function pickRowItem({ selectedOptions }) {
         const ri = rowItemPicker.value; rowItemPicker.value = null;

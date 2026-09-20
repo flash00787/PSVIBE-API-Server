@@ -572,3 +572,7 @@ html, body {
 /* Tight screens (short height + native update banner): drop the legend so 10 console rows
    still fit one page (owner 2026-09-20 11:53). */
 .psv-tl-wrap.is-tight .psv-tl-legend { display: none !important; }
+
+/* Compact picker — category section labels (owner 2026-09-20 16:26) */
+.psv-pick__grp{padding:10px 14px 2px;font-size:11px;font-weight:800;letter-spacing:.03em;
+  text-transform:uppercase;color:var(--pv-primary,#f0b429);opacity:.95}

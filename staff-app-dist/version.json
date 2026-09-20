@@ -1,9 +1,9 @@
 {
-  "version": "1.4.4",
-  "version_code": 26,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.4.apk",
-  "size": 5132830,
-  "sha256": "be5b376782b8044903859e0f487c6854e6b0f04a94111964b6d2710f2bedcf68",
+  "version": "1.4.6",
+  "version_code": 28,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.6.apk",
+  "size": 5133614,
+  "sha256": "3781aeb41047433277b2762a7480d9ddee21c2976ab068ec5886dcc81d684641",
   "released_at": "2026-09-20",
-  "notes": "v1.4.4 (code 26): Draft vouchers get their own screen \u2014 reachable from More \u2192 Draft vouchers; lists every parked sale (label, saved time, game/mins/payment/food summary) with the total parked value, Delete per entry, Delete all, and Restore & finish which loads the draft into New Sale. The draft is removed automatically once that sale is saved."
+  "notes": "v1.4.6 (code 28): Stock In item picker now lists EVERY inventory item (API /fetch_food_menu?all=1) \u2014 out-of-stock items such as \u101c\u103b\u103e\u102c\u1019\u102e\u1038\u1010\u1031\u102c\u1000\u103a were hidden because the menu endpoint only returned quantity>0 items in a fixed category list; the sales food menu is unchanged."
 }
