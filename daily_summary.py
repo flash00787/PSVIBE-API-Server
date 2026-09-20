@@ -29,10 +29,13 @@ bks = query("""
     GROUP BY status
 """, (today,))
 
-# Sessions run today (all console_sessions rows), split by member vs guest
+# Sessions run today (all console_sessions rows), split by source (accurate),
+# plus the legacy member/guest split for backward compatibility.
 today_sessions = query("""
     SELECT COUNT(*) as cnt,
-           SUM(CASE WHEN COALESCE(NULLIF(TRIM(cb.member_id),''),'Guest') = 'Guest' THEN 1 ELSE 0 END) as guest_cnt
+           SUM(CASE WHEN COALESCE(NULLIF(TRIM(cb.member_id),''),'Guest') = 'Guest' THEN 1 ELSE 0 END) as guest_cnt,
+           SUM(CASE WHEN cs.source = 'walkin' THEN 1 ELSE 0 END) as walkin_cnt,
+           SUM(CASE WHEN cs.source = 'booking' THEN 1 ELSE 0 END) as booking_cnt
     FROM console_sessions cs JOIN console_bookings cb ON cb.id = cs.booking_id
     WHERE cb.booking_date = %s
 """, (today,))
@@ -58,10 +61,10 @@ if bks:
 else:
     lines.append("  none")
 
-# Sessions (all console_sessions rows today)
+# Sessions (all console_sessions rows today) — origin split via source column
 if today_sessions:
     ts = today_sessions[0]
-    lines.append(f"\n🎮 <b>Sessions:</b> {ts['cnt']} (guest {ts['guest_cnt'] or 0})")
+    lines.append(f"\n🎮 <b>Sessions:</b> {ts['cnt']} (walk-in {ts['walkin_cnt'] or 0} · booking {ts['booking_cnt'] or 0})")
 
 # Sales  
 if sales:

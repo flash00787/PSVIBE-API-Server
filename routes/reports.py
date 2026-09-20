@@ -36,12 +36,20 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
         )
         today_bookings = today_bookings["cnt"] if today_bookings else 0
 
-        today_sessions = _mysql_query_one(
-            "SELECT COUNT(*) as cnt FROM console_sessions cs "
+        # Session split by ORIGIN (accurate) — 2026-09-20 `source` column:
+        #   walkin_sessions  = started at the counter, no booking/reservation
+        #   booking_sessions = came through the bot/app reservation flow
+        _ts_row = _mysql_query_one(
+            "SELECT COUNT(*) as cnt, "
+            "  SUM(CASE WHEN cs.source = 'walkin' THEN 1 ELSE 0 END) as walkin_cnt, "
+            "  SUM(CASE WHEN cs.source = 'booking' THEN 1 ELSE 0 END) as booking_cnt "
+            "FROM console_sessions cs "
             "JOIN console_bookings cb ON cb.id = cs.booking_id "
             "WHERE DATE(cb.booking_date) = %s", (today,)
         )
-        today_sessions = today_sessions["cnt"] if today_sessions else 0
+        today_sessions = _ts_row["cnt"] if _ts_row else 0
+        today_walkin_sessions = int(_ts_row["walkin_cnt"] or 0) if _ts_row else 0
+        today_booking_sessions = int(_ts_row["booking_cnt"] or 0) if _ts_row else 0
 
         today_converted = _mysql_query_one(
             "SELECT COUNT(*) as cnt FROM console_bookings cb "
@@ -109,6 +117,9 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
                 "today_bookings": today_bookings,
                 "today_sessions": today_sessions,
                 "today_converted_bookings": today_converted,
+                # accurate origin split (source-based; supersedes member-id heuristic)
+                "walkin_sessions": today_walkin_sessions,
+                "booking_sessions": today_booking_sessions,
                 "active_players": active_players,
                 "today_revenue": today_revenue,  # game amount only (topup excluded)
                 "today_topup_income": today_topup,
@@ -126,6 +137,7 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
         return {"success": True, "data": {
             "today_bookings": 0, "active_players": 0,
             "today_sessions": 0, "today_converted_bookings": 0,
+            "walkin_sessions": 0, "booking_sessions": 0,
             "today_revenue": 0, "today_topup_income": 0, "today_collected": 0, "total_members": 0,
             "sales_count": 0, "sales_by_staff": [], "food_sales": 0,
             "low_stock": [], "low_stock_count": 0,

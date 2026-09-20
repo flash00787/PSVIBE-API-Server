@@ -231,7 +231,7 @@ async def api_waitlist_get(entry_id: str, auth=Depends(verify_api_key)):
 async def api_waitlist_create(req: dict, auth=Depends(verify_api_key)):
     """Add to waitlist in MySQL."""
     try:
-        _mysql_exec("INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, status, staff_name, notes) VALUES (%s,%s,CURDATE(),NOW(),'waiting',%s,%s)", (req.get("console_id",""), req.get("member_id",""), req.get("staff_name",""), req.get("notes","")))
+        _mysql_exec("INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, status, staff_name, notes, source) VALUES (%s,%s,CURDATE(),NOW(),'waiting',%s,%s,'booking')", (req.get("console_id",""), req.get("member_id",""), req.get("staff_name",""), req.get("notes","")))
         return ok({"saved": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

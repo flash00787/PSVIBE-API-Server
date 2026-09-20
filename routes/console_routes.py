@@ -385,13 +385,13 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 _dur_end5 = 360 if duration_mins == 0 else duration_mins
                 # Walk-in: create booking row in console_bookings
                 _start_cur.execute(
-                    "INSERT INTO console_bookings (console_id, member_id, status, booking_date, planned_start, planned_duration_mins, planned_end, game_name, staff_name, customer_name) VALUES (%s,%s,'active',%s,%s,%s,DATE_ADD(%s, INTERVAL %s MINUTE),%s,%s,%s)",
+                    "INSERT INTO console_bookings (console_id, member_id, status, booking_date, planned_start, planned_duration_mins, planned_end, game_name, staff_name, customer_name, source) VALUES (%s,%s,'active',%s,%s,%s,DATE_ADD(%s, INTERVAL %s MINUTE),%s,%s,%s,'walkin')",
                     (console_id, member_id, today, _now_ref, duration_mins, _now_ref, _dur_end5, game_name, member_id, member_id)
                 )
                 booking_id = _start_cur.lastrowid
                 # Walk-in: create session row in console_sessions
                 _start_cur.execute(
-                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_duration_mins, actual_end, game_name, staff_name, customer_name, created_at) VALUES (%s,%s,%s,'active',%s,%s,DATE_ADD(%s, INTERVAL %s MINUTE),%s,%s,%s,NOW())",
+                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_duration_mins, actual_end, game_name, staff_name, customer_name, created_at, source) VALUES (%s,%s,%s,'active',%s,%s,DATE_ADD(%s, INTERVAL %s MINUTE),%s,%s,%s,NOW(),'walkin')",
                     (booking_id, console_id, member_id, _now_ref, duration_mins, _now_ref, _dur_end5, game_name, member_id, member_id)
                 )
                 if duration_mins and duration_mins > 0:
@@ -612,14 +612,14 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 # Create booking + session rows for walk-in
                 _dur_end4 = 360 if duration_mins == 0 else duration_mins
                 cur.execute(
-                    "INSERT INTO console_bookings (console_id, member_id, status, booking_date, planned_start, planned_end, planned_duration_mins, game_name, staff_name, customer_name) VALUES (%s, %s, 'Active', %s, %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s, %s, %s)",
+                    "INSERT INTO console_bookings (console_id, member_id, status, booking_date, planned_start, planned_end, planned_duration_mins, game_name, staff_name, customer_name, source) VALUES (%s, %s, 'Active', %s, %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s, %s, %s, 'walkin')",
                     (console_id, member_id, booking_date, _now_ref, _now_ref, _dur_end4, duration_mins, game_name, member_id, member_id)
                 )
                 booking_id = cur.lastrowid
                 # Use req_staff_name if provided (actual staff), else member_name defaults
                 _ses_staff = req_staff_name if req_staff_name else member_name
                 cur.execute(
-                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_end, actual_duration_mins, game_name, staff_name, customer_name, created_at) VALUES (%s, %s, %s, 'active', %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s, %s, %s, NOW())",
+                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_end, actual_duration_mins, game_name, staff_name, customer_name, created_at, source) VALUES (%s, %s, %s, 'active', %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s, %s, %s, NOW(), 'walkin')",
                     (booking_id, console_id, member_id, _now_ref, _now_ref, _dur_end4, duration_mins, game_name, _ses_staff, member_name)
                 )
                 if duration_mins and duration_mins > 0:

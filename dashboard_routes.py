@@ -3187,7 +3187,12 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
                 SUM(CASE WHEN cs.status = 'done' THEN 1 ELSE 0 END) AS completed_sessions,
                 SUM(CASE WHEN cs.status IN ('active','checked_in') THEN 1 ELSE 0 END) AS active_sessions,
                 SUM(CASE WHEN COALESCE(NULLIF(TRIM(cb.member_id),''),'Guest') IN ('Guest') THEN 1 ELSE 0 END) AS guest_sessions,
-                SUM(CASE WHEN COALESCE(NULLIF(TRIM(cb.member_id),''),'Guest') NOT IN ('Guest') THEN 1 ELSE 0 END) AS reserved_sessions
+                SUM(CASE WHEN COALESCE(NULLIF(TRIM(cb.member_id),''),'Guest') NOT IN ('Guest') THEN 1 ELSE 0 END) AS reserved_sessions,
+                -- ACCURATE origin split from console_sessions.source (2026-09-20).
+                -- Supersedes guest_sessions/reserved_sessions, which used a member-id
+                -- heuristic and lumped staff-started walk-ins of members under 'reserved'.
+                SUM(CASE WHEN cs.source = 'walkin' THEN 1 ELSE 0 END) AS walkin_sessions,
+                SUM(CASE WHEN cs.source = 'booking' THEN 1 ELSE 0 END) AS booking_sessions
             FROM console_sessions cs
             LEFT JOIN console_bookings cb ON cb.id = cs.booking_id
         """)
@@ -3214,6 +3219,9 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
             "active_sessions": _safe_int(sess.get("active_sessions")),
             "guest_sessions": _safe_int(sess.get("guest_sessions")),
             "reserved_sessions": _safe_int(sess.get("reserved_sessions")),
+            # accurate source-based split (supersedes the two keys above)
+            "walkin_sessions": _safe_int(sess.get("walkin_sessions")),
+            "booking_sessions": _safe_int(sess.get("booking_sessions")),
             "cancelled_bookings": _safe_int(summary.get("cancelled_bookings")),
             # Rate = cancelled ÷ ALL booking attempts (the funnel denominator), NOT ÷ the
             # reservations-only figure — otherwise a store that converts most reservations to
@@ -3242,6 +3250,7 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
             "total_topup_revenue": 0, "total_revenue": 0,
             "member_bookings": 0, "legacy_played_bookings": 0, "total_sessions": 0,
             "active_sessions": 0, "guest_sessions": 0, "reserved_sessions": 0,
+            "walkin_sessions": 0, "booking_sessions": 0,
         }
 
     # ── 2. Monthly Trends ──

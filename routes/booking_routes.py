@@ -344,15 +344,15 @@ async def api_booking_checkin(req: dict, request: Request, auth=Depends(verify_a
             # Use the checkin staff's name if provided, otherwise fall back to booking's staff_name
             if _checkin_staff:
                 _chk_cur.execute(
-                    "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, customer_name, notes, created_at) "
-                    "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, %s, customer_name, notes, %s "
+                    "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, customer_name, notes, created_at, source) "
+                    "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, %s, customer_name, notes, %s, 'booking' "
                     "FROM console_bookings WHERE id=%s",
                     (booking_id, _checkin_staff, datetime.now(timezone(timedelta(hours=6, minutes=30))), booking_id)
                 )
             else:
                 _chk_cur.execute(
-                    "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, customer_name, notes, created_at) "
-                    "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, staff_name, customer_name, notes, %s "
+                    "INSERT INTO console_sessions (booking_id, branch_id, console_id, member_id, actual_start, actual_duration_mins, status, game_name, staff_name, customer_name, notes, created_at, source) "
+                    "SELECT %s, COALESCE(branch_id,1), console_id, member_id, planned_start, planned_duration_mins, 'checked_in', game_name, staff_name, customer_name, notes, %s, 'booking' "
                     "FROM console_bookings WHERE id=%s",
                     (booking_id, datetime.now(timezone(timedelta(hours=6, minutes=30))), booking_id)
                 )
@@ -460,7 +460,7 @@ async def api_create_booking(req: dict, auth=Depends(verify_api_key)):
         notes = req.get("notes", "")
         bk_id = f"BK-{now.strftime('%Y%m%d')}-{console_id.replace(' ','').replace('-','')}-{now.strftime('%H%M')}"
         _mysql_exec(
-            "INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, status, staff_name, customer_name, notes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, status, staff_name, customer_name, notes, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'booking')",
             (console_id, member_id, now.date(), now, "Active", staff, staff, notes))
         # Extract game name from notes (format: "GameName" or "GameName [BK#123]")
         _game_name = notes
@@ -587,11 +587,11 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
                 # Build INSERT columns
                 _cols = ["console_id", "booking_date", "planned_start", "planned_end",
                          "planned_duration_mins", "status", "staff_name", "customer_name", "notes", "phone", "game_name",
-                         "created_at"]
+                         "created_at", "source"]
                 _vals = [console_id, booking_date, start_dt.strftime('%Y-%m-%d %H:%M:%S'),
                          end_dt.strftime('%Y-%m-%d %H:%M:%S'),
                          duration_mins, _bk_status, _staff_name, _staff_name, notes, phone, game_name,
-                         start_mmt.strftime('%Y-%m-%d %H:%M:%S')]
+                         start_mmt.strftime('%Y-%m-%d %H:%M:%S'), "booking"]
 
                 if member_id:
                     _cols.append("member_id")
@@ -806,7 +806,7 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
                     bk_member_id = None  # Store NULL instead of ""
 
                 cur.execute(
-                    "INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, planned_end, status, staff_name, customer_name, notes, telegram_chat_id, planned_duration_mins, phone, game_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "INSERT INTO console_bookings (console_id, member_id, booking_date, planned_start, planned_end, status, staff_name, customer_name, notes, telegram_chat_id, planned_duration_mins, phone, game_name, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'booking')",
                     (console_id, bk_member_id, _parsed_date, start_dt, end_dt, _bk_status, customer_name_bot, customer_name_bot, notes, telegram_chat_id, duration_mins, phone, game_name)
                 )
                 bk_id = cur.lastrowid
