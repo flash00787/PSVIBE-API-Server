@@ -24,10 +24,32 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
         from datetime import timedelta as _td
         today = datetime.now(timezone(_td(hours=6, minutes=30))).strftime("%Y-%m-%d")  # MMT date — sale_date stored in MMT
 
+        # BOOKING vs SESSION SPLIT (owner order 2026-09-20):
+        #   today_bookings = RESERVATIONS-ONLY created today that never became a played session.
+        #   today_sessions  = sessions run today (all console_sessions rows for today's bookings).
+        #   A booking that turned into a live session is counted only as a session.
         today_bookings = _mysql_query_one(
-            "SELECT COUNT(*) as cnt FROM console_bookings WHERE DATE(booking_date) = %s", (today,)
+            "SELECT COUNT(*) as cnt FROM console_bookings cb "
+            "WHERE DATE(cb.booking_date) = %s "
+            "  AND cb.status NOT IN ('done','Active') "
+            "  AND NOT EXISTS (SELECT 1 FROM console_sessions s WHERE s.booking_id = cb.id)", (today,)
         )
         today_bookings = today_bookings["cnt"] if today_bookings else 0
+
+        today_sessions = _mysql_query_one(
+            "SELECT COUNT(*) as cnt FROM console_sessions cs "
+            "JOIN console_bookings cb ON cb.id = cs.booking_id "
+            "WHERE DATE(cb.booking_date) = %s", (today,)
+        )
+        today_sessions = today_sessions["cnt"] if today_sessions else 0
+
+        today_converted = _mysql_query_one(
+            "SELECT COUNT(*) as cnt FROM console_bookings cb "
+            "WHERE DATE(cb.booking_date) = %s "
+            "  AND cb.status IN ('done','Active') "
+            "  AND EXISTS (SELECT 1 FROM console_sessions s WHERE s.booking_id = cb.id)", (today,)
+        )
+        today_converted = today_converted["cnt"] if today_converted else 0
 
         active_players = _mysql_query_one(
             "SELECT COUNT(*) as cnt FROM console_status WHERE status = 'Active'"
@@ -85,6 +107,8 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
             "success": True,
             "data": {
                 "today_bookings": today_bookings,
+                "today_sessions": today_sessions,
+                "today_converted_bookings": today_converted,
                 "active_players": active_players,
                 "today_revenue": today_revenue,  # game amount only (topup excluded)
                 "today_topup_income": today_topup,
@@ -101,6 +125,7 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
         logger.error(f"Dashboard stats error: {e}")
         return {"success": True, "data": {
             "today_bookings": 0, "active_players": 0,
+            "today_sessions": 0, "today_converted_bookings": 0,
             "today_revenue": 0, "today_topup_income": 0, "today_collected": 0, "total_members": 0,
             "sales_count": 0, "sales_by_staff": [], "food_sales": 0,
             "low_stock": [], "low_stock_count": 0,

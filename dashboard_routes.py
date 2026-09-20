@@ -3153,16 +3153,43 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
 
     # ── 1. Summary Cards ──
     try:
+        # BOOKING vs SESSION SPLIT (owner order 2026-09-20):
+        #   * total_bookings now counts RESERVATIONS-ONLY = console_bookings rows that
+        #     never became a played session (status NOT IN done/Active AND no console_sessions row).
+        #   * A row that became a live/played session is counted as a SESSION, never as a booking.
+        #   * legacy_played_bookings = Done/Active bookings with NO session row (old data, played
+        #     before console_sessions existed) — surfaced separately, not counted as bookings.
         summary = _mysql_query_one("""
             SELECT
-                COUNT(DISTINCT cb.id) AS total_bookings,
-                COUNT(DISTINCT CASE WHEN cb.status IN ('Done','Active') THEN cb.id END) AS completed_sessions,
+                COUNT(DISTINCT CASE WHEN cb.status NOT IN ('done','Active')
+                      AND NOT EXISTS (SELECT 1 FROM console_sessions s0 WHERE s0.booking_id = cb.id)
+                    THEN cb.id END) AS total_bookings,
+                COUNT(DISTINCT CASE WHEN cb.status NOT IN ('done','Active')
+                      AND NOT EXISTS (SELECT 1 FROM console_sessions s0 WHERE s0.booking_id = cb.id)
+                      AND COALESCE(NULLIF(TRIM(cb.member_id),''),'Guest') NOT IN ('Guest')
+                    THEN cb.id END) AS member_bookings,
+                COUNT(DISTINCT CASE WHEN cb.status IN ('done','Active')
+                      AND NOT EXISTS (SELECT 1 FROM console_sessions s0 WHERE s0.booking_id = cb.id)
+                    THEN cb.id END) AS legacy_played_bookings,
                 COUNT(DISTINCT CASE WHEN cb.status = 'cancelled' THEN cb.id END) AS cancelled_bookings,
+                COUNT(DISTINCT cb.id) AS booking_attempts,
                 COUNT(DISTINCT CASE WHEN cb.member_id IS NOT NULL AND cb.member_id != '' AND cb.member_id != 'Guest' THEN cb.member_id END) AS unique_members,
                 COALESCE(SUM(CASE WHEN cb.status IN ('Done','Active') THEN COALESCE(cs.actual_duration_mins, cb.planned_duration_mins, 0) END), 0) AS total_play_mins,
                 COALESCE(AVG(CASE WHEN cb.status IN ('Done','Active') THEN COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) END), 0) AS avg_session_mins
             FROM console_bookings cb
             LEFT JOIN console_sessions cs ON cs.booking_id = cb.id
+        """)
+        # SESSION counts — a session is any console_sessions row (played/active) regardless of origin.
+        # guest_sessions = session whose source booking has no member id (walk-in / guest).
+        sess = _mysql_query_one("""
+            SELECT
+                COUNT(*) AS total_sessions,
+                SUM(CASE WHEN cs.status = 'done' THEN 1 ELSE 0 END) AS completed_sessions,
+                SUM(CASE WHEN cs.status IN ('active','checked_in') THEN 1 ELSE 0 END) AS active_sessions,
+                SUM(CASE WHEN COALESCE(NULLIF(TRIM(cb.member_id),''),'Guest') IN ('Guest') THEN 1 ELSE 0 END) AS guest_sessions,
+                SUM(CASE WHEN COALESCE(NULLIF(TRIM(cb.member_id),''),'Guest') NOT IN ('Guest') THEN 1 ELSE 0 END) AS reserved_sessions
+            FROM console_sessions cs
+            LEFT JOIN console_bookings cb ON cb.id = cs.booking_id
         """)
         rev = _mysql_query_one("""
             SELECT
@@ -3174,13 +3201,27 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
             summary = {}
         if not rev:
             rev = {}
+        if not sess:
+            sess = {}
         result["summary"] = {
+            # reservations-only (a booking that became a session is NOT counted here)
             "total_bookings": _safe_int(summary.get("total_bookings")),
-            "completed_sessions": _safe_int(summary.get("completed_sessions")),
+            "member_bookings": _safe_int(summary.get("member_bookings")),
+            "legacy_played_bookings": _safe_int(summary.get("legacy_played_bookings")),
+            # sessions (all console_sessions rows)
+            "total_sessions": _safe_int(sess.get("total_sessions")),
+            "completed_sessions": _safe_int(sess.get("completed_sessions")),
+            "active_sessions": _safe_int(sess.get("active_sessions")),
+            "guest_sessions": _safe_int(sess.get("guest_sessions")),
+            "reserved_sessions": _safe_int(sess.get("reserved_sessions")),
             "cancelled_bookings": _safe_int(summary.get("cancelled_bookings")),
+            # Rate = cancelled ÷ ALL booking attempts (the funnel denominator), NOT ÷ the
+            # reservations-only figure — otherwise a store that converts most reservations to
+            # sessions showed a nonsense ~94% (2026-09-20 fix).
+            "booking_attempts": _safe_int(summary.get("booking_attempts")),
             "cancellation_rate": round(
                 _safe_int(summary.get("cancelled_bookings", 0))
-                / max(1, _safe_int(summary.get("total_bookings", 1))) * 100, 1
+                / max(1, _safe_int(summary.get("booking_attempts", 0)) or _safe_int(summary.get("total_bookings", 1))) * 100, 1
             ),
             "unique_members": _safe_int(summary.get("unique_members")),
             "total_play_hours": round(_safe_int(summary.get("total_play_mins", 0)) / 60, 1),
@@ -3199,6 +3240,8 @@ async def get_cumulative_stats(user: dict = Depends(require_admin)):
             "cancellation_rate": 0, "unique_members": 0, "total_play_hours": 0,
             "avg_session_mins": 0, "total_gaming_revenue": 0, "total_food_revenue": 0,
             "total_topup_revenue": 0, "total_revenue": 0,
+            "member_bookings": 0, "legacy_played_bookings": 0, "total_sessions": 0,
+            "active_sessions": 0, "guest_sessions": 0, "reserved_sessions": 0,
         }
 
     # ── 2. Monthly Trends ──

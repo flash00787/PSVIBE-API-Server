@@ -18,11 +18,23 @@ from datetime import date
 
 today = date.today()
 
-# Today's bookings
+# Today's BOOKINGS vs SESSIONS split (owner order 2026-09-20):
+# a booking that became a live session is a SESSION, never a booking.
 bks = query("""
     SELECT status, COUNT(*) as cnt, COALESCE(SUM(planned_duration_mins),0) as total_mins
-    FROM console_bookings WHERE booking_date = %s
+    FROM console_bookings cb
+    WHERE booking_date = %s
+      AND status NOT IN ('done','Active')
+      AND NOT EXISTS (SELECT 1 FROM console_sessions s WHERE s.booking_id = cb.id)
     GROUP BY status
+""", (today,))
+
+# Sessions run today (all console_sessions rows), split by member vs guest
+today_sessions = query("""
+    SELECT COUNT(*) as cnt,
+           SUM(CASE WHEN COALESCE(NULLIF(TRIM(cb.member_id),''),'Guest') = 'Guest' THEN 1 ELSE 0 END) as guest_cnt
+    FROM console_sessions cs JOIN console_bookings cb ON cb.id = cs.booking_id
+    WHERE cb.booking_date = %s
 """, (today,))
 
 # Sales
@@ -38,10 +50,18 @@ consoles = query("SELECT status, COUNT(*) as cnt FROM console_status WHERE statu
 
 lines = [f"📊 <b>PS VIBE Daily Summary — {today}</b>", "━━━━━━━━━━━━━━━━━━"]
 
-# Bookings
-lines.append("\n📅 <b>Bookings:</b>")
-for b in (bks or []):
-    lines.append(f"  {b['status']}: {b['cnt']} | {b['total_mins']}min")
+# Bookings (reservations-only — played rows are counted under Sessions)
+lines.append("\n📅 <b>Bookings (reservations):</b>")
+if bks:
+    for b in bks:
+        lines.append(f"  {b['status']}: {b['cnt']} | {b['total_mins']}min")
+else:
+    lines.append("  none")
+
+# Sessions (all console_sessions rows today)
+if today_sessions:
+    ts = today_sessions[0]
+    lines.append(f"\n🎮 <b>Sessions:</b> {ts['cnt']} (guest {ts['guest_cnt'] or 0})")
 
 # Sales  
 if sales:
