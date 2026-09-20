@@ -590,6 +590,24 @@
     const _qLines = _voucherLines(data);
     const _hasNonAscii = _qLines.some((l) => /[^\x00-\x7F]/.test(String((l && l.text) || "")));
 
+    // ── Preferred #0: RAW in-app Canvas render + raw ESC/POS write (2026-09-20) ──
+    // The owner: "text mode was correct, the raster became tiny" — the DantSu library scales /
+    // centres an <img> against the paper profile, so a stale 58mm profile printed the whole
+    // receipt at 384 dots. This path renders at 576 dots and writes GS v 0 raster bands
+    // straight to the printer stream: no library scaling, no profile, always 80mm.
+    if (plugin && typeof plugin.printVoucherRaw === "function") {
+      try {
+        await _ensurePrinterConnected(plugin);
+        try { await plugin.setPaperWidth({ mm: 80 }); } catch (_e) {}
+        const _rr = await plugin.printVoucherRaw({ lines: _qLines, cut: true });
+        const _rw = (_rr && _rr.width) || 576;
+        toast("Voucher sent ✓ · " + _rw + " dots (80mm)", "success");
+        return true;
+      } catch (e) {
+        try { toast("raw print failed → fallback", "warning"); } catch (_e2) {}
+      }
+    }
+
     // ── Preferred #1: native in-app Canvas render (self-contained APK, 2026-09-20) ──
     // The bundled Android app draws the voucher with Android Canvas and prints it as a
     // monochrome raster, so Myanmar + the full layout print correctly with NO web-side
