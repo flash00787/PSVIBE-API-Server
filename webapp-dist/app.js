@@ -3228,7 +3228,7 @@
             <span class="psv-menu-head__my">{{ g.en }}</span>
           </div>
           <div class="psv-card psv-list psv-menu-list">
-            <div v-for="it in (isAdmin ? g.items : g.items.filter(function (x) { return !x.ownerOnly; }))" :key="it.en" class="psv-menu-item" :class="{ 'is-soon': it.tag }" @click="tap(it)">
+            <div v-for="it in g.items" :key="it.en" class="psv-menu-item" :class="{ 'is-soon': it.tag }" @click="tap(it)">
               <span class="psv-menu-item__ico">{{ it.icon }}</span>
               <div class="psv-menu-item__main">
                 <div class="psv-menu-item__my">{{ it.en }}</div>
@@ -3261,13 +3261,20 @@
       }
       onMounted(loadBadges);
       function badge(it) { return (it.path === "/stock-alerts" && lowStock.value > 0) ? lowStock.value : 0; }
+      // Fail-open role check: only a role that is explicitly a shop-staff role blocks the row.
+      // (api.js falls back to role "staff" when the login payload has no role, which must NOT
+      // hide owner features from the real admin — the API 403 remains the real gate.)
+      const isStaffRole = computed(() => {
+        const r = String((staff && staff.role) || "").trim().toLowerCase();
+        return ["staff", "cashier", "manager", "viewer", "operator"].indexOf(r) >= 0;
+      });
       function tap(it) {
         haptic("light");
         if (it.action === "logout") { logout(); return; }
         // Owner 2026-09-20 16:50 ("Staff role မှာ salary advance ကို ပိတ်ထားပါ", admin = owner):
         // owner-only rows must be blocked BEFORE the path branch, otherwise the guard never
         // runs (staff used to land on the Salary screen).
-        if (it.tag === "Owner only" && !isAdmin.value) {
+        if (it.tag === "Owner only" && isStaffRole.value) {
           showToast("🔒 " + (it.en || "Owner only") + " — owner only, ask an admin", "text");
           return;
         }
@@ -4452,13 +4459,14 @@
     setup() {
       // Owner 2026-09-20 16:50: salary advance is owner-only (admin = owner) — the staff role
       // gets a locked card and never even calls the endpoint (the API is already 403 for them).
-      const isAdminRole = String((PSV.getStaff() || {}).role || "").toLowerCase() === "admin";
-      const loading = ref(!isAdminRole);
-      const ownerOnly = ref(!isAdminRole);
-      const serverMsg = ref(isAdminRole ? "" : "Salary advance is owner-only (admin). Ask the owner to action it.");
+      // The API is the real gate (staff get a clean 403 -> the locked card below); we do NOT
+      // pre-block on the client role, because an absent role defaults to "staff" and that locked
+      // the admin out (owner report 2026-09-20 16:52).
+      const loading = ref(true);
+      const ownerOnly = ref(false);
+      const serverMsg = ref("");
       const advances = ref([]);
       async function load() {
-        if (!isAdminRole) { loading.value = false; ownerOnly.value = true; return; }
         loading.value = true;
         try {
           const d = PSV.unwrap(await PSV.apiCached("/api/dashboard/salary/advances"));

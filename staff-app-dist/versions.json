@@ -1,8 +1,19 @@
 {
-  "latest": "1.5.0",
-  "latest_code": 32,
-  "updated_at": "2026-09-20T16:51:40Z",
+  "latest": "1.5.1",
+  "latest_code": 33,
+  "updated_at": "2026-09-20T16:53:42Z",
   "versions": [
+    {
+      "version": "1.5.1",
+      "version_code": 33,
+      "arch": "universal",
+      "file": "psvibe-staff-1.5.1.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.1.apk",
+      "size": 5070856,
+      "sha256": "6c18c021f135e7b2d02c86d59f8ec5b9a321708a6dd6ed0c6a2aca66e8c12b9f",
+      "released_at": "2026-09-20",
+      "notes": "v1.5.1 (code 33): fixes the v1.5.0 over-block \u2014 the admin account could not open Salary because api.js defaults an absent role to 'staff' and the client gate trusted it. Owner-only rows are visible again for everyone (the guard only blocks an explicitly staff/cashier/manager role) and the Salary screen always queries the API, where the admin-only 403 is the real gate (staff still get the locked card)."
+    },
     {
       "version": "1.5.0",
       "version_code": 32,
