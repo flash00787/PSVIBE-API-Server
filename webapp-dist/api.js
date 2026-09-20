@@ -32,7 +32,7 @@
   var PSV_BUILD = "w24print";
   // Real app build number — shown in the More menu footer (was hardcoded "build 34" before,
   // which misled diagnosis). Bump together with android versionCode.
-  var APP_BUILD = "41";
+  var APP_BUILD = "44";
   function psvBuildSelfHeal() {
     try {
       fetch(_u("/webapp/?_b=" + Date.now()), { cache: "no-store" })
@@ -221,6 +221,48 @@
     }
     return body;
   }
+
+  // ── Avatar (owner 2026-09-20 17:43: the uploaded picture never appeared) ──────────────
+  // Server photo_url when it exists, otherwise a copy kept ON THIS PHONE so a failed upload
+  // still shows a picture immediately.
+  function _avatarKey() {
+    try { const st = staff || {}; return "psv_avatar_" + (st.username || st.id || "me"); } catch (_e) { return "psv_avatar_me"; }
+  }
+  function avatarSrc() {
+    try {
+      const st = staff || {};
+      const su = st.photo_url || "";
+      if (su) return /^(https?:|data:)/i.test(su) ? su : (API_ORIGIN + su);
+      return localStorage.getItem(_avatarKey()) || "";
+    } catch (_e) { return ""; }
+  }
+  function setLocalAvatar(dataUrl) {
+    try { localStorage.setItem(_avatarKey(), dataUrl || ""); } catch (_e) {}
+  }
+
+  /** CORS-simple POST (no Authorization header, text/plain body) — used by the profile calls
+   *  because the phone rejected the preflighted /auth/* POSTs with a network error. */
+  async function apiPlain(path, obj) {
+    let resp;
+    try {
+      resp = await fetch(_u(path), { method: "POST", headers: { "Content-Type": "text/plain;charset=UTF-8" }, body: JSON.stringify(obj || {}) });
+    } catch (e) { throw new Error("Network error — " + path); }
+    let body = null;
+    try { body = await resp.json(); } catch (_e) { body = null; }
+    if (!resp.ok) throw new Error((body && (body.detail || body.error)) || ("HTTP " + resp.status));
+    return body;
+  }
+  /** CORS-simple multipart upload (no Authorization header). */
+  async function uploadPlain(path, formData) {
+    let resp;
+    try { resp = await fetch(_u(path), { method: "POST", body: formData }); }
+    catch (e) { throw new Error("Network error — " + path); }
+    let body = null;
+    try { body = await resp.json(); } catch (_e) { body = null; }
+    if (!resp.ok) throw new Error((body && (body.detail || body.error)) || ("HTTP " + resp.status));
+    return body;
+  }
+  function apiToken() { return jwt || ""; }
 
   function retryNow() { invalidate(); _emit("psv:retry", {}); }
 
@@ -805,6 +847,11 @@
     api, apiCached, invalidate, retryNow, upload, unwrap, authenticate, isAuthed, getStaff, getTg,
     apiOrigin: function () { return API_ORIGIN; },
     appBuild: APP_BUILD,
+    apiPlain: apiPlain,
+    uploadPlain: uploadPlain,
+    apiToken: apiToken,
+    avatarSrc: avatarSrc,
+    setLocalAvatar: setLocalAvatar,
     blobUrl, revokeBlob,
     login, logout, loadStoredAuth, usesWebLogin,
     renderVoucherPng, printVoucher, setPaperWidth, getPaperWidth: paperWidth, setPrintDensity,

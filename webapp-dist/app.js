@@ -418,7 +418,10 @@
         </div>
         <div class="pv-header psv-home-greet" style="padding-top:0;padding-bottom:8px">
           <div v-if="nativeMode" class="psv-home-id">
-            <div class="psv-avatar psv-avatar--lg">{{ initials }}</div>
+            <div class="psv-avatar psv-avatar--lg" style="overflow:hidden">
+              <img v-if="$avatar()" :src="$avatar()" alt="" style="width:100%;height:100%;object-fit:cover" />
+              <template v-else>{{ initials }}</template>
+            </div>
             <div>
               <div class="pv-hello">Welcome 👋</div>
               <div class="pv-staff-name">{{ staffName }}</div>
@@ -5935,6 +5938,10 @@
               <van-icon name="arrow" />
             </div>
             <div class="psv-row"><span>Username</span><b>{{ staff.username || '-' }}</b></div>
+            <div class="psv-list-row" @click="testApi">
+              <div class="psv-list-row__main"><div class="psv-list-row__title">Test connection</div><div class="psv-list-row__sub">Check the app can reach the server</div></div>
+              <van-icon name="replay" />
+            </div>
           </div>
           <input ref="fileEl" type="file" accept="image/*" style="display:none" @change="onPhoto" />
 
@@ -6002,15 +6009,32 @@
       const fileEl = ref(null);
       const photo = ref(staff.photo_url || "");
       const photoSrc = computed(() => {
-        if (!photo.value) return "";
-        if (/^https?:/i.test(photo.value)) return photo.value;
-        return (PSV.apiOrigin ? PSV.apiOrigin() : "") + photo.value;
+        if (photo.value) {
+          if (/^(https?:|data:)/i.test(photo.value)) return photo.value;
+          return (PSV.apiOrigin ? PSV.apiOrigin() : "") + photo.value;
+        }
+        try { return PSV.avatarSrc ? PSV.avatarSrc() : ""; } catch (_e) { return ""; }
       });
+      // "Test connection" — pins down why an API call fails (owner 17:39/17:43).
+      async function testApi() {
+        try {
+          const r = await PSV.api("/auth/me");
+          const d = PSV.unwrap(r) || {};
+          showToast("API OK ✓ · " + (d.username || "user") + " · " + (d.role || ""), "success");
+        } catch (e) { showToast("API FAIL ✗ · " + String((e && e.message) || e), "fail"); }
+      }
       function pickPhoto() { haptic("light"); try { if (fileEl.value) fileEl.value.click(); } catch (_e) {} }
       async function _upPhoto(url, f) {
         const fd = new FormData();
         fd.append("file", f);
         return await PSV.upload(url, fd);
+      }
+      // Preflight-free upload: token in the multipart form, no Authorization header.
+      async function _upPhotoPlain(f) {
+        const fd = new FormData();
+        fd.append("token", PSV.apiToken());
+        fd.append("file", f);
+        return await PSV.uploadPlain("/api/profile/photo", fd);
       }
       async function onPhoto(e) {
         const f = e && e.target && e.target.files && e.target.files[0];
@@ -6018,18 +6042,25 @@
         if (f.size > 2 * 1024 * 1024) { showToast("Image must be smaller than 2 MB", "warning"); return; }
         try {
           let r = null;
-          try {
-            r = await _upPhoto("/auth/profile/photo", f);
-          } catch (e1) {
-            if (/network/i.test(String(e1 && e1.message))) {
-              r = await _upPhoto("https://ps-vibe.com/auth/profile/photo", f);
-            } else { throw e1; }
-          }
+          try { r = await _upPhoto("/api/profile/photo", f); }
+          catch (e0) { r = await _upPhoto("https://ps-vibe.com/auth/profile/photo", f); }
           const url = (r && r.photo_url) || "";
           photo.value = url; staff.photo_url = url;
           try { PSV.getStaff().photo_url = url; } catch (_e2) {}
           showToast("Profile picture updated ✓", "success");
-        } catch (err) { showToast("Upload failed: " + String((err && err.message) || "error"), "fail"); }
+        } catch (err) {
+          // Keep the picture on this phone so it still shows, and say why the upload failed.
+          try {
+            const fr = new FileReader();
+            fr.onload = function () {
+              const du = String(fr.result || "");
+              photo.value = du;
+              try { PSV.setLocalAvatar(du); } catch (_e) {}
+              showToast("Saved on this phone (upload failed: " + String((err && err.message) || "error") + ")", "warning");
+            };
+            fr.readAsDataURL(f);
+          } catch (_e2) { showToast("Upload failed: " + String((err && err.message) || "error"), "fail"); }
+        }
         finally { try { e.target.value = ""; } catch (_e3) {} }
       }
       const pwOpen = ref(false), pwCur = ref(""), pwNew = ref(""), pwNew2 = ref(""), pwSaving = ref(false);
@@ -6042,17 +6073,28 @@
         return await PSV.api(url, { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ current_password: pwCur.value, new_password: pwNew.value }) });
       }
+      // Preflight-free route (owner 17:44): token travels in the body, content-type text/plain.
+      async function _changePwPlain() {
+        return await PSV.apiPlain("/api/profile/password", {
+          token: PSV.apiToken(), current_password: pwCur.value, new_password: pwNew.value });
+      }
       async function savePw() {
         if (!pwOk.value) { showToast("Check the fields (min 6 chars, both must match)", "warning"); return; }
         pwSaving.value = true;
         try {
+          let done = false, lastErr = null;
+          // Primary: the normal /api/* path with JSON + Authorization — exactly how every other
+          // working call in this app talks to the server (the /auth/* POSTs were the anomaly).
           try {
-            await _changePw("/auth/change-password");
-          } catch (e1) {
-            if (/network/i.test(String(e1 && e1.message))) {
-              await _changePw("https://ps-vibe.com/auth/change-password");
-            } else { throw e1; }
+            await PSV.api("/api/profile/password", { method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ current_password: pwCur.value, new_password: pwNew.value }) });
+            done = true;
+          } catch (e0) { lastErr = e0; }
+          if (!done) {
+            try { await _changePw("https://ps-vibe.com/auth/change-password"); done = true; }
+            catch (e1) { lastErr = e1; }
           }
+          if (!done) throw (lastErr || new Error("failed"));
           pwOpen.value = false;
           showToast("Password changed ✓", "success");
         } catch (e) {
@@ -6117,7 +6159,7 @@
       function onNotify() { haptic("light"); showToast(notify.value ? "Notifications on" : "Notifications off", "success"); }
       function logout() { haptic("medium"); PSV.logout(); showToast("Logged out", "success"); }
       onMounted(load);
-      return { staff, initials, notify, appVersion, updateText, summary, attendance, attBusy, checkIn, checkOut, goPrint, goNotifications, checkUpdate, onNotify, logout, fKs, fileEl, photo, photoSrc, pickPhoto, onPhoto, pwOpen, pwCur, pwNew, pwNew2, pwSaving, pwOk, openPw, savePw };
+      return { staff, initials, notify, appVersion, updateText, summary, attendance, attBusy, checkIn, checkOut, goPrint, goNotifications, checkUpdate, onNotify, logout, fKs, fileEl, photo, photoSrc, pickPhoto, onPhoto, pwOpen, pwCur, pwNew, pwNew2, pwSaving, pwOk, openPw, savePw, testApi };
     },
   };
 
@@ -6383,6 +6425,8 @@
     app.use(vant);
     app.component("PageHeader", PageHeader);
     app.component("PSVPicker", PSVPicker);
+    // Templates can render the avatar (server photo or the phone-local copy) with $avatar()
+    app.config.globalProperties.$avatar = function () { try { return PSV.avatarSrc ? PSV.avatarSrc() : ""; } catch (_e) { return ""; } };
     app.component("SaleForm", SaleForm);
     app.component("BookingForm", BookingForm);
     app.component("Home", Home);

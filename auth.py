@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import jwt
-from fastapi import UploadFile, File, Depends, HTTPException, status
+from fastapi import UploadFile, File, Request, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import bcrypt
 from pydantic import BaseModel
@@ -277,6 +277,83 @@ def register_auth_routes(app):
             raise HTTPException(status_code=400, detail="Current password is wrong")
         _me("UPDATE dashboard_users SET password_hash = %s WHERE username = %s", (hash_password(new), user["username"]))
         return {"success": True}
+
+    # ── Preflight-free profile endpoints (owner 2026-09-20 17:44: the app's POST to /auth/*
+    #    rejected at the device with a network error while everything else worked). These live
+    #    under /api and accept the JWT in the BODY/FORM instead of the Authorization header, so
+    #    the browser sends a CORS-simple request (text/plain or multipart) with no preflight.
+    def _user_from_any(auth_header: str, token: str) -> dict:
+        tk = str(token or "").strip()
+        if not tk and auth_header and str(auth_header).lower().startswith("bearer "):
+            tk = str(auth_header)[7:].strip()
+        if not tk:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        payload = decode_token(tk)
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        uname = payload.get("sub")
+        row = get_user(uname)
+        if not row:
+            raise HTTPException(status_code=401, detail="User not found")
+        return {**row, "username": uname}
+
+    @app.post("/api/profile/password")
+    async def api_profile_password(request: Request):
+        # Body is parsed manually so the client can use a CORS-simple content type
+        # (text/plain) and avoid the preflight that the phone was failing on.
+        import json as _json
+        auth_header = request.headers.get("authorization", "")
+        try:
+            raw = (await request.body()) or b""
+        except Exception:
+            raw = b""
+        body = {}
+        if raw:
+            try:
+                body = _json.loads(raw.decode("utf-8", "ignore")) or {}
+            except Exception:
+                try:
+                    from urllib.parse import parse_qs
+                    q = parse_qs(raw.decode("utf-8", "ignore"))
+                    body = {k: (v[0] if isinstance(v, list) and v else v) for k, v in q.items()}
+                except Exception:
+                    body = {}
+        if not isinstance(body, dict):
+            body = {}
+        user = _user_from_any(auth_header, body.get("token", ""))
+        from mysql_db import query_one as _q1, execute as _me
+        cur = str(body.get("current_password") or "")
+        new = str(body.get("new_password") or "")
+        if len(new) < 6:
+            raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+        row = _q1("SELECT password_hash FROM dashboard_users WHERE username = %s", (user["username"],))
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not verify_password(cur, row["password_hash"]):
+            raise HTTPException(status_code=400, detail="Current password is wrong")
+        _me("UPDATE dashboard_users SET password_hash = %s WHERE username = %s", (hash_password(new), user["username"]))
+        return {"success": True}
+
+    @app.post("/api/profile/photo")
+    async def api_profile_photo(request: Request, file: UploadFile = File(...), token: str = ""):
+        auth_header = request.headers.get("authorization", "")
+        user = _user_from_any(auth_header, token)
+        from mysql_db import execute as _me
+        import os as _os
+        ext = _os.path.splitext(file.filename or "")[1].lower()
+        if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+            raise HTTPException(status_code=400, detail="Only PNG/JPG/WEBP images are allowed")
+        data = await file.read()
+        if not data or len(data) > 2 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Image must be smaller than 2 MB")
+        d = _os.path.join(_os.path.dirname(__file__), "uploads", "avatars")
+        _os.makedirs(d, exist_ok=True)
+        fn = str(user["username"]).replace("/", "_") + ext
+        with open(_os.path.join(d, fn), "wb") as f:
+            f.write(data)
+        url = "/uploads/avatars/" + fn
+        _me("UPDATE dashboard_users SET photo_url = %s WHERE username = %s", (url, user["username"]))
+        return {"success": True, "photo_url": url}
 
     @app.post("/auth/profile/photo")
     async def upload_profile_photo(file: UploadFile = File(...), user: dict = Depends(get_current_user)):

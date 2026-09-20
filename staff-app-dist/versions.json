@@ -1,8 +1,41 @@
 {
-  "latest": "1.5.9",
-  "latest_code": 41,
-  "updated_at": "2026-09-20T17:41:10Z",
+  "latest": "1.6.2",
+  "latest_code": 44,
+  "updated_at": "2026-09-20T17:46:44Z",
   "versions": [
+    {
+      "version": "1.6.2",
+      "version_code": 44,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.2.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.2.apk",
+      "size": 5075436,
+      "sha256": "3fb170fa6589409cedffcf6772ec7dbc27e0650a0fec01c6d8e391de169feecd",
+      "released_at": "2026-09-20",
+      "notes": "v1.6.2 (code 44): profile password + photo upload now call the normal /api/profile/* endpoints with JSON + Authorization (the same transport every other working call uses) with the /auth/* absolute URL as a fallback; the earlier text/plain attempt was rejected by our own content-type middleware (415), so it is no longer the primary path."
+    },
+    {
+      "version": "1.6.1",
+      "version_code": 43,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.1.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.1.apk",
+      "size": 5075336,
+      "sha256": "9c53ca0f4a0104d57eee5aff51dcd62597748adf294f4f781971cfab2a6c290c",
+      "released_at": "2026-09-20",
+      "notes": "v1.6.1 (code 43): profile password change and photo upload now use preflight-free endpoints (/api/profile/password via text/plain body, /api/profile/photo via multipart with the token in the form) because the phone was rejecting the preflighted /auth/* POSTs with a network error; the old routes remain as a fallback."
+    },
+    {
+      "version": "1.6.0",
+      "version_code": 42,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.0.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.0.apk",
+      "size": 5074928,
+      "sha256": "10ccb0531168323f37c80c9e8539f09d0fcaf35954596f4c96040a4544e28115",
+      "released_at": "2026-09-20",
+      "notes": "v1.6.0 (code 42): profile picture fixes \u2014 the avatar (server photo or a phone-local copy) shows on Home, the Menu profile card and the Me screen; a failed upload keeps the picture on the phone with the reason in the toast; the Profile section gained a Test connection row reporting whether the app can reach the API; the More footer prints the real build (42)."
+    },
     {
       "version": "1.5.9",
       "version_code": 41,

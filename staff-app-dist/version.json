@@ -1,9 +1,9 @@
 {
-  "version": "1.5.9",
-  "version_code": 41,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.5.9.apk",
-  "size": 5074200,
-  "sha256": "40a10f5af46c054e56ae5b9052d78bd13c2d6f8c1326c83bed410b27db04cdb5",
+  "version": "1.6.2",
+  "version_code": 44,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.2.apk",
+  "size": 5075436,
+  "sha256": "3fb170fa6589409cedffcf6772ec7dbc27e0650a0fec01c6d8e391de169feecd",
   "released_at": "2026-09-20",
-  "notes": "v1.5.9 (code 41): diagnostics + fixes \u2014 the More footer now shows the REAL build number (it was hardcoded 'build 34'); the Home header got a gear icon that opens the profile (/me); and both Change password and Profile picture now retry once against the explicit https://ps-vibe.com origin when the first attempt fails at the network layer, reporting the exact failure in the toast."
+  "notes": "v1.6.2 (code 44): profile password + photo upload now call the normal /api/profile/* endpoints with JSON + Authorization (the same transport every other working call uses) with the /auth/* absolute URL as a fallback; the earlier text/plain attempt was rejected by our own content-type middleware (415), so it is no longer the primary path."
 }
