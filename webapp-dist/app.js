@@ -338,6 +338,70 @@
     },
   };
 
+  // ── 💾 Draft vouchers (owner 2026-09-20 16:23: "သီးသန့် စုပြပေးတာ ပို အဆင်ပြေမယ်") ──
+  // A dedicated place for parked sale vouchers: staff fill a sale, park it as a draft while
+  // the money is settled later, then Restore & finish it from here.
+  const SALE_DRAFT_KEY = "psv_sale_drafts_v1";
+  const Drafts = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Draft vouchers" back="/more" />
+        <div class="pv-header" style="padding-top:0">
+          <div>
+            <div class="pv-hello">💾 {{ drafts.length }} draft{{ drafts.length === 1 ? '' : 's' }}</div>
+            <div class="pv-staff-name">{{ fKs(total) }} Ks parked</div>
+          </div>
+          <van-button v-if="drafts.length" size="small" plain type="danger" @click="clearAll">Delete all</van-button>
+        </div>
+        <van-empty v-if="!drafts.length" description="No draft vouchers" />
+        <div v-else style="padding:0 12px 24px">
+          <div v-for="d in drafts" :key="d.id"
+               style="background:var(--pv-card);border-radius:12px;padding:12px;margin-top:10px">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+              <div style="flex:1">
+                <div style="font-weight:700">{{ d.label }}</div>
+                <div style="color:var(--pv-muted);font-size:12px;margin-top:2px">Saved {{ d.at }}</div>
+                <div style="color:var(--pv-muted);font-size:12px">{{ summary(d) }}</div>
+              </div>
+              <van-icon name="cross" style="color:var(--pv-danger);padding:4px" @click="remove(d.id)" />
+            </div>
+            <div style="margin-top:10px">
+              <van-button size="small" type="primary" icon="play-circle-o" @click="restore(d)">Restore &amp; finish</van-button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `,
+    setup() {
+      const drafts = ref([]);
+      function load() { try { drafts.value = JSON.parse(localStorage.getItem(SALE_DRAFT_KEY) || "[]") || []; } catch (_e) { drafts.value = []; } }
+      function save() { try { localStorage.setItem(SALE_DRAFT_KEY, JSON.stringify(drafts.value)); } catch (_e) {} }
+      const total = computed(() => drafts.value.reduce((a, d) => a + (Number(d.total) || 0), 0));
+      function summary(d) {
+        const f = d.form || {}; const bits = [];
+        if (f.game_name) bits.push("🎮 " + f.game_name);
+        if (Number(f.mins)) bits.push(f.mins + "m");
+        if (f.payment_method) bits.push(f.payment_method);
+        if ((d.food || []).length) bits.push((d.food || []).length + " food");
+        return bits.join(" · ") || "—";
+      }
+      function remove(id) { load(); drafts.value = drafts.value.filter((x) => x.id !== id); save(); haptic("light"); showToast("Draft removed", "success"); }
+      async function clearAll() {
+        const okc = await confirmBox("Delete all drafts?", drafts.value.length + " parked draft voucher(s) will be removed from this device.", "Delete all", "Cancel");
+        if (!okc) return;
+        drafts.value = []; save(); showToast("Drafts cleared", "success");
+      }
+      function restore(d) {
+        try { PSV.pendingSaleDraft = d; } catch (_e) {}
+        haptic("medium");
+        router.push("/sales");
+      }
+      onMounted(load);
+      return { drafts, total, summary, remove, clearAll, restore, fKs };
+    },
+  };
+
   // ── VIEW: Home / Dashboard ──────────────────────────────
   const Home = {
     template: `
@@ -992,7 +1056,33 @@
         <div style="padding:14px 16px">
         <div style="padding:14px 16px">
           <van-button type="primary" block :loading="submitting" @click="submit">Save Sale</van-button>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <van-button block plain type="warning" icon="records" @click="saveDraft">Save as draft</van-button>
+            <van-button v-if="saleDrafts.length" block plain type="primary" @click="gotoDrafts">
+              All drafts ({{ saleDrafts.length }})
+            </van-button>
+          </div>
+          <div style="margin-top:8px;color:var(--pv-muted);font-size:11px;line-height:1.5">
+            Draft = voucher မဖြတ်သေးဘဲ သိမ်းထားသည် · ပိုက်ဆံ ရှင်းချိန် Drafts → Restore → Save Sale
+          </div>
         </div>
+
+        <!-- 💾 Sale drafts (owner 2026-09-20 16:20: voucher issued, money settled later) -->
+        <van-popup v-model:show="draftOpen" position="bottom" round style="max-height:70vh">
+          <div style="padding:14px 16px 4px;font-weight:700">💾 Saved sale drafts</div>
+          <div style="max-height:60vh;overflow:auto;padding:0 12px 16px">
+            <van-empty v-if="!saleDrafts.length" description="No drafts" />
+            <div v-for="d in saleDrafts" :key="d.id"
+                 style="background:var(--pv-card);border-radius:10px;padding:10px 12px;margin-top:8px">
+              <div style="font-weight:600">{{ d.label }}</div>
+              <div style="color:var(--pv-muted);font-size:12px;margin-top:2px">Saved {{ d.at }}</div>
+              <div style="display:flex;gap:8px;margin-top:8px">
+                <van-button size="small" type="primary" @click="restoreDraft(d)">Restore</van-button>
+                <van-button size="small" plain type="danger" @click="deleteDraft(d.id)">Delete</van-button>
+              </div>
+            </div>
+          </div>
+        </van-popup>
 
         <!-- Member Picker -->
         <van-popup v-model:show="memberPicker" position="bottom" round>
@@ -1139,6 +1229,68 @@
       // ↩️ Deposit redeem (WAVE 1 → completed in WAVE 2): a booking flagged from the
       // Booking detail view. WAVE 2 adds the explicit "Deduct deposit"
       // confirm + a lookup for verified deposits on the picked member/console.
+      // ── 💾 Sale drafts (owner 2026-09-20 16:20) ──────────────────────────────
+      // "တခါတလေ voucher ထုတ်ထားပေမယ့် ပိုက်ဆံက ခဏနေ မှ ရှင်းတာ" — staff can park the whole
+      // sale (member, console, game, mins, food cart, splits, discount) on the device and
+      // come back to it when the money arrives. Drafts never touch the server.
+      const DRAFT_KEY = SALE_DRAFT_KEY;
+      const saleDrafts = ref([]);
+      const draftOpen = ref(false);
+      function loadDrafts() {
+        try { saleDrafts.value = JSON.parse(localStorage.getItem(DRAFT_KEY) || "[]") || []; }
+        catch (_e) { saleDrafts.value = []; }
+        return saleDrafts.value;
+      }
+      function persistDrafts() {
+        try { localStorage.setItem(DRAFT_KEY, JSON.stringify(saleDrafts.value)); } catch (_e) {}
+      }
+      function openDrafts() { loadDrafts(); draftOpen.value = true; haptic("light"); }
+      function gotoDrafts() { haptic("light"); router.push("/drafts"); }
+      let restoredDraftId = null;
+      function saveDraft() {
+        const bits = [];
+        if (form.member_id) bits.push(form.member_id);
+        else if (form.member_search) bits.push(form.member_search);
+        if (form.console_id) bits.push(form.console_id);
+        if (Number(form.mins)) bits.push(Number(form.mins) + "m");
+        const snap = {
+          id: "D" + Date.now(), ts: Date.now(),
+          at: PSV.todayMMT() + " " + new Date().toTimeString().slice(0, 5),
+          total: Number(cashNetTotal.value) || 0,
+          label: (bits.join(" · ") || "Draft") + " · " + fKs(Number(cashNetTotal.value) || 0) + " Ks",
+          form: JSON.parse(JSON.stringify(form)),
+          food: JSON.parse(JSON.stringify(foodLines.value || [])),
+        };
+        loadDrafts();
+        saleDrafts.value.unshift(snap);
+        persistDrafts();
+        draftOpen.value = false;
+        haptic("medium");
+        showToast("Draft saved ✓ (" + saleDrafts.value.length + ")", "success");
+      }
+      function restoreDraft(d) {
+        if (!d) return;
+        const f = d.form || {};
+        Object.keys(form).forEach(function (k) { if (k in f) form[k] = f[k]; });
+        form.payment_splits = JSON.parse(JSON.stringify(f.payment_splits || []));
+        foodLines.value = JSON.parse(JSON.stringify(d.food || []));
+        try { recomputeFood(); } catch (_e) {}
+        restoredDraftId = d.id;
+        loadDrafts();
+        saleDrafts.value = saleDrafts.value.filter(function (x) { return x.id !== d.id; });
+        persistDrafts();
+        draftOpen.value = false;
+        haptic("medium");
+        showToast("Draft restored ✓ — Save Sale when the money is settled", "success");
+      }
+      function deleteDraft(id) {
+        loadDrafts();
+        saleDrafts.value = saleDrafts.value.filter(function (x) { return x.id !== id; });
+        persistDrafts();
+        showToast("Draft removed", "success");
+      }
+      loadDrafts();
+
       const depositRedeem = ref(PSV.pendingDepositRedeem || null);
       const depositApplied = ref(false);
       function clearRedeem() { try { PSV.pendingDepositRedeem = null; } catch (_e) {} depositRedeem.value = null; depositApplied.value = false; }
@@ -1454,6 +1606,13 @@
         }
       }
       onMounted(() => { loadRefs().then(() => scheduleCalc()); loadPromos(); loadActiveBookings(); });
+      // Draft opened from the dedicated Draft vouchers screen (owner 2026-09-20 16:23).
+      onMounted(() => {
+        try {
+          const pd = PSV.pendingSaleDraft;
+          if (pd) { PSV.pendingSaleDraft = null; restoreDraft(pd); }
+        } catch (_e) {}
+      });
       // 🚩 WAVE 2: proactive in-session detection + verified-deposit lookup on picks
       async function probeDeposits() {
         try {
@@ -1708,6 +1867,7 @@
             try { PSV.pendingDepositRedeem = null; } catch (_e2) {}
             serverCalc.value = null;
             loadActiveBookings();
+            if (restoredDraftId) { try { deleteDraft(restoredDraftId); } catch (_e) {} restoredDraftId = null; }
             pendingSaved.value = true;   // emit("saved") fires when the voucher popup closes
           }
         } catch (e) { showToast("Error: " + e.message, "fail"); }
@@ -1715,6 +1875,7 @@
       }
 
       return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs, depositRedeem, clearRedeem,
+        saleDrafts, draftOpen, saveDraft, restoreDraft, deleteDraft, openDrafts, gotoDrafts,
                // ── WAVE 2: promo / coupon / discount / deposit / in-session guard ──
                sessionWarn, depositApplied, depositAppliedAmt, applyDeposit, promos, promoOpen, promo, promoText, openPromo, pickPromo, clearPromo, focOpen, focItem, pickFoc, coupon, applyCoupon, clearCoupon, calcStatus, discountLines, subtotalKs, totalDiscountKs, payableBeforeDeposit, rawCash, scheduleCalc };
     },
@@ -2949,6 +3110,7 @@
       { en: "Food menu list", sub: "Browse the food menu", icon: "🍜", path: "/food" },
       { en: "Discount / Promo", sub: "View active promotions", icon: "🏷️", path: "/promotions" },
       { en: "Coupon", sub: "Validate & redeem a coupon", icon: "🎟️", path: "/sales" },
+      { en: "Draft vouchers", sub: "Saved sales waiting for settlement", icon: "💾", path: "/drafts" },
     ] },
     { id: "booking", emoji: "📅", en: "Bookings", tone: "warn", items: [
       { en: "Today's bookings", sub: "All bookings for today", icon: "📋", path: "/bookings" },
@@ -5117,6 +5279,7 @@
   function registerApp() {
     router.register("/", Home);
     router.register("/sales", Sales);
+    router.register("/drafts", Drafts);
     router.register("/members", Members);
     router.register("/members/register", MemberRegister);
     router.register("/bookings", Bookings);

@@ -1,8 +1,30 @@
 {
-  "latest": "1.4.2",
-  "latest_code": 24,
-  "updated_at": "2026-09-20T16:07:52Z",
+  "latest": "1.4.4",
+  "latest_code": 26,
+  "updated_at": "2026-09-20T16:24:38Z",
   "versions": [
+    {
+      "version": "1.4.4",
+      "version_code": 26,
+      "arch": "universal",
+      "file": "psvibe-staff-1.4.4.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.4.apk",
+      "size": 5132830,
+      "sha256": "be5b376782b8044903859e0f487c6854e6b0f04a94111964b6d2710f2bedcf68",
+      "released_at": "2026-09-20",
+      "notes": "v1.4.4 (code 26): Draft vouchers get their own screen \u2014 reachable from More \u2192 Draft vouchers; lists every parked sale (label, saved time, game/mins/payment/food summary) with the total parked value, Delete per entry, Delete all, and Restore & finish which loads the draft into New Sale. The draft is removed automatically once that sale is saved."
+    },
+    {
+      "version": "1.4.3",
+      "version_code": 25,
+      "arch": "universal",
+      "file": "psvibe-staff-1.4.3.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.3.apk",
+      "size": 5131734,
+      "sha256": "7d89f6e028a918f7af201ccf28fb5db5d804d9051daab1920aa1a639c2de9272",
+      "released_at": "2026-09-20",
+      "notes": "v1.4.3 (code 25): New Sale \u2014 Save as draft. The whole sale (member, console, game, mins, food cart, split payments, discount, promo/coupon state) is snapshotted to the device, so a voucher can be parked when the money is only settled later; Drafts (N) opens the list to Restore or Delete, and restoring puts everything back so Save Sale can finish it. Drafts never touch the server."
+    },
     {
       "version": "1.4.2",
       "version_code": 24,

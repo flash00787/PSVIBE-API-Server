@@ -1,9 +1,9 @@
 {
-  "version": "1.4.2",
-  "version_code": 24,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.2.apk",
-  "size": 5130610,
-  "sha256": "2e1f4523253fe6270f29126f398c1dfb2cde20e492d569030451a0a50bb9564a",
+  "version": "1.4.4",
+  "version_code": 26,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.4.4.apk",
+  "size": 5132830,
+  "sha256": "be5b376782b8044903859e0f487c6854e6b0f04a94111964b6d2710f2bedcf68",
   "released_at": "2026-09-20",
-  "notes": "v1.4.2 (code 24): speed \u2014 the read path now caches. apiCached upgraded to stale-while-revalidate with a localStorage-persisted store (instant first paint after an app restart) and any successful write invalidates the cache. 101 read call sites switched from PSV.api to PSV.apiCached (slow-changing lists cache 2-10 min, the rest 15 s); realtime/auth endpoints stay uncached."
+  "notes": "v1.4.4 (code 26): Draft vouchers get their own screen \u2014 reachable from More \u2192 Draft vouchers; lists every parked sale (label, saved time, game/mins/payment/food summary) with the total parked value, Delete per entry, Delete all, and Restore & finish which loads the draft into New Sale. The draft is removed automatically once that sale is saved."
 }
