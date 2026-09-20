@@ -335,13 +335,15 @@ def extend_session(booking_id: int, extra_mins: int) -> Dict[str, Any]:
     """Extend a session by N minutes. Returns updated info."""
     try:
         booking = _mysql_query(
-            "SELECT id, console_id, member_id, actual_start AS start_time, actual_duration_mins AS duration_mins, status FROM console_sessions WHERE id=%s",
+            "SELECT id, console_id, member_id, actual_start AS start_time, actual_duration_mins AS duration_mins, status FROM console_sessions WHERE booking_id=%s AND status='active' ORDER BY id DESC LIMIT 1",
             (booking_id,))
         if not booking:
             return {"ok": False, "error": "Booking not found"}
         
         b = booking[0]
-        if b["status"] != "Active":
+        # NOTE (2026-09-20): the DB stores lowercase 'active'; the old check compared
+        # against 'Active' and therefore ALWAYS failed (dead extend path).
+        if str(b["status"] or "").strip().lower() != "active":
             return {"ok": False, "error": "Session is not active"}
         
         new_duration = (b["duration_mins"] or 0) + extra_mins
@@ -381,7 +383,7 @@ def end_session_now(booking_id: int) -> Dict[str, Any]:
     """End a session immediately. Returns updated info."""
     try:
         booking = _mysql_query(
-            "SELECT id, console_id, member_id FROM console_sessions WHERE id=%s",
+            "SELECT id, console_id, member_id FROM console_sessions WHERE booking_id=%s ORDER BY id DESC LIMIT 1",
             (booking_id,))
         if not booking:
             return {"ok": False, "error": "Booking not found"}

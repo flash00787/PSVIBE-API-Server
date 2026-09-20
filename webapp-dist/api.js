@@ -35,7 +35,7 @@
   const SHELL_JWT_FALLBACK = "psv_token";
   function _syncShellJwt() {
     try {
-      if (isWebLogin && jwt) localStorage.setItem(SHELL_JWT_KEY, jwt);
+      if (isWebLogin && jwt) { localStorage.setItem(SHELL_JWT_KEY, jwt); localStorage.setItem(SHELL_JWT_FALLBACK, jwt); }
       else { localStorage.removeItem(SHELL_JWT_KEY); localStorage.removeItem(SHELL_JWT_FALLBACK); }
     } catch (_e) {}
   }
