@@ -2128,17 +2128,36 @@
       // Keep the grid the ONLY vertical scroller: bound its height to the space left
       // between its own top and the fixed tabbar (+ the footer line under it), so the
       // page itself never scrolls and the last console row is never cut off.
+      // Fit-to-height (Osmo: "C01 to C10 ကို 1 page ထဲ ပြနိုင်မှ အဆင်ပြေမယ်"): measure the
+      // space left between the grid's own top and the fixed tab bar and shrink the
+      // ROWS so every console is visible at once — no inner vertical scrolling.
+      // Only when even the minimum readable row can't fit do we fall back to scrolling.
       function sizeScroller() {
         const el = scroller.value;
         if (!el) return;
-        const top = el.getBoundingClientRect().top + (window.scrollY || 0);
+        const top = el.getBoundingClientRect().top;
         const tb = document.querySelector(".van-tabbar");
         const tabH = tb ? tb.getBoundingClientRect().height : 0;
         const foot = el.parentElement ? el.parentElement.querySelector(".psv-tl-foot") : null;
         const footH = foot ? foot.getBoundingClientRect().height : 0;
         const avail = Math.floor(window.innerHeight - top - tabH - footH - 12);
-        if (avail > 0) el.style.maxHeight = Math.max(200, avail) + "px";
-        else el.style.maxHeight = "";
+        const rows = Math.max(1, (tlRows.value || []).length);
+        const head = el.querySelector(".psv-tl-head-hours");
+        const headH = head ? Math.round(head.getBoundingClientRect().height) || 34 : 34;
+        const MINH = 24, MAXH = 56;
+        const ideal = Math.floor((avail - headH) / rows);
+        const fits = ideal >= MINH;
+        const rowH = Math.max(MINH, Math.min(MAXH, ideal || MAXH));
+        el.style.setProperty("--psv-tl-rowh", rowH + "px");
+        el.classList.toggle("is-compact", rowH < 40);
+        el.classList.toggle("is-fit", fits);
+        if (avail > 0) {
+          // Fits → size the grid exactly to its content so there is no inner scroll.
+          // +14 = the scroller's own padding/border (8px native padding + 2px borders + slack).
+          el.style.maxHeight = (fits ? headH + rows * rowH + 14 : Math.max(220, avail)) + "px";
+        } else {
+          el.style.maxHeight = "";
+        }
       }
       async function load() {
         const _id = ++fetchId;
@@ -2173,7 +2192,7 @@
           if (_id === fetchId) {
             loading.value = false;
             refreshing.value = false;
-            nextTick(() => { sizeScroller(); scrollToNow(); });
+            nextTick(() => { sizeScroller(); scrollToNow(); requestAnimationFrame(() => { sizeScroller(); psvSyncChrome(); }); });
           }
         }
       }
@@ -5550,6 +5569,29 @@
     },
   };
 
+  // ── Global bottom-chrome sync (2026-09-20, Osmo: "Scroll ဆွဲလည်း အောက်ဆုံးထိ အပြည့်မပေါ်ဘူး") ──
+  // The bottom tab bar's real height changes with font scaling, safe-area insets
+  // and gesture navigation, so a hardcoded padding can leave the last row hidden
+  // behind it. Measure the bar instead and publish it as --psv-tabbar-h; also
+  // measure the Android system-navigation overlap (Android WebView reports
+  // env(safe-area-inset-bottom) as 0) as --psv-sysnav-h.
+  function psvSyncChrome() {
+    try {
+      const tb = document.querySelector(".van-tabbar");
+      if (tb) {
+        const h = Math.round(tb.getBoundingClientRect().height);
+        if (h > 0) document.documentElement.style.setProperty("--psv-tabbar-h", h + "px");
+      }
+      let sys = 0;
+      const vv = window.visualViewport;
+      if (vv && window.innerHeight > vv.height) {
+        const d = Math.round(window.innerHeight - vv.height - (vv.offsetTop || 0));
+        if (d > 0 && d < 140) sys = d;
+      }
+      document.documentElement.style.setProperty("--psv-sysnav-h", sys + "px");
+    } catch (_e) {}
+  }
+
   const App = {
     components: { LoginScreen },
     template: `
@@ -5629,7 +5671,15 @@
       onMounted(() => {
         window.addEventListener("psv:rate-limit", _onRateLimit);
         window.addEventListener("psv:rate-limit-clear", _onRateLimitClear);
+        // Keep the reserved bottom space in sync with the real tab bar.
+        psvSyncChrome();
+        requestAnimationFrame(psvSyncChrome);
+        setTimeout(psvSyncChrome, 350);
+        window.addEventListener("resize", psvSyncChrome);
+        window.addEventListener("orientationchange", psvSyncChrome);
+        if (window.visualViewport) window.visualViewport.addEventListener("resize", psvSyncChrome);
       });
+      watch(activeView, () => { nextTick(psvSyncChrome); });
       return { activeView, tab, needLogin, onLoggedIn, nativeMode: NATIVE, rl, retry };
     },
   };

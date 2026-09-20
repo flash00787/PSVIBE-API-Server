@@ -52,7 +52,10 @@ html, body {
 
 #app {
   min-height: 100vh;
-  padding-bottom: calc(50px + env(safe-area-inset-bottom, 0px));
+  /* Reserved bottom space = REAL tab-bar height (measured → --psv-tabbar-h) +
+     Android system-nav overlap (--psv-sysnav-h) + 14px breathing room + iOS inset.
+     So no page can hide its last row behind the fixed tab bar. */
+  padding-bottom: calc(var(--psv-tabbar-h, 50px) + var(--psv-sysnav-h, 0px) + 14px + env(safe-area-inset-bottom, 0px));
 }
 
 /* ── Cards / surfaces ─────────────────────────────── */
@@ -396,13 +399,22 @@ html, body {
 .psv-tl-head-hours { position: sticky; top: 0; z-index: 3; display: flex; background: var(--van-background-2); border-bottom: 1px solid var(--pv-card-border); }
 .psv-tl-hour { width: 64px; flex: 0 0 64px; padding: 10px 0; text-align: center; font-size: 10.5px; font-weight: 700; color: var(--pv-muted); border-right: 1px solid var(--pv-card-border); }
 .psv-tl-hour--end { font-size: 9.5px; border-right: 0; opacity: .8; }
-.psv-tl-label { position: sticky; left: 0; z-index: 2; background: var(--van-background-2); border-right: 1px solid var(--pv-card-border); border-bottom: 1px solid var(--pv-card-border); min-height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 4px; }
+.psv-tl-label { position: sticky; left: 0; z-index: 2; background: var(--van-background-2); border-right: 1px solid var(--pv-card-border); border-bottom: 1px solid var(--pv-card-border); height: var(--psv-tl-rowh, 48px); min-height: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 2px; }
 .psv-tl-label__id { font-size: 12.5px; font-weight: 800; }
 .psv-tl-label__util { font-size: 10px; font-weight: 700; }
 .psv-tl-label__util.is-hi { color: #ef4444; }
 .psv-tl-label__util.is-mid { color: #f59e0b; }
 .psv-tl-label__util.is-lo { color: #10b981; }
-.psv-tl-track { position: relative; min-height: 48px; border-bottom: 1px solid var(--pv-card-border); background-image: repeating-linear-gradient(90deg, var(--pv-card-border) 0 1px, transparent 1px 64px); background-image: repeating-linear-gradient(90deg, color-mix(in srgb, var(--pv-card-border) 60%, transparent) 0 1px, transparent 1px 64px); }
+.psv-tl-track { position: relative; height: var(--psv-tl-rowh, 48px); min-height: 12px; border-bottom: 1px solid var(--pv-card-border); background-image: repeating-linear-gradient(90deg, var(--pv-card-border) 0 1px, transparent 1px 64px); background-image: repeating-linear-gradient(90deg, color-mix(in srgb, var(--pv-card-border) 60%, transparent) 0 1px, transparent 1px 64px); }
+/* Compact rows — every console on one page (10-12 rows): inline + smaller type. */
+.psv-tl-scroll.is-compact .psv-tl-label { flex-direction: row; gap: 4px; padding: 0 2px; }
+.psv-tl-scroll.is-compact .psv-tl-label__id { font-size: 11px; }
+.psv-tl-scroll.is-compact .psv-tl-label__util { font-size: 9px; }
+.psv-tl-scroll.is-compact .psv-tl-block { flex-direction: row; align-items: center; gap: 4px; top: 2px; bottom: 2px; padding: 0 4px; border-radius: 6px; }
+.psv-tl-scroll.is-compact .psv-tl-block__name { font-size: 9.5px; }
+.psv-tl-scroll.is-compact .psv-tl-block__time { font-size: 8px; }
+.psv-tl-scroll.is-compact .psv-tl-hour { padding: 6px 0; font-size: 9.5px; }
+.psv-tl-scroll.is-compact .psv-tl-corner { padding: 6px 4px; font-size: 9.5px; }
 /* WAVE 6 smoothness — ONE now-line overlay for the whole grid (was one per console row).
    Sits above the tracks (z 2) but below the sticky console column (label z 2, later in DOM)
    and the sticky hour header (z 3). Glides between 15s ticks; never blocks taps. */
