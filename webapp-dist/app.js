@@ -2135,12 +2135,22 @@
       function sizeScroller() {
         const el = scroller.value;
         if (!el) return;
-        const top = el.getBoundingClientRect().top;
+        psvSyncChrome();                 // refresh --psv-tabbar-h before measuring
+        const r = el.getBoundingClientRect();
+        const top = r.top + (window.scrollY || 0);   // document-space (scroll-safe)
+        const vpH = document.documentElement.clientHeight || window.innerHeight;
         const tb = document.querySelector(".van-tabbar");
         const tabH = tb ? tb.getBoundingClientRect().height : 0;
         const foot = el.parentElement ? el.parentElement.querySelector(".psv-tl-foot") : null;
         const footH = foot ? foot.getBoundingClientRect().height : 0;
-        const avail = Math.floor(window.innerHeight - top - tabH - footH - 12);
+        // The app shell already RESERVES `--psv-tabbar-h` (+ Android system-nav) as #app
+        // bottom padding. If we only cleared the bar itself, that reserved padding would
+        // push the document past the viewport → a stray page scroll. Reserve the LARGER
+        // of (bar height, shell padding) so the page fits AND no row hides behind the bar.
+        const appEl = document.getElementById("app");
+        const appPad = appEl ? (parseFloat(getComputedStyle(appEl).paddingBottom) || 0) : 0;
+        const reserve = Math.max(tabH, appPad);
+        const avail = Math.floor(vpH - top - reserve - footH - 16);
         const rows = Math.max(1, (tlRows.value || []).length);
         const head = el.querySelector(".psv-tl-head-hours");
         const headH = head ? Math.round(head.getBoundingClientRect().height) || 34 : 34;
@@ -2196,7 +2206,7 @@
           }
         }
       }
-      const onResize = () => { sizeScroller(); };
+      const onResize = () => { psvSyncChrome(); sizeScroller(); };
       onMounted(() => {
         load();
         // 15s tick → the single now-line glides (transition: transform 15s linear)
