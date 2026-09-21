@@ -285,7 +285,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
             return error_response(message='console_id required')
 
         # HI-2: Only auto-checkin if booking time is within ±30 minutes
-        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        today = now_mmt().strftime('%Y-%m-%d')
         _now_mmt = now_mmt()
         bk = _mysql_query_one(
             "SELECT id, member_id, game_name, planned_duration_mins AS duration_mins, telegram_chat_id, staff_name, customer_name, phone FROM console_bookings "
@@ -515,7 +515,7 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 _lk_dur = linked_booking.get("duration_mins") or 0
                 duration_mins = _lk_dur if _lk_dur > 0 else 0  # keep 0=No Timer if linked booking also has no duration
         
-        booking_date = req.get("booking_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        booking_date = req.get("booking_date") or now_mmt().strftime("%Y-%m-%d")
         
         # Check if console already Active
         cs = _mysql_query_one("SELECT status FROM console_status WHERE console_id=%s", (console_id,))
