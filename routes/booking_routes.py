@@ -1937,21 +1937,30 @@ async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
                 raise HTTPException(status_code=404, detail="Booking not found")
             current_status = row.get("status", "")
             _console_id = row.get("console_id")  # save for _sync_console_status
+            # Capture session console(s) BEFORE marking done — booking.console_id can drift
+            # from console_sessions.console_id (move/swap), so free BOTH to avoid stale Active.
+            _end_cur.execute(
+                "SELECT DISTINCT console_id FROM console_sessions WHERE booking_id=%s AND status IN ('active','checked_in')",
+                (booking_id,)
+            )
+            _session_consoles = [r["console_id"] for r in _end_cur.fetchall()]
             # End session: update console_sessions with actual_end and done status
             _end_cur.execute("UPDATE console_sessions SET actual_end=%s, status='done' WHERE booking_id=%s AND status IN ('active','checked_in')", (now, booking_id))
             # Also update console_bookings status to 'done' to reflect booking completed
             _end_cur.execute("UPDATE console_bookings SET status='done' WHERE id=%s", (booking_id,))
-            # Only free console if booking was Active (session was actually running)
-            # checked_in bookings never started the session — console was never marked Active
+            # Free every console this booking's sessions ran on (session consoles + booking console)
+            _consoles_to_free = set(c for c in _session_consoles if c)
             if current_status == "Active" and _console_id:
+                _consoles_to_free.add(_console_id)
+            for _cid in _consoles_to_free:
                 _end_cur.execute(
                     "UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s",
-                    (_console_id,)
+                    (_cid,)
                 )
             _end_conn.commit()
             # Safety: sync console_status in case of edge-case drift
-            if _console_id:
-                _sync_console_status(_console_id)
+            for _cid in _consoles_to_free:
+                _sync_console_status(_cid)
             # Auto-cancel any remaining stock holds for this booking (food not sold/released)
             _mysql_exec("UPDATE stock_hold SET status = 'cancelled', updated_at = NOW() WHERE booking_id = %s AND status = 'held'", (booking_id,))
 

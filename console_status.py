@@ -40,7 +40,7 @@ def sync_console_status(console_id):
         # Use MMT time for comparisons (DB stores times in MMT, not UTC)
         _now_mmt_dt = _now_mmt()
         _now_mmt_str = _now_mmt_dt.strftime('%Y-%m-%d %H:%M:%S')
-        _now_plus_60 = (_now_mmt_dt + timedelta(minutes=60)).strftime('%Y-%m-%d %H:%M:%S')
+        _now_plus_30 = (_now_mmt_dt + timedelta(minutes=30)).strftime('%Y-%m-%d %H:%M:%S')
         cur.execute(
             "SELECT cs.booking_id AS id, cs.member_id, cs.game_name, cs.actual_start AS start_time FROM console_sessions cs "
             "WHERE cs.console_id=%s AND cs.status='active' ORDER BY cs.id DESC LIMIT 1",
@@ -88,7 +88,7 @@ def sync_console_status(console_id):
         cur.execute(
             "SELECT cb.id, cb.member_id, cb.game_name FROM console_bookings cb "
             "WHERE cb.console_id=%s AND cb.status IN ('confirmed','checked_in') AND cb.planned_start <= %s AND cb.planned_end >= %s ORDER BY cb.id DESC LIMIT 1",
-            (console_id, _now_plus_60, _now_mmt_str)
+            (console_id, _now_plus_30, _now_mmt_str)
         )
         confirmed = cur.fetchone()
         if confirmed:

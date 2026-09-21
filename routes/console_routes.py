@@ -108,7 +108,7 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)) -> JSONResponse
         # Also attach upcoming booking info to Active consoles for dual-status display.
         try:
             _now_ref = now_mmt()
-            _window_end = _now_ref + timedelta(minutes=120)
+            _window_end = _now_ref + timedelta(minutes=30)
             upcoming = _mysql_query(
                 "SELECT cb.console_id, cb.planned_start AS start_time, cb.staff_name, cb.customer_name, cb.planned_duration_mins AS duration_mins FROM console_bookings cb "
                 "WHERE cb.status IN ('confirmed', 'pending_check_in') "
