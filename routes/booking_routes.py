@@ -2363,9 +2363,15 @@ async def api_receipt_save(req: dict, auth=Depends(verify_api_key)):
         voucher_id = req.get("voucher_id", "")
         receipt_no = req.get("receipt_no") or req.get("voucher_id", "")
         member_id = req.get("member_id", req.get("member", ""))
+        if isinstance(member_id, dict):
+            member_id = member_id.get("id", member_id.get("member_id", ""))
         amount = req.get("gross_total", req.get("amount", 0))
+        if isinstance(amount, (dict, list)):
+            amount = 0
         payment_method = req.get("payment_method", "")
         items = req.get("food_items", req.get("items", ""))
+        if isinstance(items, (list, dict)):
+            items = _sjson.dumps(items, ensure_ascii=False)
         receipt_date = req.get("date", req.get("receipt_date", ""))
         staff_name = req.get("staff_name", "")
         # Guard: never persist an empty receipt row (Staff App / bad callers).
@@ -2415,6 +2421,8 @@ async def api_save_receipt_json(req: dict, auth=Depends(verify_api_key)):
         # Store full receipt JSON in receipt_data column
         import json as _json_dump
         receipt_data = _json_dump.dumps(req_src, ensure_ascii=False)
+        if isinstance(items, (list, dict)):
+            items = _json_dump.dumps(items, ensure_ascii=False)
 
         logger.info("Saving receipt to MySQL: receipt_no=%s", receipt_no)
 
