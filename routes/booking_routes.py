@@ -1490,7 +1490,7 @@ async def api_get_bookings(request: Request, status: str = "", member_id: str = 
             _rows = _mysql_query(_OPEN_BOOKINGS_SQL)
             _bookings = _normalize_booking_rows(_rows, _can_see_ref)
             return ok({"bookings": _bookings, "total": len(_bookings)})
-        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, " \
+        sql = "SELECT cb.id, cb.console_id, cb.member_id, cb.booking_date, cb.source, " \
               "DATE_FORMAT(COALESCE(cs.actual_start, cb.planned_start), '%%H:%%i') AS start_time, " \
               "DATE_FORMAT(COALESCE(cs.actual_end, cb.planned_end), '%%H:%%i') AS end_time, " \
               "cb.status, cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, " \
@@ -1641,7 +1641,8 @@ async def api_get_bookings(request: Request, status: str = "", member_id: str = 
                 "depositRef": (r.get("deposit_ref") or "") if _can_see_ref else "",
                 "deposit_ref_type": (r.get("deposit_ref_type") or "") if _can_see_ref else "",
                 "can_view_proof": _can_see_ref,
-                "notes": r.get("notes","") or ""
+                "notes": r.get("notes","") or "",
+                "source": r.get("source","") or ""
             })
         return ok({"bookings": normalized, "total": len(normalized)})
     except Exception as e:
