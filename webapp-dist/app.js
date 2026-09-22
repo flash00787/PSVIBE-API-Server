@@ -81,6 +81,7 @@
   //   * an in-app stack is the source of truth for router.back().
   const ROOT_TABS = ["/", "/sales", "/members", "/bookings", "/print", "/more"];
   const isRootTab = (p) => ROOT_TABS.indexOf(p) >= 0;
+  let saleLeaveHook = null;  // Sales view registers an auto-draft-on-leave callback
 
   const router = {
     routes: {},
@@ -135,6 +136,7 @@
     replace(path, fromTab) {
       const target = this.onlyPath(path);
       const cur = this.current.value;
+      if (cur === "/sales" && target !== "/sales" && saleLeaveHook) { try { saleLeaveHook(); } catch (_e) {} }
       if (fromTab && isRootTab(cur) && isRootTab(target) && cur !== target) {
         if (this._tabStack[this._tabStack.length - 1] !== cur) this._tabStack.push(cur);
         if (this._tabStack.length > 12) this._tabStack.shift();
@@ -739,7 +741,7 @@
               </van-cell-group>
             </van-pull-refresh>
           </van-tab>
-                  <van-tab title="Drafts">
+                  <van-tab :title="draftsTab.length ? ('Drafts (' + draftsTab.length + ')') : 'Drafts'">
             <van-empty v-if="!draftsTab.length" description="No draft vouchers" />
             <div v-else style="padding:8px 12px 24px">
               <div v-for="d in draftsTab" :key="d.id"
@@ -951,7 +953,10 @@
         showToast("Draft loaded into New Sale ✓", "success");
       }
       watch(tab, function (v) { if (v === 2) loadDraftsTab(); });
+      function onDraftsChanged() { loadDraftsTab(); }
       onMounted(loadDraftsTab);
+      onMounted(function () { window.addEventListener("psv:drafts-changed", onDraftsChanged); });
+      onUnmounted(function () { window.removeEventListener("psv:drafts-changed", onDraftsChanged); });
 
       // Build the van-cell label: member · time, plus food / discount detail lines.
       function labelFor(s) {
@@ -1270,6 +1275,7 @@
       }
       function persistDrafts() {
         try { localStorage.setItem(DRAFT_KEY, JSON.stringify(saleDrafts.value)); } catch (_e) {}
+        try { window.dispatchEvent(new Event("psv:drafts-changed")); } catch (_e) {}
       }
       function openDrafts() { loadDrafts(); draftOpen.value = true; haptic("light"); }
       // Owner 2026-09-20 16:35: "Save as draft နှိပ်လိုက်လည်း voucher က reset မကျသွားဘူး" —
@@ -1659,6 +1665,38 @@
           if (pd) { PSV.pendingSaleDraft = null; restoreDraft(pd); }
         } catch (_e) {}
       }
+      // ── 💾 Auto-draft on leaving the Sales tab (owner 2026-09-21 18:55) ──────
+      // "Voucher ထဲ data entry ရှိနေတုန်း tab ပြောင်းရင် refresh ဖြစ်သွားတယ်" — park a
+      // partially-filled voucher as a draft instead of silently losing it.
+      const isDirty = computed(() => !!(
+        form.member_id || form.member_search || form.console_id ||
+        Number(form.mins) > 0 || Number(form.game_amt) > 0 ||
+        foodLines.value.length > 0 || form.payment_splits.length > 0 ||
+        coupon.applied || depositApplied.value
+      ));
+      function autoSaveDraft() {
+        if (!isDirty.value) return;
+        const bits = [];
+        if (form.member_id) bits.push(form.member_id);
+        else if (form.member_search) bits.push(form.member_search);
+        if (form.console_id) bits.push(form.console_id);
+        if (Number(form.mins)) bits.push(Number(form.mins) + "m");
+        const snap = {
+          id: "D" + Date.now(), ts: Date.now(),
+          at: PSV.todayMMT() + " " + new Date().toTimeString().slice(0, 5),
+          total: Number(cashNetTotal.value) || 0,
+          label: (bits.join(" · ") || "Draft") + " · " + fKs(Number(cashNetTotal.value) || 0) + " Ks",
+          form: JSON.parse(JSON.stringify(form)),
+          food: JSON.parse(JSON.stringify(foodLines.value || [])),
+        };
+        loadDrafts();
+        saleDrafts.value.unshift(snap);
+        persistDrafts();
+        showToast("💾 Saved as draft — find it in Drafts", "success");
+      }
+      onMounted(() => { saleLeaveHook = autoSaveDraft; });
+      onUnmounted(() => { if (saleLeaveHook === autoSaveDraft) saleLeaveHook = null; });
+
       onMounted(() => { applyPendingDraft(); window.addEventListener("psv:draft", applyPendingDraft); });
       onUnmounted(() => { window.removeEventListener("psv:draft", applyPendingDraft); });
       // 🚩 WAVE 2: proactive in-session detection + verified-deposit lookup on picks
@@ -2569,7 +2607,7 @@
               <div class="psv-bk-card__top" @click="openDetail(b)">
                 <div class="psv-bk-card__who">
                   <div class="psv-bk-card__name">{{ b.customerName || b.member_id || 'Guest' }}</div>
-                  <div class="psv-bk-card__sub">BK#{{ b.id }} · {{ b.console_id || b.consoleType || '-' }}</div>
+                  <div class="psv-bk-card__sub">{{ (b.source === 'walkin' ? '🎮 Session' : '📅 Booking') }} #{{ b.id }} · {{ b.console_id || b.consoleType || '-' }}</div>
                 </div>
                 <span class="psv-pill" :class="'psv-pill--' + bkStatus(b.status).tone">{{ bkStatus(b.status).en }}</span>
               </div>
@@ -2601,7 +2639,7 @@
             <div class="psv-bk-detail__head">
               <div>
                 <div class="psv-bk-detail__name">{{ detail.customerName || detail.member_id || 'Guest' }}</div>
-                <div class="psv-bk-detail__id">BK#{{ detail.id }}</div>
+                <div class="psv-bk-detail__id">{{ (detail.source === 'walkin' ? '🎮 Session' : '📅 Booking') }} #{{ detail.id }}</div>
               </div>
               <span class="psv-pill" :class="'psv-pill--' + bkStatus(detail.status).tone">{{ bkStatus(detail.status).en }}</span>
             </div>
@@ -2680,8 +2718,7 @@
     `,
     setup() {
       const CHIPS = [
-        { id: "today", icon: "📅", label: "Today", hint: "All bookings for today (cancelled & no-shows excluded)" },
-        { id: "open", icon: "🔓", label: "Open", hint: "Pending · Confirmed · Checked-in · Active" },
+        { id: "today", icon: "📅", label: "Today", hint: "Bookings for today (walk-in sessions excluded — see Consoles)" },
         { id: "pending", icon: "⏳", label: "Pending", hint: "Waiting for approve / reject" },
         { id: "confirmed", icon: "✅", label: "Confirmed", hint: "Confirmed — check in when the customer arrives" },
         { id: "checked_in", icon: "🎟", label: "Checked-in", hint: "Arrived — start the console session" },
@@ -2689,7 +2726,7 @@
         { id: "deposit", icon: "💰", label: "Deposit", hint: "Verify / redeem a deposit" },
         { id: "cancelled", icon: "⛔", label: "Cancelled", hint: "Cancelled, rejected & no-show bookings" },
       ];
-      const chip = ref("open");
+      const chip = ref("today");
       const view = ref("list");
       const rows = ref([]);
       const loading = ref(true);
@@ -2779,9 +2816,7 @@
           if (c === "today") {
             const all = await fetchAll();
             const today = PSV.todayMMT();
-            list = all.filter((b) => String(b.date || b.booking_date || "").slice(0, 10) === today && !isDead(b));
-          } else if (c === "open") {
-            list = await loadOpen();
+            list = all.filter((b) => String(b.date || b.booking_date || "").slice(0, 10) === today && !isDead(b) && bkKey(b.source) !== "walkin");
           } else if (c === "deposit") {
             const all = await fetchAll();
             list = all.filter((b) => hasDepositPending(b) && !isDead(b));
@@ -2812,7 +2847,7 @@
       function setView(id) { haptic("light"); view.value = id; }
       function onPickTimeline(b) { haptic("light"); detail.value = b; detailOpen.value = true; }
       function goNew() { haptic("light"); newOpen.value = true; }
-      function onSaved() { newOpen.value = false; chip.value = "open"; load(); }
+      function onSaved() { newOpen.value = false; chip.value = "today"; load(); }
 
       async function fetchOne(id) {
         try {
@@ -4325,7 +4360,7 @@
             <van-popup v-model:show="addOpen" position="bottom" round>
               <div style="padding:14px 16px">
                 <div style="font-weight:700;margin-bottom:8px">Add expense</div>
-                <van-field v-model="form.category" label="Category" placeholder="Water / Internet / Staff Salary" />
+                <van-field :model-value="form.category" label="Category" is-link readonly placeholder="Select category" @click="catPicker=true" />
                 <van-field v-model="form.description" label="Note" placeholder="optional" />
                 <van-field v-model.number="form.amount" type="number" label="Amount (Ks)" placeholder="0" />
                 <van-field :model-value="form.payment_method" label="Payment" is-link readonly @click="payPicker=true" />
@@ -4340,6 +4375,11 @@
                        :model-value="form.payment_method"
                        @update:show="(v) => { payPicker = v; }"
                        @confirm="(v) => { form.payment_method = v; payPicker = false; }" />
+            <PSVPicker :show="catPicker" title="Category"
+                       :items="CATEGORIES.map((c) => ({ value: c, label: c }))"
+                       :model-value="form.category"
+                       @update:show="(v) => { catPicker = v; }"
+                       @confirm="(v) => { form.category = v; catPicker = false; }" />
           </template>
         </template>
       </div>
@@ -4347,6 +4387,7 @@
     setup() {
       const PAY = ["Cash", "KPay", "WavePay", "AYA Pay"];
       const payColumns = PAY.map((p) => ({ text: p, value: p }));
+      const CATEGORIES = ["Rent", "Staff Salary", "Electricity", "Water", "Internet", "Maintenance", "Marketing", "Software/License", "Snacks/Drinks", "Transaction Charges", "Others"];
       const _role = String((PSV.getStaff() || {}).role || "").trim().toLowerCase();
       const knownStaff = ["staff", "cashier", "manager", "viewer", "operator"].indexOf(_role) >= 0;
       const locked = ref(false);
@@ -4355,6 +4396,7 @@
       const list = ref([]);
       const addOpen = ref(false);
       const payPicker = ref(false);
+      const catPicker = ref(false);
       const saving = ref(false);
       const form = reactive({ category: "", description: "", amount: 0, payment_method: "Cash" });
       const total = computed(() => list.value.reduce((a, o) => a + (Number(o.amount) || 0), 0));
@@ -4392,7 +4434,7 @@
         finally { saving.value = false; }
       }
       onMounted(load);
-      return { loading, locked, err, list, total, addOpen, payPicker, payColumns, saving, form, canSave, openAdd, save, fKs };
+      return { loading, locked, err, list, total, addOpen, payPicker, payColumns, catPicker, CATEGORIES, saving, form, canSave, openAdd, save, fKs };
     },
   };
 

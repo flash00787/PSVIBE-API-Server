@@ -1,9 +1,9 @@
 {
-  "version": "1.6.5",
-  "version_code": 47,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.5.apk",
-  "size": 5076196,
-  "sha256": "24abb43915f67e8b8eeec499f9f4332a29b361f5982bdee25fc7de9aba6de76e",
-  "released_at": "2026-09-20",
-  "notes": "v1.6.5 (code 47): avatar no longer disappears \u2014 /auth/login, /auth/refresh and /auth/me now read photo_url straight from the DB (the cached user row could be stale) and the app keeps its phone-local copy as a fallback; the password call also sends the token in the body."
+  "version": "1.6.9",
+  "version_code": 51,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.9.apk",
+  "size": 5076513,
+  "sha256": "64f75470ff920389dfc0162752b2cd32c793363472ac55026c8be7915ad8ddb6",
+  "released_at": "2026-09-21",
+  "notes": "Fix double-draft + Drafts count badge"
 }

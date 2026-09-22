@@ -1,5 +1,6 @@
 """PS VIBE API — Staff & Salary Routes."""
 import logging
+import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, HTTPException

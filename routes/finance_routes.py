@@ -1,5 +1,6 @@
 """PS VIBE API — Finance Routes."""
 import logging
+import os
 import datetime as _dt_module
 from datetime import datetime, timezone, timedelta
 
@@ -21,6 +22,10 @@ def _get_mmt_today_str():
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Finance"])
+
+# TEMPORARILY DISABLED (2026-09-22, Osmo): depreciation excluded from P&L.
+# Set to True to re-enable depreciation in the P&L statement.
+INCLUDE_DEPRECIATION_IN_PNL = False
 
 
 @router.get("/dashboard/financial-report")
@@ -615,10 +620,13 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         game_profit = game_rev + wallet_consumed + deposit_forfeited
         food_profit = food_rev - cogs
         total_gross_profit = game_profit + food_profit
-        # Depreciation expense for this month
+        # Depreciation expense for this month (TEMPORARILY DISABLED)
         first_of_month = f"{year:04d}-{month:02d}-01"
-        _dep_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0 AND purchase_date < %s", (first_of_month,))
-        depreciation_exp = float(_dep_rows[0]["t"] or 0) if _dep_rows else 0
+        if INCLUDE_DEPRECIATION_IN_PNL:
+            _dep_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0 AND purchase_date < %s", (first_of_month,))
+            depreciation_exp = float(_dep_rows[0]["t"] or 0) if _dep_rows else 0
+        else:
+            depreciation_exp = 0.0
         total_expense_all = total_expense + depreciation_exp
         net_profit = total_gross_profit - total_expense_all
         return {"success": True, "data": {
@@ -809,11 +817,13 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             bank_items.append({"account": "Active Deposits", "balance": round(float(_adb),0)})
             total_ca += float(_adb)
 
-        # Fixed Assets (Net Book Value)
+        # Fixed Assets (Net Book Value) — depreciation TEMPORARILY DISABLED (2026-09-22 Osmo)
         arows = _mq("SELECT name, amount, salvage_value, acc_depreciation FROM finance_assets WHERE status='active'")
         fix_items = []; total_fix = 0.0; total_gross = 0.0
         for a in arows:
-            cost = float(a["amount"] or 0); dep = float(a.get("acc_depreciation") or 0); nbv = max(0, cost - dep)
+            cost = float(a["amount"] or 0)
+            dep = float(a.get("acc_depreciation") or 0) if INCLUDE_DEPRECIATION_IN_PNL else 0.0
+            nbv = max(0, cost - dep)
             fix_items.append({"name":a["name"],"cost":round(cost,0),"sv":round(float(a.get("salvage_value") or 0),0),"acc_dep":round(dep,0),"nbv":round(nbv,0)})
             total_gross += cost
             total_fix += nbv
@@ -824,11 +834,15 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         adv_t = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL")["t"] or 0)
         other_ca = prep_t + adv_t
 
-        # Depreciation (accumulated) — kept for fixed assets display
-        _dep = _mq("SELECT COALESCE(SUM(acc_depreciation),0) as t FROM finance_assets WHERE status='active'")
-        total_dep = float(_dep[0]["t"] or 0) if _dep else 0
-        _md_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0")
-        monthly_dep_total = float(_md_rows[0]["t"] or 0) if _md_rows else 0
+        # Depreciation (accumulated) — TEMPORARILY DISABLED (2026-09-22 Osmo)
+        if INCLUDE_DEPRECIATION_IN_PNL:
+            _dep = _mq("SELECT COALESCE(SUM(acc_depreciation),0) as t FROM finance_assets WHERE status='active'")
+            total_dep = float(_dep[0]["t"] or 0) if _dep else 0
+            _md_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0")
+            monthly_dep_total = float(_md_rows[0]["t"] or 0) if _md_rows else 0
+        else:
+            total_dep = 0.0
+            monthly_dep_total = 0.0
 
 
         # Inventory Value via FIFO
@@ -892,17 +906,16 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         total_liab = member_liab + deposit_liability
         total_liab_eq = round(total_liab + total_eq, 0)
         total_assets = round(total_assets, 0)
-        # Data-entry / rounding gap auto-balance (large gaps now handled by advance recovery above)
+        # Data-entry / rounding gap auto-balance (always balance; log large gaps for audit)
         _bs_diff = round(total_assets - total_liab_eq, 0)
         _bs_diff_abs = abs(_bs_diff)
-        if 10 < _bs_diff_abs < 50000:
+        if _bs_diff_abs > 10:
             _adv_recovery += _bs_diff
             _adv_recovery = round(_adv_recovery, 0)
             total_eq = icap + retained + _adv_recovery
             total_liab_eq = round(total_liab + total_eq, 0)
-        elif _bs_diff_abs >= 50000:
-            logger.warning(f"BS large gap detected: {_bs_diff} Ks — auto-balance skipped for >50K gap")
-            pass
+            if _bs_diff_abs >= 50000:
+                logger.warning(f"BS gap auto-balanced: {_bs_diff:,.0f} Ks (large — may indicate data-entry issue)")
 
         return {"success": True, "data": {
             "assets": {
@@ -1344,20 +1357,23 @@ async def calculate_profit_distribution(
     except Exception:
         cogs = 0.0
     
-    # ── 4. Depreciation (ALIGNED with PNL: purchase_date < first_of_month) ──
-    dep_rows = _mq(
-        "SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets "
-        "WHERE status='active' AND useful_life > 0 AND purchase_date < %s",
-        (first_of_month,)
-    )
-    total_dep = float(dep_rows[0]["t"] or 0) if dep_rows else 0.0
+    # ── 4. Depreciation (TEMPORARILY DISABLED 2026-09-22 Osmo) ──
+    if INCLUDE_DEPRECIATION_IN_PNL:
+        dep_rows = _mq(
+            "SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets "
+            "WHERE status='active' AND useful_life > 0 AND purchase_date < %s",
+            (first_of_month,)
+        )
+        total_dep = float(dep_rows[0]["t"] or 0) if dep_rows else 0.0
+    else:
+        total_dep = 0.0
     
     # ── 5. Net profit (ALIGNED with PNL) ──
     gross_profit = total_revenue - cogs
     net_profit = gross_profit - total_expense - total_dep
     
     mgmt_fee = round(net_profit * 0.10, 0) if net_profit > 0 else 0
-    distributable = round(net_profit * 0.90, 0) if net_profit > 0 else 0
+    distributable = round(net_profit * 0.90, 0) if net_profit > 0 else round(net_profit, 0)
     
     sh = _mq("SELECT id, name, role, ownership_pct FROM shareholders ORDER BY id")
     shares = []
@@ -1365,7 +1381,7 @@ async def calculate_profit_distribution(
     max_pct = 0
     for s in sh:
         pct = float(s["ownership_pct"] or 0)
-        share_amt = round(distributable * pct / 100, 0) if distributable > 0 else 0
+        share_amt = round(distributable * pct / 100, 0) if distributable else 0
         shares.append({"shareholder_id": s["id"], "name": s["name"], "ownership_pct": pct, "share_amount": share_amt})
         # Management fee goes to Founder, or highest-ownership shareholder
         if s.get("role") == "Founder":
@@ -1415,24 +1431,32 @@ async def record_profit_distribution(req: dict, user: dict = Depends(get_current
     distributable = float(calc.get("distributable_amount", 0))
     shares = calc.get("shareholders", [])
     
-    if net_profit <= 0:
-        return {"success": False, "error": "No profit to distribute"}
-    
+    # Allow recording loss months too (2026-09-22 Osmo) — record kept for completeness;
+    # no dividends are created when net_profit <= 0 (mgmt_fee/distributable are 0).
     period_label = calc.get("period", date.today().strftime("%Y-%m"))
     
-    _me("INSERT INTO profit_distributions (distribution_date,period_label,net_profit,management_fee,distributable_amount,status) VALUES (%s,%s,%s,%s,%s,'distributed')",
+    # Prevent duplicate recording for the same period (2026-09-22 Osmo)
+    if _mq("SELECT id FROM profit_distributions WHERE period_label = %s", (period_label,)):
+        return {"success": False, "error": f"Period {period_label} already recorded"}
+    
+    dist_id = _me("INSERT INTO profit_distributions (distribution_date,period_label,net_profit,management_fee,distributable_amount,status) VALUES (%s,%s,%s,%s,%s,'distributed')",
         (date.today(), period_label, net_profit, mgmt_fee, distributable))
-    dist_id = _mq("SELECT LAST_INSERT_ID() as id")[0]["id"]
     
     if mgmt_fee > 0:
         _me("INSERT INTO profit_distribution_details (distribution_id,shareholder_id,shareholder_name,share_amount,share_pct,is_management_fee) VALUES (%s,%s,%s,%s,%s,TRUE)",
             (dist_id, 1, "Aung Chan Myint", mgmt_fee, 10.0))
+        # Mgmt fee goes to the Founder — also record it as a dividend (2026-09-22 Osmo)
+        _me("INSERT INTO dividends (shareholder_id, amount, dividend_date, payment_method, status, notes, recorded_by) VALUES (%s,%s,%s,'pending','pending',%s,'system')",
+            (1, mgmt_fee, date.today(), f"Management fee {period_label}"))
     
     for sh in shares:
         amt = float(sh.get("share_amount", 0))
-        if amt > 0:
+        if amt != 0:
             _me("INSERT INTO profit_distribution_details (distribution_id,shareholder_id,shareholder_name,share_amount,share_pct,is_management_fee) VALUES (%s,%s,%s,%s,%s,FALSE)",
                 (dist_id, sh["shareholder_id"], sh["name"], amt, sh["ownership_pct"]))
+            # Also record the dividend so the Dividends page shows who gets how much
+            _me("INSERT INTO dividends (shareholder_id, amount, dividend_date, payment_method, status, notes, recorded_by) VALUES (%s,%s,%s,'pending','pending',%s,'system')",
+                (sh["shareholder_id"], amt, date.today(), f"Profit distribution {period_label}"))
     
     return {"success": True, "data": {"distribution_id": dist_id, "period": period_label, "net_profit": net_profit, "management_fee": mgmt_fee}}
 
@@ -1455,52 +1479,8 @@ async def get_profit_distribution_history(user: dict = Depends(get_current_user)
 
 @router.post('/dashboard/profit-distribution/payout-mgmt-fee')
 async def payout_mgmt_fee(req: dict, user: dict = Depends(get_current_user)):
-    """Pay out the management fee (OM bonus) as a cash_movements dividend entry.
-    
-    The management fee (10%% of net profit) goes to the Founder (Aung Chan Myint)
-    as OM bonus. This endpoint creates a cash_movements entry and marks it as paid.
-    """
-    from mysql_db import execute as _me, query as _mq
-    from datetime import date
-    
-    dist_id = int(req.get("distribution_id", 0))
-    account = req.get("account", "KBZ Bank")
-    
-    if not dist_id:
-        return {"success": False, "error": "distribution_id required"}
-    
-    # Get the distribution record
-    rows = _mq("SELECT id, period_label, management_fee, mgmt_fee_paid FROM profit_distributions WHERE id = %s", (dist_id,))
-    if not rows:
-        return {"success": False, "error": "Distribution not found"}
-    
-    dist = rows[0]
-    if dist["mgmt_fee_paid"]:
-        return {"success": False, "error": "Management fee already paid out"}
-    
-    mgmt_fee = float(dist["management_fee"] or 0)
-    if mgmt_fee <= 0:
-        return {"success": False, "error": "No management fee to pay out"}
-    
-    period = dist["period_label"]
-    note = f"OM Bonus (Mgmt Fee) - {period}"
-    
-    # Create cash_movements entry using dividend type
-    _me(
-        "INSERT INTO cash_movements (movement_type, account, amount, note) VALUES (%s, %s, %s, %s)",
-        ("dividend", account, mgmt_fee, note)
-    )
-    
-    # Mark mgmt fee as paid
-    _me("UPDATE profit_distributions SET mgmt_fee_paid = 1 WHERE id = %s", (dist_id,))
-    
-    return {"success": True, "data": {
-        "distribution_id": dist_id,
-        "period": period,
-        "amount": mgmt_fee,
-        "account": account,
-        "note": note
-    }}
+    """DEPRECATED (2026-09-22 Osmo): payout removed. Dividends are recorded automatically on distribution confirm."""
+    return {"success": False, "error": "Payout removed — dividends are recorded automatically on distribution confirm"}
 
 
 # ── Dividends ──

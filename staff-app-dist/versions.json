@@ -1,8 +1,52 @@
 {
-  "latest": "1.6.5",
-  "latest_code": 47,
-  "updated_at": "2026-09-20T18:22:16Z",
+  "latest": "1.6.9",
+  "latest_code": 51,
+  "updated_at": "2026-09-21T19:06:45Z",
   "versions": [
+    {
+      "version": "1.6.9",
+      "version_code": 51,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.9.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.9.apk",
+      "size": 5076513,
+      "sha256": "64f75470ff920389dfc0162752b2cd32c793363472ac55026c8be7915ad8ddb6",
+      "released_at": "2026-09-21",
+      "notes": "Fix double-draft + Drafts count badge"
+    },
+    {
+      "version": "1.6.8",
+      "version_code": 50,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.8.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.8.apk",
+      "size": 5076401,
+      "sha256": "52800021d11783b639d6b5b4ef2ecebf7a309bc77b5594ab931250a0c4c90c3f",
+      "released_at": "2026-09-21",
+      "notes": "Auto-draft voucher on tab switch"
+    },
+    {
+      "version": "1.6.7",
+      "version_code": 49,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.7.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.7.apk",
+      "size": 5076021,
+      "sha256": "72434b36ff7a5a24a3ed3823a68af3cc1465edcc675368a76e33966bc3f44cff",
+      "released_at": "2026-09-21",
+      "notes": "Bookings: remove Open, Today=bookings-only, tab order Today|Pending|Confirmed|Check-in"
+    },
+    {
+      "version": "1.6.6",
+      "version_code": 48,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.6.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.6.apk",
+      "size": 5076029,
+      "sha256": "75c7e06c3064ac8fa7fd3a3e158a291d7f0c81667f381fb4c726f4336ee523da",
+      "released_at": "2026-09-21",
+      "notes": "Session/Booking label + OPEX dropdown + timeline fix"
+    },
     {
       "version": "1.6.5",
       "version_code": 47,

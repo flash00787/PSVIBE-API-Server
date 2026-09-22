@@ -312,10 +312,8 @@ async def api_finance_pnl(m: str = Query("", description="Month in YYYY-MM forma
         wallet_consumed = float(_fr.get("consumed", 0))
         total_revenue = game_rev + food_rev + wallet_consumed
         first_of_month = f"{ym}-01"
-        _dep_rows = _mysql_query(
-            "SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0 AND purchase_date < %s",
-            (first_of_month,))
-        depreciation_exp = float(_dep_rows[0]["t"] or 0) if _dep_rows else 0
+        # TEMPORARILY REMOVED (2026-09-22, Osmo): depreciation excluded from P&L.
+        depreciation_exp = 0.0
         total_expense_all = total_expense + depreciation_exp
         game_profit = game_rev + wallet_consumed
         food_profit = food_rev - cogs
