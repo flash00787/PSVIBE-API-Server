@@ -2256,6 +2256,7 @@
           <div v-else class="psv-tl-wrap">
             <div class="psv-tl-scroll" ref="scroller">
               <div class="psv-tl-inner">
+                <div v-if="showNow" class="psv-tl-elapsed" :style="elapsedStyle"></div>
                 <div v-if="showNow" class="psv-tl-line" :style="{ transform: 'translateX(' + nowLinePx + 'px)' }"></div>
                 <div class="psv-tl-corner">Console</div>
                 <div class="psv-tl-head-hours">
@@ -2325,6 +2326,12 @@
       const showNow = computed(() => isToday.value && nowPx.value >= 0 && nowPx.value <= trackW);
       // x of the single overlay now-line inside .psv-tl-inner (label column + hour offset)
       const nowLinePx = computed(() => TL_LABEL_W + nowPx.value);
+      // Elapsed-day shade (Osmo 2026-09-23): fill the track from the open hour (left edge)
+      // up to NOW so staff can see at a glance how much of the day has already passed.
+      const elapsedStyle = computed(() => ({
+        left: TL_LABEL_W + "px",
+        width: Math.max(0, nowPx.value) + "px",
+      }));
       // WAVE 6 smoothness — per-console row metadata computed ONCE per data change
       // (Map keyed by console id). No O(rows x bookings) filtering during the 15s clock tick.
       const tlMeta = computed(() => {
@@ -2571,7 +2578,7 @@
         window.removeEventListener("resize", onResize);
         window.removeEventListener("orientationchange", onResize);
       });
-      return { embedded: props.embedded, refreshing, day, bookings, consoles, loading, err, scroller, gridHours, tlRows, nowLinePx,
+      return { embedded: props.embedded, refreshing, day, bookings, consoles, loading, err, scroller, gridHours, tlRows, nowLinePx, elapsedStyle,
         isToday, isTomorrow, dayLabel, nowPx, showNow, openHourLabel, closeHourLabel,
         hourPx, hourLabel, tone, blockStyle, isNarrow, blockTime, range, pick, goToday, goTomorrow, step, load };
     },

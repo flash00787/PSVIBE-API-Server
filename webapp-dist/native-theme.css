@@ -589,6 +589,7 @@ html.psv-native .psv-tl-track { border-color: var(--psv-border); contain: paint;
 html.psv-native .psv-tl-head-hours { will-change: transform; transform: translateZ(0); }
 html.psv-native .psv-tl-line { will-change: transform; }
 html.psv-native .psv-tl-now { will-change: left; }
+html.psv-native .psv-tl-elapsed { background: rgba(148, 163, 184, 0.12); will-change: width; }
 html.psv-native .psv-tl-foot { color: var(--psv-text-dim); }
 html.psv-native .psv-tl-empty__sub { color: var(--psv-text-dim); }
 html.psv-native .psv-tl-block { border-radius: 10px; }
