@@ -1,9 +1,9 @@
 {
-  "version": "1.6.10",
-  "version_code": 52,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.10.apk",
+  "version": "1.6.11",
+  "version_code": 53,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.11.apk",
   "size": 5077613,
-  "sha256": "f220c080ab95d9b3df31145e28cc9617ba23ce127f0d343202e315bc7db9c392",
+  "sha256": "86806c9143e534809d4836ffc172797b4d5010d0a12f4fd9bf9113e6df87596a",
   "released_at": "2026-09-24",
-  "notes": "server.url -> live webapp (fix: APK was bundling stale assets, not loading live); deposit auto-deduct + shared drafts + timeline + food breakdown"
+  "notes": "Refund deposit + payment-method picker in booking detail"
 }
