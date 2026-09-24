@@ -29,7 +29,7 @@
   // the freshly fetched index.html with the marker this bundle was built with; when the
   // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
   // with the ?v= query on every deploy.
-  var PSV_BUILD = "w33depositdrafts";
+  var PSV_BUILD = "w34adminrole";
   // Real app build number — shown in the More menu footer (was hardcoded "build 34" before,
   // which misled diagnosis). Bump together with android versionCode.
   var APP_BUILD = "51";
@@ -417,6 +417,7 @@
       jwt = data.token;
       staff.id = data.user_id != null ? data.user_id : null;
       staff.name = data.username || ("#" + data.user_id);
+      staff.role = data.role || "staff";
       return true;
     }
     // Also accept raw token at top level
@@ -424,6 +425,7 @@
       jwt = resp.token;
       staff.id = resp.user_id != null ? resp.user_id : null;
       staff.name = resp.username || ("#" + resp.user_id);
+      staff.role = resp.role || "staff";
       return true;
     }
     return false;

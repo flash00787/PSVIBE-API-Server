@@ -36,6 +36,19 @@ def _load_allowed_staff_ids() -> set[int]:
     return set()
 
 
+def _load_admin_user_ids() -> set[int]:
+    """Telegram user IDs that map to the 'admin' role in the Mini App JWT.
+
+    Staff get role 'staff' (4 shop accounts in transfer); admins (owner/partners)
+    get role 'admin' (all 6 accounts, incl. ACM's Acc + KBZ Bank). Canonical source
+    is the ADMIN_USER_IDS env var (comma-separated), same as the sales bot uses.
+    """
+    val = os.environ.get("ADMIN_USER_IDS", "")
+    if val.strip():
+        return {int(x.strip()) for x in val.split(",") if x.strip().isdigit()}
+    return set()
+
+
 def _validate_init_data(init_data: str, bot_token: str) -> dict:
     """Validate Telegram initData HMAC and freshness. Returns parsed dict or raises HTTPException."""
     if not init_data:
@@ -101,9 +114,11 @@ async def telegram_validate(body: dict = Body(...)):
     if user_id not in allowed:
         raise HTTPException(status_code=403, detail="not authorized staff")
 
+    admin_ids = _load_admin_user_ids()
+    role = "admin" if user_id in admin_ids else "staff"
     username = user.get("username") or user.get("first_name") or ""
     token = create_access_token(
-        {"sub": str(user_id), "scope": "staff-webapp", "role": "staff"},
+        {"sub": str(user_id), "scope": "staff-webapp", "role": role},
         expires_delta=timedelta(hours=_JWT_TTL_HOURS),
     )
 
@@ -112,6 +127,7 @@ async def telegram_validate(body: dict = Body(...)):
             "token": token,
             "user_id": user_id,
             "username": username,
+            "role": role,
             "expires_in": _JWT_TTL_HOURS * 3600,
         }
     )
