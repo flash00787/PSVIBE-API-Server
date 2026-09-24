@@ -29,7 +29,7 @@ Design notes
 import logging
 import random
 import string
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pymysql
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -37,6 +37,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from auth import get_staff_or_dashboard_user
 from mysql_db import get_connection as _get_conn
 from mysql_db import query as _q
+from mysql_db import execute as _ex
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,159 @@ async def _balances_by_name() -> dict:
 
 def _iso(v):
     return v.isoformat() if hasattr(v, "isoformat") else v
+
+
+# ── Daily account balance open/close (Staff App) ────────────────────────────
+# Owner 2026-09-24: staff opens/closes the daily balance for the 4 shop accounts
+# (Cash, WavePay, KPay, AYA Pay). Owner accounts (ACM's Acc + KBZ Bank) excluded.
+
+_daily_bal_table_ready = False
+
+
+def _mmt_now_str() -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=6, minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _mmt_today_str() -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=6, minutes=30)).strftime("%Y-%m-%d")
+
+
+def _ensure_daily_balances_table() -> None:
+    global _daily_bal_table_ready
+    if _daily_bal_table_ready:
+        return
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS daily_account_balances (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    branch_id INT NOT NULL DEFAULT 1,
+                    balance_date DATE NOT NULL,
+                    account VARCHAR(50) NOT NULL,
+                    opening_balance DECIMAL(12,2) DEFAULT 0,
+                    closing_balance DECIMAL(12,2) DEFAULT 0,
+                    status ENUM('open','closed') NOT NULL DEFAULT 'open',
+                    opened_by VARCHAR(100) DEFAULT NULL,
+                    opened_at DATETIME DEFAULT NULL,
+                    closed_by VARCHAR(100) DEFAULT NULL,
+                    closed_at DATETIME DEFAULT NULL,
+                    UNIQUE KEY uniq_date_account (balance_date, account)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+        conn.commit()
+        _daily_bal_table_ready = True
+    finally:
+        conn.close()
+
+
+@router.get("/daily-balances/today")
+async def daily_balances_today(user: dict = Depends(get_staff_or_dashboard_user)):
+    """Today's daily balance open/close state for the 4 operational accounts."""
+    _ensure_daily_balances_table()
+    today = _mmt_today_str()
+    for acc in _OPERATIONAL:
+        if not _q("SELECT id FROM daily_account_balances WHERE balance_date=%s AND account=%s", (today, acc)):
+            _ex("INSERT INTO daily_account_balances (balance_date, account, status) VALUES (%s,%s,'open')", (today, acc))
+    rows = _q("SELECT * FROM daily_account_balances WHERE balance_date=%s ORDER BY id", (today,))
+    bals = await _balances_by_name()
+    out = []
+    for r in rows:
+        acc = r["account"]
+        opening = float(r["opening_balance"] or 0)
+        closing = float(r["closing_balance"] or 0)
+        out.append({
+            "account": acc,
+            "status": r["status"],
+            "opening_balance": round(opening),
+            "closing_balance": round(closing),
+            "variance": round(closing - opening),
+            "live_balance": round(float(bals.get(acc, 0))),
+            "opened_by": r.get("opened_by") or "",
+            "closed_by": r.get("closed_by") or "",
+            "opened_at": _iso(r.get("opened_at")) if r.get("opened_at") else None,
+            "closed_at": _iso(r.get("closed_at")) if r.get("closed_at") else None,
+        })
+    return {"success": True, "date": today, "accounts": out}
+
+
+@router.post("/daily-balances/open")
+async def daily_balances_open(body: dict = Body(...), user: dict = Depends(get_staff_or_dashboard_user)):
+    """Set today's opening balance for an operational account."""
+    _ensure_daily_balances_table()
+    today = _mmt_today_str()
+    account = str(body.get("account") or "").strip()
+    if account not in _OPERATIONAL:
+        raise HTTPException(status_code=400, detail="Account must be one of Cash / WavePay / KPay / AYA Pay")
+    try:
+        opening = float(body.get("opening_balance", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="opening_balance must be a number")
+    opened_by = str(body.get("opened_by") or _caller_name(user) or user.get("username") or "").strip()
+    now_str = _mmt_now_str()
+    _ex(
+        """INSERT INTO daily_account_balances (balance_date, account, opening_balance, status, opened_by, opened_at)
+           VALUES (%s,%s,%s,'open',%s,%s)
+           ON DUPLICATE KEY UPDATE opening_balance=VALUES(opening_balance), status='open',
+             opened_by=VALUES(opened_by), opened_at=VALUES(opened_at)""",
+        (today, account, opening, opened_by, now_str),
+    )
+    return {"success": True, "message": f"{account} opened with {opening:,.0f} Ks"}
+
+
+@router.post("/daily-balances/close")
+async def daily_balances_close(body: dict = Body(...), user: dict = Depends(get_staff_or_dashboard_user)):
+    """Set today's closing balance for an operational account."""
+    _ensure_daily_balances_table()
+    today = _mmt_today_str()
+    account = str(body.get("account") or "").strip()
+    if account not in _OPERATIONAL:
+        raise HTTPException(status_code=400, detail="Account must be one of Cash / WavePay / KPay / AYA Pay")
+    try:
+        closing = float(body.get("closing_balance", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="closing_balance must be a number")
+    closed_by = str(body.get("closed_by") or _caller_name(user) or user.get("username") or "").strip()
+    now_str = _mmt_now_str()
+    row = _q("SELECT opening_balance FROM daily_account_balances WHERE balance_date=%s AND account=%s", (today, account))
+    opening = float(row[0]["opening_balance"] or 0) if row else 0.0
+    _ex(
+        """INSERT INTO daily_account_balances (balance_date, account, closing_balance, status, closed_by, closed_at)
+           VALUES (%s,%s,%s,'closed',%s,%s)
+           ON DUPLICATE KEY UPDATE closing_balance=VALUES(closing_balance), status='closed',
+             closed_by=VALUES(closed_by), closed_at=VALUES(closed_at)""",
+        (today, account, closing, closed_by, now_str),
+    )
+    variance = closing - opening
+    return {"success": True, "message": f"{account} closed. Variance {variance:+,.0f} Ks", "variance": round(variance)}
+
+
+@router.get("/daily-balances/history")
+async def daily_balances_history(days: int = Query(7, ge=1, le=90),
+                                 user: dict = Depends(get_staff_or_dashboard_user)):
+    """Recent daily balance history."""
+    _ensure_daily_balances_table()
+    rows = _q(
+        "SELECT * FROM daily_account_balances WHERE balance_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY) ORDER BY balance_date DESC, id",
+        (days,),
+    )
+    out = []
+    for r in rows:
+        opening = float(r["opening_balance"] or 0)
+        closing = float(r["closing_balance"] or 0)
+        out.append({
+            "date": str(r["balance_date"]),
+            "account": r["account"],
+            "status": r["status"],
+            "opening_balance": round(opening),
+            "closing_balance": round(closing),
+            "variance": round(closing - opening),
+            "opened_by": r.get("opened_by") or "",
+            "closed_by": r.get("closed_by") or "",
+        })
+    return {"success": True, "history": out}
 
 
 # ── GET /api/accounts/transferable ───────────────────────────────────────────

@@ -1,9 +1,9 @@
 {
-  "version": "1.6.11",
-  "version_code": 53,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.11.apk",
+  "version": "1.6.12",
+  "version_code": 54,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.12.apk",
   "size": 5077613,
-  "sha256": "86806c9143e534809d4836ffc172797b4d5010d0a12f4fd9bf9113e6df87596a",
+  "sha256": "1a344b5b359d5c9d9e4e0681314f6eec1d20bd6ac6fbe059ef656418dff2dd25",
   "released_at": "2026-09-24",
   "notes": "Refund deposit + payment-method picker in booking detail"
 }

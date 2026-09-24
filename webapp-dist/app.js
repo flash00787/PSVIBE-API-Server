@@ -3360,6 +3360,7 @@
       { en: "Account Balances", sub: "ACM's Acc & KBZ Bank", icon: "🏦", path: "/account-balances", ownerOnly: true },
       { en: "Transfer", sub: "Move money between accounts", icon: "🔄", path: "/transfer" },
       { en: "Transfer history", sub: "Recent account transfers", icon: "🧾", path: "/transfer-history" },
+      { en: "Daily Balance", sub: "Open / close daily balances", icon: "🌗", path: "/daily-balance" },
     ] },
     { id: "me", emoji: "🕒", en: "Me & staff", tone: "dim", items: [
       { en: "Attendance in / out", sub: "Shift check-in", icon: "🕐", path: "/attendance" },
@@ -5563,6 +5564,125 @@
     },
   };
 
+  // ── VIEW: Daily Balance — open/close daily balance per operational account ──
+  // Owner 2026-09-24: staff opens/closes the daily balance for the 4 shop accounts
+  // (Cash, WavePay, KPay, AYA Pay). Owner accounts (ACM's Acc + KBZ Bank) excluded.
+  const DailyBalance = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page" style="min-height:72vh">
+        <PageHeader title="Daily Balance" back="/more" />
+        <van-pull-refresh v-model="refreshing" @refresh="load">
+          <van-skeleton title :row="4" v-if="loading" style="margin:12px 16px" />
+          <template v-else>
+            <van-empty v-if="err" image="error" :description="err" />
+            <template v-else>
+              <div class="psv-note" style="text-align:center;padding:8px 16px 0">{{ date }}</div>
+              <div v-for="a in accounts" :key="a.account" class="psv-card" style="margin:10px 14px">
+                <div class="psv-acc-card__top">
+                  <span class="psv-acc-card__ico">{{ accIcon(a.account) }}</span>
+                  <span class="psv-acc-card__label">{{ a.account }}</span>
+                  <span class="psv-pill" :class="a.status === 'closed' ? 'psv-pill--gold' : 'psv-pill--warn'">{{ a.status === 'closed' ? 'Closed' : 'Open' }}</span>
+                </div>
+                <div class="psv-acc-card__bal psv-tabnum">{{ fKs(a.live_balance) }} <span class="psv-acc-card__unit">Ks</span></div>
+                <div class="psv-acc-card__meta">Live balance now</div>
+                <div class="psv-rows" style="margin-top:8px">
+                  <div class="psv-row"><span>Opening</span><b class="psv-tabnum">{{ a.opening_set ? fKs(a.opening_balance) + ' Ks' : '—' }}</b></div>
+                  <div class="psv-row" v-if="a.status === 'closed'"><span>Closing</span><b class="psv-tabnum">{{ fKs(a.closing_balance) }} Ks</b></div>
+                  <div class="psv-row" v-if="a.status === 'closed'"><span>Variance</span><b class="psv-tabnum" :style="a.variance !== 0 ? 'color:#f87171' : ''">{{ (a.variance > 0 ? '+' : '') + fKs(a.variance) }} Ks</b></div>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:10px">
+                  <button v-if="a.status !== 'closed'" class="psv-btn psv-btn--ghost psv-btn--block" @click="openSheet(a, 'open')">🔓 Open balance</button>
+                  <button v-if="a.status !== 'closed'" class="psv-btn psv-btn--primary psv-btn--block" @click="openSheet(a, 'close')">🔒 Close balance</button>
+                  <button v-else class="psv-btn psv-btn--ghost psv-btn--block" @click="openSheet(a, 'open')">↺ Re-open</button>
+                </div>
+              </div>
+              <div class="psv-readonly">🔒 Owner accounts (ACM's Acc &amp; KBZ Bank) are excluded from daily balance.</div>
+            </template>
+          </template>
+        </van-pull-refresh>
+
+        <van-popup v-model:show="sheetShow" position="bottom" round :close-on-click-overlay="!busy">
+          <div class="psv-sheet">
+            <div class="psv-sheet__handle"></div>
+            <div class="psv-sheet__body">
+              <div style="font-size:16px;font-weight:700;margin-bottom:12px">{{ sheetMode === 'open' ? '🔓 Open' : '🔒 Close' }} — {{ sheetAccount }}</div>
+              <div class="psv-field-card">
+                <div class="psv-field-label">{{ sheetMode === 'open' ? 'Opening balance' : 'Closing balance' }} (Ks)</div>
+                <input class="psv-input psv-tabnum" type="tel" inputmode="numeric" v-model="amountStr" placeholder="0" />
+                <div class="psv-xfer-quick" v-if="quick.length">
+                  <button v-for="q in quick" :key="q" class="psv-chip" @click="amountStr = String(q)">{{ fKs(q) }}</button>
+                </div>
+              </div>
+              <div class="psv-note" v-if="sheetMode === 'open'">Opening balance = money in this account at the start of today.</div>
+              <div class="psv-note" v-else>Closing balance = money counted in this account at the end of today.</div>
+              <div class="psv-btn-row" style="margin-top:12px">
+                <button class="psv-btn psv-btn--ghost psv-btn--block" @click="sheetShow = false" :disabled="busy">Cancel</button>
+                <button class="psv-btn psv-btn--primary psv-btn--block" @click="submit" :disabled="busy || !canSubmit">Save</button>
+              </div>
+            </div>
+          </div>
+        </van-popup>
+      </div>
+    `,
+    setup() {
+      const accounts = ref([]); const loading = ref(true); const refreshing = ref(false);
+      const err = ref(""); const date = ref("");
+      const sheetShow = ref(false); const sheetMode = ref("open"); const sheetAccount = ref("");
+      const sheetLive = ref(0); const amountStr = ref(""); const busy = ref(false);
+      const amount = computed(() => { const n = Math.floor(Number(amountStr.value) || 0); return n > 0 ? n : 0; });
+      const canSubmit = computed(() => !!sheetAccount.value && amount.value > 0);
+      const quick = computed(() => [sheetLive.value, 10000, 20000, 50000, 100000].filter((x, i, arr) => x > 0 && arr.indexOf(x) === i).slice(0, 5));
+      function norm(rows) {
+        return (rows || []).map((r) => ({
+          account: r.account,
+          status: r.status || "open",
+          opening_balance: Number(r.opening_balance) || 0,
+          opening_set: !!(r.opened_by || r.opened_at || (Number(r.opening_balance) > 0)),
+          closing_balance: Number(r.closing_balance) || 0,
+          variance: Number(r.variance) || 0,
+          live_balance: Number(r.live_balance) || 0,
+          opened_by: r.opened_by || "",
+          closed_by: r.closed_by || "",
+        }));
+      }
+      async function load() {
+        loading.value = true; err.value = "";
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/accounts/daily-balances/today")) || {};
+          date.value = d.date || "";
+          accounts.value = norm(d.accounts || []);
+        } catch (e) {
+          accounts.value = [];
+          const m = String((e && e.message) || e || "");
+          err.value = /not found|404|not available|405/i.test(m) ? "Daily balance is not available yet — please try again shortly." : (m || "Could not load daily balances — pull to refresh");
+        } finally { loading.value = false; refreshing.value = false; }
+      }
+      onMounted(load);
+      function openSheet(a, mode) {
+        sheetAccount.value = a.account; sheetMode.value = mode; sheetLive.value = a.live_balance;
+        amountStr.value = String(a.live_balance || ""); sheetShow.value = true; haptic("light");
+      }
+      async function submit() {
+        if (busy.value || !canSubmit.value) return;
+        busy.value = true;
+        const isOpen = sheetMode.value === "open";
+        const payload = { account: sheetAccount.value, [isOpen ? "opening_balance" : "closing_balance"]: amount.value, [isOpen ? "opened_by" : "closed_by"]: (PSV.getStaff() || {}).name || "" };
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/accounts/daily-balances/" + (isOpen ? "open" : "close"), { method: "POST", headers: HJSON, body: JSON.stringify(payload) })) || {};
+          sheetShow.value = false;
+          showToast(d.message || (isOpen ? "Opened " : "Closed ") + sheetAccount.value, "success");
+          try { PSV.invalidate("/api/accounts"); } catch (_e) {}
+          await load();
+        } catch (e) {
+          const m = String((e && e.message) || e || "");
+          showToast(m || "Could not save", "fail");
+        } finally { busy.value = false; }
+      }
+      return { accounts, loading, refreshing, err, date, sheetShow, sheetMode, sheetAccount, amountStr, busy, amount, canSubmit, quick, load, openSheet, submit, accIcon, fKs };
+    },
+  };
+
   // ── VIEW: Gift / Free card (WAVE 3) ─────────────────────
   const GiftCard = {
     components: { PageHeader },
@@ -5683,6 +5803,7 @@
     router.register("/account-balances", AccountBalances);
     router.register("/transfer", TransferScreen);
     router.register("/transfer-history", TransferHistory);
+    router.register("/daily-balance", DailyBalance);
     router.register("/gift-card", GiftCard);
     router.register("/rank-bonus", RankBonus);
   }
@@ -6627,6 +6748,7 @@
     app.component("AccountBalances", AccountBalances);
     app.component("TransferScreen", TransferScreen);
     app.component("TransferHistory", TransferHistory);
+    app.component("DailyBalance", DailyBalance);
 
     // WAVE 6 — Android back closes the top overlay first, then navigates.
     // Every Vant popup / action-sheet / dialog exposes a `show` prop; while one is
