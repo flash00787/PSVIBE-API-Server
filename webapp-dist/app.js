@@ -2326,12 +2326,27 @@
       const showNow = computed(() => isToday.value && nowPx.value >= 0 && nowPx.value <= trackW);
       // x of the single overlay now-line inside .psv-tl-inner (label column + hour offset)
       const nowLinePx = computed(() => TL_LABEL_W + nowPx.value);
-      // Elapsed-day shade (Osmo 2026-09-23): fill the track from the open hour (left edge)
-      // up to NOW so staff can see at a glance how much of the day has already passed.
-      const elapsedStyle = computed(() => ({
-        left: TL_LABEL_W + "px",
-        width: Math.max(0, nowPx.value) + "px",
-      }));
+      // Earliest real activity of the day (min start across non-cancelled bookings).
+      const dayStartMin = computed(() => {
+        let min = null;
+        for (const b of bookings.value) {
+          if (TL_DEAD.indexOf(bkKey(b.status)) >= 0) continue;
+          const r = minutesOf(b);
+          if (!r) continue;
+          if (min == null || r.st < min) min = r.st;
+        }
+        return min;
+      });
+      // Elapsed shade (Osmo 2026-09-23): fill the track from the first booking's START
+      // TIME up to NOW — not the fixed 9AM open hour — so it reflects actual activity.
+      const elapsedStyle = computed(() => {
+        const s = dayStartMin.value;
+        if (s == null) return { left: TL_LABEL_W + "px", width: "0px" };
+        const startPx = Math.max(0, ((s - TL_OPEN_HOUR * 60) / 60) * TL_HOUR_W);
+        const left = TL_LABEL_W + startPx;
+        const width = Math.max(0, nowPx.value - startPx);
+        return { left: left + "px", width: width + "px" };
+      });
       // WAVE 6 smoothness — per-console row metadata computed ONCE per data change
       // (Map keyed by console id). No O(rows x bookings) filtering during the 15s clock tick.
       const tlMeta = computed(() => {
