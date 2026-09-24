@@ -2705,7 +2705,7 @@ async def api_booking_conflicts(req: dict, auth=Depends(verify_api_key)):
 # ════════════════════════════════════════════════════════════════════════════
 @router.post("/bookings/{booking_id}/refund", response_model=GenericResponse, tags=["Bookings"],
           summary="Refund deposit for a cancelled booking")
-async def api_booking_refund(booking_id: int, auth=Depends(verify_api_key), request: Request = None):
+async def api_booking_refund(booking_id: int, auth=Depends(verify_api_key), request: Request = None, body: dict = Body(default=None)):
     """Refund deposit for a cancelled booking.
 
     Rules:
@@ -2770,9 +2770,11 @@ async def api_booking_refund(booking_id: int, auth=Depends(verify_api_key), requ
             if payload:
                 refunded_by = payload.get("name") or payload.get("sub") or ""
 
-        # Determine payment method for cash_movements
+        # Determine refund payment method for cash_movements (default = deposit method)
         deposit_method = booking.get("deposit_method", "kpay") or "kpay"
-        method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(deposit_method, deposit_method)
+        refund_method = ((body or {}).get("refund_method") or deposit_method).strip().lower()
+        _method_map = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "cash": "Cash"}
+        method_label = _method_map.get(refund_method, _method_map.get(deposit_method, deposit_method))
 
         # Update booking: deposit_status = 'refunded', add note
         import datetime as _refund_dt2
