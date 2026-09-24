@@ -94,7 +94,7 @@ def _mysql_get_settings_dict(prefix=None):
 
 
 # ── Payment method parser (used by topup, register, etc.) ──
-def insert_cash_movement_if_absent(movement_type: str, account: str, amount, note_pattern: str, note: str, staff_name: str = "system") -> bool:
+def insert_cash_movement_if_absent(movement_type: str, account: str, amount, note_pattern: str, note: str, staff_name: str = "system", category: str = None) -> bool:
     """Insert a cash_movement atomically only if no matching row exists.
 
     Uses INSERT ... SELECT ... WHERE NOT EXISTS so concurrent duplicate calls
@@ -105,10 +105,10 @@ def insert_cash_movement_if_absent(movement_type: str, account: str, amount, not
     try:
         # note_pattern is matched with LIKE (already includes trailing % by convention).
         affected = _mysql_delete_rows(
-            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-            "SELECT %s, %s, %s, %s, %s, NOW() "
+            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, category, created_at) "
+            "SELECT %s, %s, %s, %s, %s, %s, NOW() "
             "WHERE NOT EXISTS (SELECT 1 FROM cash_movements WHERE movement_type=%s AND note LIKE %s)",
-            (movement_type, account, amount, note, staff_name, movement_type, note_pattern),
+            (movement_type, account, amount, note, staff_name, category, movement_type, note_pattern),
         )
         inserted = affected is not None and int(affected) > 0
         if not inserted:

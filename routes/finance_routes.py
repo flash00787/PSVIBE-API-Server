@@ -420,7 +420,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             if _k in cash_map:
                 cash_map[_k] -= float(_r["total"] or 0)
         # Also subtract booking-related ejects (deposit reversals) to keep paired entries net zero
-        _bk_eject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'eject' AND (note IS NOT NULL AND (note LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) OR note LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
+        _bk_eject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'eject' AND (note IS NOT NULL AND (note LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) OR note LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) OR note LIKE CONCAT('[Refund]', CHAR(37)) OR note LIKE CONCAT('Refund Deposit', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
         for _r in _bk_eject_rows:
             _k = "eject|" + _r["account"]
             if _k in cash_map:
@@ -456,7 +456,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                 FROM cash_movements cm JOIN console_bookings cb
                   ON cb.id = CAST(REPLACE(cm.note, 'Forfeit BK#', '') AS UNSIGNED)
                 WHERE cm.movement_type='inject' AND cm.account IN ({_ph})
-                  AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status='redeemed'""".format(_ph=", ".join(["%s"] * len(_db_list))), (*_db_list,))["t"] or 0)
+                  AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status IN ('redeemed','refunded')""".format(_ph=", ".join(["%s"] * len(_db_list))), (*_db_list,))["t"] or 0)
             if _forfeit_redeemed > 0 and inject > 0:
                 inject -= min(inject, _forfeit_redeemed)
             # Formula: income - opex + transfers - stock_in_payments + inject - eject
@@ -778,7 +778,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             # magnitude of money that LEFT each account (defensive to sign drift)
             t_out = float(_mqo(f"SELECT COALESCE(SUM(ABS(amount)),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='transfer_out' AND created_at < %s", (*db_list, _end))["t"] or 0)
             inj = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='inject' AND (category IS NULL OR category <> 'topup') AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37)) AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
-            ej = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='eject' AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
+            ej = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='eject' AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) AND note NOT LIKE CONCAT('[Refund]', CHAR(37)) AND note NOT LIKE CONCAT('Refund Deposit', CHAR(37)) )) AND created_at < %s", (*db_list, _end))["t"] or 0)
             dv = float(_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({_ph}) AND movement_type='dividend' AND created_at < %s", (*db_list, _end))["t"] or 0)
 
             # 🆕 Targeted defensive: only cancel forfeit injects of REDEEMED bookings
@@ -787,7 +787,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 FROM cash_movements cm JOIN console_bookings cb
                   ON cb.id = CAST(REPLACE(cm.note, 'Forfeit BK#', '') AS UNSIGNED)
                 WHERE cm.movement_type='inject' AND cm.account IN ({_ph})
-                  AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status='redeemed'""", (*db_list,))["t"] or 0)
+                  AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status IN ('redeemed','refunded')""", (*db_list,))["t"] or 0)
             if _forfeit_redeemed > 0 and inj > 0:
                 inj -= min(inj, _forfeit_redeemed)
 
@@ -1044,12 +1044,12 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                         AND (note IS NULL OR (note NOT LIKE CONCAT('Topup', CHAR(37)) AND note NOT LIKE CONCAT('New member', CHAR(37))
                           AND note NOT LIKE CONCAT('Deposit #', CHAR(37)) AND note NOT LIKE CONCAT('BK#', CHAR(37)))) AND created_at < %s""", (*db_list, cutoff)) or {}).get("t", 0) or 0)
                 ej = float((_mqo(f"""SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='eject'
-                        AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)))) AND created_at < %s""", (*db_list, cutoff)) or {}).get("t", 0) or 0)
+                        AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) AND note NOT LIKE CONCAT('[Refund]', CHAR(37)) AND note NOT LIKE CONCAT('Refund Deposit', CHAR(37)))) AND created_at < %s""", (*db_list, cutoff)) or {}).get("t", 0) or 0)
                 # Targeted defensive: forfeit injects of REDEEMED bookings (deposit became income)
                 _fr = float((_mqo(f"""SELECT COALESCE(SUM(cm.amount),0) as t FROM cash_movements cm
                         JOIN console_bookings cb ON cb.id = CAST(REPLACE(cm.note, 'Forfeit BK#', '') AS UNSIGNED)
                         WHERE cm.movement_type='inject' AND cm.account IN ({ph})
-                          AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status='redeemed'""", (*db_list,)) or {}).get("t", 0) or 0)
+                          AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status IN ('redeemed','refunded')""", (*db_list,)) or {}).get("t", 0) or 0)
                 if _fr > 0 and inj > 0:
                     inj -= min(inj, _fr)
                 bal = income[key] - opex[key] + t_in - t_out + inj - ej  # t_out is a magnitude

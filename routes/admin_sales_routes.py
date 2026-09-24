@@ -480,6 +480,7 @@ def _reverse_outstanding_forfeits(booking_id):
                 f"Refund forfeit BK#{bk_str}%",
                 f"Refund forfeit BK#{bk_str} (deposit reverse - redeemed, session played) via {account}",
                 "system",
+                "deposit_refund",
             )
             reversed_count += 1
             reversed_total += reverse_amt

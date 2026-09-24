@@ -369,7 +369,7 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
                 insert_cash_movement_if_absent(
                     "eject", _meth_label, _dep_amt,
                     f"Refund forfeit BK#{booking_id}%",
-                    f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system")
+                    f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system", "deposit_refund")
                 logger.info(f"Rebook BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
             logger.info(f"Rebook BK#{booking_id}: deposit_status restored from forfeited → verified, cancelled_at cleared")
 
@@ -557,7 +557,7 @@ async def dashboard_delete_booking(booking_id: int, user: dict = Depends(get_cur
                     insert_cash_movement_if_absent(
                         "inject", _meth_label, dep_amt,
                         f"Forfeit BK#{booking_id}%",
-                        f"Forfeit BK#{booking_id} via {_meth_label}", "system")
+                        f"Forfeit BK#{booking_id} via {_meth_label}", "system", "deposit_forfeit")
                     logger.info(f"Dashboard cancel forfeit: BK#{booking_id} {dep_amt}Ks {_meth_label}")
                 except Exception as ce:
                     logger.warning(f"Dashboard cancel forfeit cash_movements BK#{booking_id}: {ce}")

@@ -425,7 +425,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                         insert_cash_movement_if_absent(
                             "eject", _meth_label, _dep_amt,
                             f"Refund forfeit BK#{booking_id}%",
-                            f"Refund forfeit BK#{booking_id} (deposit reverse - reactivated) via {_meth_label}", "system")
+                            f"Refund forfeit BK#{booking_id} (deposit reverse - reactivated) via {_meth_label}", "system", "deposit_refund")
                         logger.info(f"Console start BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
 
             # Safety: sync console_status to ensure no drift
@@ -655,7 +655,7 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                         insert_cash_movement_if_absent(
                             "eject", _meth_label, _dep_amt,
                             f"Refund forfeit BK#{linked_booking_id}%",
-                            f"Refund forfeit BK#{linked_booking_id} (deposit reverse - reactivated) via {_meth_label}", "system")
+                            f"Refund forfeit BK#{linked_booking_id} (deposit reverse - reactivated) via {_meth_label}", "system", "deposit_refund")
                         logger.info(f"Session start BK#{linked_booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
 
             # Safety: sync console_status to ensure no drift

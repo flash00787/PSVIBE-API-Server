@@ -386,7 +386,7 @@ async def api_booking_checkin(req: dict, request: Request, auth=Depends(verify_a
                     insert_cash_movement_if_absent(
                         "eject", _meth_label, _dep_amt,
                         f"Refund forfeit BK#{booking_id}%",
-                        f"Refund forfeit BK#{booking_id} (deposit reverse - reactivated via checkin) via {_meth_label}", "system")
+                        f"Refund forfeit BK#{booking_id} (deposit reverse - reactivated via checkin) via {_meth_label}", "system", "deposit_refund")
                     logger.info(f"Checkin BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
         except Exception:
             _chk_conn.rollback()
@@ -999,7 +999,7 @@ async def api_update_booking_status(booking_id: int, req: dict, request: Request
                         insert_cash_movement_if_absent(
                             "inject", _meth_label, _dep_amt,
                             f"Forfeit BK#{booking_id}%",
-                            f"Forfeit BK#{booking_id} via {_meth_label}", "system")
+                            f"Forfeit BK#{booking_id} via {_meth_label}", "system", "deposit_forfeit")
                         logger.info(f"api_update_booking_status forfeit: BK#{booking_id} {_dep_amt}Ks {_meth_label}")
                     except Exception as fe:
                         logger.warning(f"api_update_booking_status forfeit cash_movements BK#{booking_id}: {fe}")
@@ -1023,7 +1023,7 @@ async def api_update_booking_status(booking_id: int, req: dict, request: Request
                         insert_cash_movement_if_absent(
                             "eject", _meth_label, _dep_amt,
                             f"Refund forfeit BK#{booking_id}%",
-                            f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system")
+                            f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system", "deposit_refund")
                         logger.info(f"BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject), cancelled_at cleared")
 
             # 📢 Customer notification on confirm/cancel (fire-and-forget)
@@ -2237,7 +2237,7 @@ async def api_booking_cancel(req: dict, request: Request, auth=Depends(verify_ap
                     "inject", _method_label, _pre_deposit_amount,
                     f"Forfeit BK#{booking_id}%",
                     f"Forfeit BK#{booking_id} via {_method_label}",
-                    booking.get("staff_name", "") or _cancel_staff or "system")
+                    booking.get("staff_name", "") or _cancel_staff or "system", "deposit_forfeit")
                 logger.info(f"Forfeit deposit recorded: BK#{booking_id} {_pre_deposit_amount}Ks {_method_label}")
             except Exception as _fe:
                 logger.warning(f"Forfeit cash_movements BK#{booking_id} failed: {_fe}")
@@ -2788,9 +2788,9 @@ async def api_booking_refund(booking_id: int, auth=Depends(verify_api_key), requ
         # Record cash_movements eject
         note = f"[Refund] BK#{booking_id} via {method_label}"
         _mysql_exec(
-            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, NOW())",
-            ("eject", method_label, dep_amount, note, refunded_by or "admin")
+            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, category, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, NOW())",
+            ("eject", method_label, dep_amount, note, refunded_by or "admin", "deposit_refund")
         )
 
         # Notify customer via Telegram
@@ -2919,7 +2919,7 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
                             insert_cash_movement_if_absent(
                                 "inject", _meth_label, _dep_amt,
                                 f"Forfeit BK#{bk_id}%",
-                                f"Forfeit BK#{bk_id} via {_meth_label}", "system")
+                                f"Forfeit BK#{bk_id} via {_meth_label}", "system", "deposit_forfeit")
                             logger.info(f"Auto-cancel forfeit: BK#{bk_id} {_dep_amt}Ks {_meth_label}")
                     except Exception as _fe:
                         logger.warning(f"Auto-cancel forfeit cash_movements BK#{bk_id}: {_fe}")
@@ -3268,9 +3268,9 @@ async def api_deposit_verify(booking_id: int, req: dict, request: Request, auth=
         method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(deposit_method, deposit_method)
         note = f"Deposit #{booking_id} via {method_label}"
         _mysql_exec(
-            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, NOW())",
-            ("inject", method_label, deposit_amount, note, verified_by)
+            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, category, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, NOW())",
+            ("inject", method_label, deposit_amount, note, verified_by, "deposit")
         )
         
         # Customer notification (Telegram)
@@ -3378,6 +3378,7 @@ def _reverse_outstanding_forfeits(booking_id):
                 f"Refund forfeit BK#{bk_str}%",
                 f"Refund forfeit BK#{bk_str} (deposit reverse - redeemed, session played) via {account}",
                 "system",
+                "deposit_refund",
             )
             reversed_count += 1
             reversed_total += reverse_amt
