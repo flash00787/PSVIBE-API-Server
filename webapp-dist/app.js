@@ -1865,7 +1865,8 @@
           const payload = {
             voucher_no: form.voucher_no, member_id: member_id,
             console_id: form.console_id, mins: form.mins, base_rate: form.base_rate,
-            multiplier: form.multiplier, game_amt: final_game_amt, food_items: form.food_items,
+            multiplier: form.multiplier, game_amt: final_game_amt,
+            food_items: foodLines.value.map((l) => ({ name: l.name, qty: Number(l.qty) || 0, subtotal: (Number(l.qty) || 0) * (Number(l.price) || 0) })),
             food_total: form.food_total, discount: Number(form.discount) || 0, net_total: Math.max(0, rawCash.value - (Number(form.discount) || 0)),
             // NOTE: discount/net above are the MANUAL-only fallback. When promo_id or coupon_code
             // is present the server recomputes discount+net (compute_totals) and ignores these.
