@@ -2746,6 +2746,22 @@
           </div>
         </van-popup>
 
+        <!-- Refund payment method picker -->
+        <van-popup v-model:show="refundOpen" position="bottom" round class="psv-sheet">
+          <div class="psv-sheet__handle"></div>
+          <div class="psv-sheet__body">
+            <div class="psv-sheet-title">💸 Refund deposit — payment method</div>
+            <div class="psv-reason" v-for="m in refundMethods" :key="m.value" :class="{ 'is-on': refundPick === m.value }" @click="refundPick = m.value">
+              <div class="psv-reason__radio"></div>
+              <div class="psv-reason__main"><div class="psv-reason__t">{{ m.label }}</div></div>
+            </div>
+            <div class="psv-btn-row" style="margin-top:12px">
+              <button class="psv-btn psv-btn--ghost psv-btn--block" @click="refundOpen = false">Cancel</button>
+              <button class="psv-btn psv-btn--danger psv-btn--block" :disabled="!refundPick" @click="confirmRefund">Refund</button>
+            </div>
+          </div>
+        </van-popup>
+
         <!-- Deposit proof -->
         <van-popup v-model:show="proofOpen" position="bottom" round class="psv-sheet">
           <div class="psv-sheet__handle"></div>
@@ -2803,6 +2819,15 @@
       const reasonPick = ref("");
       const reasonNote = ref("");
       const reasonTarget = ref(null);
+      const refundOpen = ref(false);
+      const refundPick = ref("");
+      const refundTarget = ref(null);
+      const refundMethods = [
+        { value: "cash", label: "💵 Cash" },
+        { value: "kpay", label: "📱 KPay" },
+        { value: "wavepay", label: "📱 WavePay" },
+        { value: "aya_pay", label: "💳 AYA Pay" },
+      ];
       const proofOpen = ref(false);
       const proofFull = ref(false);
       const proof = reactive({ ref: "", isImg: false, booking_id: "", restricted: false, imgUrl: "", imgKey: "", imgLoading: false, imgError: "" });
@@ -2814,6 +2839,7 @@
 
       function hasDepositPending(b) { return ["paid", "pending"].includes(bkKey(b.deposit_status)); }
       function isVerified(b) { return bkKey(b.deposit_status) === "verified"; }
+      function canRefund(b) { return ["forfeited", "paid", "verified"].includes(bkKey(b.deposit_status)); }
       function depRef(b) { return b.deposit_ref || b.depositRef || b.deposit_slip || ""; }
       function depositText(b) {
         const s = bkKey(b.deposit_status);
@@ -2844,6 +2870,7 @@
       function detailActions(b) {
         const out = cardActions(b);
         if (isVerified(b)) out.push({ id: "redeem", en: "Redeem at sale", icon: "↩️", tone: "gold", kind: "redeem" });
+        if (canRefund(b)) out.push({ id: "refund", en: "Refund deposit", icon: "💸", tone: "danger", kind: "refund" });
         if (depRef(b)) out.push({ id: "proof", en: "View proof", icon: "👁", tone: "ghost", kind: "proof" });
         if (bkKey(b.status) === "active") out.push({ id: "consoles", en: "View session", icon: "🖥", tone: "ghost", kind: "consoles" });
         return out;
@@ -2985,6 +3012,29 @@
           router.push("/sales");
         } catch (e) { showToast("Failed: " + e.message, "fail"); }
       }
+      function openRefund(b) {
+        refundTarget.value = b;
+        const m = bkKey(b.deposit_method || b.depositMethod);
+        refundPick.value = (m === "wavepay" || m === "aya_pay" || m === "kpay") ? m : "kpay";
+        refundOpen.value = true;
+        haptic("light");
+      }
+      async function confirmRefund() {
+        const b = refundTarget.value;
+        if (!b || !refundPick.value) return;
+        const amt = Number(b.deposit_amount) || 0;
+        const label = (refundMethods.find((m) => m.value === refundPick.value) || {}).label || refundPick.value;
+        refundOpen.value = false;
+        const okc = await confirmBox("Refund deposit?", "Refund " + amt.toLocaleString() + " Ks from " + label + " for BK#" + b.id + ". This records the money going out and notifies the customer.", "Refund", "Cancel", true);
+        if (!okc) return;
+        busy.value = b.id;
+        try {
+          await PSV.apiCached("/api/bookings/" + b.id + "/refund", { method: "POST", headers: HJSON, body: JSON.stringify({ refund_method: refundPick.value }) });
+          haptic("medium"); showToast("Deposit refunded 💸", "success");
+          await afterMutation(b.id, { deposit_status: "refunded", status: "cancelled" });
+        } catch (e) { showToast("Failed: " + e.message, "fail"); }
+        finally { busy.value = null; }
+      }
       function resetProofImg() {
         if (proof.imgKey) { try { PSV.revokeBlob(proof.imgKey); } catch (_e) {} }
         proof.imgUrl = ""; proof.imgKey = ""; proof.imgLoading = false; proof.imgError = "";
@@ -3057,6 +3107,7 @@
         if (a.kind === "checkin") return doCheckin(b);
         if (a.kind === "verify") return doVerify(b);
         if (a.kind === "redeem") return doRedeem(b);
+        if (a.kind === "refund") return openRefund(b);
         if (a.kind === "proof") return showProof(b);
         if (a.kind === "reject") return openReason("reject", b);
         if (a.kind === "cancel") return openReason("cancel", b);
@@ -3077,6 +3128,7 @@
       return { chips: CHIPS, chip, chipHint, emptyText, rows, loading, refreshing, busy, detail, detailOpen, newOpen,
         view, setView, onPickTimeline,
         reasonOpen, reasonMode, reasonPick, reasonNote, reasonList, proofOpen, proof, proofFull, loadProof, maybeProofFull,
+        refundOpen, refundPick, refundMethods, confirmRefund, openRefund,
         bkStatus, depositText, depRef, cardActions, detailActions, setChip, goNew, onSaved, load, openDetail, runAction, confirmReason, fmt12h };
     },
   };
