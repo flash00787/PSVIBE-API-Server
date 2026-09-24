@@ -1,8 +1,19 @@
 {
-  "latest": "1.6.9",
-  "latest_code": 51,
-  "updated_at": "2026-09-21T19:06:45Z",
+  "latest": "1.6.10",
+  "latest_code": 52,
+  "updated_at": "2026-09-24T11:15:53Z",
   "versions": [
+    {
+      "version": "1.6.10",
+      "version_code": 52,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.10.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.10.apk",
+      "size": 5077613,
+      "sha256": "f220c080ab95d9b3df31145e28cc9617ba23ce127f0d343202e315bc7db9c392",
+      "released_at": "2026-09-24",
+      "notes": "server.url -> live webapp (fix: APK was bundling stale assets, not loading live); deposit auto-deduct + shared drafts + timeline + food breakdown"
+    },
     {
       "version": "1.6.9",
       "version_code": 51,

@@ -1,9 +1,9 @@
 {
-  "version": "1.6.9",
-  "version_code": 51,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.9.apk",
-  "size": 5076513,
-  "sha256": "64f75470ff920389dfc0162752b2cd32c793363472ac55026c8be7915ad8ddb6",
-  "released_at": "2026-09-21",
-  "notes": "Fix double-draft + Drafts count badge"
+  "version": "1.6.10",
+  "version_code": 52,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.10.apk",
+  "size": 5077613,
+  "sha256": "f220c080ab95d9b3df31145e28cc9617ba23ce127f0d343202e315bc7db9c392",
+  "released_at": "2026-09-24",
+  "notes": "server.url -> live webapp (fix: APK was bundling stale assets, not loading live); deposit auto-deduct + shared drafts + timeline + food breakdown"
 }
