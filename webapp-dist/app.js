@@ -55,6 +55,37 @@
   };
   const isOwnerBlock = (e) => /owner|admin|not allowed|pin|403|manage/i.test(String((e && e.message) || e || ""));
 
+  // ── 💾 Shared draft vouchers (server-backed, owner 2026-09-24) ──────────
+  // Drafts were localStorage-only (per device), so a draft saved on one phone
+  // was invisible to everyone else. Now stored in MySQL via /api/sales/drafts
+  // so ALL staff see the same parked vouchers. Read path caches briefly; every
+  // write goes through the server then reloads.
+  const DraftStore = {
+    async list() {
+      try {
+        const d = PSV.unwrap(await PSV.apiCached("/api/sales/drafts", {}, 10000));
+        return (d && d.drafts) || [];
+      } catch (_e) { return []; }
+    },
+    async save(draft) {
+      const d = PSV.unwrap(await PSV.api("/api/sales/drafts", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          draft_id: draft.id, label: draft.label, total: draft.total,
+          form: draft.form || {}, food: draft.food || []
+        })
+      }));
+      return d && d.draft_id;
+    },
+    async remove(id) {
+      try { await PSV.api("/api/sales/drafts/" + encodeURIComponent(id), { method: "DELETE" }); } catch (_e) {}
+    },
+    async clear() {
+      const list = await DraftStore.list();
+      for (const d of list) { await DraftStore.remove(d.id); }
+    },
+  };
+
   // ── Auth gate (standalone staff login) ──────────────────
   // Telegram path is NEVER gated (initData drives auth). Only the standalone
   // (no-initData) Android/WebView path shows the login screen.
@@ -346,8 +377,7 @@
 
   // ── 💾 Draft vouchers (owner 2026-09-20 16:23: "သီးသန့် စုပြပေးတာ ပို အဆင်ပြေမယ်") ──
   // A dedicated place for parked sale vouchers: staff fill a sale, park it as a draft while
-  // the money is settled later, then Restore & finish it from here.
-  const SALE_DRAFT_KEY = "psv_sale_drafts_v1";
+  // the money is settled later, then Restore & finish it from here. Server-backed (shared).
   const Drafts = {
     components: { PageHeader },
     template: `
@@ -381,8 +411,7 @@
     `,
     setup() {
       const drafts = ref([]);
-      function load() { try { drafts.value = JSON.parse(localStorage.getItem(SALE_DRAFT_KEY) || "[]") || []; } catch (_e) { drafts.value = []; } }
-      function save() { try { localStorage.setItem(SALE_DRAFT_KEY, JSON.stringify(drafts.value)); } catch (_e) {} }
+      function load() { DraftStore.list().then(function (arr) { drafts.value = arr; }); }
       const total = computed(() => drafts.value.reduce((a, d) => a + (Number(d.total) || 0), 0));
       function summary(d) {
         const f = d.form || {}; const bits = [];
@@ -392,11 +421,12 @@
         if ((d.food || []).length) bits.push((d.food || []).length + " food");
         return bits.join(" · ") || "—";
       }
-      function remove(id) { load(); drafts.value = drafts.value.filter((x) => x.id !== id); save(); haptic("light"); showToast("Draft removed", "success"); }
+      function remove(id) { DraftStore.remove(id).then(function () { load(); haptic("light"); showToast("Draft removed", "success"); }); }
       async function clearAll() {
-        const okc = await confirmBox("Delete all drafts?", drafts.value.length + " parked draft voucher(s) will be removed from this device.", "Delete all", "Cancel");
+        const okc = await confirmBox("Delete all drafts?", drafts.value.length + " parked draft voucher(s) will be removed for all staff.", "Delete all", "Cancel");
         if (!okc) return;
-        drafts.value = []; save(); showToast("Drafts cleared", "success");
+        await DraftStore.clear();
+        load(); showToast("Drafts cleared", "success");
       }
       function restore(d) {
         try { PSV.pendingSaleDraft = d; } catch (_e) {}
@@ -935,14 +965,11 @@
       // Owner 2026-09-20 16:35: drafts next to Today as their own tab.
       const draftsTab = ref([]);
       function loadDraftsTab() {
-        try { draftsTab.value = JSON.parse(localStorage.getItem(SALE_DRAFT_KEY) || "[]") || []; }
-        catch (_e) { draftsTab.value = []; }
+        DraftStore.list().then(function (arr) { draftsTab.value = arr; });
         return draftsTab.value;
       }
       function removeDraftTab(id) {
-        loadDraftsTab();
-        draftsTab.value = draftsTab.value.filter(function (x) { return x.id !== id; });
-        try { localStorage.setItem(SALE_DRAFT_KEY, JSON.stringify(draftsTab.value)); } catch (_e) {}
+        DraftStore.remove(id).then(function () { loadDraftsTab(); });
         haptic("light"); showToast("Draft removed", "success");
       }
       function restoreDraftTab(d) {
@@ -1264,17 +1291,14 @@
       // ── 💾 Sale drafts (owner 2026-09-20 16:20) ──────────────────────────────
       // "တခါတလေ voucher ထုတ်ထားပေမယ့် ပိုက်ဆံက ခဏနေ မှ ရှင်းတာ" — staff can park the whole
       // sale (member, console, game, mins, food cart, splits, discount) on the device and
-      // come back to it when the money arrives. Drafts never touch the server.
-      const DRAFT_KEY = SALE_DRAFT_KEY;
+      // come back to it when the money arrives. Drafts are server-backed (shared across staff).
       const saleDrafts = ref([]);
       const draftOpen = ref(false);
       function loadDrafts() {
-        try { saleDrafts.value = JSON.parse(localStorage.getItem(DRAFT_KEY) || "[]") || []; }
-        catch (_e) { saleDrafts.value = []; }
+        DraftStore.list().then(function (arr) { saleDrafts.value = arr; });
         return saleDrafts.value;
       }
-      function persistDrafts() {
-        try { localStorage.setItem(DRAFT_KEY, JSON.stringify(saleDrafts.value)); } catch (_e) {}
+      function notifyDraftsChanged() {
         try { window.dispatchEvent(new Event("psv:drafts-changed")); } catch (_e) {}
       }
       function openDrafts() { loadDrafts(); draftOpen.value = true; haptic("light"); }
@@ -1298,27 +1322,25 @@
       }
       function gotoDrafts() { haptic("light"); router.push("/drafts"); }
       let restoredDraftId = null;
-      function saveDraft() {
+      async function saveDraft() {
         const bits = [];
         if (form.member_id) bits.push(form.member_id);
         else if (form.member_search) bits.push(form.member_search);
         if (form.console_id) bits.push(form.console_id);
         if (Number(form.mins)) bits.push(Number(form.mins) + "m");
         const snap = {
-          id: "D" + Date.now(), ts: Date.now(),
-          at: PSV.todayMMT() + " " + new Date().toTimeString().slice(0, 5),
           total: Number(cashNetTotal.value) || 0,
           label: (bits.join(" · ") || "Draft") + " · " + fKs(Number(cashNetTotal.value) || 0) + " Ks",
           form: JSON.parse(JSON.stringify(form)),
           food: JSON.parse(JSON.stringify(foodLines.value || [])),
         };
+        await DraftStore.save(snap);
         loadDrafts();
-        saleDrafts.value.unshift(snap);
-        persistDrafts();
+        notifyDraftsChanged();
         draftOpen.value = false;
         haptic("medium");
         resetSale();
-        showToast("Draft saved ✓ (" + saleDrafts.value.length + ") — form cleared", "success");
+        showToast("Draft saved ✓ — form cleared", "success");
       }
       function restoreDraft(d) {
         if (!d) return;
@@ -1328,17 +1350,18 @@
         foodLines.value = JSON.parse(JSON.stringify(d.food || []));
         try { recomputeFood(); } catch (_e) {}
         restoredDraftId = d.id;
-        loadDrafts();
+        // Consumed into the form → remove from server + local list (same as old localStorage behavior).
+        DraftStore.remove(d.id);
         saleDrafts.value = saleDrafts.value.filter(function (x) { return x.id !== d.id; });
-        persistDrafts();
+        notifyDraftsChanged();
         draftOpen.value = false;
         haptic("medium");
         showToast("Draft restored ✓ — Save Sale when the money is settled", "success");
       }
       function deleteDraft(id) {
-        loadDrafts();
+        DraftStore.remove(id);
         saleDrafts.value = saleDrafts.value.filter(function (x) { return x.id !== id; });
-        persistDrafts();
+        notifyDraftsChanged();
         showToast("Draft removed", "success");
       }
       loadDrafts();
@@ -1654,6 +1677,20 @@
               });
               recomputeFood();
             }).catch(() => {});
+            // 🧾 Session-end deposit settlement (owner 2026-09-24): a booking that just
+            // ended may carry a verified deposit that must be deducted from the final
+            // voucher. probeDeposits() only sees confirmed/checked_in rows, and the
+            // booking is now 'done', so fetch it directly and auto-apply here.
+            PSV.apiCached("/api/bookings/" + encodeURIComponent(pending.booking_id)).then((res) => {
+              const bd = PSV.unwrap(res);
+              const bk = (bd && bd.booking) || {};
+              const dstatus = String(bk.deposit_status || bk.depositStatus || "").toLowerCase();
+              const damt = Number(bk.deposit_amount || bk.depositAmount) || 0;
+              if (dstatus === "verified" && damt > 0) {
+                depositRedeem.value = { booking_id: pending.booking_id, amount: damt, method: bk.deposit_method || "", ts: Date.now() };
+                depositApplied.value = true;
+              }
+            }).catch(() => {});
           }
         }
       }
@@ -1682,16 +1719,12 @@
         if (form.console_id) bits.push(form.console_id);
         if (Number(form.mins)) bits.push(Number(form.mins) + "m");
         const snap = {
-          id: "D" + Date.now(), ts: Date.now(),
-          at: PSV.todayMMT() + " " + new Date().toTimeString().slice(0, 5),
           total: Number(cashNetTotal.value) || 0,
           label: (bits.join(" · ") || "Draft") + " · " + fKs(Number(cashNetTotal.value) || 0) + " Ks",
           form: JSON.parse(JSON.stringify(form)),
           food: JSON.parse(JSON.stringify(foodLines.value || [])),
         };
-        loadDrafts();
-        saleDrafts.value.unshift(snap);
-        persistDrafts();
+        DraftStore.save(snap).then(function () { loadDrafts(); notifyDraftsChanged(); });
         showToast("💾 Saved as draft — find it in Drafts", "success");
       }
       onMounted(() => { saleLeaveHook = autoSaveDraft; });
@@ -2400,7 +2433,14 @@
         if (st == null) return null;
         const dur = Number(b.durationMins || b.duration_mins || b.planned_duration_mins) || 0;
         const et = tlMin(b.endTime || b.end_time || b.planned_end);
-        let end = dur > 0 ? (st + dur) : (et != null ? et : st + 60);
+        const isLive = TL_LIVE.indexOf(bkKey(b.status)) >= 0;
+        // Live no-timer session (dur=0) → bar runs from started time up to NOW, not a
+        // fixed 1h block (Osmo 2026-09-24). NOTE: the backend computes endTime as
+        // start+0 for no-timer rows, so et === st and must NOT be treated as a real end.
+        let end;
+        if (dur > 0) end = st + dur;
+        else if (isLive) end = Math.max(tlNowMin(), st);
+        else end = (et != null && et > st) ? et : st + 60;
         if (end <= st) end = st + 60;
         // Owner spec: a forfeited booking shows as a 1-hour block only (it never played).
         if (tlIsForfeit(b) && end > st + 60) end = st + 60;

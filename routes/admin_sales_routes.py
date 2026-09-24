@@ -1146,3 +1146,84 @@ async def api_opex_summary(
 # ================================================================
 #  WALLET — deduct/bonus (Sale Bot calls this when member plays)
 # ================================================================
+
+
+# ================================================================
+#  SALE DRAFTS — shared draft vouchers (owner 2026-09-24)
+#  Drafts were localStorage-only (per device), so a draft saved on
+#  one staff phone was invisible to everyone else. Moved to MySQL
+#  so all staff see the same parked vouchers.
+# ================================================================
+@router.get("/sales/drafts", response_model=GenericResponse, tags=["Sales"], summary="List shared draft vouchers [MySQL]")
+async def api_sale_drafts_list(auth=Depends(verify_api_key)):
+    try:
+        rows = _mysql_query(
+            "SELECT id, staff_name, label, total, form_json, food_json, created_at "
+            "FROM sale_drafts ORDER BY id DESC")
+        drafts = []
+        for r in rows:
+            d = {
+                "id": r["id"],
+                "staff_name": r.get("staff_name") or "",
+                "label": r.get("label") or "",
+                "total": float(r.get("total") or 0),
+                "at": (str(r.get("created_at") or ""))[:16],
+            }
+            try:
+                d["form"] = _json.loads(r["form_json"]) if r.get("form_json") else {}
+            except Exception:
+                d["form"] = {}
+            try:
+                d["food"] = _json.loads(r["food_json"]) if r.get("food_json") else []
+            except Exception:
+                d["food"] = []
+            drafts.append(d)
+        return ok({"drafts": drafts})
+    except Exception as e:
+        logger.error("sales/drafts list failed: %s", e)
+        return error_response(message=str(e))
+
+
+@router.post("/sales/drafts", response_model=GenericResponse, tags=["Sales"], summary="Save a shared draft voucher [MySQL]")
+async def api_sale_drafts_save(req: dict, request: Request, auth=Depends(verify_api_key)):
+    """Persist a parked sale voucher. Body: {label, total, form, food}.
+
+    If ``draft_id`` is present the existing row is updated, else a new one is created.
+    Returns the server draft id so the client can reconcile its local copy.
+    """
+    try:
+        draft_id = req.get("draft_id") or req.get("id")
+        label = (req.get("label") or "")[:255]
+        try:
+            total = float(req.get("total") or 0)
+        except Exception:
+            total = 0.0
+        staff = staff_audit.identity_from_request(request, req)
+        form_obj = req.get("form") if isinstance(req.get("form"), dict) else {}
+        food_arr = req.get("food") if isinstance(req.get("food"), list) else []
+        form_json = _json.dumps(form_obj, ensure_ascii=False)
+        food_json = _json.dumps(food_arr, ensure_ascii=False)
+
+        if draft_id:
+            _mysql_exec(
+                "UPDATE sale_drafts SET label=%s, total=%s, form_json=%s, food_json=%s, staff_name=%s WHERE id=%s",
+                (label, total, form_json, food_json, staff, int(draft_id)))
+            return ok({"draft_id": int(draft_id)})
+
+        new_id = _mysql_exec(
+            "INSERT INTO sale_drafts (label, total, form_json, food_json, staff_name) VALUES (%s,%s,%s,%s,%s)",
+            (label, total, form_json, food_json, staff))
+        return ok({"draft_id": new_id})
+    except Exception as e:
+        logger.error("sales/drafts save failed: %s", e)
+        return error_response(message=str(e))
+
+
+@router.delete("/sales/drafts/{draft_id}", response_model=GenericResponse, tags=["Sales"], summary="Delete a shared draft voucher [MySQL]")
+async def api_sale_drafts_delete(draft_id: int, auth=Depends(verify_api_key)):
+    try:
+        _mysql_exec("DELETE FROM sale_drafts WHERE id=%s", (draft_id,))
+        return ok({"deleted": draft_id})
+    except Exception as e:
+        logger.error("sales/drafts delete failed: %s", e)
+        return error_response(message=str(e))
