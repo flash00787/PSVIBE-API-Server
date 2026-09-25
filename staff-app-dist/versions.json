@@ -1,8 +1,30 @@
 {
-  "latest": "1.6.12",
-  "latest_code": 54,
-  "updated_at": "2026-09-24T20:30:58Z",
+  "latest": "1.6.14",
+  "latest_code": 56,
+  "updated_at": "2026-09-25T10:37:24Z",
   "versions": [
+    {
+      "version": "1.6.14",
+      "version_code": 56,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.14.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.14.apk",
+      "size": 5079701,
+      "sha256": "f5923b5d66d4e1b6286619d1a72cef2bbe6e9f74f323147bd98c59d3c45914fb",
+      "released_at": "2026-09-25",
+      "notes": "Auto-bind fix: walk-in guest no longer hijacks future booking (C10 5pm case)"
+    },
+    {
+      "version": "1.6.13",
+      "version_code": 55,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.13.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.13.apk",
+      "size": 5079481,
+      "sha256": "b607e0a7c61781ea4822560a43da6db23791bdc05245a6137a96757c8fdab48c",
+      "released_at": "2026-09-25",
+      "notes": "New Booking time picker fix (Vant 4 columns)"
+    },
     {
       "version": "1.6.12",
       "version_code": 54,

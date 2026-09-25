@@ -3923,7 +3923,11 @@
           startBind.selId = null;
           startForm.linked_booking_id = null;
           const want = pendingBindId.value;
-          const target = (want != null && cands.find((x) => String(x.id) === String(want))) || (cands.length === 1 ? cands[0] : null);
+          // Only auto-bind on an EXPLICIT deep-link (?bind=<id> from booking detail).
+          // Never auto-bind a single candidate on a plain walk-in start — otherwise a
+          // future booking (e.g. 5pm) silently hijacks a guest session and auto
+          // check-ins it. (owner Osmo 2026-09-25)
+          const target = want != null ? cands.find((x) => String(x.id) === String(want)) : null;
           if (target) selectBind(target);
           pendingBindId.value = null;
         } catch (e) { startBind.bookings = []; startBind.selId = null; }
@@ -3936,9 +3940,13 @@
         if (val === "Guest") {
           startForm.member_id = "";
           startForm.member_name = "Guest";
+          startForm.linked_booking_id = null;
+          startBind.selId = null;
         } else {
           startForm.member_id = val;
           startForm.member_name = String(opt.text || val).replace(/\s*\(.*\)$/, "");
+          startForm.linked_booking_id = null;
+          startBind.selId = null;
         }
         startMemberPicker.value = false;
       }
@@ -3959,6 +3967,9 @@
           startForm.member_id = v;
           startForm.member_name = it ? it.label : v;
         }
+        // Picking a member manually (walk-in) clears any prior booking bind.
+        startForm.linked_booking_id = null;
+        startBind.selId = null;
         startMemberPicker.value = false;
       }
       function pickStartGameVal(val) {

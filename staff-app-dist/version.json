@@ -1,9 +1,9 @@
 {
-  "version": "1.6.12",
-  "version_code": 54,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.12.apk",
-  "size": 5077613,
-  "sha256": "1a344b5b359d5c9d9e4e0681314f6eec1d20bd6ac6fbe059ef656418dff2dd25",
-  "released_at": "2026-09-24",
-  "notes": "Refund deposit + payment-method picker in booking detail"
+  "version": "1.6.14",
+  "version_code": 56,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.14.apk",
+  "size": 5079701,
+  "sha256": "f5923b5d66d4e1b6286619d1a72cef2bbe6e9f74f323147bd98c59d3c45914fb",
+  "released_at": "2026-09-25",
+  "notes": "Auto-bind fix: walk-in guest no longer hijacks future booking (C10 5pm case)"
 }
