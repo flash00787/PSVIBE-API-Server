@@ -1,9 +1,9 @@
 {
-  "version": "1.6.14",
-  "version_code": 56,
-  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.14.apk",
-  "size": 5079701,
-  "sha256": "f5923b5d66d4e1b6286619d1a72cef2bbe6e9f74f323147bd98c59d3c45914fb",
+  "version": "1.6.15",
+  "version_code": 57,
+  "apk_url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.15.apk",
+  "size": 5079693,
+  "sha256": "49900fe007b32aebee5960e1c94c00a8ea17b6425ef497166dfd061b3ede37ff",
   "released_at": "2026-09-25",
-  "notes": "Auto-bind fix: walk-in guest no longer hijacks future booking (C10 5pm case)"
+  "notes": "Remove Daily Till + once-per-day daily balance open/close"
 }

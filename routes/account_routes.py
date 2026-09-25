@@ -225,6 +225,10 @@ async def daily_balances_open(body: dict = Body(...), user: dict = Depends(get_s
         raise HTTPException(status_code=400, detail="opening_balance must be a number")
     opened_by = str(body.get("opened_by") or _caller_name(user) or user.get("username") or "").strip()
     now_str = _mmt_now_str()
+    # Once per day: reject a second open for the same account today.
+    existing = _q("SELECT opened_at FROM daily_account_balances WHERE balance_date=%s AND account=%s", (today, account))
+    if existing and existing[0].get("opened_at"):
+        raise HTTPException(status_code=400, detail=f"{account} already opened today")
     _ex(
         """INSERT INTO daily_account_balances (balance_date, account, opening_balance, status, opened_by, opened_at)
            VALUES (%s,%s,%s,'open',%s,%s)
@@ -249,7 +253,10 @@ async def daily_balances_close(body: dict = Body(...), user: dict = Depends(get_
         raise HTTPException(status_code=400, detail="closing_balance must be a number")
     closed_by = str(body.get("closed_by") or _caller_name(user) or user.get("username") or "").strip()
     now_str = _mmt_now_str()
-    row = _q("SELECT opening_balance FROM daily_account_balances WHERE balance_date=%s AND account=%s", (today, account))
+    row = _q("SELECT opening_balance, status FROM daily_account_balances WHERE balance_date=%s AND account=%s", (today, account))
+    # Once per day: reject a second close for the same account today.
+    if row and (row[0].get("status") or "").lower() == "closed":
+        raise HTTPException(status_code=400, detail=f"{account} already closed today")
     opening = float(row[0]["opening_balance"] or 0) if row else 0.0
     _ex(
         """INSERT INTO daily_account_balances (balance_date, account, closing_balance, status, closed_by, closed_at)

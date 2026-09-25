@@ -5603,9 +5603,8 @@
                   <div class="psv-row" v-if="a.status === 'closed'"><span>Variance</span><b class="psv-tabnum" :style="a.variance !== 0 ? 'color:#f87171' : ''">{{ (a.variance > 0 ? '+' : '') + fKs(a.variance) }} Ks</b></div>
                 </div>
                 <div style="display:flex;gap:8px;margin-top:10px">
-                  <button v-if="a.status !== 'closed'" class="psv-btn psv-btn--ghost psv-btn--block" @click="openSheet(a, 'open')">🔓 Open balance</button>
-                  <button v-if="a.status !== 'closed'" class="psv-btn psv-btn--primary psv-btn--block" @click="openSheet(a, 'close')">🔒 Close balance</button>
-                  <button v-else class="psv-btn psv-btn--ghost psv-btn--block" @click="openSheet(a, 'open')">↺ Re-open</button>
+                  <button v-if="!a.opening_set" class="psv-btn psv-btn--ghost psv-btn--block" @click="openSheet(a, 'open')">🔓 Open balance</button>
+                  <button v-if="a.opening_set && a.status !== 'closed'" class="psv-btn psv-btn--primary psv-btn--block" @click="openSheet(a, 'close')">🔒 Close balance</button>
                 </div>
               </div>
               <div class="psv-readonly">🔒 Owner accounts (ACM's Acc &amp; KBZ Bank) are excluded from daily balance.</div>

@@ -1,8 +1,19 @@
 {
-  "latest": "1.6.14",
-  "latest_code": 56,
-  "updated_at": "2026-09-25T10:37:24Z",
+  "latest": "1.6.15",
+  "latest_code": 57,
+  "updated_at": "2026-09-25T14:22:08Z",
   "versions": [
+    {
+      "version": "1.6.15",
+      "version_code": 57,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.15.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.15.apk",
+      "size": 5079693,
+      "sha256": "49900fe007b32aebee5960e1c94c00a8ea17b6425ef497166dfd061b3ede37ff",
+      "released_at": "2026-09-25",
+      "notes": "Remove Daily Till + once-per-day daily balance open/close"
+    },
     {
       "version": "1.6.14",
       "version_code": 56,
