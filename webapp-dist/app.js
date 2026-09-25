@@ -3224,9 +3224,9 @@
       const TIME_HOURS = ["1","2","3","4","5","6","7","8","9","10","11","12"];
       const TIME_MINS = ["00","05","10","15","20","25","30","35","40","45","50","55"];
       const timeColumns = [
-        { values: TIME_HOURS },
-        { values: TIME_MINS },
-        { values: ["AM", "PM"] },
+        TIME_HOURS.map((h) => ({ text: h, value: h })),
+        TIME_MINS.map((m) => ({ text: m, value: m })),
+        ["AM", "PM"].map((x) => ({ text: x, value: x })),
       ];
       const filteredMembers = computed(() => {
         const q = (memberQuery.value || "").trim().toLowerCase();
