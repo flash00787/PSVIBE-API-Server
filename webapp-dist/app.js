@@ -2329,10 +2329,11 @@
       // ── Timeline visibility (owner spec 2026-09-20) ────────────────────────
       // Show ONLY:  • live sessions (active / checked_in)
       //             • confirmed bookings that are still UPCOMING (start >= now MMT)
+      //             • pending bookings (awaiting approve/reject, incl. deposit-paid) — Osmo 2026-09-25
       //             • forfeited-deposit bookings, drawn as a MAX 1 HOUR block
-      // Hide: done / cancelled / rejected / no-show / past-confirmed / pending.
+      // Hide: done / cancelled / rejected / no-show / past-confirmed.
       const TL_LIVE = ["active", "checked_in"];
-      const TL_UPCOMING = ["confirmed", "pending_check_in"];
+      const TL_UPCOMING = ["confirmed", "pending_check_in", "pending"];
       const clock = ref(Date.now());
       const gridHours = TL_GRID_HOURS;
       const trackW = (TL_CLOSE_HOUR - TL_OPEN_HOUR + 1) * TL_HOUR_W;
@@ -5607,6 +5608,26 @@
                   <button v-if="a.opening_set && a.status !== 'closed'" class="psv-btn psv-btn--primary psv-btn--block" @click="openSheet(a, 'close')">🔒 Close balance</button>
                 </div>
               </div>
+              <div class="psv-card" style="margin:10px 14px">
+                <div style="font-weight:700;padding:4px 0 10px">📜 History (7 days)</div>
+                <div v-if="histLoading" class="psv-note">Loading history…</div>
+                <div v-else-if="!histGroups.length" class="psv-note">No history yet</div>
+                <template v-else>
+                  <div v-for="g in histGroups" :key="g.date" style="margin-bottom:12px">
+                    <div style="font-size:12px;color:#8a93a6;margin-bottom:4px">{{ g.date }}</div>
+                    <table class="psv-table" style="width:100%">
+                      <tbody>
+                        <tr v-for="h in g.rows" :key="h.account">
+                          <td style="padding:3px 0">{{ h.account }}</td>
+                          <td class="psv-tabnum" style="text-align:right;padding:3px 4px">{{ h.opening_balance > 0 ? fKs(h.opening_balance) : '—' }}</td>
+                          <td class="psv-tabnum" style="text-align:right;padding:3px 4px">{{ h.status === 'closed' ? fKs(h.closing_balance) : '—' }}</td>
+                          <td class="psv-tabnum" style="text-align:right;padding:3px 0" :style="h.variance !== 0 ? 'color:#f87171' : ''">{{ h.status === 'closed' ? ((h.variance > 0 ? '+' : '') + fKs(h.variance)) : '—' }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </template>
+              </div>
               <div class="psv-readonly">🔒 Owner accounts (ACM's Acc &amp; KBZ Bank) are excluded from daily balance.</div>
             </template>
           </template>
@@ -5639,10 +5660,16 @@
       const accounts = ref([]); const loading = ref(true); const refreshing = ref(false);
       const err = ref(""); const date = ref("");
       const sheetShow = ref(false); const sheetMode = ref("open"); const sheetAccount = ref("");
+      const hist = ref([]); const histLoading = ref(false);
       const sheetLive = ref(0); const amountStr = ref(""); const busy = ref(false);
       const amount = computed(() => { const n = Math.floor(Number(amountStr.value) || 0); return n > 0 ? n : 0; });
       const canSubmit = computed(() => !!sheetAccount.value && amount.value > 0);
       const quick = computed(() => [sheetLive.value, 10000, 20000, 50000, 100000].filter((x, i, arr) => x > 0 && arr.indexOf(x) === i).slice(0, 5));
+      const histGroups = computed(() => {
+        const m = {};
+        for (const h of hist.value) { (m[h.date] = m[h.date] || []).push(h); }
+        return Object.keys(m).sort().reverse().map((d) => ({ date: d, rows: m[d] }));
+      });
       function norm(rows) {
         return (rows || []).map((r) => ({
           account: r.account,
@@ -5669,6 +5696,21 @@
         } finally { loading.value = false; refreshing.value = false; }
       }
       onMounted(load);
+      async function loadHistory() {
+        histLoading.value = true;
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/accounts/daily-balances/history?days=7")) || {};
+          hist.value = (d.history || []).map((h) => ({
+            date: h.date, account: h.account, status: h.status,
+            opening_balance: Number(h.opening_balance) || 0,
+            closing_balance: Number(h.closing_balance) || 0,
+            variance: Number(h.variance) || 0,
+            opened_by: h.opened_by || "", closed_by: h.closed_by || "",
+          }));
+        } catch (_e) { hist.value = []; }
+        finally { histLoading.value = false; }
+      }
+      onMounted(() => { load(); loadHistory(); });
       function openSheet(a, mode) {
         sheetAccount.value = a.account; sheetMode.value = mode; sheetLive.value = a.live_balance;
         amountStr.value = String(a.live_balance || ""); sheetShow.value = true; haptic("light");
@@ -5689,7 +5731,7 @@
           showToast(m || "Could not save", "fail");
         } finally { busy.value = false; }
       }
-      return { accounts, loading, refreshing, err, date, sheetShow, sheetMode, sheetAccount, amountStr, busy, amount, canSubmit, quick, load, openSheet, submit, accIcon, fKs };
+      return { accounts, loading, refreshing, err, date, histGroups, histLoading, sheetShow, sheetMode, sheetAccount, amountStr, busy, amount, canSubmit, quick, load, loadHistory, openSheet, submit, accIcon, fKs };
     },
   };
 

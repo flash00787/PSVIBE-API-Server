@@ -1,8 +1,19 @@
 {
-  "latest": "1.6.15",
-  "latest_code": 57,
-  "updated_at": "2026-09-25T14:22:08Z",
+  "latest": "1.6.16",
+  "latest_code": 58,
+  "updated_at": "2026-09-25T14:38:55Z",
   "versions": [
+    {
+      "version": "1.6.16",
+      "version_code": 58,
+      "arch": "universal",
+      "file": "psvibe-staff-1.6.16.apk",
+      "url": "https://ps-vibe.com/staff-app/psvibe-staff-1.6.16.apk",
+      "size": 5080249,
+      "sha256": "f702f0b4711a2d9c1cb073f0ff7b15829abdf325ee3b3c08cda1a25a50877bbb",
+      "released_at": "2026-09-25",
+      "notes": "Daily Balance history (staff+dashboard) + timeline shows pending bookings"
+    },
     {
       "version": "1.6.15",
       "version_code": 57,
