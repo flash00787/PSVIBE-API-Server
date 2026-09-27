@@ -399,7 +399,9 @@ def commit_deposit_redemption(
         out["method"] = dep.get("method") or ""
 
         # Already redeemed / forfeited / refunded → nothing to do.
-        if dep.get("status") != "verified" or dep.get("amount", 0) <= 0:
+        # 2026-09-26 (owner): also accept a SUBMITTED-but-unverified deposit ('paid')
+        # — a booking-bound session end must deduct it (staff see it on the voucher).
+        if dep.get("status") not in ("verified", "paid") or dep.get("amount", 0) <= 0:
             out["amount"] = dep.get("amount", 0) if dep.get("status") == "redeemed" else 0
             out["already"] = dep.get("status") == "redeemed"
             out["reason"] = f"deposit_status={dep.get('status')}"
@@ -414,7 +416,7 @@ def commit_deposit_redemption(
             from mysql_db import delete_rows as _rowcount
             affected = _rowcount(
                 "UPDATE console_bookings SET deposit_status='redeemed', deposit_redeemed_at=NOW() "
-                "WHERE id=%s AND deposit_status='verified' AND deposit_amount>0",
+                "WHERE id=%s AND deposit_status IN ('verified','paid') AND deposit_amount>0",
                 (booking_id,),
             )
         except Exception as e:

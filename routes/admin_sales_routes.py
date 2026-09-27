@@ -496,6 +496,52 @@ def _reverse_outstanding_forfeits(booking_id):
         return (0, 0)
 
 
+def _resolve_booking_from_console(console_id):
+    """Resolve the single outstanding-deposit booking for a console at session end.
+
+    Called when a sale payload carries no ``booking_id`` but does carry a console.
+    Returns ``(booking_id, session_id)`` for the console's booking whose deposit is
+    still outstanding (``verified``/``paid``, amount>0, no redemption row) and whose
+    session just ended (``actual_end`` within the last ~6h in MMT) or is still
+    active. Only ever returns a result for EXACTLY ONE candidate — ambiguity or
+    zero candidates returns ``(None, None)`` so we never guess and never touch a
+    wrong booking's money.
+    """
+    if not console_id:
+        return (None, None)
+    try:
+        rows = _mysql_query(
+            "SELECT cb.id AS booking_id, cb.deposit_amount, cs.id AS session_id, "
+            "       cs.actual_end, cs.status AS session_status "
+            "FROM console_bookings cb "
+            "JOIN console_sessions cs ON cs.booking_id = cb.id "
+            "WHERE cb.console_id = %s "
+            "  AND cb.deposit_amount > 0 "
+            "  AND cb.deposit_status IN ('verified','paid') "
+            "  AND cb.booking_date = DATE(NOW() + INTERVAL 390 MINUTE) "
+            "  AND (cs.status = 'active' "
+            "       OR (cs.actual_end IS NOT NULL "
+            "           AND cs.actual_end >= (NOW() + INTERVAL 390 MINUTE) - INTERVAL 6 HOUR)) "
+            "  AND NOT EXISTS (SELECT 1 FROM deposit_redemptions dr WHERE dr.booking_id = cb.id) "
+            "ORDER BY (cs.actual_end IS NULL) DESC, cs.actual_end DESC, cs.id DESC",
+            (console_id,),
+        )
+        if not rows:
+            return (None, None)
+        if len(rows) > 1:
+            ids = ", ".join(str(r["booking_id"]) for r in rows)
+            logger.warning(
+                "deposit auto-resolve AMBIGUOUS for console %s: %s candidates [%s] — no auto-redeem",
+                console_id, len(rows), ids,
+            )
+            return (None, None)
+        r = rows[0]
+        return (r["booking_id"], r["session_id"])
+    except Exception as e:
+        logger.warning("deposit auto-resolve lookup failed for console %s: %s", console_id, e)
+        return (None, None)
+
+
 @router.post("/sales/record", response_model=GenericResponse, tags=["Sales"], summary="Save sales record [MySQL]")
 async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_key)):
     """Save a sales record to MySQL sales_daily table (replaces direct GSheets write).
@@ -596,11 +642,28 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
         # ── Deposit redemption (server-side, exactly once) ───────────────────────
         deposit_deducted = 0
         deposit_info = None
+        resolved_session_id = None
+        booking_auto_resolved = False
+        # 2026-09-26 (owner): when the payload has no booking link but a console is
+        # present, resolve the console's session-end booking server-side and redeem
+        # its outstanding deposit. Exactly-one candidate only; never guess.
+        if not booking_id and console_id:
+            _rb, _rs = _resolve_booking_from_console(console_id)
+            if _rb:
+                booking_id = _rb
+                resolved_session_id = _rs
+                booking_auto_resolved = True
+                logger.info(
+                    "deposit auto-resolved BK#%s from console %s (voucher %s) session=%s",
+                    booking_id, console_id, voucher_no, _rs,
+                )
         if booking_id:
             try:
                 _client_handled_dep = _dep_in_pm(payment_method)
                 _dep = _get_verified_deposit(booking_id)
-                if _dep.get("status") == "verified" and _dep.get("amount", 0) > 0:
+                # 2026-09-26 (owner): a booking-bound session end must also redeem a
+                # SUBMITTED-but-unverified ('paid') deposit.
+                if _dep.get("status") in ("verified", "paid") and _dep.get("amount", 0) > 0:
                     # Safety net: reverse any outstanding forfeit injects before redeeming
                     _reverse_outstanding_forfeits(booking_id)
                     _commit = _commit_deposit(
@@ -698,20 +761,30 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
         _wallet_deduct = int(req.get("wallet_deduct", 0) or 0)
         _wallet_before = None
         _wallet_after = None
-        _is_member_sale = bool(member_id) and str(member_id).strip() not in ("", "0", "0 (Guest)", "-", "Guest")
+        # ── Attribution hardening (2026-09-26) ─────────────────────────────────
+        # A member_id is only a *member* when a real member_wallets row exists for it.
+        # Walk-in booker names must never drive wallet deduction, member_name lookups,
+        # or member attribution. Resolve once and reuse for wallet + customer_name.
+        _member_id_clean = str(member_id or "").strip()
+        _is_guest_label = (not _member_id_clean) or _member_id_clean in ("", "0", "0 (Guest)", "-", "Guest")
+        _member_wallet_row = None
+        if not _is_guest_label:
+            _member_wallet_row = _mysql_query_one(
+                "SELECT member_id, member_name, COALESCE(balance_mins, 0) AS balance_mins FROM member_wallets WHERE member_id=%s",
+                (_member_id_clean,))
+        _is_member_sale = bool(_member_wallet_row)
         if _wallet_deduct > 0 and _is_member_sale:
             try:
-                _wb = _mysql_query_one("SELECT COALESCE(balance_mins, 0) AS bal FROM member_wallets WHERE member_id=%s", (member_id,))
-                _wallet_before = int(float(_wb.get("bal") or 0)) if _wb else 0
+                _wallet_before = int(float(_member_wallet_row.get("balance_mins") or 0))
                 _wallet_after = max(0, _wallet_before - _wallet_deduct)
                 _mysql_exec(
                     "UPDATE member_wallets SET balance_mins=%s, total_used_mins = COALESCE(total_used_mins, 0) + %s WHERE member_id=%s",
-                    (_wallet_after, _wallet_deduct, member_id),
+                    (_wallet_after, _wallet_deduct, _member_id_clean),
                 )
                 extra_notes.append(f"Wallet: -{_wallet_deduct} mins (bal {_wallet_before} -> {_wallet_after})")
-                logger.info("Wallet deducted: %s mins for member %s (%s -> %s)", _wallet_deduct, member_id, _wallet_before, _wallet_after)
+                logger.info("Wallet deducted: %s mins for member %s (%s -> %s)", _wallet_deduct, _member_id_clean, _wallet_before, _wallet_after)
             except Exception as _we:
-                logger.warning("wallet deduct detail failed (member %s): %s", member_id, _we)
+                logger.warning("wallet deduct detail failed (member %s): %s", _member_id_clean, _we)
         combined_notes = notes
         if extra_notes:
             combined_notes = (notes + " | " if notes else "") + " | ".join(extra_notes)
@@ -719,28 +792,28 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
         sale_date = created_at if created_at else datetime.now(timezone(timedelta(hours=6, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
         gross = game_amt + food_total
 
-        # Resolve customer_name from member_wallets for member sales (staff name must NOT leak here).
-        # Guest rows (member_id empty / '0 (Guest)' / '-' / 'Guest') keep customer_name empty unless a guest name is supplied.
-        _is_guest = (not member_id) or member_id.strip() in ("", "0 (Guest)", "0", "-", "Guest")
+        # Resolve customer_name from member_wallets ONLY for a real member (staff name
+        # must NOT leak here). Walk-in/unknown member_ids preserve the supplied guest
+        # name verbatim and never pull a name out of member_wallets.
         customer_name = req.get("customer_name") or ""
-        if not _is_guest:
-            _mw = _mysql_query_one(
-                "SELECT member_name FROM member_wallets WHERE member_id=%s", (member_id,)
-            )
-            if _mw and _mw.get("member_name"):
-                customer_name = _mw["member_name"]
+        if _is_member_sale and _member_wallet_row and _member_wallet_row.get("member_name"):
+            customer_name = _member_wallet_row["member_name"]
 
         # ── Game attribution (2026-09-20): populate game_name + game_id at sale time ──
         # Resolved from an explicit hint / the linked session / the console's current
         # game. NULLs when unknown — the insert must never break on a missing game.
         _game_name, _game_id, _session_id = resolve_sale_game(
-            console_id, session_id=req.get("session_id"),
+            console_id, session_id=req.get("session_id") or resolved_session_id,
             booking_id=booking_id, game_name_hint=req.get("game_name"))
 
+        # Never persist a walk-in/unknown name as a member id (report pollution).
+        _stored_member_id = member_id
+        if not _is_member_sale and not _is_guest_label:
+            _stored_member_id = ""
         _mysql_exec(
             "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, customer_name, payment_method, notes, client_ref, session_id, game_name, game_id) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (voucher_no, sale_date, console_id, member_id, game_amt, gross, discount, net_total, staff, customer_name, payment_method, combined_notes, client_ref, _session_id, _game_name, _game_id)
+            (voucher_no, sale_date, console_id, _stored_member_id, game_amt, gross, discount, net_total, staff, customer_name, payment_method, combined_notes, client_ref, _session_id, _game_name, _game_id)
         )
 
         # Wallet balance was already deducted BEFORE the insert (wallet detail block above) so
@@ -765,6 +838,9 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
             "wallet_deduct": _wallet_deduct,
             "wallet_balance_before": _wallet_before,
             "wallet_balance_after": _wallet_after,
+            "booking_auto_resolved": booking_auto_resolved,
+            "resolved_booking_id": booking_id if booking_auto_resolved else None,
+            "resolved_session_id": resolved_session_id,
         })
     except Exception as e:
         logger.error(f"api_sales_record: {e}")
@@ -1158,8 +1234,13 @@ async def api_opex_summary(
 @router.get("/sales/drafts", response_model=GenericResponse, tags=["Sales"], summary="List shared draft vouchers [MySQL]")
 async def api_sale_drafts_list(auth=Depends(verify_api_key)):
     try:
+        # created_at is stored in UTC (DB session tz = UTC) but staff read Myanmar time,
+        # so shift the draft timestamp to MMT (+06:30 = 390 min) before returning it.
+        # Bug (Osmo 2026-09-26): Drafts showed "Saved 2026-09-26 08:17" (=UTC) instead
+        # of the local 14:47.
         rows = _mysql_query(
-            "SELECT id, staff_name, label, total, form_json, food_json, created_at "
+            "SELECT id, staff_name, label, total, form_json, food_json, "
+            "DATE_ADD(created_at, INTERVAL 390 MINUTE) AS created_at_mmt "
             "FROM sale_drafts ORDER BY id DESC")
         drafts = []
         for r in rows:
@@ -1168,7 +1249,7 @@ async def api_sale_drafts_list(auth=Depends(verify_api_key)):
                 "staff_name": r.get("staff_name") or "",
                 "label": r.get("label") or "",
                 "total": float(r.get("total") or 0),
-                "at": (str(r.get("created_at") or ""))[:16],
+                "at": (str(r.get("created_at_mmt") or ""))[:16],
             }
             try:
                 d["form"] = _json.loads(r["form_json"]) if r.get("form_json") else {}

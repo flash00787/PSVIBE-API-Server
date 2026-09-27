@@ -166,6 +166,8 @@ def _ensure_daily_balances_table() -> None:
                     account VARCHAR(50) NOT NULL,
                     opening_balance DECIMAL(12,2) DEFAULT 0,
                     closing_balance DECIMAL(12,2) DEFAULT 0,
+                    expected_balance DECIMAL(12,2) DEFAULT NULL,
+                    variance DECIMAL(12,2) DEFAULT NULL,
                     status ENUM('open','closed') NOT NULL DEFAULT 'open',
                     opened_by VARCHAR(100) DEFAULT NULL,
                     opened_at DATETIME DEFAULT NULL,
@@ -175,6 +177,16 @@ def _ensure_daily_balances_table() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+            # Migration for pre-existing installs: MySQL 8 has no
+            # ADD COLUMN IF NOT EXISTS, so attempt each new column defensively.
+            for _col in ("expected_balance", "variance"):
+                try:
+                    cur.execute(
+                        f"ALTER TABLE daily_account_balances "
+                        f"ADD COLUMN {_col} DECIMAL(12,2) DEFAULT NULL"
+                    )
+                except Exception:  # pragma: no cover - column already exists
+                    pass
         conn.commit()
         _daily_bal_table_ready = True
     finally:
@@ -196,13 +208,21 @@ async def daily_balances_today(user: dict = Depends(get_staff_or_dashboard_user)
         acc = r["account"]
         opening = float(r["opening_balance"] or 0)
         closing = float(r["closing_balance"] or 0)
+        live = round(float(bals.get(acc, 0)))
+        # Variance = actually counted (closing) − recorded/system (live) balance.
+        # Prefer the value frozen at close time; fall back to live for legacy rows.
+        if r["status"] == "closed":
+            stored_var = r.get("variance")
+            variance = round(float(stored_var)) if stored_var is not None else round(closing - live)
+        else:
+            variance = None
         out.append({
             "account": acc,
             "status": r["status"],
             "opening_balance": round(opening),
             "closing_balance": round(closing),
-            "variance": round(closing - opening),
-            "live_balance": round(float(bals.get(acc, 0))),
+            "variance": variance,
+            "live_balance": live,
             "opened_by": r.get("opened_by") or "",
             "closed_by": r.get("closed_by") or "",
             "opened_at": _iso(r.get("opened_at")) if r.get("opened_at") else None,
@@ -253,20 +273,24 @@ async def daily_balances_close(body: dict = Body(...), user: dict = Depends(get_
         raise HTTPException(status_code=400, detail="closing_balance must be a number")
     closed_by = str(body.get("closed_by") or _caller_name(user) or user.get("username") or "").strip()
     now_str = _mmt_now_str()
-    row = _q("SELECT opening_balance, status FROM daily_account_balances WHERE balance_date=%s AND account=%s", (today, account))
+    row = _q("SELECT status FROM daily_account_balances WHERE balance_date=%s AND account=%s", (today, account))
     # Once per day: reject a second close for the same account today.
     if row and (row[0].get("status") or "").lower() == "closed":
         raise HTTPException(status_code=400, detail=f"{account} already closed today")
-    opening = float(row[0]["opening_balance"] or 0) if row else 0.0
+    # Expected = the recorded/system (live) balance computed AT close time, so a closed
+    # day's variance stays stable even as new cash movements land afterwards.
+    bals = await _balances_by_name()
+    expected = round(float(bals.get(account, 0)))
+    variance = round(closing - expected)
     _ex(
-        """INSERT INTO daily_account_balances (balance_date, account, closing_balance, status, closed_by, closed_at)
-           VALUES (%s,%s,%s,'closed',%s,%s)
+        """INSERT INTO daily_account_balances (balance_date, account, closing_balance, status, closed_by, closed_at, expected_balance, variance)
+           VALUES (%s,%s,%s,'closed',%s,%s,%s,%s)
            ON DUPLICATE KEY UPDATE closing_balance=VALUES(closing_balance), status='closed',
-             closed_by=VALUES(closed_by), closed_at=VALUES(closed_at)""",
-        (today, account, closing, closed_by, now_str),
+             closed_by=VALUES(closed_by), closed_at=VALUES(closed_at),
+             expected_balance=VALUES(expected_balance), variance=VALUES(variance)""",
+        (today, account, closing, closed_by, now_str, expected, variance),
     )
-    variance = closing - opening
-    return {"success": True, "message": f"{account} closed. Variance {variance:+,.0f} Ks", "variance": round(variance)}
+    return {"success": True, "message": f"{account} closed. Variance (Actual − Recorded) {variance:+,.0f} Ks", "variance": round(variance)}
 
 
 @router.get("/daily-balances/history")
@@ -282,13 +306,17 @@ async def daily_balances_history(days: int = Query(7, ge=1, le=90),
     for r in rows:
         opening = float(r["opening_balance"] or 0)
         closing = float(r["closing_balance"] or 0)
+        stored_var = r.get("variance")
+        # Only return the frozen variance; legacy rows without a stored value
+        # get null so the app renders "—" instead of a misleading number.
+        variance = round(float(stored_var)) if stored_var is not None else None
         out.append({
             "date": str(r["balance_date"]),
             "account": r["account"],
             "status": r["status"],
             "opening_balance": round(opening),
             "closing_balance": round(closing),
-            "variance": round(closing - opening),
+            "variance": variance,
             "opened_by": r.get("opened_by") or "",
             "closed_by": r.get("closed_by") or "",
         })

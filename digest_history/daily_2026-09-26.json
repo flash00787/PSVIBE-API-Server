@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-09-26T02:08:32.422789Z",
+  "date": "2026-09-26",
+  "summary": {
+    "total_sales": {
+      "count": 0,
+      "gross": 0.0,
+      "net": 0.0
+    },
+    "total_topups": {
+      "count": 0,
+      "amount": 0.0,
+      "mins_added": 0
+    },
+    "active_sessions": 0,
+    "completed_sessions": 0,
+    "food_sales": {
+      "count": 0,
+      "total": 0.0
+    },
+    "new_members": 0,
+    "top_consoles": [],
+    "top_games": [
+      {
+        "game": "Injustice 2",
+        "sessions": 1
+      }
+    ],
+    "revenue_by_payment": []
+  },
+  "alerts": [
+    "⚠️ No sales or topups recorded today. Verify if business is open."
+  ],
+  "recommendations": [
+    "Run the integrity checks to verify no missing records.",
+    "No food sales today — check if food sales are being recorded properly."
+  ]
+}

@@ -442,6 +442,7 @@
   const Home = {
     template: `
       <div class="pv-page">
+        <van-pull-refresh v-model="refreshing" @refresh="() => load(true)">
         <div class="pv-header">
           <div>
             <img class="pv-brand-logo" src="psvibe-logo-ui.png" alt="PS VIBE" style="height:34px;display:block" />
@@ -472,7 +473,7 @@
               <span v-if="unread > 0" class="psv-bell__badge">{{ unread > 99 ? '99+' : unread }}</span>
             </div>
             <van-icon v-if="webLogin" name="revoke" size="20" @click="doLogout" style="color:var(--pv-danger);cursor:pointer" />
-            <van-icon name="replay" size="22" @click="load" style="color:var(--pv-muted);cursor:pointer" />
+            <van-icon name="replay" size="22" @click="load(true)" style="color:var(--pv-muted);cursor:pointer" />
           </div>
         </div>
 
@@ -502,8 +503,11 @@
             <div class="pv-action" @click="go('/reports')"><div class="pv-action__icon">📊</div><div class="pv-action__label">Today</div></div>
             <div class="pv-action" @click="go('/members')"><div class="pv-action__icon">🆕</div><div class="pv-action__label">New Member</div></div>
             <div class="pv-action" @click="go('/food')"><div class="pv-action__icon">🍜</div><div class="pv-action__label">Food</div></div>
+            <div class="pv-action" @click="go('/reconciliation')"><div class="pv-action__icon">🔁</div><div class="pv-action__label">{{ summary.reconcile > 0 ? 'Reconcile (' + summary.reconcile + ')' : 'Reconcile' }}</div></div>
           </div>
         </template>
+
+        </van-pull-refresh>
 
         <van-popup v-model:show="topup.picker" position="bottom" round style="max-height:70vh">
           <van-search v-model="topup.q" placeholder="Search member" />
@@ -556,7 +560,8 @@
       const staffRole = ref(PSV.getStaff().role || "");
       function doLogout() { PSV.logout(); showToast("Logged out", "success"); }
       const loading = ref(true);
-      const summary = reactive({ todayRevenue: 0, activeConsoles: 0, todaySales: 0, totalMembers: 0, bookings: 0, pendingDeposits: 0 });
+      const refreshing = ref(false);
+      const summary = reactive({ todayRevenue: 0, activeConsoles: 0, todaySales: 0, totalMembers: 0, bookings: 0, pendingDeposits: 0, reconcile: 0 });
       const nativeMode = NATIVE;
       const initials = computed(() => String(staffName.value || "?").trim().slice(0, 2).toUpperCase());
       const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay"];
@@ -695,14 +700,26 @@
       function _onVisibility() { if (!document.hidden) loadUnread(false); }
       function goNotifications() { haptic("light"); router.push("/notifications"); }
 
-      async function load() {
-        loading.value = true;
+      async function load(force) {
+        // A user-initiated refresh (replay icon / pull-to-refresh) must show NEW numbers,
+        // so drop the cached copies of the Home endpoints first — otherwise the 15s shared
+        // cache (and the persisted localStorage one) hands back the same values and the
+        // refresh looks like it did nothing.
+        if (force === true) {
+          try {
+            ["/api/fetch_members", "/api/fetch_console_status", "/api/sales/list-today", "/api/bookings"]
+              .forEach((k) => PSV.invalidate(k));
+          } catch (_e) {}
+        }
+        // Pull-to-refresh draws its own spinner — don't swap the content out for the skeleton.
+        if (!refreshing.value) loading.value = true;
         // Home ≤ 4 requests per load: members + consoles + sales (+ native bookings),
         // all served from the 15s shared cache so quick returns are free.
-        const [members, consoles, sales] = await Promise.allSettled([
+        const [members, consoles, sales, recon] = await Promise.allSettled([
           PSV.apiCached("/api/fetch_members?limit=1", {}, 15000),
           PSV.apiCached("/api/fetch_console_status", {}, 15000),
           PSV.apiCached("/api/sales/list-today", {}, 15000).catch(() => null),
+          PSV.apiCached("/api/reconciliation/deposits", {}, 15000).catch(() => null),
         ]);
         if (members.status === "fulfilled") {
           const m = PSV.unwrap(members.value);
@@ -723,6 +740,10 @@
             summary.todayRevenue = s.total_net ?? s.total_revenue ?? s.total ?? 0;
           }
         }
+        if (recon.status === "fulfilled" && recon.value) {
+          const r = PSV.unwrap(recon.value);
+          summary.reconcile = Number((r && (r.count ?? r.total_count)) || 0) || 0;
+        }
         if (NATIVE) {
           try {
             const bd = PSV.unwrap(await PSV.apiCached("/api/bookings?status=", {}, 15000));
@@ -735,6 +756,7 @@
           } catch (_e) {}
         }
         loading.value = false;
+        refreshing.value = false;
       }
       onMounted(() => {
         load();
@@ -748,7 +770,7 @@
         document.removeEventListener("visibilitychange", _onVisibility);
         window.removeEventListener("psv:retry", load);
       });
-      return { staffName, webLogin, staffRole, doLogout, loading, summary, nativeMode, initials, fKs, go, load, unread, goNotifications, topup, topupFiltered, topupTier, topupPaid, topupRemaining, topupPreview, calcTopupBonus, openTopup, openTopupEntry, pickTopup, confirmTopup, topupOpenPay, topupPickPay, topupConfirmSplit, topupRemoveSplit };
+      return { staffName, webLogin, staffRole, doLogout, loading, refreshing, summary, nativeMode, initials, fKs, go, load, unread, goNotifications, topup, topupFiltered, topupTier, topupPaid, topupRemaining, topupPreview, calcTopupBonus, openTopup, openTopupEntry, pickTopup, confirmTopup, topupOpenPay, topupPickPay, topupConfirmSplit, topupRemoveSplit };
     },
   };
 
@@ -900,6 +922,7 @@
             time: s.sale_time || "",
             staff: s.staff_name || "",
             member: memberLabel.value,
+            customer: (memberNameLabel.value || "").replace(/^Name:\s*/, ""),
             items: items,
             total: Number(s.net) || 0,
             balance: _wallet ? ("-" + _wallet.ded + " mins (bal " + _wallet.before + " -> " + _wallet.after + ")") : "",
@@ -1011,6 +1034,7 @@
     template: `
       <div style="padding:8px 14px 16px">
         <div v-if="sessionWarn" class="psv-sess-warn">⚠️ {{ sessionWarn }} — please double-check</div>
+        <div v-if="depositLinkWarn" class="psv-sess-warn">{{ depositLinkWarn }}</div>
         <div v-if="depositRedeem" class="psv-redeem-banner" :class="{ 'is-applied': depositApplied }">
           <span class="psv-redeem-banner__txt"><template v-if="depositApplied">✅ Deposit {{ fKs(depositRedeem.amount) }} Ks (BK#{{ depositRedeem.booking_id }}) — deducted</template><template v-else>↩️ Verified deposit {{ fKs(depositRedeem.amount) }} Ks (BK#{{ depositRedeem.booking_id }}) available</template></span>
           <button v-if="!depositApplied" class="psv-abtn psv-abtn--gold" style="min-height:36px;padding:0 10px" @click="applyDeposit">💰 Deduct {{ fKs(depositRedeem.amount) }} deposit</button>
@@ -1370,6 +1394,21 @@
       const depositApplied = ref(false);
       function clearRedeem() { try { PSV.pendingDepositRedeem = null; } catch (_e) {} depositRedeem.value = null; depositApplied.value = false; }
       const depositAppliedAmt = computed(() => (depositApplied.value && depositRedeem.value) ? (Number(depositRedeem.value.amount) || 0) : 0);
+      // 🔗 Known booking id for the picked console (session-end prefill / console board).
+      // Sent on the sale payload independently of deposit application so the server
+      // can always redeem an outstanding deposit (owner 2026-09-26 — never lose a
+      // verified/paid deposit at session-end voucher time).
+      const sessionBookingId = ref(null);
+      const bookingIdOut = computed(() => {
+        if (sessionBookingId.value) return String(sessionBookingId.value);
+        if (depositApplied.value && depositRedeem.value) return String(depositRedeem.value.booking_id);
+        return "";
+      });
+      const depositLinkWarn = computed(() => {
+        if (!depositRedeem.value) return "";
+        if (bookingIdOut.value) return "";
+        return "⚠️ Booking #" + depositRedeem.value.booking_id + " deposit " + fKs(depositRedeem.value.amount) + " Ks မနှုတ်ရသေးပါ — စစ်ပါ";
+      });
       async function applyDeposit() {
         if (!depositRedeem.value) return;
         const amt = Number(depositRedeem.value.amount) || 0;
@@ -1651,11 +1690,21 @@
         const pending = PSV.pendingSessionSale;
         if (pending) {
           PSV.pendingSessionSale = null;
-          if (pending.member_name && pending.member_name !== "Guest" && pending.member_name !== "0 (Guest)") {
-            const m = members.value.find((x) => x.id === pending.member_id || x.name === pending.member_name);
-            if (m) { form.member_id = m.id; form.member_search = m.name || m.id; setWalletMember(m.id, m.wallet_balance ?? m.liability_mins); }
-            else { form.member_search = pending.member_name; form.member_id = pending.member_name; setWalletMember(pending.member_id || pending.member_name, 0); }
-          } else { pickGuest(); }
+          // 🔒 Resolve a REAL member by ID ONLY (owner 2026-09-26): matching a walk-in
+          // booker's NAME against member names could pick the wrong member card and
+          // charge their wallet. No id match → Guest + keep the booker's name as the
+          // guest customer name.
+          const _pMid = String(pending.member_id || "").trim();
+          const _pMname = String(pending.member_name || "").trim();
+          const _pGuestIds = ["", "0", "0 (Guest)", "-", "Guest"];
+          const _pMem = _pGuestIds.indexOf(_pMid) === -1 ? members.value.find((x) => String(x.id) === _pMid) : null;
+          if (_pMem) {
+            form.member_id = _pMem.id; form.member_search = _pMem.name || _pMem.id;
+            setWalletMember(_pMem.id, _pMem.wallet_balance ?? _pMem.liability_mins);
+          } else {
+            pickGuest();
+            if (_pMname && _pMname !== "Guest" && _pMname !== "0 (Guest)") form.customer_name = _pMname;
+          }
           form.mins = Number(pending.mins) || 0;
           form.adjust = 0;
           sessionLocked.value = true;  // 🔒 session-end voucher: mins locked, only ±10 adjust allowed
@@ -1664,6 +1713,7 @@
             if (cc) pickConsole(cc); else form.console_id = pending.console_id;
           }
           if (pending.booking_id) {
+            sessionBookingId.value = pending.booking_id;
             PSV.apiCached("/api/food-cart/booking/" + encodeURIComponent(pending.booking_id)).then((res) => {
               const d2 = PSV.unwrap(res);
               const items = (d2 && d2.items) || [];
@@ -1686,7 +1736,9 @@
               const bk = (bd && bd.booking) || {};
               const dstatus = String(bk.deposit_status || bk.depositStatus || "").toLowerCase();
               const damt = Number(bk.deposit_amount || bk.depositAmount) || 0;
-              if (dstatus === "verified" && damt > 0) {
+              // 2026-09-26 (owner): also deduct a SUBMITTED-but-unverified ('paid')
+              // deposit — a booking-bound session end must pick it up.
+              if ((dstatus === "verified" || dstatus === "paid") && damt > 0) {
                 depositRedeem.value = { booking_id: pending.booking_id, amount: damt, method: bk.deposit_method || "", ts: Date.now() };
                 depositApplied.value = true;
               }
@@ -1794,6 +1846,7 @@
       );
       function pickConsole(c) {
         form.console_id = c.console_id || c.id; consolePicker.value = false;
+        sessionBookingId.value = c.booking_id || null;
         probeDeposits(); loadActiveBookings();
         const cid = form.console_id;
         // 📥 Prefill existing session food cart when an active console is picked mid-session
@@ -1904,6 +1957,8 @@
             // NOTE: discount/net above are the MANUAL-only fallback. When promo_id or coupon_code
             // is present the server recomputes discount+net (compute_totals) and ignores these.
             payment_method: final_pm, staff: PSV.getStaff().name,
+            // a walk-in/guest name must reach the server (never stored as member_id)
+            customer_name: form.customer_name || "",
             wallet_deduct: wallet_deduct,
             // ── money-path parity: same cart the preview calc used ──
             promotion_name: promo.title || "",
@@ -1916,7 +1971,7 @@
             wallet_mins: cart.wallet_mins || 0,
             effective_cost_mins: cart.effective_cost_mins || 0,
             gross_total: (Number(final_game_amt) || 0) + (Number(form.food_total) || 0),
-            booking_id: (depositApplied.value && depositRedeem.value) ? depositRedeem.value.booking_id : "",
+            booking_id: bookingIdOut.value,
             client_ref: saleRef,
           };
           const res = PSV.unwrap(await PSV.apiCached("/api/sales/record", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }));
@@ -1961,6 +2016,7 @@
               time: new Date().toTimeString().slice(0, 5),
               staff: PSV.getStaff().name,
               member: isMemberSale ? (form.member_search || form.member_id) : "Guest",
+              customer: (!isMemberSale && form.customer_name) ? form.customer_name : "",
               items: vItems,
               subtotal: vSubtotal,
               discount: serverDiscount,
@@ -1984,6 +2040,7 @@
             promo.id = ""; promo.title = ""; promo.type = ""; promo.notes = ""; focItem.value = "";
             coupon.code = ""; coupon.applied = false; coupon.minutes = 0; coupon.discount = 0; coupon.message = "";
             depositRedeem.value = null; depositApplied.value = false;
+            sessionBookingId.value = null;
             try { PSV.pendingDepositRedeem = null; } catch (_e2) {}
             serverCalc.value = null;
             loadActiveBookings();
@@ -1997,7 +2054,7 @@
       return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs, depositRedeem, clearRedeem,
         saleDrafts, draftOpen, saveDraft, restoreDraft, deleteDraft, openDrafts, gotoDrafts, resetSale,
                // ── WAVE 2: promo / coupon / discount / deposit / in-session guard ──
-               sessionWarn, depositApplied, depositAppliedAmt, applyDeposit, promos, promoOpen, promo, promoText, openPromo, pickPromo, clearPromo, focOpen, focItem, pickFoc, coupon, applyCoupon, clearCoupon, calcStatus, discountLines, subtotalKs, totalDiscountKs, payableBeforeDeposit, rawCash, scheduleCalc };
+               sessionWarn, depositLinkWarn, depositApplied, depositAppliedAmt, applyDeposit, promos, promoOpen, promo, promoText, openPromo, pickPromo, clearPromo, focOpen, focItem, pickFoc, coupon, applyCoupon, clearCoupon, calcStatus, discountLines, subtotalKs, totalDiscountKs, payableBeforeDeposit, rawCash, scheduleCalc };
     },
   };
 
@@ -2711,6 +2768,7 @@
               <div class="psv-row"><span>Console</span><b>{{ detail.console_id || detail.consoleType || '-' }}</b></div>
               <div class="psv-row"><span>Date / Time</span><b>{{ detail.date }} · {{ fmt12h(detail.timeSlot || detail.startTime) }}</b></div>
               <div class="psv-row"><span>Duration</span><b>{{ detail.durationMins || '-' }} min</b></div>
+              <div class="psv-row" v-if="endLabel(detail)"><span>End time</span><b>{{ endLabel(detail) }}</b></div>
               <div class="psv-row" v-if="detail.gameName"><span>Game</span><b>{{ detail.gameName }}</b></div>
               <div class="psv-row" v-if="detail.phone"><span>Phone</span><b>{{ detail.phone }}</b></div>
               <div class="psv-row" v-if="detail.member_id"><span>Member</span><b>{{ detail.member_id }}</b></div>
@@ -2794,6 +2852,37 @@
           <div class="psv-sheet__handle"></div>
           <div style="overflow:auto;height:calc(92vh - 20px)"><BookingForm @saved="onSaved" /></div>
         </van-popup>
+
+        <!-- Edit time / console (reschedule a confirmed booking) -->
+        <van-popup v-model:show="editOpen" position="bottom" round class="psv-sheet" :style="{ maxHeight: '90vh' }">
+          <div class="psv-sheet__handle"></div>
+          <div class="psv-sheet__body" v-if="editTarget">
+            <div class="psv-sheet-title">✏️ Edit time / console — BK#{{ editTarget.id }}</div>
+            <van-cell-group inset>
+              <van-field :model-value="editForm.console_id || 'Select console'" label="Console" placeholder="Select console" is-link readonly @click="openEditConsole" />
+              <van-field v-model="editForm.date" label="Date (YYYY-MM-DD)" placeholder="2026-09-26" @update:model-value="scheduleConflictCheck" />
+              <van-field :model-value="editForm.time_slot ? fmt12h(editForm.time_slot) : 'Select time'" label="Time" placeholder="Select time" is-link readonly @click="editTimePicker = true" />
+              <van-field v-model.number="editForm.duration_mins" type="number" label="Duration (mins)" placeholder="60" @update:model-value="scheduleConflictCheck" />
+            </van-cell-group>
+            <div v-if="editConflict" class="psv-card" style="margin:8px 16px">
+              <div style="font-size:13px;color:#ef4444">⏰ {{ editConflict }}</div>
+            </div>
+            <div v-else-if="editChecking" style="padding:0 16px;font-size:12px;color:var(--pv-muted)">Checking conflicts…</div>
+            <div class="psv-btn-row" style="margin-top:12px">
+              <button class="psv-btn psv-btn--ghost psv-btn--block" @click="editOpen = false">Cancel</button>
+              <button class="psv-btn psv-btn--primary psv-btn--block" :disabled="editConflict || editSaving" @click="saveReschedule">Save changes</button>
+            </div>
+          </div>
+        </van-popup>
+
+        <van-popup v-model:show="editConsolePicker" position="bottom" round>
+          <div style="max-height:60vh;overflow:auto;padding:12px 0 20px">
+            <van-cell v-for="c in editConsoles" :key="c.console_id || c.id" :title="c.console_id || c.id" :label="'Status: ' + (c.status||'-')" @click="pickEditConsole(c)" />
+          </div>
+        </van-popup>
+        <van-popup v-model:show="editTimePicker" position="bottom" round>
+          <van-picker :columns="editTimeColumns" title="Select Time" @confirm="pickEditTime" @cancel="editTimePicker=false" />
+        </van-popup>
       </div>
     `,
     setup() {
@@ -2833,6 +2922,25 @@
       const proofFull = ref(false);
       const proof = reactive({ ref: "", isImg: false, booking_id: "", restricted: false, imgUrl: "", imgKey: "", imgLoading: false, imgError: "" });
 
+      // ── Reschedule (edit time / console) state ──
+      const editOpen = ref(false);
+      const editTarget = ref(null);
+      const editConsoles = ref([]);
+      const editConsolePicker = ref(false);
+      const editTimePicker = ref(false);
+      const editChecking = ref(false);
+      const editConflict = ref("");
+      const editSaving = ref(false);
+      const editForm = reactive({ console_id: "", date: "", time_slot: "", duration_mins: 60 });
+      const EDIT_TIME_HOURS = ["1","2","3","4","5","6","7","8","9","10","11","12"];
+      const EDIT_TIME_MINS = ["00","05","10","15","20","25","30","35","40","45","50","55"];
+      const editTimeColumns = [
+        EDIT_TIME_HOURS.map((h) => ({ text: h, value: h })),
+        EDIT_TIME_MINS.map((m) => ({ text: m, value: m })),
+        ["AM", "PM"].map((x) => ({ text: x, value: x })),
+      ];
+      let _editConflictTimer = null;
+
       const chipMeta = computed(() => CHIPS.find((c) => c.id === chip.value) || CHIPS[1]);
       const chipHint = computed(() => chipMeta.value.hint);
       const emptyText = computed(() => (chip.value === "deposit" ? "No deposits to verify" : "No bookings"));
@@ -2842,6 +2950,24 @@
       function isVerified(b) { return bkKey(b.deposit_status) === "verified"; }
       function canRefund(b) { return ["forfeited", "paid", "verified"].includes(bkKey(b.deposit_status)); }
       function depRef(b) { return b.deposit_ref || b.depositRef || b.deposit_slip || ""; }
+      function endLabel(b) {
+        const end = b.endTime || b.end_time || b.planned_end;
+        if (end) {
+          const m = String(end).match(/(\d{1,2}):(\d{2})/);
+          return m ? fmt12h(m[1] + ":" + m[2]) : "";
+        }
+        const startVal = b.timeSlot || b.startTime || b.start_time || b.time_slot || b.planned_start;
+        const dur = Number(b.durationMins || b.duration_mins || b.planned_duration_mins) || 0;
+        const startMin = tlMin(startVal);
+        if (dur > 0) {
+          if (startMin == null) return "";
+          const endMin = (startMin + dur) % 1440;
+          const hh = String(Math.floor(endMin / 60)).padStart(2, "0");
+          const mm = String(endMin % 60).padStart(2, "0");
+          return fmt12h(hh + ":" + mm);
+        }
+        return startMin == null ? "" : "Open";
+      }
       function depositText(b) {
         const s = bkKey(b.deposit_status);
         const amount = b.deposit_amount ? Number(b.deposit_amount).toLocaleString() : "";
@@ -2858,7 +2984,12 @@
           out.push({ id: "reject", en: "Reject", icon: "❌", tone: "danger", kind: "reject" });
           if (hasDepositPending(b)) out.push({ id: "verify", en: "Verify deposit", icon: "💰", tone: "gold", kind: "verify" });
           out.push({ id: "cancel", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
-        } else if (k === "confirmed" || k === "pending_check_in") {
+        } else if (k === "confirmed") {
+          out.push({ id: "checkin", my: "Check-in", en: "Arrived", icon: "🎟", tone: "ok", kind: "checkin" });
+          out.push({ id: "reschedule", en: "Edit time / console", icon: "✏️", tone: "ghost", kind: "reschedule" });
+          if (hasDepositPending(b)) out.push({ id: "verify", en: "Verify deposit", icon: "💰", tone: "gold", kind: "verify" });
+          out.push({ id: "cancel", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
+        } else if (k === "pending_check_in") {
           out.push({ id: "checkin", my: "Check-in", en: "Arrived", icon: "🎟", tone: "ok", kind: "checkin" });
           if (hasDepositPending(b)) out.push({ id: "verify", en: "Verify deposit", icon: "💰", tone: "gold", kind: "verify" });
           out.push({ id: "cancel", en: "Cancel", icon: "⛔", tone: "danger", kind: "cancel" });
@@ -3103,6 +3234,79 @@
         finally { busy.value = null; }
       }
 
+      // ── Reschedule (edit time / console) ──
+      function openEdit(b) {
+        editTarget.value = b;
+        editForm.console_id = b.console_id || b.consoleType || "";
+        editForm.date = String(b.date || b.booking_date || PSV.todayMMT()).slice(0, 10);
+        const ts = b.timeSlot || b.startTime || "";
+        editForm.time_slot = String(ts).slice(0, 5);
+        editForm.duration_mins = Number(b.durationMins || b.duration_mins || 60);
+        editConflict.value = "";
+        editChecking.value = false;
+        editOpen.value = true;
+        if (!editConsoles.value.length) loadEditConsoles();
+        haptic("light");
+        scheduleConflictCheck();
+      }
+      async function loadEditConsoles() {
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_console_status")); editConsoles.value = (d && d.consoles) || []; } catch (_e) { editConsoles.value = []; }
+      }
+      function openEditConsole() { if (!editConsoles.value.length) loadEditConsoles(); editConsolePicker.value = true; haptic("light"); }
+      function pickEditConsole(c) { editForm.console_id = c.console_id || c.id; editConsolePicker.value = false; scheduleConflictCheck(); }
+      function pickEditTime({ selectedOptions }) {
+        const h12 = parseInt(selectedOptions[0].value, 10);
+        const mm = selectedOptions[1].value;
+        const mer = selectedOptions[2].value;
+        let hh = h12 % 12;
+        if (mer === "PM") hh += 12;
+        editForm.time_slot = String(hh).padStart(2, "0") + ":" + mm;
+        editTimePicker.value = false;
+        scheduleConflictCheck();
+      }
+      function scheduleConflictCheck() {
+        if (_editConflictTimer) clearTimeout(_editConflictTimer);
+        _editConflictTimer = setTimeout(runConflictCheck, 400);
+      }
+      async function runConflictCheck() {
+        if (!editTarget.value) return;
+        const cid = (editForm.console_id || "").trim();
+        const date = (editForm.date || "").trim();
+        const ts = (editForm.time_slot || "").trim();
+        const dur = Number(editForm.duration_mins);
+        if (!cid || !date || !ts || !dur) { editConflict.value = ""; return; }
+        editChecking.value = true;
+        try {
+          const res = PSV.unwrap(await PSV.apiCached("/api/booking-conflicts", { method: "POST", headers: HJSON, body: JSON.stringify({ console_id: cid, date: date, time_slot: ts, duration_mins: dur, exclude_booking_id: editTarget.value.id }) }));
+          if (res && res.has_conflict) {
+            const c = (res.conflicts && res.conflicts[0]) || {};
+            editConflict.value = "Console " + cid + " already has a booking (BK#" + c.id + ") at this time slot";
+          } else {
+            editConflict.value = "";
+          }
+        } catch (e) {
+          editConflict.value = ""; // endpoint unavailable → don't block, server re-checks on save
+        } finally { editChecking.value = false; }
+      }
+      async function saveReschedule() {
+        const b = editTarget.value;
+        if (!b) return;
+        const cid = (editForm.console_id || "").trim();
+        const date = (editForm.date || "").trim();
+        const ts = (editForm.time_slot || "").trim();
+        const dur = Number(editForm.duration_mins);
+        if (!cid || !date || !ts || !dur) { showToast("Please fill console, date, time and duration", "warning"); return; }
+        if (editConflict.value) { showToast(editConflict.value, "fail"); return; }
+        editSaving.value = true;
+        try {
+          await PSV.apiCached("/api/bookings/" + b.id + "/reschedule", { method: "POST", headers: HJSON, body: JSON.stringify({ console_id: cid, date: date, time_slot: ts, duration_mins: dur, staff_name: psvStaffName() }) });
+          haptic("medium"); showToast("Booking updated ✓", "success");
+          editOpen.value = false;
+          await afterMutation(b.id, { console_id: cid, date: date, timeSlot: ts, durationMins: dur });
+        } catch (e) { showToast("Failed: " + e.message, "fail"); }
+        finally { editSaving.value = false; }
+      }
+
       async function runAction(a, b) {
         if (a.kind === "approve") return doApprove(b);
         if (a.kind === "checkin") return doCheckin(b);
@@ -3112,6 +3316,7 @@
         if (a.kind === "proof") return showProof(b);
         if (a.kind === "reject") return openReason("reject", b);
         if (a.kind === "cancel") return openReason("cancel", b);
+        if (a.kind === "reschedule") return openEdit(b);
         if (a.kind === "consoles") { haptic("light"); detailOpen.value = false; router.push("/consoles?bind=" + encodeURIComponent(b.id)); return; }
       }
 
@@ -3130,7 +3335,9 @@
         view, setView, onPickTimeline,
         reasonOpen, reasonMode, reasonPick, reasonNote, reasonList, proofOpen, proof, proofFull, loadProof, maybeProofFull,
         refundOpen, refundPick, refundMethods, confirmRefund, openRefund,
-        bkStatus, depositText, depRef, cardActions, detailActions, setChip, goNew, onSaved, load, openDetail, runAction, confirmReason, fmt12h };
+        editOpen, editTarget, editForm, editConsoles, editConsolePicker, editTimePicker, editTimeColumns, editChecking, editConflict, editSaving,
+        openEdit, openEditConsole, pickEditConsole, pickEditTime, scheduleConflictCheck, saveReschedule,
+        bkStatus, depositText, depRef, endLabel, cardActions, detailActions, setChip, goNew, onSaved, load, openDetail, runAction, confirmReason, fmt12h };
     },
   };
 
@@ -3304,6 +3511,7 @@
     { path: "/promotions", icon: "🎁", label: "Promo" },
     { path: "/salary", icon: "💰", label: "Salary" },
     { path: "/transfer-history", icon: "🧾", label: "Transfer history" },
+    { path: "/reconciliation", icon: "🔁", label: "Reconciliation" },
     { path: "/notifications", icon: "🔔", label: "Alerts" },
   ];
   const MENU_GROUPS = [
@@ -3354,6 +3562,7 @@
     ] },
     { id: "report", emoji: "📊", en: "Reports", tone: "teal", items: [
       { en: "Today's summary", sub: "Daily totals", icon: "📊", path: "/reports" },
+      { en: "Deposit reconciliation", sub: "Unredeemed deposits after session", icon: "🔁", path: "/reconciliation" },
       { en: "Operating expenses (OPEX)", sub: "Owner / admin managed", icon: "💸", path: "/opex", tag: "Owner only", ownerOnly: true },
       { en: "Account balance", sub: "Cash position (read-only)", icon: "🏦", path: "/balances" },
     ] },
@@ -3477,6 +3686,83 @@
     },
   };
 
+  // ── VIEW: Reconciliation — daily deposit/session reconcile (owner 2026-09-26) ──
+  const Reconciliation = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Reconciliation" back="/more" />
+        <van-pull-refresh v-model="refreshing" @refresh="load">
+          <van-skeleton title :row="3" v-if="loading" style="margin:12px" />
+          <template v-else>
+            <van-empty v-if="!items.length" description="✅ Nothing outstanding" />
+            <template v-else>
+              <div class="pv-section-title" style="padding:12px 16px 2px">{{ items.length }} items · {{ fKs(total) }} Ks</div>
+              <van-cell-group inset style="margin-top:8px">
+                <van-cell v-for="it in items" :key="it.booking_id" :title="'BK#' + it.booking_id + ' · ' + (it.console_id || '-')">
+                  <template #label>
+                    <div>{{ it.customer_name || '—' }} · <span class="pv-amount">{{ fKs(it.deposit_amount) }} Ks</span> <span style="color:var(--pv-muted)">({{ methodLabel(it.deposit_method) }})</span></div>
+                    <div style="color:var(--pv-muted);font-size:12px">{{ it.deposit_status }} · end {{ fmtEnd(it.session_end) }} · {{ ageLabel(it.age_hours) }}</div>
+                  </template>
+                  <template #value>
+                    <van-button size="small" type="primary" plain :loading="busy === it.booking_id" @click.stop="onDeduct(it)">Deduct</van-button>
+                  </template>
+                </van-cell>
+              </van-cell-group>
+              <div class="psv-note" style="margin:8px 16px">Unredeemed deposits for ended sessions. Deduct applies the deposit to the matching voucher once.</div>
+            </template>
+          </template>
+        </van-pull-refresh>
+      </div>
+    `,
+    setup() {
+      const items = ref([]);
+      const total = ref(0);
+      const loading = ref(true);
+      const refreshing = ref(false);
+      const busy = ref(null);
+      const DEP_LABELS = { kpay: "KPay", wavepay: "WavePay", aya_pay: "AYA Pay", cash: "Cash" };
+      function methodLabel(m) { return DEP_LABELS[String(m || "").toLowerCase()] || (m || "-"); }
+      function fmtEnd(ts) {
+        if (!ts) return "-";
+        const s = String(ts);
+        const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+        if (!m) return s.slice(0, 16);
+        return m[2] + "/" + m[3] + " " + m[4] + ":" + m[5];
+      }
+      function ageLabel(h) {
+        if (h == null || isNaN(h)) return "—";
+        if (h < 1) return "<1h";
+        if (h < 24) return Math.round(h) + "h";
+        return Math.floor(h / 24) + "d " + Math.round(h % 24) + "h";
+      }
+      async function load() {
+        loading.value = true;
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/reconciliation/deposits", {}, 10000));
+          items.value = (d && d.items) || [];
+          total.value = Number((d && d.total) || 0) || 0;
+        } catch (e) { showToast("Load failed: " + e.message, "fail"); items.value = []; total.value = 0; }
+        finally { loading.value = false; refreshing.value = false; }
+      }
+      onMounted(load);
+      async function onDeduct(it) {
+        const amt = fKs(it.deposit_amount);
+        const okc = await confirmBox("Deduct deposit?", "Deposit " + amt + " Ks ကို BK#" + it.booking_id + " ရဲ့ voucher မှာ နှုတ်မလား?", "Deduct", "Cancel");
+        if (!okc) return;
+        busy.value = it.booking_id; haptic("medium");
+        try {
+          asOk(await PSV.api("/api/reconciliation/deposits/" + encodeURIComponent(it.booking_id) + "/deduct", { method: "POST", headers: HJSON, body: JSON.stringify({}) }));
+          showToast("Deducted " + amt + " Ks ✓", "success");
+          load();
+        } catch (e) {
+          showToast(String(e.message || "Deduct failed"), "fail");
+        } finally { busy.value = null; }
+      }
+      return { items, total, loading, refreshing, busy, fKs, methodLabel, fmtEnd, ageLabel, onDeduct, load };
+    },
+  };
+
   // ── VIEW: Consoles ──────────────────────────────────────
   const Consoles = {
     components: { PageHeader },
@@ -3492,7 +3778,7 @@
                 <span class="pv-dot" :class="'pv-dot--' + dotClass(c.status)"></span>{{ c.status || '-' }}
                 <span v-if="c.current_game" style="margin-left:8px;color:var(--pv-muted)">{{ c.current_game }}</span>
                 <div v-if="isActive(c)" style="margin-top:2px;color:var(--pv-muted);font-size:12px">
-                  {{ c.current_member || c.customer_name || '-' }} · {{ fmtTime(c.start_time_dt || c.start_time) }}<template v-if="c.plan_end"> → {{ c.plan_end }}</template><template v-if="c.duration_mins"> · {{ c.duration_mins }}m</template><template v-if="c.elapsed_mins != null"> · ⏱ {{ c.elapsed_mins }}m elapsed</template>
+                  {{ c.current_member || c.customer_name || '-' }} · {{ fmtTime(c.start_time_dt || c.start_time) }}<template v-if="c.plan_end"> → {{ fmt12h(c.plan_end) }}</template><template v-if="c.duration_mins"> · {{ c.duration_mins }}m</template><template v-if="c.elapsed_mins != null"> · ⏱ {{ c.elapsed_mins }}m elapsed</template>
                 </div>
               </template>
               <template #value>
@@ -3638,7 +3924,7 @@
       const startBind = reactive({ bookings: [], selId: null });
       // Deep-link stash: /consoles?bind=<id> → preselect that booking once loaded.
       const pendingBindId = ref(null);
-      const endDlg = reactive({ show: false, title: "", booking_id: null, console_id: "", member_name: "", mins: 0 });
+      const endDlg = reactive({ show: false, title: "", booking_id: null, console_id: "", member_name: "", member_id: "", mins: 0 });
       const extendDlg = reactive({ show: false, console_id: "", extra: 60 });
       const noop = () => true;
 
@@ -3665,9 +3951,9 @@
       function fmtTime(v) {
         if (!v) return "--:--";
         const d = new Date(v);
-        if (!isNaN(d.getTime())) { const hh = String(d.getHours()).padStart(2, "0"); const mm = String(d.getMinutes()).padStart(2, "0"); return hh + ":" + mm; }
+        if (!isNaN(d.getTime())) { const hh = String(d.getHours()).padStart(2, "0"); const mm = String(d.getMinutes()).padStart(2, "0"); return fmt12h(hh + ":" + mm); }
         const m = String(v).match(/(\d{2}:\d{2})/);
-        return m ? m[1] : String(v).slice(0, 5);
+        return m ? fmt12h(m[1]) : fmt12h(String(v).slice(0, 5));
       }
 
       async function load() {
@@ -3870,6 +4156,9 @@
         endDlg.booking_id = c.booking_id;
         endDlg.console_id = c.console_id || c.id;
         endDlg.member_name = c.current_member || c.customer_name || "Guest";
+        // 🔒 carry the booking's REAL member id so the voucher prefill can match by ID
+        // (never by name — a walk-in name collision would charge the wrong member card).
+        endDlg.member_id = c.booking_member_id || c.member_id || "";
         // actual elapsed mins (live) preferred; fallback planned duration
         endDlg.mins = (c.elapsed_mins != null && Number(c.elapsed_mins) > 0) ? Math.round(Number(c.elapsed_mins)) : (c.duration_mins || 0);
         endDlg.show = true;
@@ -3885,6 +4174,7 @@
           PSV.pendingSessionSale = {
             console_id: endDlg.console_id,
             member_name: endDlg.member_name,
+            member_id: endDlg.member_id,
             mins: Number(endDlg.mins) || 0,
             booking_id: bid,
           };
@@ -4047,7 +4337,7 @@
         } catch (e) { showToast("Start failed: " + e.message, "fail"); }
       }
 
-      return { list, loading, refreshing, dotClass, isActive, fmtTime, load, sheetShow, sheetActions, openActions, onAction, xsess, doMove, doSwap, startShow, startForm, startMemberPicker, startGamePicker, startMemberCols, startGameCols, startMemberPickItems, startGamePickItems, startMemberSel, pickStartMemberVal, pickStartGameVal, nativeMode: NATIVE, startBind, endDlg, extendDlg, noop, submitStart, doEndSession, doExtend, loadStartOptions, pickStartMember, pickStartGame, selectBind, isCheckedIn, bindStatusLabel, startConfirmLabel, startDurPresets, foodShow, foodConsole, foodNote, sessionFoodGroups, foodSel, sQty, sSetQty, foodSaving, saveSessionFood, openSessionFood, fKs };
+      return { list, loading, refreshing, dotClass, isActive, fmtTime, fmt12h, load, sheetShow, sheetActions, openActions, onAction, xsess, doMove, doSwap, startShow, startForm, startMemberPicker, startGamePicker, startMemberCols, startGameCols, startMemberPickItems, startGamePickItems, startMemberSel, pickStartMemberVal, pickStartGameVal, nativeMode: NATIVE, startBind, endDlg, extendDlg, noop, submitStart, doEndSession, doExtend, loadStartOptions, pickStartMember, pickStartGame, selectBind, isCheckedIn, bindStatusLabel, startConfirmLabel, startDurPresets, foodShow, foodConsole, foodNote, sessionFoodGroups, foodSel, sQty, sSetQty, foodSaving, saveSessionFood, openSessionFood, fKs };
     },
   };
 
@@ -4594,26 +4884,83 @@
   };
 
   // ── VIEW: Games ─────────────────────────────────────────
+  // External SSD drives are stored as console_games rows whose console_id starts
+  // with "SSD-" (mirrors the sale-bot's SSD_NAMES in bot/constants.py).
+  const SSD_LABELS = { "SSD-T1": "Samsung T1 Shield", "SSD-Blue": "SanDisk - Light Green", "SSD-Grey": "SanDisk - Orange" };
+  const SSD_IDS = Object.keys(SSD_LABELS);
+  const isSSD = (cid) => /^SSD-/i.test(String(cid || "").trim());
+  const locLabel = (cid) => { const c = String(cid || "").trim(); return isSSD(c) ? (SSD_LABELS[c] || c) : c; };
+  const gmSort = (a, b) => a.localeCompare(b, undefined, { numeric: true });
+
   const Games = {
-    components: { PageHeader },
+    components: { PageHeader, PSVPicker },
     template: `
       <div class="pv-page">
         <PageHeader title="Games" back="/more" />
+        <div style="padding:12px 16px 0">
+          <van-button block type="primary" icon="plus" @click="openNew">New game</van-button>
+        </div>
         <van-skeleton title :row="4" v-if="loading" style="margin:12px" />
         <van-empty v-else-if="!list.length" description="No games" />
         <van-cell-group v-else inset style="margin-top:8px">
-          <van-cell v-for="g in list" :key="g.game_title ?? g.title ?? g.name ?? g.id" :title="g.game_title || g.title || g.name || g.id" :label="g.genre || g.category || '-'">
+          <van-cell v-for="g in list" :key="g.game_title ?? g.title ?? g.name ?? g.id" :title="g.game_title || g.title || g.name || g.id" :label="g.genre || g.category || '-'" is-link @click="open(g)">
             <template #value>
-              <van-tag v-if="g.final_status" :type="g.final_status === 'Available' ? 'success' : 'default'" plain>{{ g.final_status }}</van-tag>
-              <span v-if="g.disc_count != null" style="margin-left:6px;color:var(--pv-muted)">{{ g.disc_count }} disc</span>
+              <div style="text-align:right">
+                <div>
+                  <van-tag v-if="g.final_status" :type="g.final_status === 'Installed' ? 'success' : 'default'" plain>{{ g.final_status }}</van-tag>
+                  <span v-if="g.disc_count != null" style="margin-left:6px;color:var(--pv-muted);font-size:12px">{{ g.disc_count }} disc</span>
+                </div>
+                <div v-if="covText(g.game_title || g.title || g.name || g.id)" style="margin-top:2px;color:var(--pv-muted);font-size:11px">{{ covText(g.game_title || g.title || g.name || g.id) }}</div>
+              </div>
             </template>
           </van-cell>
         </van-cell-group>
+
+        <van-dialog v-model:show="newShow" title="New game" show-cancel-button @confirm="saveNew">
+          <div style="padding:14px 16px">
+            <van-field v-model="nForm.title" label="Title" placeholder="Game title" />
+            <van-field :model-value="nForm.genre || 'Select…'" label="Genre" readonly is-link @click="nGenrePicker = true" />
+            <van-field :model-value="nForm.solo_multi || 'Select…'" label="Mode" readonly is-link @click="nModePicker = true" />
+            <van-field v-model.number="nForm.copies" type="digit" label="Discs" placeholder="1" />
+            <div style="color:var(--pv-muted);font-size:12px;margin-top:8px">ဖန်တီးပြီးရင် detail ထဲက ➕ Install on နဲ့ console/SSD ပေါ် တင်ပါ။</div>
+          </div>
+        </van-dialog>
+        <PSVPicker v-model:show="nModePicker" title="Mode" :items="modeItems" @confirm="(v) => (nForm.solo_multi = v)" />
+        <PSVPicker v-model:show="nGenrePicker" title="Genre" :items="genreItems" :searchable="true" @confirm="(v) => (nForm.genre = v)" />
       </div>
     `,
     setup() {
       const list = ref([]);
       const loading = ref(true);
+      const covMap = ref({});
+      function buildCoverage(rows) {
+        const m = {};
+        for (const r of rows) {
+          const it = String(r.install_type || "").trim().toLowerCase();
+          if (it === "session") continue;                    // session disc/cart markers are NOT installs
+          const t = String(r.game_title || "").trim();
+          const cid = String(r.console_id || "").trim();
+          if (!t || !cid) continue;
+          const key = t.toLowerCase();
+          if (!m[key]) m[key] = { consoles: new Set(), ssds: new Set() };
+          if (isSSD(cid)) m[key].ssds.add(cid); else m[key].consoles.add(cid);
+        }
+        return m;
+      }
+      function cov(title) { return covMap.value[String(title || "").toLowerCase()]; }
+      function covText(title) {
+        const c = cov(title);
+        if (!c) return "";
+        const parts = [];
+        if (c.consoles.size) parts.push(c.consoles.size + " console" + (c.consoles.size > 1 ? "s" : ""));
+        if (c.ssds.size) parts.push(c.ssds.size + " SSD");
+        return parts.length ? "📀 " + parts.join(" · ") : "";
+      }
+      function open(g) {
+        const title = g.game_title || g.title || g.name || g.id;
+        haptic("light");
+        router.push("/games/detail?game=" + encodeURIComponent(String(title || "")));
+      }
       async function load() {
         loading.value = true;
         try {
@@ -4623,11 +4970,284 @@
             d = PSV.unwrap(await PSV.apiCached("/api/fetch_games", {}, 300000));
             list.value = Array.isArray(d) ? d : (d && d.games) || [];
           }
+          const c = PSV.unwrap(await PSV.apiCached("/api/fetch_console_games", {}, 300000));
+          covMap.value = buildCoverage(Array.isArray(c) ? c : (c && c.console_games) || []);
         } catch (e) { list.value = []; }
         finally { loading.value = false; }
       }
+      // 🆕 New game (owner 2026-09-26) — POST /api/add_game (games_library, ON DUPLICATE KEY UPDATE)
+      const newShow = ref(false);
+      const nModePicker = ref(false);
+      const nGenrePicker = ref(false);
+      // Genre dropdown (owner 2026-09-26): genres already used in the library + a sensible
+      // default set, de-duped + sorted. Searchable so a long list stays usable.
+      const DEFAULT_GENRES = ["Action", "Adventure", "Co-op", "Fighting", "Horror", "Music", "Party", "Platformer", "Puzzle", "Racing", "RPG", "Shooter", "Simulation", "Sports", "Strategy"];
+      const genreItems = computed(() => {
+        const set = new Set();
+        for (const g of list.value) {
+          const v = String((g && (g.genre || g.category)) || "").trim();
+          if (v) set.add(v);
+        }
+        for (const d of DEFAULT_GENRES) set.add(d);
+        return Array.from(set).sort((a, b) => a.localeCompare(b)).map((v) => ({ value: v, label: v }));
+      });
+      const nForm = reactive({ title: "", genre: "", solo_multi: "", copies: 1 });
+      const modeItems = [
+        { value: "Solo", label: "Solo" },
+        { value: "Multi", label: "Multi" },
+        { value: "Co-op", label: "Co-op" },
+      ];
+      function openNew() { nForm.title = ""; nForm.genre = ""; nForm.solo_multi = ""; nForm.copies = 1; newShow.value = true; haptic("light"); }
+      async function saveNew() {
+        const title = String(nForm.title || "").trim();
+        if (!title) { showToast("Enter a game title", "warning"); return; }
+        try {
+          await PSV.api("/api/add_game", {
+            method: "POST", headers: HJSON,
+            body: JSON.stringify({ title: title, genre: String(nForm.genre || "").trim(), solo_multi: String(nForm.solo_multi || "").trim(), copies: Number(nForm.copies) || 1 }),
+          });
+          PSV.invalidate && PSV.invalidate("/api/fetch_game_library");
+          showToast("Added ✓ " + title, "success");
+          await load();
+        } catch (e) { showToast(String((e && e.message) || e), "fail"); }
+      }
       onMounted(load);
-      return { list, loading };
+      return { list, loading, covText, open, newShow, nForm, nModePicker, modeItems, nGenrePicker, genreItems, openNew, saveNew };
+    },
+  };
+
+  // ── VIEW: Game detail (installs + move) ─────────────────
+  const GameDetail = {
+    components: { PageHeader, PSVPicker },
+    template: `
+      <div class="pv-page">
+        <PageHeader :title="game || 'Game'" back="/games" />
+        <van-skeleton title :row="5" v-if="loading" style="margin:12px" />
+        <template v-else>
+          <van-cell-group inset style="margin-top:8px" title="Library">
+            <van-cell title="Genre" :value="meta.genre || '-'" />
+            <van-cell title="Mode" :value="meta.solo_multi || '-'" />
+            <van-cell title="Status">
+              <template #value>
+                <van-tag :type="meta.final_status === 'Installed' ? 'success' : 'default'" plain>{{ meta.final_status || 'Not Installed' }}</van-tag>
+              </template>
+            </van-cell>
+            <van-cell v-if="meta.disc_count != null" title="Discs" :value="String(meta.disc_count)" />
+          </van-cell-group>
+
+          <div style="padding:12px 16px 0">
+            <van-button block type="primary" :disabled="locCount < 2" :loading="moving" @click="openMove">🔀 Move game</van-button>
+            <div v-if="locCount < 2" style="color:var(--pv-muted);font-size:12px;margin-top:6px;text-align:center">Only one location — nothing to move</div>
+            <van-button block plain type="primary" style="margin-top:10px" :loading="installing" :disabled="!instItems.length" @click="openInstall">➕ Install on a console / SSD</van-button>
+            <div v-if="!instItems.length" style="color:var(--pv-muted);font-size:12px;margin-top:6px;text-align:center">Already on every console + SSD</div>
+          </div>
+
+          <van-cell-group inset style="margin-top:10px" title="📀 Consoles">
+            <van-cell v-for="c in consoles" :key="c.console_id" :title="c.console_id" :label="installLabel(c)">
+              <template #value>
+                <van-tag plain type="success">{{ c.install_type || 'Installed' }}</van-tag>
+                <van-icon name="delete-o" style="color:var(--pv-danger);margin-left:10px" @click.stop="askRemove(c)" />
+              </template>
+            </van-cell>
+            <van-cell v-if="!consoles.length" title="Not on any console" />
+          </van-cell-group>
+
+          <van-cell-group inset style="margin-top:10px" title="💾 SSD">
+            <van-cell v-for="s in ssds" :key="s.console_id" :title="s.label" :label="installLabel(s)">
+              <template #value>
+                <van-tag plain type="warning">{{ s.install_type || 'Installed' }}</van-tag>
+                <van-icon name="delete-o" style="color:var(--pv-danger);margin-left:10px" @click.stop="askRemove(s)" />
+              </template>
+            </van-cell>
+            <van-cell v-if="!ssds.length" title="Not on any SSD" />
+          </van-cell-group>
+        </template>
+
+        <PSVPicker v-model:show="fromPicker" title="Move from" :items="fromItems" @confirm="onFrom" />
+        <PSVPicker v-model:show="toPicker" title="Move to" :items="toItems" @confirm="onTo" />
+        <PSVPicker v-model:show="instPicker" title="Install on" :items="instItems" @confirm="onInstallLoc" />
+        <PSVPicker v-model:show="instTypePicker" title="Install type" :items="instTypeItems" @confirm="onInstallType" />
+      </div>
+    `,
+    setup() {
+      const game = ref("");
+      const meta = ref({});
+      const consoles = ref([]);
+      const ssds = ref([]);
+      const loading = ref(true);
+      const moving = ref(false);
+      const fromPicker = ref(false);
+      const toPicker = ref(false);
+      const moveFrom = ref("");
+      const allRows = ref([]);
+      // ➕ Install on / ✕ Remove (owner 2026-09-26) — mirrors the sale bot's ginst flow:
+      //   POST add_console_game (+ PUT update_game_library_install true) / DELETE remove_console_game.
+      const installing = ref(false);
+      const instPicker = ref(false);
+      const instTypePicker = ref(false);
+      const instLoc = ref("");
+      const instTypeItems = computed(() => (isSSD(instLoc.value)
+        ? [{ value: "SSD Copy", label: "SSD Copy" }, { value: "Portable SSD", label: "Portable SSD" }]
+        : [{ value: "Internal SSD", label: "Internal SSD" }, { value: "Disc", label: "Disc" }, { value: "HDD", label: "HDD" }]));
+      const locCount = computed(() => consoles.value.length + ssds.value.length);
+
+      const fromItems = computed(() => [
+        ...consoles.value.map((c) => ({ value: c.console_id, label: c.console_id, sub: c.install_type || "" })),
+        ...ssds.value.map((s) => ({ value: s.console_id, label: s.label, sub: s.install_type || "" })),
+      ]);
+      const toItems = computed(() => {
+        const exclude = moveFrom.value;
+        const items = [];
+        const ids = new Set();
+        for (const r of allRows.value) {
+          const cid = String(r.console_id || "").trim();
+          if (cid && !isSSD(cid)) ids.add(cid);
+        }
+        Array.from(ids).sort(gmSort).forEach((cid) => { if (cid !== exclude) items.push({ value: cid, label: cid }); });
+        SSD_IDS.forEach((sid) => { if (sid !== exclude) items.push({ value: sid, label: SSD_LABELS[sid] }); });
+        return items;
+      });
+
+      const instItems = computed(() => {
+        const have = new Set();
+        for (const c of consoles.value) have.add(String(c.console_id));
+        for (const s of ssds.value) have.add(String(s.console_id));
+        const ids = new Set();
+        for (const r of allRows.value) {
+          const cid = String(r.console_id || "").trim();
+          if (cid && !isSSD(cid)) ids.add(cid);
+        }
+        const items = [];
+        Array.from(ids).sort(gmSort).forEach((cid) => { if (!have.has(cid)) items.push({ value: cid, label: cid }); });
+        SSD_IDS.forEach((sid) => { if (!have.has(sid)) items.push({ value: sid, label: SSD_LABELS[sid] }); });
+        return items;
+      });
+
+      function installLabel(c) {
+        const parts = [];
+        if (c.install_type) parts.push(c.install_type);
+        if (c.slot_position != null && c.slot_position !== "" && Number(c.slot_position) > 0) parts.push("slot " + c.slot_position);
+        return parts.join(" · ");
+      }
+
+      async function load() {
+        loading.value = true;
+        try {
+          game.value = decodeURIComponent((router.query.value && router.query.value.game) || "");
+          const want = game.value.trim().toLowerCase();
+          let lib = PSV.unwrap(await PSV.apiCached("/api/fetch_game_library"));
+          lib = Array.isArray(lib) ? lib : (lib && lib.games) || [];
+          if (!lib.length) {
+            lib = PSV.unwrap(await PSV.apiCached("/api/fetch_games", {}, 300000));
+            lib = Array.isArray(lib) ? lib : (lib && lib.games) || [];
+          }
+          meta.value = lib.find((g) => String(g.game_title || "").trim().toLowerCase() === want) || {};
+
+          let cg = PSV.unwrap(await PSV.apiCached("/api/fetch_console_games", {}, 300000));
+          cg = Array.isArray(cg) ? cg : (cg && cg.console_games) || [];
+          allRows.value = cg;
+
+          const cons = [];
+          const sd = [];
+          for (const r of cg) {
+            const it = String(r.install_type || "").trim().toLowerCase();
+            if (it === "session") continue;
+            if (String(r.game_title || "").trim().toLowerCase() !== want) continue;
+            const cid = String(r.console_id || "").trim();
+            if (!cid) continue;
+            const entry = { console_id: cid, install_type: r.install_type || "", slot_position: r.slot_position, status: r.status };
+            if (isSSD(cid)) { entry.label = SSD_LABELS[cid] || cid; sd.push(entry); }
+            else { entry.label = cid; cons.push(entry); }
+          }
+          consoles.value = cons.sort((a, b) => gmSort(a.console_id, b.console_id));
+          ssds.value = sd.sort((a, b) => gmSort(a.console_id, b.console_id));
+        } catch (e) {
+          game.value = decodeURIComponent((router.query.value && router.query.value.game) || "");
+          consoles.value = []; ssds.value = [];
+        } finally { loading.value = false; }
+      }
+
+      function openMove() {
+        if (locCount.value < 2) { showToast("Only one location — nothing to move", "text"); return; }
+        moveFrom.value = "";
+        fromPicker.value = true;
+        haptic("light");
+      }
+      function onFrom(v) { moveFrom.value = v; toPicker.value = true; haptic("light"); }
+      async function onTo(v) {
+        const ok = await confirmBox("Move game", game.value + " — " + locLabel(moveFrom.value) + " → " + locLabel(v), "Move", "Cancel", false);
+        if (!ok) return;
+        doMove(moveFrom.value, v);
+      }
+      async function doMove(from, to) {
+        moving.value = true;
+        try {
+          const res = await PSV.api("/api/move_console_game", {
+            method: "POST", headers: HJSON,
+            body: JSON.stringify({ game_title: game.value, from_console: from, to_console: to }),
+          });
+          asOk(res);
+          showToast("Moved ✓ " + locLabel(from) + " → " + locLabel(to), "success");
+          await load();
+        } catch (e) { showToast(String((e && e.message) || e), "fail"); }
+        finally { moving.value = false; }
+      }
+
+      function openInstall() {
+        if (!instItems.value.length) { showToast("Already on every console + SSD", "text"); return; }
+        instLoc.value = "";
+        instPicker.value = true;
+        haptic("light");
+      }
+      function onInstallLoc(v) { instLoc.value = v; instTypePicker.value = true; haptic("light"); }
+      async function onInstallType(v) {
+        const ok = await confirmBox("Install game", game.value + " — " + locLabel(instLoc.value) + " (" + v + ")", "Install", "Cancel", false);
+        if (!ok) return;
+        doInstall(instLoc.value, v);
+      }
+      async function doInstall(loc, type) {
+        installing.value = true;
+        try {
+          await PSV.api("/api/add_console_game", {
+            method: "POST", headers: HJSON,
+            body: JSON.stringify({ console_id: loc, console_name: loc, game_id: game.value, game_title: game.value, install_type: type, slot_position: 1 }),
+          });
+          try {
+            await PSV.api("/api/update_game_library_install", {
+              method: "PUT", headers: HJSON,
+              body: JSON.stringify({ game_title: game.value, console_id: loc, installed: true }),
+            });
+          } catch (_e) {}
+          try { PSV.invalidate("/api/fetch_console_games"); PSV.invalidate("/api/fetch_game_library"); } catch (_e2) {}
+          showToast("Installed on " + locLabel(loc) + " ✓", "success");
+          await load();
+        } catch (e) { showToast(String((e && e.message) || e), "fail"); }
+        finally { installing.value = false; }
+      }
+      async function askRemove(c) {
+        const loc = c.console_id || c.id;
+        const ok = await confirmBox("Remove install", game.value + " — " + locLabel(loc) + " မှ ဖျက်မလား?", "Remove", "Cancel", true);
+        if (!ok) return;
+        try {
+          await PSV.api("/api/remove_console_game", {
+            method: "DELETE", headers: HJSON,
+            body: JSON.stringify({ console_id: loc, game_title: game.value }),
+          });
+          try {
+            await PSV.api("/api/update_game_library_install", {
+              method: "PUT", headers: HJSON,
+              body: JSON.stringify({ game_title: game.value, console_id: loc, installed: false }),
+            });
+          } catch (_e) {}
+          try { PSV.invalidate("/api/fetch_console_games"); PSV.invalidate("/api/fetch_game_library"); } catch (_e2) {}
+          showToast("Removed from " + locLabel(loc), "success");
+          await load();
+        } catch (e) { showToast(String((e && e.message) || e), "fail"); }
+      }
+
+      onMounted(load);
+      return { game, meta, consoles, ssds, loading, moving, locCount, fromPicker, toPicker, fromItems, toItems, installLabel, openMove, onFrom, onTo,
+               installing, instPicker, instTypePicker, instItems, instTypeItems, openInstall, onInstallLoc, onInstallType, askRemove };
     },
   };
 
@@ -5601,7 +6221,7 @@
                 <div class="psv-rows" style="margin-top:8px">
                   <div class="psv-row"><span>Opening</span><b class="psv-tabnum">{{ a.opening_set ? fKs(a.opening_balance) + ' Ks' : '—' }}</b></div>
                   <div class="psv-row" v-if="a.status === 'closed'"><span>Closing</span><b class="psv-tabnum">{{ fKs(a.closing_balance) }} Ks</b></div>
-                  <div class="psv-row" v-if="a.status === 'closed'"><span>Variance</span><b class="psv-tabnum" :style="a.variance !== 0 ? 'color:#f87171' : ''">{{ (a.variance > 0 ? '+' : '') + fKs(a.variance) }} Ks</b></div>
+                  <div class="psv-row" v-if="a.status === 'closed'"><span>Variance (Actual − Recorded)</span><b class="psv-tabnum" :style="a.variance !== 0 ? 'color:#f87171' : ''">{{ (a.variance > 0 ? '+' : '') + fKs(a.variance) }} Ks</b></div>
                 </div>
                 <div style="display:flex;gap:8px;margin-top:10px">
                   <button v-if="!a.opening_set" class="psv-btn psv-btn--ghost psv-btn--block" @click="openSheet(a, 'open')">🔓 Open balance</button>
@@ -5621,7 +6241,7 @@
                           <td style="padding:3px 0">{{ h.account }}</td>
                           <td class="psv-tabnum" style="text-align:right;padding:3px 4px">{{ h.opening_balance > 0 ? fKs(h.opening_balance) : '—' }}</td>
                           <td class="psv-tabnum" style="text-align:right;padding:3px 4px">{{ h.status === 'closed' ? fKs(h.closing_balance) : '—' }}</td>
-                          <td class="psv-tabnum" style="text-align:right;padding:3px 0" :style="h.variance !== 0 ? 'color:#f87171' : ''">{{ h.status === 'closed' ? ((h.variance > 0 ? '+' : '') + fKs(h.variance)) : '—' }}</td>
+                          <td class="psv-tabnum" style="text-align:right;padding:3px 0" :style="h.variance != null && h.variance !== 0 ? 'color:#f87171' : ''">{{ h.status === 'closed' && h.variance != null ? ((h.variance > 0 ? '+' : '') + fKs(h.variance)) : '—' }}</td>
                         </tr>
                       </tbody>
                     </table>
@@ -5646,7 +6266,7 @@
                 </div>
               </div>
               <div class="psv-note" v-if="sheetMode === 'open'">Opening balance = money in this account at the start of today.</div>
-              <div class="psv-note" v-else>Closing balance = money counted in this account at the end of today.</div>
+              <div class="psv-note" v-else>Closing balance = money counted in this account at the end of today. Variance = counted − system (live) balance.</div>
               <div class="psv-btn-row" style="margin-top:12px">
                 <button class="psv-btn psv-btn--ghost psv-btn--block" @click="sheetShow = false" :disabled="busy">Cancel</button>
                 <button class="psv-btn psv-btn--primary psv-btn--block" @click="submit" :disabled="busy || !canSubmit">Save</button>
@@ -5677,7 +6297,7 @@
           opening_balance: Number(r.opening_balance) || 0,
           opening_set: !!(r.opened_by || r.opened_at || (Number(r.opening_balance) > 0)),
           closing_balance: Number(r.closing_balance) || 0,
-          variance: Number(r.variance) || 0,
+          variance: (r.variance == null) ? null : Number(r.variance),
           live_balance: Number(r.live_balance) || 0,
           opened_by: r.opened_by || "",
           closed_by: r.closed_by || "",
@@ -5704,7 +6324,7 @@
             date: h.date, account: h.account, status: h.status,
             opening_balance: Number(h.opening_balance) || 0,
             closing_balance: Number(h.closing_balance) || 0,
-            variance: Number(h.variance) || 0,
+            variance: (h.variance == null) ? null : Number(h.variance),
             opened_by: h.opened_by || "", closed_by: h.closed_by || "",
           }));
         } catch (_e) { hist.value = []; }
@@ -5835,6 +6455,7 @@
     router.register("/print", PrintScreen);
     router.register("/me", MeScreen);
     router.register("/deposit", Deposit);
+    router.register("/reconciliation", Reconciliation);
     router.register("/consoles", Consoles);
     router.register("/food-orders", FoodOrders);
     router.register("/inventory", Inventory);
@@ -5843,6 +6464,7 @@
     router.register("/opex", Opex);
     router.register("/staff", Staff);
     router.register("/games", Games);
+    router.register("/games/detail", GameDetail);
     router.register("/food", Food);
     router.register("/promotions", Promotions);
     router.register("/salary", Salary);
@@ -6793,6 +7415,7 @@
     app.component("Opex", Opex);
     app.component("Staff", Staff);
     app.component("Games", Games);
+    app.component("GameDetail", GameDetail);
     app.component("Food", Food);
     app.component("Promotions", Promotions);
     app.component("Salary", Salary);

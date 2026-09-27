@@ -178,6 +178,58 @@ def _notify_no_show_cancel(bk_id: int, row: dict):
     _send_telegram_customer(tg_chat_id, msg)
 
 
+def _notify_booking_rescheduled(bk_id, booking, new_console, new_date, new_time, new_dur, staff, reason):
+    """Notify staff group + customer that a confirmed booking was rescheduled."""
+    # Staff group
+    try:
+        token = os.environ.get("BOT_TOKEN", "")
+        chat_id = os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747")
+        if token and chat_id:
+            old_date = str(booking.get("booking_date", ""))[:10] if booking.get("booking_date") else "\u2014"
+            old_start = booking.get("planned_start")
+            old_time = ""
+            if old_start:
+                try:
+                    from datetime import datetime as _dt
+                    old_time = (_dt.fromisoformat(str(old_start)) if isinstance(old_start, str) else old_start).strftime("%H:%M")
+                except Exception:
+                    old_time = str(old_start)[:5] if old_start else ""
+            old_console = booking.get("console_id") or "\u2014"
+            old_dur = booking.get("planned_duration_mins") or ""
+            member = booking.get("member_id") or booking.get("customer_name") or booking.get("phone") or "Guest"
+            msg = (
+                f"\U0001f504 <b>Booking #{bk_id} \u2014 Rescheduled</b>\n\n"
+                f"\U0001f464 {member}\n"
+                f"\U0001f579\ufe0f {old_console} \u2192 <b>{new_console}</b>\n"
+                f"\U0001f4c5 {old_date} \u23f0 {old_time} ({old_dur}m)\n"
+                f"   \u21b3 <b>{new_date} \u23f0 {new_time} ({new_dur}m)</b>\n"
+                + (f"\U0001f464 By: {staff}\n" if staff else "")
+                + (f"\U0001f4dd Reason: {reason}\n" if reason else "")
+                + f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"
+            )
+            payload = json.dumps({"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}).encode()
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    data=payload, headers={"Content-Type": "application/json"}), timeout=5)
+    except Exception as _e:
+        logger.warning("[reschedule] staff notify failed: %s", _e)
+
+    # Customer
+    try:
+        tg = str(booking.get("telegram_chat_id", "") or "")
+        if tg:
+            _send_telegram_customer(tg, (
+                f"\U0001f504 <b>Booking #{bk_id} \u2014 Rescheduled</b>\n\n"
+                f"\U0001f4c5 {new_date}  \u23f0 {new_time}\n"
+                f"\U0001f579\ufe0f Console: {new_console}  \u23f1\ufe0f {new_dur} min\n\n"
+                f"Booking \u1015\u103c\u1031\u102c\u1004\u103a\u1038\u101c\u1032\u1015\u103c\u102e\u1038\u1015\u102b\u104b\n"
+                f"\u1006\u1000\u103a\u101e\u1000\u1039\u101c\u102c\u101b\u103e\u1014\u1039 @psvibeofficial"
+            ))
+    except Exception as _e:
+        logger.warning("[reschedule] customer notify failed: %s", _e)
+
+
 # ═══════════════════════════════════════
 @router.post("/bookings/extend-duration", response_model=GenericResponse, tags=["Bookings"], summary="Extend active booking duration [MySQL]")
 async def api_extend_booking_duration(req: dict, auth=Depends(verify_api_key)):
@@ -201,6 +253,29 @@ async def api_extend_booking_duration(req: dict, auth=Depends(verify_api_key)):
         _mysql_exec("UPDATE console_bookings SET planned_duration_mins=%s, planned_end=DATE_ADD(planned_start, INTERVAL %s MINUTE) WHERE id=%s AND status='Active'", (new_duration, _dur_end, _booking_id))
         # Update console_status to reflect extended session end time
         _mysql_exec("UPDATE console_status SET last_updated=NOW() WHERE console_id=%s", (console_id,))
+        # ── Reschedule API session timer to the NEW end ──
+        # 🐛 Fix (2026-09-26): extend-duration previously updated the DB duration/end
+        # but never re-armed the API session_timer. The running timer kept its OLD
+        # anchor (old_end - 5min), so after an extend it woke EARLY, re-fetched the
+        # (correctly extended) actual_end, and fired "Session ending soon" every 5 min
+        # from the stale anchor — the reported "reminder ကြိုကျ + duplicate" bug.
+        try:
+            _trow = _mysql_query_one(
+                "SELECT actual_start, member_id FROM console_sessions WHERE booking_id=%s AND status='active'",
+                (_booking_id,)
+            )
+            if _trow and _trow.get("actual_start") and new_duration and new_duration > 0:
+                _st = _trow["actual_start"]
+                if hasattr(_st, "tzinfo") and _st.tzinfo is None:
+                    _st = _st.replace(tzinfo=timezone(timedelta(hours=6, minutes=30)))
+                schedule_session_timer(
+                    _booking_id, console_id,
+                    _trow.get("member_id") or "Guest",
+                    _st, new_duration,
+                )
+                logger.info("extend-duration: rescheduled timer for booking %s → dur=%d", _booking_id, new_duration)
+        except Exception as _tm_err:
+            logger.warning("extend-duration: timer reschedule failed (non-critical): %s", _tm_err)
         # ── Sync updated duration to bot's session_reminders.json ──
         try:
             _br_file = "/opt/psvibe/sales-bot/data/session_reminders.json"
@@ -2625,6 +2700,183 @@ async def api_suggestion_update(suggestion_id: int, req: dict, auth=Depends(veri
 
 
 # ════════════════════════════════════════════════════════════════════════════
+#  POST /api/bookings/{booking_id}/reschedule — edit console/date/time (Staff App)
+# ════════════════════════════════════════════════════════════════════════════
+@router.post("/bookings/{booking_id}/reschedule", response_model=GenericResponse, tags=["Bookings"],
+             summary="Reschedule a confirmed booking (edit console/date/time/duration) [MySQL]")
+async def api_booking_reschedule(booking_id: int, req: dict, request: Request, auth=Depends(verify_api_key)):
+    """Edit the console, date, start time and duration of a CONFIRMED booking.
+
+    Body: {console_id, date (YYYY-MM-DD), time_slot (HH:MM), duration_mins,
+           staff_name?, reason?}
+
+    Only ``confirmed`` bookings may be rescheduled; a booking that has already
+    started a session (console_sessions active/checked_in) is blocked. The target
+    console + slot is conflict-checked with the same overlap rules as
+    /booking-conflicts, excluding this booking."""
+    try:
+        booking_id = int(booking_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid booking id")
+
+    booking = _mysql_query_one(
+        "SELECT id, console_id, branch_id, member_id, customer_name, booking_date, "
+        "planned_start, planned_end, planned_duration_mins, status, staff_name, notes, "
+        "telegram_chat_id, phone, game_name "
+        "FROM console_bookings WHERE id=%s",
+        (booking_id,)
+    )
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    # ── Eligibility: confirmed only ──
+    status = (booking.get("status") or "").strip()
+    if status != "confirmed":
+        raise HTTPException(status_code=400, detail=f"Only confirmed bookings can be rescheduled (current: {status or '?'})")
+
+    # ── Active-session guard ──
+    _sess = _mysql_query_one(
+        "SELECT id FROM console_sessions WHERE booking_id=%s AND status IN ('active','checked_in') LIMIT 1",
+        (booking_id,)
+    )
+    if _sess:
+        raise HTTPException(status_code=400, detail="Session \u1005\u1015\u103c\u102e\u1038\u101e\u102c\u1038 \u2014 edit \u1019\u101c\u102f\u1015\u103a\u1014\u102d\u102f\u1004\u103a\u1015\u102b")
+
+    # ── Parse + validate new fields ──
+    console_id = (req.get("console_id") or "").strip()
+    date_str = (req.get("date") or req.get("booking_date") or "").strip()
+    time_slot = (req.get("time_slot") or req.get("start_time") or "").strip()
+    duration_mins = req.get("duration_mins")
+    reason = str(req.get("reason") or "").strip()
+    staff = staff_audit.identity_from_request(request, req)
+
+    if not console_id:
+        raise HTTPException(status_code=400, detail="Console is required")
+    if not date_str:
+        raise HTTPException(status_code=400, detail="Date is required")
+    if not time_slot:
+        raise HTTPException(status_code=400, detail="Start time is required")
+
+    # console must exist
+    _cons = _mysql_query_one("SELECT console_id, console_type FROM console_status WHERE console_id=%s", (console_id,))
+    if not _cons:
+        raise HTTPException(status_code=400, detail=f"Console {console_id} does not exist")
+
+    # time_slot HH:MM (24h)
+    try:
+        h, m = map(int, time_slot.split(":"))
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError
+    except Exception:
+        raise HTTPException(status_code=400, detail="time_slot format must be HH:MM (24h)")
+
+    # date YYYY-MM-DD (naive, matching how planned_start is stored)
+    try:
+        start_dt = datetime.strptime(f"{date_str} {h:02d}:{m:02d}:00", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    # duration bounds (same as create path)
+    try:
+        duration_mins = int(duration_mins)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="duration_mins must be an integer")
+    if duration_mins < 30 or duration_mins > 480:
+        raise HTTPException(status_code=400, detail="Duration must be between 30 and 480 minutes")
+
+    end_dt = start_dt + timedelta(minutes=duration_mins)
+
+    # ── Conflict check (same overlap rules as /booking-conflicts, exclude self) ──
+    _conf = _mysql_query(
+        "SELECT cb.id FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
+        "WHERE cb.console_id=%s "
+        "AND (cb.status IN ('confirmed','pending_check_in','checked_in','Active') OR (cb.status = 'pending' AND (cb.deposit_status = 'paid' OR (cb.member_id IS NOT NULL AND cb.member_id != '')))) "
+        "AND cb.id != %s "
+        "AND NOT (COALESCE(cs.actual_end, cb.planned_end) <= %s OR COALESCE(cs.actual_start, cb.planned_start) >= %s) "
+        "LIMIT 1",
+        (console_id, booking_id, start_dt, end_dt)
+    )
+    if _conf:
+        raise HTTPException(status_code=409, detail=f"\u23f0 Console {console_id} already has a booking (BK#{_conf[0]['id']}) at this time slot")
+
+    # ── Compute before/after for the audit trail ──
+    old_console = booking.get("console_id") or ""
+    old_date = str(booking.get("booking_date"))[:10] if booking.get("booking_date") else ""
+    old_start = booking.get("planned_start")
+    old_time = ""
+    if old_start:
+        try:
+            old_time = (datetime.fromisoformat(str(old_start)) if isinstance(old_start, str) else old_start).strftime("%H:%M")
+        except Exception:
+            old_time = str(old_start)[:5] if old_start else ""
+    old_dur = booking.get("planned_duration_mins") or ""
+
+    _before = f"{old_console} / {old_date} {old_time} / {old_dur}m"
+    _after = f"{console_id} / {date_str} {time_slot} / {duration_mins}m"
+    _note = f"Rescheduled: {_before} \u2192 {_after}"
+    if staff:
+        _note += f" (by {staff})"
+    if reason:
+        _note += f" \u2014 {reason}"
+    _prev_notes = (booking.get("notes") or "").strip()
+    _new_notes = ((_prev_notes + " | " + _note) if _prev_notes else _note)
+
+    # ── Persist the reschedule ──
+    _mysql_exec(
+        "UPDATE console_bookings SET console_id=%s, booking_date=%s, planned_start=%s, planned_end=%s, "
+        "planned_duration_mins=%s, notes=%s WHERE id=%s",
+        (console_id, date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S'),
+         duration_mins, _new_notes, booking_id)
+    )
+
+    # ── Re-point any pending 30-min advance reminder (cancel + re-add) ──
+    try:
+        cancel_booking_reminder(str(booking_id))
+        # booking_reminder expects date as MM/DD/YYYY (matches its parse regex)
+        _yy, _mo, _dd = date_str.split("-")
+        add_booking_reminder({
+            "bk_id": str(booking_id),
+            "customer_name": booking.get("customer_name") or booking.get("member_id") or "Guest",
+            "phone": booking.get("phone") or "",
+            "console_id": console_id,
+            "console_type": _cons.get("console_type") or "",
+            "date": f"{_mo}/{_dd}/{_yy}",
+            "time_slot": time_slot,
+            "duration_mins": duration_mins,
+            "telegram_chat_id": booking.get("telegram_chat_id") or "",
+        })
+        logger.info("reschedule: re-pointed booking reminder for BK#%s", booking_id)
+    except Exception as _rm_err:
+        logger.warning("reschedule: reminder re-point failed (non-critical): %s", _rm_err)
+
+    # ── Sync console status (old + new console) ──
+    for _cid in {old_console, console_id}:
+        if _cid:
+            try:
+                _sync_console_status(_cid)
+            except Exception:
+                pass
+
+    # ── Notifications (fire-and-forget, never fail the reschedule) ──
+    try:
+        _notify_booking_rescheduled(booking_id, booking, console_id, date_str, time_slot, duration_mins, staff, reason)
+    except Exception as _nt_err:
+        logger.warning("reschedule: notify failed (non-critical): %s", _nt_err)
+
+    return ok({
+        "booking_id": booking_id,
+        "console_id": console_id,
+        "date": date_str,
+        "time_slot": time_slot,
+        "duration_mins": duration_mins,
+        "planned_start": start_dt.strftime('%Y-%m-%d %H:%M:%S'),
+        "planned_end": end_dt.strftime('%Y-%m-%d %H:%M:%S'),
+        "status": "confirmed",
+        "notes": _new_notes,
+    })
+
+
+# ════════════════════════════════════════════════════════════════════════════
 #  POST /api/booking-conflicts — check for time/console conflicts
 # ════════════════════════════════════════════════════════════════════════════
 @router.post("/booking-conflicts", response_model=GenericResponse, tags=["Bookings"],
@@ -2666,20 +2918,20 @@ async def api_booking_conflicts(req: dict, auth=Depends(verify_api_key)):
         
         # Query conflicting bookings (exclude cancelled/done)
         where_clause = """
-            (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != ''))))
+            (cb.status IN ('confirmed','pending_check_in','checked_in','Active') OR (cb.status = 'pending' AND (cb.deposit_status = 'paid' OR (cb.member_id IS NOT NULL AND cb.member_id != ''))))
             AND NOT (COALESCE(cs.actual_end, cb.planned_end) <= %s OR COALESCE(cs.actual_start, cb.planned_start) >= %s)
         """
         params = [start_dt, end_dt]
         
         if console_id:
-            where_clause += " AND console_id = %s"
+            where_clause += " AND cb.console_id = %s"
             params.append(console_id)
         
         if exclude_id:
-            where_clause += " AND id != %s"
+            where_clause += " AND cb.id != %s"
             params.append(int(exclude_id))
         
-        rows = mysql_query(
+        rows = _mysql_query(
             f"SELECT cb.id, cb.console_id, cb.member_id, COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, cb.booking_date, COALESCE(cs.actual_start, cb.planned_start) AS start_time, COALESCE(cs.actual_end, cb.planned_end) AS end_time, cb.status FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id WHERE {where_clause} LIMIT 20",
             tuple(params)
         )

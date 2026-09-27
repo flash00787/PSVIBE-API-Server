@@ -29,7 +29,7 @@
   // the freshly fetched index.html with the marker this bundle was built with; when the
   // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
   // with the ?v= query on every deploy.
-  var PSV_BUILD = "w35refund";
+  var PSV_BUILD = "w51endtime";
   // Real app build number — shown in the More menu footer (was hardcoded "build 34" before,
   // which misled diagnosis). Bump together with android versionCode.
   var APP_BUILD = "51";
@@ -598,6 +598,8 @@
     if (data.date) L.push({ text: "Date: " + data.date + (data.time ? " " + data.time : ""), size: 15 });
     if (data.staff) L.push({ text: "Staff: " + data.staff, size: 15 });
     if (data.member) L.push({ text: "Member: " + data.member, size: 15 });
+    // Walk-in / guest vouchers carry the booker's name separately (owner 2026-09-26).
+    if (data.customer) L.push({ text: "Customer: " + data.customer, size: 15 });
     hr();
     if (items.length) {
       for (const it of items) {
