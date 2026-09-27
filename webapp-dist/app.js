@@ -2521,13 +2521,13 @@
         if (!r) return "—";
         if (isNarrow(b)) return tlFmt(r.st);
         const openEnd = !(Number(b.durationMins || b.duration_mins || b.planned_duration_mins) > 0) && tlMin(b.endTime || b.end_time || b.planned_end) == null;
-        return tlFmt(r.st) + "–" + (openEnd ? "Open" : tlFmt(r.end));
+        return tlFmt(r.st) + "–" + (openEnd ? "-" : tlFmt(r.end));
       }
       function range(b) {
         const r = minutesOf(b);
         if (!r) return "—";
         const openEnd = !(Number(b.durationMins || b.duration_mins || b.planned_duration_mins) > 0) && tlMin(b.endTime || b.end_time || b.planned_end) == null;
-        return tlFmt(r.st) + "–" + (openEnd ? "Open" : tlFmt(r.end));
+        return tlFmt(r.st) + "–" + (openEnd ? "-" : tlFmt(r.end));
       }
       function utilOf(cid) {
         const list = blocksOf(cid).filter((b) => TL_DEAD.indexOf(bkKey(b.status)) < 0);
@@ -2966,7 +2966,7 @@
           const mm = String(endMin % 60).padStart(2, "0");
           return fmt12h(hh + ":" + mm);
         }
-        return startMin == null ? "" : "Open";
+        return startMin == null ? "" : "-";
       }
       function depositText(b) {
         const s = bkKey(b.deposit_status);
@@ -3778,7 +3778,7 @@
                 <span class="pv-dot" :class="'pv-dot--' + dotClass(c.status)"></span>{{ c.status || '-' }}
                 <span v-if="c.current_game" style="margin-left:8px;color:var(--pv-muted)">{{ c.current_game }}</span>
                 <div v-if="isActive(c)" style="margin-top:2px;color:var(--pv-muted);font-size:12px">
-                  {{ c.current_member || c.customer_name || '-' }} · {{ fmtTime(c.start_time_dt || c.start_time) }}<template v-if="c.plan_end"> → {{ fmt12h(c.plan_end) }}</template><template v-if="c.duration_mins"> · {{ c.duration_mins }}m</template><template v-if="c.elapsed_mins != null"> · ⏱ {{ c.elapsed_mins }}m elapsed</template>
+                  {{ c.current_member || c.customer_name || '-' }} · {{ fmtTime(c.start_time_dt || c.start_time) }}<template v-if="isActive(c)"> → {{ (Number(c.duration_mins) > 0 && c.plan_end) ? fmt12h(c.plan_end) : '-' }}</template><template v-if="c.duration_mins"> · {{ c.duration_mins }}m</template><template v-if="c.elapsed_mins != null"> · ⏱ {{ c.elapsed_mins }}m elapsed</template>
                 </div>
               </template>
               <template #value>
