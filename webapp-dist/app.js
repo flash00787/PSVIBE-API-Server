@@ -3892,7 +3892,7 @@
       const startShow = ref(false);
       const startForm = reactive({ member_id: "", member_name: "", duration_mins: 60, game_name: "", linked_booking_id: null });
       // "စမှတ်" = start marker only / no timer (duration 0 = API No Timer mode) — owner ask 2026-09-20
-      const startDurPresets = [{ v: 30, l: "30m" }, { v: 60, l: "60m" }, { v: 90, l: "90m" }, { v: 120, l: "120m" }, { v: 0, l: "📌 စမှတ် (no timer)" }];
+      const startDurPresets = [{ v: 30, l: "30m" }, { v: 60, l: "60m" }, { v: 90, l: "90m" }, { v: 120, l: "120m" }, { v: 150, l: "150m" }, { v: 180, l: "180m" }, { v: 0, l: "📌 စမှတ် (no timer)" }];
       const startMemberPicker = ref(false);
       const startGamePicker = ref(false);
       const startMemberCols = ref([]);
