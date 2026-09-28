@@ -319,20 +319,24 @@ def filter_items_by_kind(items, kind):
 # (2) name-variant merging so one ingredient aggregates ALL its spellings.
 COST_BASIS_LAST = "last"
 COST_BASIS_AVERAGE = "average"
+COST_BASIS_FIFO = "fifo"
 
 
 def normalize_cost_basis(value):
-    """Return the canonical cost basis ("last"|"average") or None for invalid input.
+    """Return the canonical cost basis ("last"|"average"|"fifo") or None for invalid input.
 
     Accepts friendly aliases so the UI / API can send human labels:
       last    <- last | latest | recent | last_purchase | last-purchase
       average <- average | avg | weighted | weighted_average | wavg
+      fifo    <- fifo | first_in_first_out | first-in-first-out | ဝယ်စဉ်လိုက်
     Unknown / empty / None -> None (caller falls back to the global default)."""
     t = str(value or "").strip().lower()
     if t in ("last", "latest", "recent", "last_purchase", "last-purchase", "lastpurchase", "နောက်ဆုံးဝယ်ဈေး"):
         return "last"
     if t in ("average", "avg", "weighted", "weighted_average", "weighted-average", "wavg", "ပျမ်းမျှ"):
         return "average"
+    if t in ("fifo", "first_in_first_out", "first-in-first-out", "fifo_layer", "ဝယ်စဉ်လိုက်", "အရင်ဝယ်တာ အရင်သုံး"):
+        return "fifo"
     return None
 
 
@@ -370,15 +374,112 @@ def last_purchase_cost(purchases):
     return (best_cost / best_qty).quantize(_Q4, rounding=ROUND_HALF_UP)
 
 
-def select_unit_cost(weighted_avg, last_purchase, basis):
+def fifo_layers(purchases):
+    """Normalise stock_in rows into FIFO layers ordered oldest -> newest.
+
+    ``purchases`` is an iterable of ``(quantity, total_cost, created_at[, id])``
+    tuples.  Rows with quantity <= 0 are ignored.  Each returned layer carries
+    ``qty``, ``unit_cost`` (total_cost/qty at 4 dp), ``created_at`` and ``id``.
+    Layers are sorted by ``(created_at, id)`` ascending so the oldest purchase is
+    drawn first and ties resolve deterministically to the smaller id.
+
+    Pure + unit-testable (this is the read-only FIFO queue; it never mutates stock).
+    """
+    layers = []
+    for row in purchases:
+        qty = _d(row[0])
+        cost = _d(row[1])
+        if qty <= 0:
+            continue
+        created = str(row[2] or "")
+        rid = row[3] if len(row) >= 4 else 0
+        uc = (cost / qty).quantize(_Q4, rounding=ROUND_HALF_UP)
+        layers.append({"qty": qty, "unit_cost": uc, "created_at": created, "id": rid})
+    layers.sort(key=lambda L: (L["created_at"], L["id"]))
+    return layers
+
+
+def fifo_consume(layers, consumption):
+    """Consume ``consumption`` (Decimal) from ``layers`` FIFO and report the draw layer.
+
+    Walks layers oldest -> newest, subtracting ``consumption`` from each layer's
+    quantity until exhausted.  Returns a dict:
+      * unit_cost       — per-purchase-unit cost of the OLDEST layer that still
+                          has remaining quantity (the layer being consumed now);
+                          None when there are no layers or everything is consumed.
+      * fifo_layer_cost — alias of unit_cost (same value).
+      * fifo_layer_date — created_at of that layer (or None).
+      * fifo_remaining  — quantity left in that layer (or None).
+      * on_hand_est     — total quantity remaining across ALL layers after the
+                          consumption (>= 0).
+      * consumed        — consumption actually applied (capped at total qty).
+      * out_of_stock    — True when consumption exhausted every layer.
+
+    Pure + unit-testable.  Read-only — never writes any stock layer.
+    """
+    remaining = _d(consumption)
+    on_hand = Decimal("0")
+    draw = None
+    for L in layers:
+        q = L["qty"]
+        if remaining > 0:
+            take = q if remaining >= q else remaining
+            remaining -= take
+            leftover = q - take
+        else:
+            leftover = q
+        if leftover > 0:
+            on_hand += leftover
+            if draw is None:
+                draw = {"unit_cost": L["unit_cost"], "created_at": L["created_at"], "remaining": leftover}
+    consumed = _d(consumption) - remaining
+    if draw is None:
+        return {
+            "unit_cost": None,
+            "fifo_layer_cost": None,
+            "fifo_layer_date": None,
+            "fifo_remaining": None,
+            "on_hand_est": on_hand,
+            "consumed": consumed,
+            "out_of_stock": bool(layers),
+        }
+    return {
+        "unit_cost": draw["unit_cost"],
+        "fifo_layer_cost": draw["unit_cost"],
+        "fifo_layer_date": draw["created_at"] or None,
+        "fifo_remaining": draw["remaining"],
+        "on_hand_est": on_hand,
+        "consumed": consumed,
+        "out_of_stock": False,
+    }
+
+
+def fifo_cost(layers, consumption):
+    """Convenience: FIFO draw-layer cost summary for one ingredient.
+
+    Wraps :func:`fifo_consume` and returns ``(unit_cost, fifo_layer_date,
+    fifo_remaining, on_hand_est)`` so callers that only need the headline numbers
+    have a compact signature.
+    """
+    r = fifo_consume(layers, consumption)
+    return r["unit_cost"], r["fifo_layer_date"], r["fifo_remaining"], r["on_hand_est"]
+
+
+def select_unit_cost(weighted_avg, last_purchase, basis, fifo_unit_cost=None):
     """Pick the per-purchase-unit cost for the chosen basis.
 
     basis 'last'     -> last_purchase (fallback to weighted_avg when the last
                         purchase is unknown, e.g. no rows yet).
     basis 'average'  -> weighted_avg.
+    basis 'fifo'     -> fifo_unit_cost (the FIFO draw layer's unit cost), with a
+                        safe fallback to last_purchase then weighted_avg.
     invalid/None     -> 'average' (preserves the pre-basis behaviour)."""
     b = normalize_cost_basis(basis)
     if b == "last":
+        return last_purchase if last_purchase is not None else weighted_avg
+    if b == "fifo":
+        if fifo_unit_cost is not None:
+            return fifo_unit_cost
         return last_purchase if last_purchase is not None else weighted_avg
     return weighted_avg
 

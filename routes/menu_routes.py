@@ -48,11 +48,14 @@ from routes.menu_cost import (
     normalize_cost_basis,
     select_unit_cost,
     last_purchase_cost,
+    fifo_layers,
+    fifo_consume,
     normalize_variant_key,
     duplicate_variant_groups,
     aggregate_canonical_purchases,
     COST_BASIS_LAST,
     COST_BASIS_AVERAGE,
+    COST_BASIS_FIFO,
     BASE_UNIT_CONVERSIONS,
     _d,
 )
@@ -63,7 +66,7 @@ router = APIRouter(prefix="/api/menu", tags=["menu"])
 
 _tables_ready = False
 
-# Global cost-basis setting (settings_config key) — "last" | "average" (default "last").
+# Global cost-basis setting (settings_config key) — "fifo" | "last" | "average" (default "fifo").
 _COST_BASIS_KEY = "ingredient_cost_basis"
 
 
@@ -214,14 +217,19 @@ def _variant_canonical(branch_id: int):
 
 
 def _stockin_rows(branch_id: int):
-    """All valid stock_in rows as (item_name, quantity, total_cost, created_at),
-    ordered by created_at ASC, id ASC so last-purchase ties resolve to the newest id."""
+    """All valid stock_in rows as (item_name, quantity, total_cost, created_at, id),
+    ordered by created_at ASC, id ASC so last-purchase ties resolve to the newest id
+    and FIFO layers draw oldest-first deterministically."""
     rows = _q(
-        "SELECT item_name, quantity, total_cost, created_at FROM stock_in "
+        "SELECT item_name, quantity, total_cost, created_at, id FROM stock_in "
         "WHERE branch_id=%s AND quantity > 0 ORDER BY created_at ASC, id ASC",
         (branch_id,),
     )
-    return [(r["item_name"], r["quantity"], r["total_cost"], str(r["created_at"]) if r.get("created_at") else "") for r in rows]
+    return [
+        (r["item_name"], r["quantity"], r["total_cost"],
+         str(r["created_at"]) if r.get("created_at") else "", r["id"])
+        for r in rows
+    ]
 
 
 def _canonical_stock(branch_id: int):
@@ -233,12 +241,63 @@ def _canonical_stock(branch_id: int):
     return by_canon, canon
 
 
+def _canonical_fifo_layers(branch_id: int, canon: dict):
+    """FIFO layers per canonical name: {canonical: [layer dict, …]} ordered
+    oldest -> newest, merging across variant names.  Layer dicts come from
+    ``routes.menu_cost.fifo_layers`` (qty, unit_cost, created_at, id)."""
+    rows = _stockin_rows(branch_id)
+    buckets = {}
+    for name, qty, cost, created, rid in rows:
+        cname = canon.get(name, name)
+        buckets.setdefault(cname, []).append((qty, cost, created, rid))
+    out = {}
+    for cname, raw in buckets.items():
+        out[cname] = fifo_layers(raw)
+    return out
+
+
+def _fifo_consumption(branch_id: int, canon: dict):
+    """Compute FIFO consumption (Decimal) per canonical ingredient.
+
+    consumption = direct stock_out (canonical + variant names) + recipe usage
+    (dish sales x recipe qty x (1 + waste%)).  Returns
+    ``(consumption, recipe_referenced)`` where ``recipe_referenced`` is the set of
+    canonical names referenced by any recipe row (used to label "FIFO (est.)" when
+    an ingredient has no recipe so dish usage is unknowable).  Read-only."""
+    rows = _q(
+        "SELECT item_name, SUM(quantity) AS qty FROM stock_out WHERE branch_id=%s GROUP BY item_name",
+        (branch_id,),
+    )
+    direct = {}
+    sales = {}
+    for r in rows:
+        sales[r["item_name"]] = _d(r["qty"])
+        c = canon.get(r["item_name"], r["item_name"])
+        direct[c] = direct.get(c, Decimal("0")) + _d(r["qty"])
+
+    recipes = _recipes_by_menu(branch_id)
+    recipe_usage = {}
+    recipe_referenced = set()
+    for menu_item, recs in recipes.items():
+        sold = sales.get(menu_item, Decimal("0"))
+        for rec in recs:
+            c = canon.get(rec["ingredient"], rec["ingredient"])
+            recipe_referenced.add(c)
+            add = sold * _d(rec["qty_per_portion"]) * (Decimal("1") + _d(rec["waste_pct"]) / Decimal("100"))
+            recipe_usage[c] = recipe_usage.get(c, Decimal("0")) + add
+
+    consumption = {}
+    for c in set(direct) | set(recipe_usage):
+        consumption[c] = direct.get(c, Decimal("0")) + recipe_usage.get(c, Decimal("0"))
+    return consumption, recipe_referenced
+
+
 def _global_cost_basis():
     """Global cost basis from settings_config (key ``ingredient_cost_basis``),
-    defaulting to ``last`` when unset / invalid."""
+    defaulting to ``fifo`` when unset / invalid (owner 2026-09-28 Osmo "1 FIFO နဲ့ တွက်ပါ")."""
     row = _q1("SELECT config_value FROM settings_config WHERE config_key=%s", (_COST_BASIS_KEY,))
     b = normalize_cost_basis(row["config_value"]) if row else None
-    return b or COST_BASIS_LAST
+    return b or COST_BASIS_FIFO
 
 
 def _ingredient_costs(branch_id: int):
@@ -263,12 +322,16 @@ def _ingredient_costs(branch_id: int):
         elif cname not in conv:
             conv[cname] = r
     global_basis = _global_cost_basis()
+    fifo_layers_map = _canonical_fifo_layers(branch_id, canon)
+    consumption, recipe_referenced = _fifo_consumption(branch_id, canon)
     out = {}
     for name, s in by_canon.items():
         cr = conv.get(name) or {}
         bpp = cr.get("base_per_purchase") if cr.get("base_per_purchase") is not None else Decimal("1")
         basis = normalize_cost_basis(cr.get("cost_basis")) or global_basis
-        unit_cost = select_unit_cost(s["weighted_avg"], s["last_purchase"], basis)
+        f = fifo_consume(fifo_layers_map.get(name, []), consumption.get(name, Decimal("0")))
+        fifo_unit = f["unit_cost"]
+        unit_cost = select_unit_cost(s["weighted_avg"], s["last_purchase"], basis, fifo_unit)
         cp = cost_per_base_unit(unit_cost, bpp) if unit_cost is not None else None
         out[name] = {
             "weighted_avg": s["weighted_avg"],
@@ -281,6 +344,15 @@ def _ingredient_costs(branch_id: int):
             "base_per_purchase": _d(bpp),
             "last_in": s["last_in"],
             "total_qty": s["total_qty"],
+            "fifo_unit_cost": fifo_unit,
+            "fifo_layer_cost": f["fifo_layer_cost"],
+            "fifo_layer_date": f["fifo_layer_date"],
+            "fifo_remaining": f["fifo_remaining"],
+            "on_hand_est": f["on_hand_est"],
+            "fifo_consumed": f["consumed"],
+            "fifo_out_of_stock": f["out_of_stock"],
+            "fifo_est": name not in recipe_referenced,
+            "fifo_no_purchase": not fifo_layers_map.get(name),
         }
     return out, conv, canon
 
@@ -364,6 +436,8 @@ def _stock_items(branch_id: int):
         names.add(canon.get(n, n))
 
     global_basis = _global_cost_basis()
+    fifo_layers_map = _canonical_fifo_layers(branch_id, canon)
+    consumption, recipe_referenced = _fifo_consumption(branch_id, canon)
     items = []
     for name in sorted(names):
         cr = conv_for(name)
@@ -373,7 +447,9 @@ def _stock_items(branch_id: int):
         is_sellable = name in inv_names or any(v in inv_names for v in variants_by_canon.get(name, []))
         kind = classify_item_kind(explicit_kind, is_sellable)
         basis = normalize_cost_basis(own.get("cost_basis")) or global_basis
-        unit_cost = select_unit_cost(s.get("weighted_avg"), s.get("last_purchase"), basis)
+        f = fifo_consume(fifo_layers_map.get(name, []), consumption.get(name, Decimal("0")))
+        fifo_unit = f["unit_cost"]
+        unit_cost = select_unit_cost(s.get("weighted_avg"), s.get("last_purchase"), basis, fifo_unit)
         bpp = cr.get("base_per_purchase") if cr.get("base_per_purchase") is not None else None
         disp = ingredient_display(unit_cost, cr.get("purchase_unit"), cr.get("base_unit"), bpp)
         cpb = cost_per_base_unit(unit_cost, bpp) if (unit_cost is not None and bpp is not None and _d(bpp) > 0) else None
@@ -399,6 +475,15 @@ def _stock_items(branch_id: int):
             "cost_per_base_unit": _num(cpb),
             "last_purchase": str(s.get("last_in")) if s.get("last_in") else None,
             "total_qty": _num(s.get("total_qty")),
+            "fifo_unit_cost": _num(fifo_unit),
+            "fifo_layer_cost": _num(f["fifo_layer_cost"]),
+            "fifo_layer_date": f["fifo_layer_date"],
+            "fifo_remaining": _num(f["fifo_remaining"]),
+            "on_hand_est": _num(f["on_hand_est"]),
+            "fifo_consumed": _num(f["consumed"]),
+            "fifo_out_of_stock": f["out_of_stock"],
+            "fifo_est": name not in recipe_referenced,
+            "fifo_no_purchase": not fifo_layers_map.get(name),
             "variants": sorted(variants_by_canon.get(name, [])),
         })
     return items, conv_raw
@@ -645,6 +730,11 @@ async def menu_recipe(item: str = Query(...), request: Request = None,
             "cost_basis": ci.get("cost_basis"),
             "last_purchase_price": _num(ci.get("last_purchase")),
             "last_purchase_date": str(ci.get("last_in")) if ci.get("last_in") else None,
+            "fifo_unit_cost": _num(ci.get("fifo_unit_cost")),
+            "fifo_layer_date": ci.get("fifo_layer_date"),
+            "fifo_remaining": _num(ci.get("fifo_remaining")),
+            "on_hand_est": _num(ci.get("on_hand_est")),
+            "fifo_est": ci.get("fifo_est"),
             "waste_pct": _num(waste),
             "line_cost": _num(line_cost),
         })
@@ -850,7 +940,7 @@ async def set_cost_basis(body: dict = Body(...), request: Request = None,
                          user: dict = Depends(require_admin_user)):
     """ADMIN-only: set the cost basis.
 
-    * global: {basis: "last"|"average"} — persisted in settings_config
+    * global: {basis: "fifo"|"last"|"average"} — persisted in settings_config
       (key ``ingredient_cost_basis``).
     * per-ingredient: {name, basis} — persisted on ``ingredients.cost_basis``
       (NULL = follow the global setting).
@@ -860,7 +950,7 @@ async def set_cost_basis(body: dict = Body(...), request: Request = None,
     name = str(body.get("name") or "").strip() if body.get("name") is not None else ""
     basis = normalize_cost_basis(body.get("basis"))
     if not basis:
-        raise HTTPException(status_code=422, detail={"success": False, "error": "basis must be 'last' or 'average'", "code": 422})
+        raise HTTPException(status_code=422, detail={"success": False, "error": "basis must be 'fifo', 'last' or 'average'", "code": 422})
 
     if name:
         existing = _q1("SELECT id FROM ingredients WHERE branch_id=%s AND name=%s", (branch, name))
@@ -876,7 +966,7 @@ async def set_cost_basis(body: dict = Body(...), request: Request = None,
     else:
         _ex(
             "INSERT INTO settings_config (config_key, config_value, config_type, category, description) "
-            "VALUES (%s,%s,'string','menu','Ingredient cost basis: last | average')",
+            "VALUES (%s,%s,'string','menu','Ingredient cost basis: fifo | last | average')",
             (_COST_BASIS_KEY, basis),
         )
     return {"success": True, "data": {"global": basis}}

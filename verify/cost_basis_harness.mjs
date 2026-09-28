@@ -81,16 +81,21 @@ function shortDate(s) {
 function unitCostText(it) {
   const u = it.unit_label || "pcs";
   if (it.display_cost == null) return "No purchase yet · " + u;
-  const basis = it.effective_cost_basis || "last";
+  const basis = it.effective_cost_basis || "fifo";
   let s = fKs(it.display_cost) + " Ks / " + u;
-  if (basis === "last" && it.last_purchase_price != null) {
+  if (basis === "fifo" && it.fifo_layer_cost != null) {
+    s += " · FIFO" + (it.fifo_est ? " (est.)" : "") + " " + fKs(it.fifo_layer_cost);
+    if (it.fifo_layer_date) s += " (" + shortDate(it.fifo_layer_date) + ")";
+    if (it.fifo_remaining != null) s += " · left " + fKs(it.fifo_remaining);
+    if (it.on_hand_est != null) s += " · on-hand " + fKs(it.on_hand_est);
+  } else if (basis === "last" && it.last_purchase_price != null) {
     s += " · last " + fKs(it.last_purchase_price) + (it.last_purchase_date ? " (" + shortDate(it.last_purchase_date) + ")" : "");
   }
   if (it.weighted_avg_cost != null) s += " · avg " + fKs(it.weighted_avg_cost);
   return s;
 }
-const eggLabel = unitCostText({ unit_label: "pcs", display_cost: 700, effective_cost_basis: "last", last_purchase_price: 700, last_purchase_date: "2026-09-27 04:52:30", weighted_avg_cost: 574.9175 });
-check("egg unit-cost text shows last 700 + date + avg", eggLabel.includes("last 700 (Sep 27)") && eggLabel.includes("avg 574"), eggLabel);
+const eggLabel = unitCostText({ unit_label: "pcs", display_cost: 650, effective_cost_basis: "fifo", fifo_layer_cost: 650, fifo_layer_date: "2026-09-12 05:15:15", fifo_remaining: 2, on_hand_est: 62, fifo_est: true, weighted_avg_cost: 574.9175 });
+check("egg unit-cost text shows FIFO layer + date + left + on-hand + avg", eggLabel.includes("FIFO (est.) 650 (Sep 12)") && eggLabel.includes("left 2") && eggLabel.includes("on-hand 62") && eggLabel.includes("avg 574"), eggLabel);
 
 // ── 5. Live API ──────────────────────────────────────────────────────────────
 function mintToken(role) {
@@ -116,7 +121,13 @@ try {
   check("egg last purchase 700", egg && egg.last_purchase_price === 700, String(egg && egg.last_purchase_price));
   check("egg last date 27 Sep", egg && /2026-09-27/.test(String(egg.last_purchase_date || "")), String(egg && egg.last_purchase_date));
   check("egg avg 574.92 (merged variants)", egg && Math.abs((egg.weighted_avg_cost || 0) - 574.9175) < 0.001, String(egg && egg.weighted_avg_cost));
-  check("egg unit_cost = last = 700", egg && egg.unit_cost === 700, String(egg && egg.unit_cost));
+  check("egg unit_cost = fifo = 650", egg && egg.unit_cost === 650, String(egg && egg.unit_cost));
+  check("egg fifo layer cost 650", egg && egg.fifo_layer_cost === 650, String(egg && egg.fifo_layer_cost));
+  check("egg fifo layer date 12 Sep", egg && /2026-09-12/.test(String(egg.fifo_layer_date || "")), String(egg && egg.fifo_layer_date));
+  check("egg fifo remaining 2", egg && egg.fifo_remaining === 2, String(egg && egg.fifo_remaining));
+  check("egg on-hand 62", egg && egg.on_hand_est === 62, String(egg && egg.on_hand_est));
+  check("egg fifo_est true (no recipe)", egg && egg.fifo_est === true, String(egg && egg.fifo_est));
+  check("egg effective basis fifo", egg && egg.effective_cost_basis === "fifo", String(egg && egg.effective_cost_basis));
   check("egg variants = Egg + ကြက်ဉ", egg && (egg.variants || []).includes("Egg") && (egg.variants || []).includes("ကြက်ဉ"), String(egg && egg.variants));
   check("Egg no longer a separate item", !items.some((i) => i.name === "Egg"));
   check("ကြက်ဉ no longer a separate item", !items.some((i) => i.name === "ကြက်ဉ"));
@@ -133,7 +144,7 @@ try {
   check("mapping holds Egg + ကြက်ဉ", eggVariants.includes("Egg") && eggVariants.includes("ကြက်ဉ"), eggVariants.join(", "));
 
   const cb = await api("/api/menu/cost-basis", ADMIN);
-  check("cost-basis default = last", cb.json && cb.json.data && cb.json.data.global === "last", String(cb.json && cb.json.data && cb.json.data.global));
+  check("cost-basis default = fifo", cb.json && cb.json.data && cb.json.data.global === "fifo", String(cb.json && cb.json.data && cb.json.data.global));
 
   check("staff 403 on /cost-basis", (await api("/api/menu/cost-basis", STAFF)).status === 403);
   check("staff 403 on /ingredient-variants", (await api("/api/menu/ingredient-variants", STAFF)).status === 403);

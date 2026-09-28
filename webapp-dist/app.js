@@ -4753,6 +4753,7 @@
               </div>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 16px 0">
                 <span class="psv-dim" style="font-size:12px">ကုန်ကျစရိတ် တွက်နည်း (cost basis)</span>
+                <span class="psv-dchip" :class="{ 'psv-dchip--on': costBasis === 'fifo' }" @click="setGlobalBasis('fifo')">FIFO (default)</span>
                 <span class="psv-dchip" :class="{ 'psv-dchip--on': costBasis === 'last' }" @click="setGlobalBasis('last')">နောက်ဆုံးဝယ်ဈေး (last)</span>
                 <span class="psv-dchip" :class="{ 'psv-dchip--on': costBasis === 'average' }" @click="setGlobalBasis('average')">ပျမ်းမျှ (avg)</span>
               </div>
@@ -4904,6 +4905,7 @@
               <div class="psv-dim" style="font-size:11px;margin-bottom:4px">Cost basis (override)</div>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
                 <span class="psv-dchip" :class="{ 'psv-dchip--on': !newIng.cost_basis }" @click="newIng.cost_basis = null">Global (default)</span>
+                <span class="psv-dchip" :class="{ 'psv-dchip--on': newIng.cost_basis === 'fifo' }" @click="newIng.cost_basis = 'fifo'">FIFO</span>
                 <span class="psv-dchip" :class="{ 'psv-dchip--on': newIng.cost_basis === 'last' }" @click="newIng.cost_basis = 'last'">နောက်ဆုံးဝယ်ဈေး (last)</span>
                 <span class="psv-dchip" :class="{ 'psv-dchip--on': newIng.cost_basis === 'average' }" @click="newIng.cost_basis = 'average'">ပျမ်းမျှ (avg)</span>
               </div>
@@ -4974,7 +4976,7 @@
       const priceDraft = ref(null);
       const priceSaving = ref(false);
       const ingNamePickShow = ref(false);
-      const costBasis = ref("last");
+      const costBasis = ref("fifo");
       const variantGroups = ref([]);
       const variantMappings = ref({});
       const mergedCount = computed(() => Object.keys(variantMappings.value).length);
@@ -5045,8 +5047,14 @@
         if (!it) return "";
         const u = it.unit_label || "pcs";
         if (it.display_cost == null) return "No purchase yet · " + u;
-        const basis = it.effective_cost_basis || "last";
+        const basis = it.effective_cost_basis || "fifo";
         let s = fKs(it.display_cost) + " Ks / " + u;
+        if (basis === "fifo" && it.fifo_layer_cost != null) {
+          s += " · FIFO" + (it.fifo_est ? " (est.)" : "") + " " + fKs(it.fifo_layer_cost);
+          if (it.fifo_layer_date) s += " (" + shortDate(it.fifo_layer_date) + ")";
+          if (it.fifo_remaining != null) s += " · left " + fKs(it.fifo_remaining);
+          if (it.on_hand_est != null) s += " · on-hand " + fKs(it.on_hand_est);
+        }
         if (basis === "last" && it.last_purchase_price != null) {
           s += " · last " + fKs(it.last_purchase_price) + (it.last_purchase_date ? " (" + shortDate(it.last_purchase_date) + ")" : "");
         }
@@ -5162,9 +5170,11 @@
         loading.value = false;
         refreshing.value = false;
       }
-      async function loadIngredients() {
+      async function loadIngredients(force) {
         try {
-          const d = PSV.unwrap(await PSV.apiCached("/api/menu/ingredients?kind=all", {}, 20000));
+          const d = PSV.unwrap(await (force
+            ? PSV.api("/api/menu/ingredients?kind=all")
+            : PSV.apiCached("/api/menu/ingredients?kind=all", {}, 20000)));
           if (d) { ingData.items = d.items || []; ingData.suggested = d.suggested || []; }
         } catch (e) {}
         refreshing.value = false;
@@ -5175,7 +5185,7 @@
       async function loadCostBasis() {
         try {
           const d = PSV.unwrap(await PSV.apiCached("/api/menu/cost-basis", {}, 20000));
-          if (d) costBasis.value = d.global || "last";
+          if (d) costBasis.value = d.global || "fifo";
         } catch (e) {}
       }
       async function loadVariants() {
@@ -5189,14 +5199,14 @@
         } catch (e) {}
       }
       async function setGlobalBasis(b) {
-        if (b !== "last" && b !== "average") return;
+        if (b !== "fifo" && b !== "last" && b !== "average") return;
         haptic("light");
         try {
           await PSV.api("/api/menu/cost-basis", { method: "POST", headers: HJSON, body: JSON.stringify({ basis: b }) });
           PSV.invalidate("/api/menu");
           costBasis.value = b;
-          await loadIngredients();
-          showToast(b === "last" ? "နောက်ဆုံးဝယ်ဈေးနဲ့ တွက်မယ် ✓" : "ပျမ်းမျှဈေးနဲ့ တွက်မယ် ✓", "success");
+          await loadIngredients(true);
+          showToast(b === "fifo" ? "FIFO နဲ့ တွက်မယ် ✓" : (b === "last" ? "နောက်ဆုံးဝယ်ဈေးနဲ့ တွက်မယ် ✓" : "ပျမ်းမျှဈေးနဲ့ တွက်မယ် ✓"), "success");
         } catch (e) { showToast("Error: " + e.message, "fail"); }
       }
       async function mergeGroup(g) {
@@ -5251,11 +5261,17 @@
       function closeEditor() { editor.show = false; editor.item = null; editor.rows = []; loadAll(); }
 
       function lineCost(r) {
+        let val;
         if (r && r.unit_cost_per_base != null) {
           const lc = Number(r.qty_per_portion || 0) * Number(r.unit_cost_per_base) * (1 + Number(r.waste_pct || 0) / 100);
-          return fKs(lc) + " Ks";
+          val = fKs(lc) + " Ks";
+        } else {
+          val = r && r.line_cost != null ? fKs(r.line_cost) + " Ks" : "—";
         }
-        return r && r.line_cost != null ? fKs(r.line_cost) + " Ks" : "—";
+        if (r && r.cost_basis) {
+          val += " · " + (r.cost_basis === "fifo" ? ("FIFO" + (r.fifo_est ? " (est.)" : "")) : r.cost_basis);
+        }
+        return val;
       }
       const editorTotals = computed(() => {
         let total = 0; let missing = [];
@@ -5370,14 +5386,18 @@
       async function setKind(it, kind) {
         if (!it || it.kind === kind) return;
         haptic("light");
+        const prevKind = it.kind, prevExplicit = it.explicit_kind;
+        it.kind = kind;               // optimistic update FIRST — instant reflow
+        it.explicit_kind = kind;
         try {
-          await PSV.api("/api/menu/ingredients/kind", { method: "POST", headers: HJSON, body: JSON.stringify({ name: it.name, kind }) });
+          await PSV.api("/api/menu/ingredients/kind", { method: "POST", headers: HJSON, body: JSON.stringify({ name: it.name || it.item_name, kind }) });
           PSV.invalidate("/api/menu");
-          it.kind = kind;
-          it.explicit_kind = kind;
-          await loadIngredients();
+          await loadIngredients(true);   // force a fresh (non-cached) reload
           showToast(kind === "ingredient" ? "🍚 ဟင်းခံအဖြစ် သတ်မှတ်ပြီး ✓" : "🛒 ပစ္စည်းအဖြစ် သတ်မှတ်ပြီး ✓", "success");
-        } catch (e) { showToast("Error: " + e.message, "fail"); }
+        } catch (e) {
+          it.kind = prevKind; it.explicit_kind = prevExplicit;   // rollback on failure
+          showToast("Error: " + e.message, "fail");
+        }
       }
       function openUnitEditor(it) {
         if (!it) return;
@@ -5427,7 +5447,15 @@
         finally { editor.saving = false; }
       }
 
-      onMounted(() => { if (isAdmin.value) { loadAll(); loadIngredients(); loadCostBasis(); loadVariants(); } });
+      function onIngredientsData(e) {
+        const p = (e && e.detail && e.detail.path) || "";
+        if (p.indexOf("/api/menu/ingredients") >= 0) loadIngredients();
+      }
+      onMounted(() => {
+        if (isAdmin.value) { loadAll(); loadIngredients(); loadCostBasis(); loadVariants(); }
+        window.addEventListener("psv:data", onIngredientsData);
+      });
+      onUnmounted(() => { window.removeEventListener("psv:data", onIngredientsData); });
       return {
         tab, loading, refreshing, list, all, costed, dishes, resale, splitDish, splitResale,
         summary, month, sumPct, sumWarn, sumColor,
