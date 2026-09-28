@@ -78,6 +78,58 @@ def normalize_item_name(name):
     return n or None
 
 
+# ── Item type (owner 2026-09-28: split resale vs made dishes) ──────────────
+# ``resale`` = packaged / ready-made goods costed straight from the purchase price
+# (stock_in weighted average; 1 purchase unit == 1 sold unit, NO base-unit
+# conversion).  ``dish`` = a made dish costed from a menu_recipes recipe.
+ITEM_TYPES = ("resale", "dish")
+
+
+def normalize_item_type(value):
+    """Return the canonical item_type ("resale"|"dish") or None for invalid input.
+
+    Accepts friendly aliases so the UI / API can send human labels:
+      dish  <- dish | made | made-dish | made_dish
+      resale <- resale | ready | ready-made | ready_made | packaged
+    Unknown / empty / None -> None (caller falls back to auto-classification).
+    """
+    t = str(value or "").strip().lower()
+    if t in ("dish", "made", "made-dish", "made_dish", "madedish"):
+        return "dish"
+    if t in ("resale", "ready", "ready-made", "ready_made", "readymade", "packaged"):
+        return "resale"
+    return None
+
+
+def classify_item_type(explicit_type, has_recipe):
+    """Auto-classify an item's effective type (owner 2026-09-28).
+
+    dish   if explicitly set to dish, OR it has >=1 menu_recipes row
+    resale otherwise.
+
+    This is the rule that keeps existing rows behaving sensibly: a packaged item
+    (no recipe) stays resale and is costed from its purchase price; an item the
+    owner built a recipe for is automatically a made dish.
+    """
+    t = normalize_item_type(explicit_type)
+    if t == "dish":
+        return "dish"
+    if has_recipe:
+        return "dish"
+    return "resale"
+
+
+def resale_unit_cost(purchases):
+    """Purchase unit cost for a RESALE item = weighted average of stock_in rows.
+
+    Same weighted-average math as the ingredient engine, but with NO base-unit
+    conversion (1 purchase unit == 1 sold unit).  Returns None when there is no
+    purchase history — the caller must flag the row as "no purchase yet" and must
+    NEVER report it as 0-cost.
+    """
+    return weighted_average_cost(purchases)
+
+
 def parse_selling_price(value):
     """Return a Decimal selling price when ``value`` is a non-negative number, else None.
 
@@ -172,6 +224,18 @@ def food_cost_metrics(portion_cost, selling_price):
         "margin": margin,
         "margin_pct": margin_pct,
     }
+
+
+def filter_items_by_type(items, item_type):
+    """Pure type filter for /api/menu/costs (resale | dish | all / None).
+
+    ``items`` is an iterable of dicts carrying an ``item_type`` key.  Returns a
+    list of the matching items; unknown values behave as "all" (no filtering).
+    """
+    t = normalize_item_type(item_type)
+    if t is None:
+        return list(items)
+    return [i for i in items if (i or {}).get("item_type") == t]
 
 
 def food_cost_status(pct):

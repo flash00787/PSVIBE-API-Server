@@ -675,8 +675,13 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                             # Staff App path: server is the source of truth -> deduct from net
                             # (deposit was already recognised as income at verify time).
                             net_total = max(0.0, float(net_total) - deposit_deducted)
-                            _dep_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(
-                                (_dep.get("method") or "kpay"), "KPay")
+                            # 2026-09-28: include every live method (mmqr_cb was missing ->
+                            # an MMQR-paid deposit was mislabelled KPay, understating MMQR by 6,000).
+                            _dep_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay",
+                                          "cash": "Cash", "mmqr_cb": "MMQR - CB"}.get(
+                                (_dep.get("method") or "kpay"), None)
+                            if _dep_label is None:  # unknown method -> use it verbatim, never KPay
+                                _dep_label = str(_dep.get("method") or "KPay")
                             _marker = f"{_dep_label}:{deposit_deducted} (dep)"
                             payment_method = (payment_method + "|" + _marker) if payment_method else _marker
                             logger.info(

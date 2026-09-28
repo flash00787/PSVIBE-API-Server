@@ -37,6 +37,10 @@ from routes.menu_cost import (
     lookup_conversion,
     normalize_item_name,
     parse_selling_price,
+    normalize_item_type,
+    classify_item_type,
+    resale_unit_cost,
+    filter_items_by_type,
     BASE_UNIT_CONVERSIONS,
     _d,
 )
@@ -124,6 +128,21 @@ def _ensure_tables() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+            # Idempotent item_type column on inventory (owner 2026-09-28).
+            # resale = packaged/ready-made (cost from purchase price), dish = made
+            # dish (cost from recipe).  Additive only — never touches existing data.
+            cur.execute(
+                """
+                SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inventory'
+                  AND COLUMN_NAME = 'item_type'
+                """
+            )
+            col = cur.fetchone()
+            if not col or int(col["c"] or 0) == 0:
+                cur.execute(
+                    "ALTER TABLE inventory ADD COLUMN item_type VARCHAR(16) NOT NULL DEFAULT 'resale'"
+                )
         conn.commit()
         _tables_ready = True
     finally:
@@ -190,15 +209,24 @@ def _recipes_by_menu(branch_id: int, menu_item: str = None):
 
 
 def _inventory_map(branch_id: int):
-    rows = _q("SELECT id, item_name, category, unit_price, quantity FROM inventory WHERE branch_id=%s", (branch_id,))
+    rows = _q("SELECT id, item_name, category, unit_price, quantity, item_type FROM inventory WHERE branch_id=%s", (branch_id,))
     return {r["item_name"]: r for r in rows}
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 @router.get("/costs")
 async def menu_costs(request: Request, recipe_only: int = Query(0),
+                     type: str = Query("all"),
                      user: dict = Depends(require_admin_user)):
-    """Every inventory item with selling price, cost, food-cost % and margin."""
+    """Every inventory item, costed — split by type (owner 2026-09-28).
+
+    * dish   — costed from its menu_recipes recipe (cost_source 'recipe').
+    * resale — costed from the stock_in weighted-average purchase price
+               (cost_source 'purchase'); no recipe required.
+
+    ``type`` filters the result: resale | dish | all (default).  ``recipe_only=1``
+    is kept for backward compatibility (== dish items with a recipe).
+    """
     _ensure_tables()
     branch = _branch(request)
     inv = _inventory_map(branch)
@@ -210,31 +238,54 @@ async def menu_costs(request: Request, recipe_only: int = Query(0),
         rec = recipes.get(name) or []
         selling = _d(iv.get("unit_price"))
         has_recipe = bool(rec)
+        stored_type = (iv.get("item_type") or "").strip().lower() or "resale"
+        etype = classify_item_type(stored_type, has_recipe)
         missing = []
         portion_cost = None
+        unit_cost = None
         metrics = None
-        status = "no_recipe" if not has_recipe else "unknown"
-        if has_recipe:
-            unit_costs = {c_name: (costs.get(c_name) or {}).get("cost_per_base_unit") for c_name in
-                          {r["ingredient"] for r in rec}}
-            portion_cost, missing = portion_cost_from(
-                [(r["qty_per_portion"], r["waste_pct"], r["ingredient"]) for r in rec],
-                unit_costs,
-            )
-            if portion_cost is not None:
-                metrics = food_cost_metrics(portion_cost, selling)
+        no_purchase_yet = False
+        cost_source = "recipe" if etype == "dish" else "purchase"
+
+        if etype == "dish":
+            status = "no_recipe" if not has_recipe else "unknown"
+            if has_recipe:
+                unit_costs = {c_name: (costs.get(c_name) or {}).get("cost_per_base_unit") for c_name in
+                              {r["ingredient"] for r in rec}}
+                portion_cost, missing = portion_cost_from(
+                    [(r["qty_per_portion"], r["waste_pct"], r["ingredient"]) for r in rec],
+                    unit_costs,
+                )
+                if portion_cost is not None:
+                    metrics = food_cost_metrics(portion_cost, selling)
+                    status = food_cost_status(metrics["food_cost_pct"]) if metrics else "unknown"
+                else:
+                    status = "unknown"
+            unit_cost = portion_cost
+        else:
+            # resale — purchase unit cost (no base-unit conversion)
+            unit_cost = (costs.get(name) or {}).get("weighted_avg")
+            no_purchase_yet = unit_cost is None
+            if unit_cost is not None:
+                metrics = food_cost_metrics(unit_cost, selling)
                 status = food_cost_status(metrics["food_cost_pct"]) if metrics else "unknown"
             else:
-                status = "unknown"
+                status = "no_purchase"
+
         items.append({
             "item_name": name,
+            "item_type": etype,
+            "stored_item_type": stored_type,
+            "cost_source": cost_source,
             "category": iv.get("category"),
             "selling_price": _num(selling),
             "has_recipe": has_recipe,
+            "unit_cost": _num(unit_cost),
             "portion_cost": _num(portion_cost),
             "food_cost_pct": _num(metrics["food_cost_pct"]) if metrics else None,
             "margin": _num(metrics["margin"]) if metrics else None,
             "margin_pct": _num(metrics["margin_pct"]) if metrics else None,
+            "no_purchase_yet": no_purchase_yet,
             "missing_cost_ingredients": missing,
             "status": status,
             "ingredient_count": len(rec),
@@ -242,8 +293,10 @@ async def menu_costs(request: Request, recipe_only: int = Query(0),
 
     if recipe_only:
         items = [i for i in items if i["has_recipe"]]
+    else:
+        items = filter_items_by_type(items, type)
 
-    items.sort(key=lambda i: (not i["has_recipe"], i["item_name"]))
+    items.sort(key=lambda i: (0 if i["item_type"] == "dish" else 1, i["item_name"]))
     return {"success": True, "data": items}
 
 
@@ -260,6 +313,7 @@ async def create_menu_item(body: dict = Body(...), request: Request = None,
     body: {item_name, category? (default 'Food'), unit_price? (selling price, ≥ 0)}
     """
     branch = _branch(request)
+    _ensure_tables()
     name = normalize_item_name(body.get("item_name", body.get("name")))
     if not name:
         raise HTTPException(status_code=422, detail={"success": False, "error": "item_name is required", "code": 422})
@@ -267,42 +321,47 @@ async def create_menu_item(body: dict = Body(...), request: Request = None,
     price = parse_selling_price(body.get("unit_price", body.get("selling_price")))
     if price is None:
         raise HTTPException(status_code=422, detail={"success": False, "error": "unit_price (selling price) must be a number ≥ 0", "code": 422})
+    item_type = normalize_item_type(body.get("item_type"))
+    if item_type is None:
+        item_type = "resale"  # auto-classify default (no recipe yet)
 
     existing = _q1("SELECT id FROM inventory WHERE item_name=%s", (name,))
     if existing:
         raise HTTPException(status_code=409, detail={"success": False, "error": f"'{name}' already exists in the menu", "code": 409})
 
     new_id = _ex(
-        "INSERT INTO inventory (branch_id, item_name, category, quantity, unit_price, reorder_level) "
-        "VALUES (%s,%s,%s,%s,%s,%s)",
-        (branch, name, category, 0, price, 0),
+        "INSERT INTO inventory (branch_id, item_name, category, quantity, unit_price, reorder_level, item_type) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        (branch, name, category, 0, price, 0, item_type),
     )
-    row = _q1("SELECT id, item_name, category, quantity, unit_price FROM inventory WHERE id=%s", (new_id,))
+    row = _q1("SELECT id, item_name, category, quantity, unit_price, item_type FROM inventory WHERE id=%s", (new_id,))
     return {"success": True, "data": {
         "id": row["id"],
         "item_name": row["item_name"],
         "category": row["category"],
         "quantity": _num(row["quantity"]),
         "selling_price": _num(row["unit_price"]),
+        "item_type": row.get("item_type") or "resale",
     }}
 
 
 @router.patch("/item")
 async def update_menu_item(body: dict = Body(...), request: Request = None,
                            user: dict = Depends(require_admin_user)):
-    """ADMIN-only: rename / change category / change selling price of a menu item.
+    """ADMIN-only: rename / change category / price / item_type of a menu item.
 
     ``item_name`` identifies the CURRENT row (case-insensitive via MySQL collation).
     Optional update fields: ``new_name`` (rename), ``category``, ``unit_price``
-    (selling price).  At least one update field must be supplied.  Rename collision
-    (with a *different* item) is rejected with 409.
+    (selling price), ``item_type`` (resale | dish).  At least one update field must
+    be supplied.  Rename collision (with a *different* item) is rejected with 409.
     """
     branch = _branch(request)
+    _ensure_tables()
     current = normalize_item_name(body.get("item_name"))
     if not current:
         raise HTTPException(status_code=422, detail={"success": False, "error": "item_name (current name) is required", "code": 422})
 
-    existing = _q1("SELECT id, item_name, category, unit_price FROM inventory WHERE item_name=%s", (current,))
+    existing = _q1("SELECT id, item_name, category, unit_price, item_type FROM inventory WHERE item_name=%s", (current,))
     if not existing:
         raise HTTPException(status_code=404, detail={"success": False, "error": f"'{current}' not found in the menu", "code": 404})
 
@@ -315,8 +374,14 @@ async def update_menu_item(body: dict = Body(...), request: Request = None,
     if has_price and price is None:
         raise HTTPException(status_code=422, detail={"success": False, "error": "unit_price (selling price) must be a number ≥ 0", "code": 422})
 
-    if new_name is None and category is None and price is None:
-        raise HTTPException(status_code=422, detail={"success": False, "error": "no update fields supplied (new_name / category / unit_price)", "code": 422})
+    item_type = None
+    if "item_type" in body:
+        item_type = normalize_item_type(body.get("item_type"))
+        if item_type is None:
+            raise HTTPException(status_code=422, detail={"success": False, "error": "item_type must be 'resale' or 'dish'", "code": 422})
+
+    if new_name is None and category is None and price is None and item_type is None:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "no update fields supplied (new_name / category / unit_price / item_type)", "code": 422})
 
     # Rename collision: only when the name actually changes (case-insensitive).
     if new_name and str(new_name).lower() != str(existing["item_name"]).lower():
@@ -327,15 +392,17 @@ async def update_menu_item(body: dict = Body(...), request: Request = None,
     final_name = new_name or existing["item_name"]
     final_cat = category if category is not None else existing["category"]
     final_price = price if price is not None else existing["unit_price"]
+    final_type = item_type if item_type is not None else (existing.get("item_type") or "resale")
 
-    _ex("UPDATE inventory SET item_name=%s, category=%s, unit_price=%s WHERE id=%s",
-        (final_name, final_cat, final_price, existing["id"]))
+    _ex("UPDATE inventory SET item_name=%s, category=%s, unit_price=%s, item_type=%s WHERE id=%s",
+        (final_name, final_cat, final_price, final_type, existing["id"]))
 
     return {"success": True, "data": {
         "id": existing["id"],
         "item_name": final_name,
         "category": final_cat,
         "selling_price": _num(final_price),
+        "item_type": final_type,
     }}
 
 
@@ -526,10 +593,11 @@ async def upsert_ingredient(body: dict = Body(...), request: Request = None,
 @router.get("/food-cost-report")
 async def food_cost_report(month: str = Query(...), request: Request = None,
                            user: dict = Depends(require_admin_user)):
-    """Monthly food-cost report: theoretical ingredient cost vs food revenue.
+    """Monthly food-cost report: theoretical cost vs food revenue, split by type.
 
-    theoretical = SUM(stock_out.quantity × portion_cost of that menu item)
-    revenue     = SUM(stock_out.total)
+    dish   theoretical = SUM(stock_out.quantity × portion_cost from recipe)
+    resale theoretical = SUM(stock_out.quantity × purchase unit cost from stock_in)
+    revenue = SUM(stock_out.total)
     NOTE: stock_out.sale_date is stored in MMT (Asia/Yangon)."""
     _ensure_tables()
     branch = _branch(request)
@@ -547,6 +615,7 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
 
     costs, _conv = _ingredient_costs(branch)
     recipes = _recipes_by_menu(branch)
+    inv = _inventory_map(branch)
 
     rows = _q(
         "SELECT item_name, SUM(quantity) AS qty, SUM(total) AS revenue FROM stock_out "
@@ -558,33 +627,80 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
     total_revenue = Decimal("0")
     total_theoretical = Decimal("0")
     uncosted_items = []
+    split = {
+        "dish": {"revenue": Decimal("0"), "theoretical_cost": Decimal("0"), "items": 0},
+        "resale": {"revenue": Decimal("0"), "theoretical_cost": Decimal("0"), "items": 0},
+    }
     for r in rows:
         name = r["item_name"]
         qty = Decimal(str(r["qty"] or 0))
         revenue = _d(r["revenue"])
         total_revenue += revenue
         rec = recipes.get(name) or []
-        if not rec:
-            uncosted_items.append({"item_name": name, "revenue": _num(revenue), "qty": _num(qty)})
-            continue
-        unit_costs = {c_name: (costs.get(c_name) or {}).get("cost_per_base_unit") for c_name in {x["ingredient"] for x in rec}}
-        portion_cost, missing = portion_cost_from(
-            [(x["qty_per_portion"], x["waste_pct"], x["ingredient"]) for x in rec], unit_costs)
+        stored_type = (inv.get(name) or {}).get("item_type") or "resale"
+        etype = classify_item_type(stored_type, bool(rec))
+        cost_source = "recipe" if etype == "dish" else "purchase"
+        portion_cost = None
+        unit_cost = None
+        missing = []
+        no_purchase = False
+        uncosted_reason = None
+
+        if etype == "dish":
+            if not rec:
+                uncosted_reason = "no_recipe"
+            else:
+                unit_costs = {c_name: (costs.get(c_name) or {}).get("cost_per_base_unit") for c_name in {x["ingredient"] for x in rec}}
+                portion_cost, missing = portion_cost_from(
+                    [(x["qty_per_portion"], x["waste_pct"], x["ingredient"]) for x in rec], unit_costs)
+                if portion_cost is None:
+                    uncosted_reason = "missing_ingredients"
+            unit_cost = portion_cost
+        else:
+            # resale — purchase unit cost (no base-unit conversion)
+            unit_cost = (costs.get(name) or {}).get("weighted_avg")
+            if unit_cost is None:
+                no_purchase = True
+                uncosted_reason = "no_purchase"
+            else:
+                portion_cost = unit_cost
+
         theoretical = portion_cost * qty if portion_cost is not None else None
         if theoretical is not None:
             total_theoretical += theoretical
+            split[etype]["theoretical_cost"] += theoretical
+        split[etype]["revenue"] += revenue
+        split[etype]["items"] += 1
+
+        if uncosted_reason:
+            uncosted_items.append({
+                "item_name": name, "item_type": etype, "revenue": _num(revenue),
+                "qty": _num(qty), "reason": uncosted_reason,
+                "missing_ingredients": missing,
+            })
+
         breakdown.append({
             "item_name": name,
+            "item_type": etype,
+            "cost_source": cost_source,
             "qty_sold": _num(qty),
             "revenue": _num(revenue),
+            "unit_cost": _num(unit_cost),
             "portion_cost": _num(portion_cost),
             "theoretical_cost": _num(theoretical),
             "missing_ingredients": missing,
+            "no_purchase_yet": no_purchase,
         })
 
     food_cost_pct = None
     if total_revenue > 0 and total_theoretical is not None:
         food_cost_pct = (total_theoretical / total_revenue * Decimal("100")).quantize(Decimal("0.1"))
+
+    def _split_pct(rev, theo):
+        if rev <= 0 or theo is None:
+            return None
+        return _num((theo / rev * Decimal("100")).quantize(Decimal("0.1")))
+
     return {
         "success": True,
         "data": {
@@ -594,6 +710,20 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
             "food_cost_pct": _num(food_cost_pct),
             "status": food_cost_status(food_cost_pct),
             "gross_margin": _num(total_revenue - total_theoretical),
+            "split": {
+                "dish": {
+                    "revenue": _num(split["dish"]["revenue"]),
+                    "theoretical_cost": _num(split["dish"]["theoretical_cost"]),
+                    "food_cost_pct": _split_pct(split["dish"]["revenue"], split["dish"]["theoretical_cost"]),
+                    "items": split["dish"]["items"],
+                },
+                "resale": {
+                    "revenue": _num(split["resale"]["revenue"]),
+                    "theoretical_cost": _num(split["resale"]["theoretical_cost"]),
+                    "food_cost_pct": _split_pct(split["resale"]["revenue"], split["resale"]["theoretical_cost"]),
+                    "items": split["resale"]["items"],
+                },
+            },
             "breakdown": breakdown,
             "uncosted_items": uncosted_items,
         },
