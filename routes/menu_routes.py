@@ -45,6 +45,14 @@ from routes.menu_cost import (
     classify_item_kind,
     filter_items_by_kind,
     ingredient_display,
+    normalize_cost_basis,
+    select_unit_cost,
+    last_purchase_cost,
+    normalize_variant_key,
+    duplicate_variant_groups,
+    aggregate_canonical_purchases,
+    COST_BASIS_LAST,
+    COST_BASIS_AVERAGE,
     BASE_UNIT_CONVERSIONS,
     _d,
 )
@@ -54,6 +62,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/menu", tags=["menu"])
 
 _tables_ready = False
+
+# Global cost-basis setting (settings_config key) — "last" | "average" (default "last").
+_COST_BASIS_KEY = "ingredient_cost_basis"
 
 
 def _branch(request: Request) -> int:
@@ -132,6 +143,33 @@ def _ensure_tables() -> None:
                 cur.execute(
                     "ALTER TABLE ingredients ADD COLUMN kind VARCHAR(12) NOT NULL DEFAULT 'ingredient' AFTER name"
                 )
+            # Idempotent ``cost_basis`` column on ingredients (owner 2026-09-28 Osmo:
+            # per-ingredient cost-basis override, NULL = use the global setting).
+            cur.execute(
+                """
+                SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ingredients'
+                  AND COLUMN_NAME = 'cost_basis'
+                """
+            )
+            col = cur.fetchone()
+            if not col or int(col["c"] or 0) == 0:
+                cur.execute(
+                    "ALTER TABLE ingredients ADD COLUMN cost_basis VARCHAR(10) DEFAULT NULL AFTER kind"
+                )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ingredient_variants (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    branch_id INT NOT NULL DEFAULT 1,
+                    canonical_name VARCHAR(200) NOT NULL,
+                    variant_name VARCHAR(200) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY uniq_branch_variant (branch_id, variant_name),
+                    KEY idx_branch_canonical (branch_id, canonical_name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS menu_recipes (
@@ -169,42 +207,74 @@ def _ensure_tables() -> None:
 
 
 # ── Cost-engine DB helpers (SELECT-only on prod data) ─────────────────────────
-def _stockin_wavg(branch_id: int):
-    """Per-item moving weighted average from stock_in (all-time, quantity>0)."""
+def _variant_canonical(branch_id: int):
+    """dict: variant_name -> canonical_name (from ingredient_variants)."""
+    rows = _q("SELECT canonical_name, variant_name FROM ingredient_variants WHERE branch_id=%s", (branch_id,))
+    return {r["variant_name"]: r["canonical_name"] for r in rows}
+
+
+def _stockin_rows(branch_id: int):
+    """All valid stock_in rows as (item_name, quantity, total_cost, created_at),
+    ordered by created_at ASC, id ASC so last-purchase ties resolve to the newest id."""
     rows = _q(
-        "SELECT item_name, SUM(quantity) AS qty, SUM(total_cost) AS tot, "
-        "MAX(created_at) AS last_in "
-        "FROM stock_in WHERE branch_id=%s AND quantity > 0 GROUP BY item_name",
+        "SELECT item_name, quantity, total_cost, created_at FROM stock_in "
+        "WHERE branch_id=%s AND quantity > 0 ORDER BY created_at ASC, id ASC",
         (branch_id,),
     )
-    out = {}
-    for r in rows:
-        w = weighted_average_cost([(r.get("qty"), r.get("tot"))])
-        out[r["item_name"]] = {
-            "weighted_avg": w,
-            "total_qty": r.get("qty"),
-            "total_cost": r.get("tot"),
-            "last_in": r.get("last_in"),
-        }
-    return out
+    return [(r["item_name"], r["quantity"], r["total_cost"], str(r["created_at"]) if r.get("created_at") else "") for r in rows]
+
+
+def _canonical_stock(branch_id: int):
+    """Per-canonical stock aggregates (wavg + last purchase + totals), merged
+    across variant names.  Returns ``(by_canonical, canonical_of)``."""
+    canon = _variant_canonical(branch_id)
+    rows = _stockin_rows(branch_id)
+    by_canon = aggregate_canonical_purchases(rows, canon)
+    return by_canon, canon
+
+
+def _global_cost_basis():
+    """Global cost basis from settings_config (key ``ingredient_cost_basis``),
+    defaulting to ``last`` when unset / invalid."""
+    row = _q1("SELECT config_value FROM settings_config WHERE config_key=%s", (_COST_BASIS_KEY,))
+    b = normalize_cost_basis(row["config_value"]) if row else None
+    return b or COST_BASIS_LAST
 
 
 def _ingredient_costs(branch_id: int):
-    """Cost per BASE unit for every ingredient (stock_in item) — one pass.
+    """Cost per BASE unit for every canonical ingredient (stock_in item) — one pass.
 
-    Combines the stock_in weighted average with the ingredients conversion row
-    (base_per_purchase).  An ingredient with no stock_in rows (or <=0 qty) has
-    cost None (unknown — never silently 0)."""
-    stock = _stockin_wavg(branch_id)
-    ing_rows = _q("SELECT name, base_unit, purchase_unit, base_per_purchase FROM ingredients WHERE branch_id=%s", (branch_id,))
-    conv = {r["name"]: r for r in ing_rows}
+    Combines the stock_in weighted average + last-purchase price (aggregated across
+    merged variant names) with the ingredients conversion row (base_per_purchase),
+    then picks the effective basis (per-ingredient override or the global setting).
+    An ingredient with no stock_in rows (or <=0 qty) has cost None (never 0)."""
+    by_canon, canon = _canonical_stock(branch_id)
+    ing_rows = _q(
+        "SELECT name, base_unit, purchase_unit, base_per_purchase, cost_basis FROM ingredients WHERE branch_id=%s",
+        (branch_id,),
+    )
+    # Canonicalise conversion rows: prefer the canonical's own row, else fall back
+    # to a variant's row (e.g. a conversion saved under `Egg` applies to `ကြက်ဥ`).
+    conv = {}
+    for r in ing_rows:
+        cname = canon.get(r["name"], r["name"])
+        if cname == r["name"]:
+            conv[cname] = r
+        elif cname not in conv:
+            conv[cname] = r
+    global_basis = _global_cost_basis()
     out = {}
-    for name, s in stock.items():
+    for name, s in by_canon.items():
         cr = conv.get(name) or {}
         bpp = cr.get("base_per_purchase") if cr.get("base_per_purchase") is not None else Decimal("1")
-        cp = cost_per_base_unit(s["weighted_avg"], bpp) if s["weighted_avg"] is not None else None
+        basis = normalize_cost_basis(cr.get("cost_basis")) or global_basis
+        unit_cost = select_unit_cost(s["weighted_avg"], s["last_purchase"], basis)
+        cp = cost_per_base_unit(unit_cost, bpp) if unit_cost is not None else None
         out[name] = {
             "weighted_avg": s["weighted_avg"],
+            "last_purchase": s["last_purchase"],
+            "unit_cost": unit_cost,
+            "cost_basis": basis,
             "cost_per_base_unit": cp,
             "base_unit": cr.get("base_unit") or "g",
             "purchase_unit": cr.get("purchase_unit"),
@@ -212,7 +282,7 @@ def _ingredient_costs(branch_id: int):
             "last_in": s["last_in"],
             "total_qty": s["total_qty"],
         }
-    return out, conv
+    return out, conv, canon
 
 
 def _recipes_by_menu(branch_id: int, menu_item: str = None):
@@ -240,37 +310,75 @@ def _sellable_inventory_names(branch_id: int):
     }
 
 
+def _all_item_names(branch_id: int):
+    """Union of every raw item name (stock_in + ingredients + inventory) — used by
+    the duplicate-name candidate detector."""
+    names = set()
+    for r in _q("SELECT DISTINCT item_name FROM stock_in WHERE branch_id=%s", (branch_id,)):
+        names.add(r["item_name"])
+    for r in _q("SELECT name FROM ingredients WHERE branch_id=%s", (branch_id,)):
+        names.add(r["name"])
+    for r in _q("SELECT item_name FROM inventory WHERE branch_id=%s", (branch_id,)):
+        names.add(r["item_name"])
+    return names
+
+
 def _stock_items(branch_id: int):
     """Full stock-item catalog (owner 2026-09-28): every purchased (stock_in) item
     + every explicit ``ingredients`` row, each with an effective kind
     (ingredient|product) and unit-cost display info.
 
-    The recipe picker reads this filtered by kind (ingredient only).  The
-    ingredient review tab reads all of it so the owner can reclassify items.
+    Variant-merge aware: items are keyed by CANONICAL name; stock_in aggregates
+    (weighted average + last purchase) are summed across the canonical's variant
+    names.  Kind is NOT inherited from variants (it stays on the canonical's own
+    row or the sellable heuristic), but the base-unit conversion may fall back to
+    a variant's row so costing stays correct.
     """
-    stock = _stockin_wavg(branch_id)
+    by_canon, canon = _canonical_stock(branch_id)
     ing_rows = _q(
-        "SELECT id, name, kind, base_unit, purchase_unit, base_per_purchase, updated_at "
+        "SELECT id, name, kind, base_unit, purchase_unit, base_per_purchase, cost_basis, updated_at "
         "FROM ingredients WHERE branch_id=%s",
         (branch_id,),
     )
-    conv = {r["name"]: r for r in ing_rows}
+    conv_raw = {r["name"]: r for r in ing_rows}
     inv_names = _sellable_inventory_names(branch_id)
 
-    names = set(stock.keys()) | set(conv.keys()) | inv_names
+    variants_by_canon = {}
+    for v, c in canon.items():
+        variants_by_canon.setdefault(c, []).append(v)
+
+    def conv_for(cname):
+        """Conversion info for a canonical (base_unit/purchase_unit/base_per_purchase),
+        preferring its own row, else a variant's row."""
+        if cname in conv_raw:
+            return conv_raw[cname]
+        for v in variants_by_canon.get(cname, []):
+            if v in conv_raw:
+                return conv_raw[v]
+        return {}
+
+    names = set(by_canon.keys()) | set(canon.values())
+    for n in inv_names:
+        names.add(canon.get(n, n))
+    for n in conv_raw:
+        names.add(canon.get(n, n))
+
+    global_basis = _global_cost_basis()
     items = []
     for name in sorted(names):
-        cr = conv.get(name) or {}
-        s = stock.get(name) or {}
-        explicit_kind = (str(cr.get("kind") or "").strip() or None)
-        is_sellable = name in inv_names
+        cr = conv_for(name)
+        own = conv_raw.get(name) or {}
+        s = by_canon.get(name) or {}
+        explicit_kind = (str(own.get("kind") or "").strip() or None)
+        is_sellable = name in inv_names or any(v in inv_names for v in variants_by_canon.get(name, []))
         kind = classify_item_kind(explicit_kind, is_sellable)
-        wavg = s.get("weighted_avg")
+        basis = normalize_cost_basis(own.get("cost_basis")) or global_basis
+        unit_cost = select_unit_cost(s.get("weighted_avg"), s.get("last_purchase"), basis)
         bpp = cr.get("base_per_purchase") if cr.get("base_per_purchase") is not None else None
-        disp = ingredient_display(wavg, cr.get("purchase_unit"), cr.get("base_unit"), bpp)
-        cpb = cost_per_base_unit(wavg, bpp) if (wavg is not None and bpp is not None and _d(bpp) > 0) else None
+        disp = ingredient_display(unit_cost, cr.get("purchase_unit"), cr.get("base_unit"), bpp)
+        cpb = cost_per_base_unit(unit_cost, bpp) if (unit_cost is not None and bpp is not None and _d(bpp) > 0) else None
         items.append({
-            "id": cr.get("id"),
+            "id": own.get("id"),
             "name": name,
             "kind": kind,
             "explicit_kind": explicit_kind,
@@ -282,12 +390,18 @@ def _stock_items(branch_id: int):
             "unit_label": disp["unit_label"],
             "cost_basis": disp["cost_basis"],
             "display_cost": _num(disp["display_cost"]),
-            "weighted_avg_cost": _num(wavg),
+            "weighted_avg_cost": _num(s.get("weighted_avg")),
+            "last_purchase_price": _num(s.get("last_purchase")),
+            "last_purchase_date": str(s.get("last_in")) if s.get("last_in") else None,
+            "unit_cost": _num(unit_cost),
+            "effective_cost_basis": basis,
+            "explicit_cost_basis": normalize_cost_basis(own.get("cost_basis")),
             "cost_per_base_unit": _num(cpb),
             "last_purchase": str(s.get("last_in")) if s.get("last_in") else None,
             "total_qty": _num(s.get("total_qty")),
+            "variants": sorted(variants_by_canon.get(name, [])),
         })
-    return items, conv
+    return items, conv_raw
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -307,7 +421,7 @@ async def menu_costs(request: Request, recipe_only: int = Query(0),
     _ensure_tables()
     branch = _branch(request)
     inv = _inventory_map(branch)
-    costs, _conv = _ingredient_costs(branch)
+    costs, _conv, canon = _ingredient_costs(branch)
     recipes = _recipes_by_menu(branch)
 
     items = []
@@ -322,12 +436,15 @@ async def menu_costs(request: Request, recipe_only: int = Query(0),
         unit_cost = None
         metrics = None
         no_purchase_yet = False
+        unit_cost_basis = None
+        last_price = None
+        last_date = None
         cost_source = "recipe" if etype == "dish" else "purchase"
 
         if etype == "dish":
             status = "no_recipe" if not has_recipe else "unknown"
             if has_recipe:
-                unit_costs = {c_name: (costs.get(c_name) or {}).get("cost_per_base_unit") for c_name in
+                unit_costs = {c_name: (costs.get(canon.get(c_name, c_name)) or {}).get("cost_per_base_unit") for c_name in
                               {r["ingredient"] for r in rec}}
                 portion_cost, missing = portion_cost_from(
                     [(r["qty_per_portion"], r["waste_pct"], r["ingredient"]) for r in rec],
@@ -340,9 +457,15 @@ async def menu_costs(request: Request, recipe_only: int = Query(0),
                     status = "unknown"
             unit_cost = portion_cost
         else:
-            # resale — purchase unit cost (no base-unit conversion)
-            unit_cost = (costs.get(name) or {}).get("weighted_avg")
+            # resale — purchase unit cost (no base-unit conversion), honouring the
+            # chosen cost basis (last purchase by default, weighted average optional).
+            cname = canon.get(name, name)
+            ci = costs.get(cname) or {}
+            unit_cost = ci.get("unit_cost")
             no_purchase_yet = unit_cost is None
+            unit_cost_basis = ci.get("cost_basis")
+            last_price = ci.get("last_purchase")
+            last_date = ci.get("last_in")
             if unit_cost is not None:
                 metrics = food_cost_metrics(unit_cost, selling)
                 status = food_cost_status(metrics["food_cost_pct"]) if metrics else "unknown"
@@ -366,6 +489,9 @@ async def menu_costs(request: Request, recipe_only: int = Query(0),
             "missing_cost_ingredients": missing,
             "status": status,
             "ingredient_count": len(rec),
+            "unit_cost_basis": unit_cost_basis if etype != "dish" else None,
+            "last_purchase_price": _num(last_price) if etype != "dish" else None,
+            "last_purchase_date": str(last_date) if (etype != "dish" and last_date) else None,
         })
 
     if recipe_only:
@@ -489,7 +615,7 @@ async def menu_recipe(item: str = Query(...), request: Request = None,
     """One menu item's recipe rows with per-row qty, unit cost, waste, line cost + totals."""
     _ensure_tables()
     branch = _branch(request)
-    costs, _conv = _ingredient_costs(branch)
+    costs, _conv, canon = _ingredient_costs(branch)
     rows = _q(
         "SELECT id, menu_item, ingredient, qty_per_portion, waste_pct FROM menu_recipes "
         "WHERE branch_id=%s AND menu_item=%s ORDER BY id",
@@ -500,7 +626,7 @@ async def menu_recipe(item: str = Query(...), request: Request = None,
     total = Decimal("0")
     missing = []
     for r in rows:
-        ci = costs.get(r["ingredient"]) or {}
+        ci = costs.get(canon.get(r["ingredient"], r["ingredient"])) or {}
         uc = ci.get("cost_per_base_unit")
         qty = _d(r["qty_per_portion"])
         waste = _d(r["waste_pct"])
@@ -516,6 +642,9 @@ async def menu_recipe(item: str = Query(...), request: Request = None,
             "qty_per_portion": _num(qty),
             "base_unit": ci.get("base_unit") or "g",
             "unit_cost_per_base": _num(uc),
+            "cost_basis": ci.get("cost_basis"),
+            "last_purchase_price": _num(ci.get("last_purchase")),
+            "last_purchase_date": str(ci.get("last_in")) if ci.get("last_in") else None,
             "waste_pct": _num(waste),
             "line_cost": _num(line_cost),
         })
@@ -674,12 +803,18 @@ async def upsert_ingredient(body: dict = Body(...), request: Request = None,
         bpp = _d(bpp)
 
     kind = normalize_kind(body.get("kind"))
+    has_basis = "cost_basis" in body
+    cost_basis = normalize_cost_basis(body.get("cost_basis")) if has_basis else None
 
     existing = _q1("SELECT id, kind FROM ingredients WHERE branch_id=%s AND name=%s", (branch, name))
     if existing:
         final_kind = kind or (str(existing.get("kind") or "").strip() or "ingredient")
-        _ex("UPDATE ingredients SET base_unit=%s, purchase_unit=%s, base_per_purchase=%s, kind=%s WHERE id=%s",
-            (base_unit, purchase_unit, bpp, final_kind, existing["id"]))
+        if has_basis:
+            _ex("UPDATE ingredients SET base_unit=%s, purchase_unit=%s, base_per_purchase=%s, kind=%s, cost_basis=%s WHERE id=%s",
+                (base_unit, purchase_unit, bpp, final_kind, cost_basis, existing["id"]))
+        else:
+            _ex("UPDATE ingredients SET base_unit=%s, purchase_unit=%s, base_per_purchase=%s, kind=%s WHERE id=%s",
+                (base_unit, purchase_unit, bpp, final_kind, existing["id"]))
         iid = existing["id"]
     else:
         if kind is None:
@@ -687,10 +822,181 @@ async def upsert_ingredient(body: dict = Body(...), request: Request = None,
             kind = classify_item_kind(None, name in _sellable_inventory_names(branch))
         final_kind = kind
         iid = _ex(
-            "INSERT INTO ingredients (branch_id, name, kind, base_unit, purchase_unit, base_per_purchase) VALUES (%s,%s,%s,%s,%s,%s)",
-            (branch, name, kind, base_unit, purchase_unit, bpp),
+            "INSERT INTO ingredients (branch_id, name, kind, base_unit, purchase_unit, base_per_purchase, cost_basis) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (branch, name, kind, base_unit, purchase_unit, bpp, cost_basis),
         )
-    return {"success": True, "data": {"id": iid, "name": name, "kind": final_kind, "base_unit": base_unit, "purchase_unit": purchase_unit, "base_per_purchase": _num(bpp)}}
+    return {"success": True, "data": {"id": iid, "name": name, "kind": final_kind, "base_unit": base_unit, "purchase_unit": purchase_unit, "base_per_purchase": _num(bpp), "cost_basis": cost_basis}}
+
+
+@router.get("/cost-basis")
+async def get_cost_basis(request: Request, user: dict = Depends(require_admin_user)):
+    """Read the effective cost basis: global setting + per-ingredient overrides."""
+    _ensure_tables()
+    branch = _branch(request)
+    global_basis = _global_cost_basis()
+    overrides = {}
+    for r in _q(
+        "SELECT name, cost_basis FROM ingredients WHERE branch_id=%s AND cost_basis IS NOT NULL AND cost_basis <> ''",
+        (branch,),
+    ):
+        b = normalize_cost_basis(r["cost_basis"])
+        if b:
+            overrides[r["name"]] = b
+    return {"success": True, "data": {"global": global_basis, "overrides": overrides}}
+
+
+@router.post("/cost-basis")
+async def set_cost_basis(body: dict = Body(...), request: Request = None,
+                         user: dict = Depends(require_admin_user)):
+    """ADMIN-only: set the cost basis.
+
+    * global: {basis: "last"|"average"} — persisted in settings_config
+      (key ``ingredient_cost_basis``).
+    * per-ingredient: {name, basis} — persisted on ``ingredients.cost_basis``
+      (NULL = follow the global setting).
+    """
+    _ensure_tables()
+    branch = _branch(request)
+    name = str(body.get("name") or "").strip() if body.get("name") is not None else ""
+    basis = normalize_cost_basis(body.get("basis"))
+    if not basis:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "basis must be 'last' or 'average'", "code": 422})
+
+    if name:
+        existing = _q1("SELECT id FROM ingredients WHERE branch_id=%s AND name=%s", (branch, name))
+        if existing:
+            _ex("UPDATE ingredients SET cost_basis=%s WHERE id=%s", (basis, existing["id"]))
+        else:
+            _ex("INSERT INTO ingredients (branch_id, name, cost_basis) VALUES (%s,%s,%s)", (branch, name, basis))
+        return {"success": True, "data": {"name": name, "basis": basis}}
+
+    existing = _q1("SELECT id FROM settings_config WHERE config_key=%s", (_COST_BASIS_KEY,))
+    if existing:
+        _ex("UPDATE settings_config SET config_value=%s, config_type='string' WHERE config_key=%s", (basis, _COST_BASIS_KEY))
+    else:
+        _ex(
+            "INSERT INTO settings_config (config_key, config_value, config_type, category, description) "
+            "VALUES (%s,%s,'string','menu','Ingredient cost basis: last | average')",
+            (_COST_BASIS_KEY, basis),
+        )
+    return {"success": True, "data": {"global": basis}}
+
+
+@router.get("/ingredient-variants")
+async def list_ingredient_variants(request: Request, user: dict = Depends(require_admin_user)):
+    """List current name-variant merges (canonical -> [variant, …])."""
+    _ensure_tables()
+    branch = _branch(request)
+    rows = _q(
+        "SELECT canonical_name, variant_name, created_at FROM ingredient_variants "
+        "WHERE branch_id=%s ORDER BY canonical_name, variant_name",
+        (branch,),
+    )
+    mappings = {}
+    for r in rows:
+        mappings.setdefault(r["canonical_name"], []).append({
+            "variant_name": r["variant_name"],
+            "created_at": str(r["created_at"]) if r.get("created_at") else None,
+        })
+    return {"success": True, "data": {"mappings": mappings}}
+
+
+@router.get("/ingredient-variants/candidates")
+async def variant_candidates(request: Request, user: dict = Depends(require_admin_user)):
+    """Auto-detect duplicate name variants (normalisation: ZWSP/space/punct/case +
+    Burmese ဥ/ဉ) and suggest a canonical per group (sellable > most purchased)."""
+    _ensure_tables()
+    branch = _branch(request)
+    names = sorted(_all_item_names(branch))
+    raw_agg = aggregate_canonical_purchases(_stockin_rows(branch), {})
+    sellable = _sellable_inventory_names(branch)
+    canon = _variant_canonical(branch)
+
+    groups = []
+    for g in duplicate_variant_groups(names):
+        # Skip groups already fully resolved: every member maps to the SAME
+        # canonical via an existing merge (so we don't re-suggest the egg merge
+        # forever after it has been merged).
+        resolved = {canon.get(n, n) for n in g}
+        if len(resolved) == 1:
+            continue
+        def qty(n):
+            return float(raw_agg.get(n, {}).get("total_qty") or 0)
+        suggested = None
+        for n in g:
+            if n in sellable:
+                suggested = n
+                break
+        if suggested is None:
+            suggested = sorted(g, key=lambda n: (-qty(n), len(str(n)), str(n)))[0]
+        members = [{
+            "name": n,
+            "weighted_avg": _num(raw_agg.get(n, {}).get("weighted_avg")),
+            "last_purchase": _num(raw_agg.get(n, {}).get("last_purchase")),
+            "last_in": str(raw_agg.get(n, {}).get("last_in")) if raw_agg.get(n, {}).get("last_in") else None,
+            "total_qty": _num(raw_agg.get(n, {}).get("total_qty")),
+            "is_sellable": n in sellable,
+        } for n in g]
+        groups.append({"members": g, "suggested_canonical": suggested, "items": members})
+
+    mappings = {c: sorted(v for v in canon if canon[v] == c) for c in sorted(set(canon.values()))}
+    return {"success": True, "data": {"groups": groups, "mappings": mappings}}
+
+
+@router.post("/ingredient-variants/merge")
+async def merge_ingredient_variants(body: dict = Body(...), request: Request = None,
+                                    user: dict = Depends(require_admin_user)):
+    """ADMIN-only: merge variant names into ONE canonical ingredient (non-destructive).
+
+    body: {canonical_name, variant_names: [...]}.  Creates / re-points
+    ``ingredient_variants`` mapping rows only — stock_in rows are NEVER touched,
+    so the merge is fully reversible via /ingredient-variants/unmerge.
+    """
+    _ensure_tables()
+    branch = _branch(request)
+    canonical = str(body.get("canonical_name") or "").strip()
+    if not canonical:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "canonical_name is required", "code": 422})
+    raw = body.get("variant_names", body.get("variants", []))
+    if isinstance(raw, str):
+        raw = [raw]
+    variants = []
+    for v in raw:
+        v = str(v).strip()
+        if v and v != canonical and v not in variants:
+            variants.append(v)
+    if not variants:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "variant_names must list at least one name different from canonical_name", "code": 422})
+
+    created, updated, skipped = [], [], []
+    for v in variants:
+        existing = _q1("SELECT canonical_name FROM ingredient_variants WHERE branch_id=%s AND variant_name=%s", (branch, v))
+        if existing:
+            if existing["canonical_name"] == canonical:
+                skipped.append(v)
+            else:
+                _ex("UPDATE ingredient_variants SET canonical_name=%s WHERE branch_id=%s AND variant_name=%s", (canonical, branch, v))
+                updated.append(v)
+        else:
+            _ex("INSERT INTO ingredient_variants (branch_id, canonical_name, variant_name) VALUES (%s,%s,%s)", (branch, canonical, v))
+            created.append(v)
+    return {"success": True, "data": {
+        "canonical_name": canonical, "variant_names": variants,
+        "created": created, "updated": updated, "skipped": skipped,
+    }}
+
+
+@router.post("/ingredient-variants/unmerge")
+async def unmerge_ingredient_variant(body: dict = Body(...), request: Request = None,
+                                     user: dict = Depends(require_admin_user)):
+    """ADMIN-only: undo a single variant mapping (reversible).  No stock_in rows touched."""
+    _ensure_tables()
+    branch = _branch(request)
+    variant = str(body.get("variant_name") or "").strip()
+    if not variant:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "variant_name is required", "code": 422})
+    affected = _del("DELETE FROM ingredient_variants WHERE branch_id=%s AND variant_name=%s", (branch, variant))
+    return {"success": True, "data": {"variant_name": variant, "removed": int(affected)}}
 
 
 @router.get("/food-cost-report")
@@ -716,7 +1022,7 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
     except ValueError:
         raise HTTPException(status_code=422, detail={"success": False, "error": "invalid month", "code": 422})
 
-    costs, _conv = _ingredient_costs(branch)
+    costs, _conv, canon = _ingredient_costs(branch)
     recipes = _recipes_by_menu(branch)
     inv = _inventory_map(branch)
 
@@ -753,15 +1059,15 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
             if not rec:
                 uncosted_reason = "no_recipe"
             else:
-                unit_costs = {c_name: (costs.get(c_name) or {}).get("cost_per_base_unit") for c_name in {x["ingredient"] for x in rec}}
+                unit_costs = {c_name: (costs.get(canon.get(c_name, c_name)) or {}).get("cost_per_base_unit") for c_name in {x["ingredient"] for x in rec}}
                 portion_cost, missing = portion_cost_from(
                     [(x["qty_per_portion"], x["waste_pct"], x["ingredient"]) for x in rec], unit_costs)
                 if portion_cost is None:
                     uncosted_reason = "missing_ingredients"
             unit_cost = portion_cost
         else:
-            # resale — purchase unit cost (no base-unit conversion)
-            unit_cost = (costs.get(name) or {}).get("weighted_avg")
+            # resale — purchase unit cost (no base-unit conversion), basis-aware
+            unit_cost = (costs.get(canon.get(name, name)) or {}).get("unit_cost")
             if unit_cost is None:
                 no_purchase = True
                 uncosted_reason = "no_purchase"

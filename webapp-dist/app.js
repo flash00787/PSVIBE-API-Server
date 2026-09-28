@@ -4751,6 +4751,30 @@
                 🛒 <b>ပစ္စည်း</b> = ရောင်းစရာ အထုပ်/အဘူး (ကိတ်၊ အာလူးကြော်၊ အချိုရည်…)<br/>
                 မှားနေရင် အောက်က ခလုတ်နဲ့ ပြောင်းလို့ရတယ်။ ယူနစ်သတ်မှတ်ဖို့ ကုန်ကြမ်းကို နှိပ်ပါ။
               </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 16px 0">
+                <span class="psv-dim" style="font-size:12px">ကုန်ကျစရိတ် တွက်နည်း (cost basis)</span>
+                <span class="psv-dchip" :class="{ 'psv-dchip--on': costBasis === 'last' }" @click="setGlobalBasis('last')">နောက်ဆုံးဝယ်ဈေး (last)</span>
+                <span class="psv-dchip" :class="{ 'psv-dchip--on': costBasis === 'average' }" @click="setGlobalBasis('average')">ပျမ်းမျှ (avg)</span>
+              </div>
+              <van-cell-group v-if="variantGroups.length" inset title="⚠️ နာမည်ကွဲနေတဲ့ ပစ္စည်းများ (duplicate names)" style="margin-top:14px">
+                <van-cell v-for="(g, gi) in variantGroups" :key="'g' + gi">
+                  <template #title><span style="font-size:13px">{{ g.suggested_canonical }}</span></template>
+                  <template #label><span class="psv-dim" style="font-size:12px">{{ g.members.join(' + ') }} — နာမည်တူ အရေးအသားကွဲ</span></template>
+                  <template #value><van-button size="mini" type="primary" plain @click="mergeGroup(g)">ပေါင်း Merge</van-button></template>
+                </van-cell>
+                <van-cell v-if="!variantGroups.length" title="No duplicate names found" />
+              </van-cell-group>
+              <van-cell-group v-if="mergedCount" inset title="🔗 ပေါင်းပြီးသား နာမည်များ (merged)" style="margin-top:14px">
+                <van-cell v-for="(vs, cname) in variantMappings" :key="'m' + cname" :title="cname">
+                  <template #label><span class="psv-dim" style="font-size:12px">{{ variantNames(vs) }}</span></template>
+                  <template #value>
+                    <span v-for="v in vs" :key="'u' + (v.variant_name || v)" class="psv-unmerge" @click="unmergeVariant(cname, v.variant_name || v)">✕ {{ v.variant_name || v }}</span>
+                  </template>
+                </van-cell>
+              </van-cell-group>
+              <div style="padding:8px 16px 0">
+                <van-button size="small" plain icon="swap" @click="openMerge">➕ နာမည်လက်နဲ့ ပေါင်း (manual merge)</van-button>
+              </div>
               <van-cell-group inset title="🍚 ဟင်းခံပစ္စည်းများ (Ingredients)" style="margin-top:8px">
                 <van-cell v-for="it in reviewIngredients" :key="it.name" :title="it.name" is-link @click="openUnitEditor(it)">
                   <template #label><span>{{ unitCostText(it) }}</span></template>
@@ -4876,10 +4900,32 @@
               </div>
             </div>
             <van-field v-model.number="newIng.base_per_purchase" type="number" label="Units / purchase" placeholder="auto from preset" />
+            <div style="padding:0 12px 6px">
+              <div class="psv-dim" style="font-size:11px;margin-bottom:4px">Cost basis (override)</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <span class="psv-dchip" :class="{ 'psv-dchip--on': !newIng.cost_basis }" @click="newIng.cost_basis = null">Global (default)</span>
+                <span class="psv-dchip" :class="{ 'psv-dchip--on': newIng.cost_basis === 'last' }" @click="newIng.cost_basis = 'last'">နောက်ဆုံးဝယ်ဈေး (last)</span>
+                <span class="psv-dchip" :class="{ 'psv-dchip--on': newIng.cost_basis === 'average' }" @click="newIng.cost_basis = 'average'">ပျမ်းမျှ (avg)</span>
+              </div>
+            </div>
             <div v-if="liveUnitCost" class="psv-note" style="margin:4px 12px">💡 ≈ <b>{{ liveUnitCost }}</b> Ks per {{ newIng.base_unit || 'g' }}</div>
             <div style="display:flex;gap:8px;margin-top:12px">
               <van-button block plain @click="newIng.show = false">Cancel</van-button>
               <van-button block type="primary" :loading="newIng.saving" @click="saveIngredient">Add</van-button>
+            </div>
+          </div>
+        </van-popup>
+
+        <!-- Manual merge popup (owner 2026-09-28): merge variant names into one canonical -->
+        <van-popup v-model:show="merge.show" position="bottom" round class="psv-pick">
+          <div style="padding:16px">
+            <div class="psv-pick__title" style="margin-bottom:12px">➕ နာမည်ပေါင်း (Merge names)</div>
+            <div class="psv-dim" style="font-size:12px;margin-bottom:8px">မူရင်းနာမည် (canonical) ရွေးပါ — ကျန်တဲ့ နာမည်ကွဲတွေက အဲဒီထဲ ပေါင်းပါမယ်။ stock_in ကို မဖျက်ပါ။</div>
+            <van-field v-model="merge.canonical" label="Canonical" placeholder="e.g. ကြက်ဥ" />
+            <van-field v-model="merge.variants" label="Variants (comma)" placeholder="ကြက်ဉ, Egg" />
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <van-button block plain @click="merge.show = false">Cancel</van-button>
+              <van-button block type="primary" :loading="merge.saving" @click="doMerge">Merge</van-button>
             </div>
           </div>
         </van-popup>
@@ -4922,12 +4968,17 @@
       const ingData = reactive({ items: [], suggested: [] });
       const ingPickerShow = ref(false);
       const editor = reactive({ show: false, item: null, rows: [], saving: false });
-      const newIng = reactive({ show: false, name: "", base_unit: "g", purchase_unit: "", base_per_purchase: null, kind: null, saving: false });
+      const newIng = reactive({ show: false, name: "", base_unit: "g", purchase_unit: "", base_per_purchase: null, kind: null, cost_basis: null, saving: false });
       const newDish = reactive({ show: false, name: "", category: "Food", selling_price: null, saving: false, item_type: "dish" });
       const editingPrice = ref(false);
       const priceDraft = ref(null);
       const priceSaving = ref(false);
       const ingNamePickShow = ref(false);
+      const costBasis = ref("last");
+      const variantGroups = ref([]);
+      const variantMappings = ref({});
+      const mergedCount = computed(() => Object.keys(variantMappings.value).length);
+      const merge = reactive({ show: false, canonical: "", variants: "", saving: false });
       const staff = PSV.getStaff() || {};
       const isAdmin = computed(() => String((staff && staff.role) || "").toLowerCase() === "admin");
 
@@ -4981,12 +5032,26 @@
         if (it.item_type === "dish") return !!it.has_recipe;
         return !it.no_purchase_yet;
       }
-      // Unit-cost text for a stock item (real purchase unit, or per base unit
-      // when a conversion is configured — never a fake "/g").
+      // Unit-cost text for a stock item — shows the chosen-basis cost PLUS the
+      // last purchase price + date and the weighted average (owner 2026-09-28).
+      function shortDate(s) {
+        if (!s) return "";
+        const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (!m) return String(s).slice(0, 10);
+        const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        return MON[parseInt(m[2], 10) - 1] + " " + parseInt(m[3], 10);
+      }
       function unitCostText(it) {
         if (!it) return "";
         const u = it.unit_label || "pcs";
-        return it.display_cost == null ? ("No purchase yet · " + u) : (fKs(it.display_cost) + " Ks / " + u);
+        if (it.display_cost == null) return "No purchase yet · " + u;
+        const basis = it.effective_cost_basis || "last";
+        let s = fKs(it.display_cost) + " Ks / " + u;
+        if (basis === "last" && it.last_purchase_price != null) {
+          s += " · last " + fKs(it.last_purchase_price) + (it.last_purchase_date ? " (" + shortDate(it.last_purchase_date) + ")" : "");
+        }
+        if (it.weighted_avg_cost != null) s += " · avg " + fKs(it.weighted_avg_cost);
+        return s;
       }
       const ingPickerItems = computed(() => {
         const out = [];
@@ -5104,6 +5169,73 @@
         } catch (e) {}
         refreshing.value = false;
       }
+      function variantNames(vs) {
+        return (vs || []).map((v) => (v && v.variant_name) ? v.variant_name : v).join(", ");
+      }
+      async function loadCostBasis() {
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/menu/cost-basis", {}, 20000));
+          if (d) costBasis.value = d.global || "last";
+        } catch (e) {}
+      }
+      async function loadVariants() {
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/menu/ingredient-variants/candidates", {}, 20000));
+          if (d) variantGroups.value = d.groups || [];
+        } catch (e) {}
+        try {
+          const m = PSV.unwrap(await PSV.apiCached("/api/menu/ingredient-variants", {}, 20000));
+          if (m) variantMappings.value = m.mappings || {};
+        } catch (e) {}
+      }
+      async function setGlobalBasis(b) {
+        if (b !== "last" && b !== "average") return;
+        haptic("light");
+        try {
+          await PSV.api("/api/menu/cost-basis", { method: "POST", headers: HJSON, body: JSON.stringify({ basis: b }) });
+          PSV.invalidate("/api/menu");
+          costBasis.value = b;
+          await loadIngredients();
+          showToast(b === "last" ? "နောက်ဆုံးဝယ်ဈေးနဲ့ တွက်မယ် ✓" : "ပျမ်းမျှဈေးနဲ့ တွက်မယ် ✓", "success");
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
+      }
+      async function mergeGroup(g) {
+        if (!g || !g.suggested_canonical) return;
+        const vars = (g.members || []).filter((m) => m !== g.suggested_canonical);
+        await doMergeNames(g.suggested_canonical, vars);
+      }
+      function openMerge() {
+        merge.canonical = ""; merge.variants = ""; merge.saving = false; merge.show = true;
+      }
+      async function doMerge() {
+        const canonical = (merge.canonical || "").trim();
+        const vars = (merge.variants || "").split(",").map((s) => s.trim()).filter(Boolean);
+        if (!canonical) { showToast("Canonical name is required", "fail"); return; }
+        if (!vars.length) { showToast("Add at least one variant name", "fail"); return; }
+        await doMergeNames(canonical, vars);
+      }
+      async function doMergeNames(canonical, vars) {
+        merge.saving = true; haptic("medium");
+        try {
+          await PSV.api("/api/menu/ingredient-variants/merge", { method: "POST", headers: HJSON, body: JSON.stringify({ canonical_name: canonical, variant_names: vars }) });
+          PSV.invalidate("/api/menu");
+          merge.show = false;
+          await Promise.all([loadIngredients(), loadVariants()]);
+          showToast("ပေါင်းပြီး ✓ (" + canonical + " ← " + vars.join(", ") + ")", "success");
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
+        finally { merge.saving = false; }
+      }
+      async function unmergeVariant(cname, variant) {
+        if (!variant) return;
+        const ok = await confirmBox("ပြန်ခွဲမလား? (unmerge)", cname + " ← " + variant + " ကို ပြန်ခွဲပါမယ်။ stock_in မထိပါ။", "ခွဲမယ်", "မလုပ်တော့ဘူး");
+        if (!ok) return;
+        try {
+          await PSV.api("/api/menu/ingredient-variants/unmerge", { method: "POST", headers: HJSON, body: JSON.stringify({ variant_name: variant }) });
+          PSV.invalidate("/api/menu");
+          await Promise.all([loadIngredients(), loadVariants()]);
+          showToast("ခွဲပြီး ✓", "success");
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
+      }
 
       async function openEditor(it) {
         haptic("light");
@@ -5140,7 +5272,7 @@
 
       function pickIngredient(v) {
         if (v === "__new__") {
-          newIng.name = ""; newIng.base_unit = "g"; newIng.purchase_unit = ""; newIng.base_per_purchase = null; newIng.kind = null;
+          newIng.name = ""; newIng.base_unit = "g"; newIng.purchase_unit = ""; newIng.base_per_purchase = null; newIng.kind = null; newIng.cost_basis = null;
           newIng.show = true;
           return;
         }
@@ -5254,6 +5386,7 @@
         newIng.purchase_unit = it.purchase_unit || "";
         newIng.base_per_purchase = (it.base_per_purchase != null && Number(it.base_per_purchase) > 1) ? Number(it.base_per_purchase) : null;
         newIng.kind = it.kind || null;
+        newIng.cost_basis = it.explicit_cost_basis || null;
         newIng.show = true;
       }
       async function saveIngredient() {
@@ -5264,6 +5397,7 @@
           const body = { name: name, base_unit: newIng.base_unit || "g", purchase_unit: newIng.purchase_unit || null };
           if (newIng.kind) body.kind = newIng.kind;
           if (newIng.base_per_purchase != null && Number(newIng.base_per_purchase) > 0) body.base_per_purchase = Number(newIng.base_per_purchase);
+          body.cost_basis = newIng.cost_basis || null;
           await PSV.api("/api/menu/ingredients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
           PSV.invalidate("/api/menu");
           newIng.show = false;
@@ -5293,19 +5427,21 @@
         finally { editor.saving = false; }
       }
 
-      onMounted(() => { if (isAdmin.value) { loadAll(); loadIngredients(); } });
+      onMounted(() => { if (isAdmin.value) { loadAll(); loadIngredients(); loadCostBasis(); loadVariants(); } });
       return {
         tab, loading, refreshing, list, all, costed, dishes, resale, splitDish, splitResale,
         summary, month, sumPct, sumWarn, sumColor,
         pct, pillClass, fKs, openEditor, closeEditor, lineCost, editorTotals,
         typeBadge, dishLabel, resaleLabel, costLabel, hasCostPill,
-        unitCostText, reviewIngredients, reviewProducts, setKind, openUnitEditor,
+        unitCostText, shortDate, reviewIngredients, reviewProducts, setKind, openUnitEditor,
         ingPickerShow, ingPickerItems, pickIngredient, removeRow,
         newIng, saveIngredient, saveRecipe, editor, isAdmin, goStockIn,
         newDish, openNewDish, saveNewDish,
         editingPrice, priceDraft, priceSaving, startEditPrice, savePrice, switchType,
         ingNamePickShow, ingNamePickItems, purchasePresets, setPurchase, liveUnitCost,
         switchLabel, switchHint, editorStats, editorCostText, editorPctText, editorMarginText, editorPctColor,
+        costBasis, variantGroups, variantMappings, mergedCount, merge,
+        setGlobalBasis, mergeGroup, openMerge, doMerge, unmergeVariant, variantNames,
       };
     },
   };

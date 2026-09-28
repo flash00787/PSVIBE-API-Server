@@ -26,6 +26,7 @@ Rounding policy (documented choice):
   * portion_cost_from      -> 2 dp  (kyat, per plate)
   * food_cost_metrics      -> pct 1 dp, margin 2 dp, margin_pct 1 dp
 """
+import re as _re
 from decimal import Decimal, ROUND_HALF_UP
 
 # Quantization constants
@@ -308,6 +309,174 @@ def filter_items_by_kind(items, kind):
     if k is None:
         return list(items)
     return [i for i in items if (i or {}).get("kind") == k]
+
+
+# ── Cost basis: last purchase vs weighted average (owner 2026-09-28 Osmo) ──
+# The owner flagged that a single spelling variant (`ကြက်ဉ` @ 600) and a bogus
+# English row (`Egg` @ 0) were being shown instead of the real item (`ကြက်ဥ`,
+# last purchase 700 on 27 Sep).  Two fixes: (1) cost basis defaults to the LAST
+# purchase price (with the weighted average kept as a secondary figure), and
+# (2) name-variant merging so one ingredient aggregates ALL its spellings.
+COST_BASIS_LAST = "last"
+COST_BASIS_AVERAGE = "average"
+
+
+def normalize_cost_basis(value):
+    """Return the canonical cost basis ("last"|"average") or None for invalid input.
+
+    Accepts friendly aliases so the UI / API can send human labels:
+      last    <- last | latest | recent | last_purchase | last-purchase
+      average <- average | avg | weighted | weighted_average | wavg
+    Unknown / empty / None -> None (caller falls back to the global default)."""
+    t = str(value or "").strip().lower()
+    if t in ("last", "latest", "recent", "last_purchase", "last-purchase", "lastpurchase", "နောက်ဆုံးဝယ်ဈေး"):
+        return "last"
+    if t in ("average", "avg", "weighted", "weighted_average", "weighted-average", "wavg", "ပျမ်းမျှ"):
+        return "average"
+    return None
+
+
+def last_purchase_cost(purchases):
+    """Unit cost of the MOST RECENT purchase (per purchase unit), 4 dp, or None.
+
+    ``purchases`` is an iterable of ``(quantity, total_cost, created_at)`` triples
+    (an optional 4th element ``id`` may be appended for tie-breaking).  Rows with
+    quantity <= 0 are ignored.  The winner is the row with the largest
+    ``created_at`` (ISO strings compare lexicographically); on an exact tie the
+    LAST tuple seen wins, so callers should pre-sort by ``created_at ASC, id ASC``
+    to make ties resolve deterministically to the newest row id.
+
+    This is the price the owner actually paid most recently — 700 Ks for the egg
+    on 27 Sep — as opposed to the weighted average (578.63) which is diluted by
+    older, cheaper purchases.
+    """
+    best_qty = None
+    best_cost = None
+    best_key = None
+    for row in purchases:
+        qty = _d(row[0])
+        cost = _d(row[1])
+        created = str(row[2] or "")
+        rid = row[3] if len(row) >= 4 else 0
+        if qty <= 0:
+            continue
+        key = (created, rid)
+        if best_key is None or key >= best_key:
+            best_key = key
+            best_qty = qty
+            best_cost = cost
+    if best_qty is None or best_qty <= 0:
+        return None
+    return (best_cost / best_qty).quantize(_Q4, rounding=ROUND_HALF_UP)
+
+
+def select_unit_cost(weighted_avg, last_purchase, basis):
+    """Pick the per-purchase-unit cost for the chosen basis.
+
+    basis 'last'     -> last_purchase (fallback to weighted_avg when the last
+                        purchase is unknown, e.g. no rows yet).
+    basis 'average'  -> weighted_avg.
+    invalid/None     -> 'average' (preserves the pre-basis behaviour)."""
+    b = normalize_cost_basis(basis)
+    if b == "last":
+        return last_purchase if last_purchase is not None else weighted_avg
+    return weighted_avg
+
+
+# ── Name-variant normalisation + merge (owner 2026-09-28 Osmo) ────────────
+# Burmese spelling variants (`ကြက်ဥ` vs `ကြက်ဉ`) differ only by the final letter
+# (ဥ U+1025 vs ဉ U+1009 — a very common orthography mix-up for "egg").  Other
+# variants differ by ZWSP / spaces / punctuation / underscores / case (e.g.
+# `Birdy 3 in 1 Coffee` vs `Birdy_3 in 1`).  We normalise both down to one key.
+_VARIANT_STRIP = _re.compile(r"[\s\u200b\u200c\u200d_\-\u2010\u2013\u2014\.,\(\)\[\]\{\}\'\"\u2018\u2019\u201c\u201d\:\;\!\?\/\\]+")
+_BURMESE_KEY = str.maketrans({"ဉ": "ဥ"})  # ဉ (NYA) -> ဥ (U): "egg" spelling variant
+
+
+def normalize_variant_key(name):
+    """Normalise an item name into a comparison key for duplicate detection.
+
+    Strips ZWSP / whitespace / punctuation / underscores, lowercases latin, and
+    maps the common Burmese confusable ဉ -> ဥ so `ကြက်ဥ` == `ကြက်ဉ`.  Returns the
+    empty string for a blank/None input (caller must treat "" as "no key").
+    """
+    n = str(name or "")
+    n = n.translate(_BURMESE_KEY)
+    n = n.lower()
+    n = _VARIANT_STRIP.sub("", n)
+    return n
+
+
+def duplicate_variant_groups(names):
+    """Group names whose normalised keys collide, returning only groups with >1 name.
+
+    ``names`` is an iterable of raw item names.  Returns a list of lists, each an
+    ordered group of names that are variants of one another (sorted by length then
+    lexicographically so the shortest / most-canonical name leads).  Names whose
+    normalised key is empty ("") are skipped.
+    """
+    buckets = {}
+    for name in names:
+        key = normalize_variant_key(name)
+        if not key:
+            continue
+        buckets.setdefault(key, [])
+        if name not in buckets[key]:
+            buckets[key].append(name)
+    groups = []
+    for key in sorted(buckets):
+        members = buckets[key]
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda n: (len(str(n)), str(n)))
+        groups.append(members)
+    groups.sort(key=lambda g: (len(str(g[0])), str(g[0])))
+    return groups
+
+
+def aggregate_canonical_purchases(stock_rows, canonical_of=None):
+    """Aggregate stock_in rows by CANONICAL ingredient name (variant merge).
+
+    ``stock_rows``   : iterable of ``(item_name, quantity, total_cost, created_at)``.
+    ``canonical_of`` : dict variant_name -> canonical_name (missing -> identity).
+
+    Returns ``{canonical_name: {"weighted_avg", "last_purchase", "last_in",
+    "total_qty", "total_cost"}}``.  ``last_in`` is the max created_at across the
+    merged group; ``last_purchase`` is the unit cost of that most-recent row.
+    Pure + unit-testable (this is where "aggregation across merged variants"
+    lives).
+    """
+    canon = canonical_of or {}
+    groups = {}  # canonical -> list of (qty, cost, created_at)
+    for row in stock_rows:
+        name = row[0]
+        qty = row[1]
+        cost = row[2]
+        created = str(row[3] or "") if len(row) > 3 else ""
+        cname = canon.get(name, name)
+        groups.setdefault(cname, []).append((qty, cost, created))
+
+    out = {}
+    for cname, rows in groups.items():
+        total_qty = Decimal("0")
+        total_cost = Decimal("0")
+        for qty, cost, created in rows:
+            q = _d(qty)
+            c = _d(cost)
+            if q <= 0:
+                continue
+            total_qty += q
+            total_cost += c
+        wavg = (total_cost / total_qty).quantize(_Q4, rounding=ROUND_HALF_UP) if total_qty > 0 else None
+        lp = last_purchase_cost(rows)
+        last_in = max((cr for _, _, cr in rows), default="")
+        out[cname] = {
+            "weighted_avg": wavg,
+            "last_purchase": lp,
+            "last_in": last_in or None,
+            "total_qty": total_qty,
+            "total_cost": total_cost,
+        }
+    return out
 
 
 def ingredient_display(weighted_avg, purchase_unit, base_unit, base_per_purchase):
