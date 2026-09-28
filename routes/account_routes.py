@@ -130,15 +130,28 @@ def _ensure_table() -> None:
         conn.close()
 
 
-async def _balances_by_name() -> dict:
-    """Current balance per account label, from the shared finance calculator."""
+async def _account_rows_by_name() -> dict:
+    """Return {label: {balance, fee_pct, fee_amount, net_balance, fee_note}} from
+    the shared finance calculator (which now also emits the MMQR net-of-fee fields)."""
     from routes.finance_routes import get_finance_balances
     res = await get_finance_balances(year=None, month=None, user={"username": "accounts_api", "role": "admin"})
     out = {}
     if isinstance(res, dict) and res.get("success"):
         for a in res.get("accounts", []) or []:
-            out[str(a.get("label"))] = float(a.get("balance") or 0)
+            out[str(a.get("label"))] = {
+                "balance": float(a.get("balance") or 0),
+                "fee_pct": float(a.get("fee_pct") or 0),
+                "fee_amount": float(a.get("fee_amount") or 0),
+                "net_balance": float(a.get("net_balance") or 0),
+                "fee_note": str(a.get("fee_note") or ""),
+            }
     return out
+
+
+async def _balances_by_name() -> dict:
+    """Current numeric balance per account label, from the shared finance calculator."""
+    meta = await _account_rows_by_name()
+    return {k: v["balance"] for k, v in meta.items()}
 
 
 def _iso(v):
@@ -391,8 +404,8 @@ async def list_balances(user: dict = Depends(get_staff_or_dashboard_user)):
     _ensure_table()
     role = "admin" if _is_admin(user) else "staff"
     allowed = _allowed_accounts(user)
-    bals = await _balances_by_name()
-    # Last movement for the owner-only accounts (informational).
+    meta = await _account_rows_by_name()
+    bals = {k: v["balance"] for k, v in meta.items()}
     last = {}
     try:
         for r in _q(
@@ -411,6 +424,10 @@ async def list_balances(user: dict = Depends(get_staff_or_dashboard_user)):
             "owner_only": name in _OWNER_ONLY,
             "active": _is_active_account(name),
             "last_movement": last.get(name) if name in _OWNER_ONLY else None,
+            "fee_pct": (meta.get(name) or {}).get("fee_pct", 0.0),
+            "fee_amount": (meta.get(name) or {}).get("fee_amount", 0.0),
+            "net_balance": (meta.get(name) or {}).get("net_balance", round(bals.get(name, 0), 2)),
+            "fee_note": (meta.get(name) or {}).get("fee_note", ""),
         }
         for name in allowed
     ]

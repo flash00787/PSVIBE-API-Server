@@ -94,7 +94,7 @@ def normalize_item_type(value):
     Unknown / empty / None -> None (caller falls back to auto-classification).
     """
     t = str(value or "").strip().lower()
-    if t in ("dish", "made", "made-dish", "made_dish", "madedish"):
+    if t in ("dish", "made", "made-dish", "made dish", "made_dish", "madedish"):
         return "dish"
     if t in ("resale", "ready", "ready-made", "ready_made", "readymade", "packaged"):
         return "resale"

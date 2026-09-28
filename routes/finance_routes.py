@@ -34,6 +34,65 @@ INCLUDE_DEPRECIATION_IN_PNL = False
 _INACTIVE_ACCOUNT_LABELS = {"WavePay", "KPay", "AYA Pay"}
 
 
+# ── MMQR merchant fee (net-of-fee display, DISPLAY ONLY) ──────────────────────
+# Owner 2026-09-28 Osmo: the real MMQR merchant account (CB, "PS Vibe- SC")
+# credits QR payments NET of a 0.3% transaction fee, while the app records gross.
+# For the owner/admin view we surface a small "net of fee" line next to the
+# MMQR - CB balance. This is additive + display-only — no money-table writes.
+_MMQR_FEE_KEY = "mmqr_fee_pct"
+_MMQR_FEE_DEFAULT_PCT = 0.3  # percent
+_FEE_ACCOUNT_LABELS = {"MMQR - CB"}  # accounts that carry the merchant fee
+
+
+def _coerce_fee_pct(value) -> float:
+    """Coerce a raw config value to a positive fee percentage (default fallback)."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return _MMQR_FEE_DEFAULT_PCT
+    return v if v > 0 else _MMQR_FEE_DEFAULT_PCT
+
+
+def compute_fee_fields(balance: float, fee_pct: float, label: str) -> dict:
+    """Pure fee/net computation (no DB). Fee applies only to fee-flagged accounts.
+
+    net_balance = balance × (1 − fee_pct/100); fee_amount = balance × fee_pct/100,
+    both rounded to 2dp. Non-fee accounts return fee 0 / net == balance.
+    """
+    balance = float(balance or 0)
+    fee_pct = float(fee_pct or 0)
+    if (label in _FEE_ACCOUNT_LABELS) and fee_pct > 0:
+        fee_amount = round(balance * fee_pct / 100.0, 2)
+        net_balance = round(balance - fee_amount, 2)
+        fee_note = f"{fee_pct:g}% MMQR fee"
+        return {"fee_pct": round(fee_pct, 4), "fee_amount": fee_amount,
+                "net_balance": net_balance, "fee_note": fee_note}
+    return {"fee_pct": 0.0, "fee_amount": 0.0,
+            "net_balance": round(balance, 2), "fee_note": ""}
+
+
+def _read_mmqr_fee_pct() -> float:
+    """Read mmqr_fee_pct (percent) from settings_config; idempotent upsert to default."""
+    try:
+        row = _mysql_query_one(
+            "SELECT config_value FROM settings_config WHERE config_key=%s", (_MMQR_FEE_KEY,))
+    except Exception:
+        row = None
+    if row:
+        return _coerce_fee_pct(row.get("config_value"))
+    # Missing → create the row idempotently so the owner can change it later.
+    try:
+        _mysql_execute(
+            "INSERT INTO settings_config (config_key, config_value, config_type, category, description) "
+            "VALUES (%s, %s, 'float', 'pricing', 'MMQR merchant fee %% (net = balance × (1 − fee/100))') "
+            "ON DUPLICATE KEY UPDATE config_key=config_key",
+            (_MMQR_FEE_KEY, str(_MMQR_FEE_DEFAULT_PCT)),
+        )
+    except Exception:
+        pass
+    return _MMQR_FEE_DEFAULT_PCT
+
+
 @router.get("/dashboard/financial-report")
 async def dashboard_financial_report(
     limit: int = Query(100, ge=1, le=1000),
@@ -515,6 +574,11 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                         _ra["injections"] = round(_ra["injections"] + _amt, 0)
                         logger.debug(f"Active deposit added: {_method} {_amt:,.0f} Ks → {_key}")
                         break
+
+        # ── MMQR merchant fee (net-of-fee display, additive) ──
+        _fee_pct = _read_mmqr_fee_pct()
+        for _ra in result:
+            _ra.update(compute_fee_fields(float(_ra.get("balance") or 0), _fee_pct, _ra.get("label") or ""))
 
         total_balance = sum(a["balance"] for a in result) or 0
         total_income = sum(a["income"] for a in result) or 0

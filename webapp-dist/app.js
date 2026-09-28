@@ -4669,9 +4669,9 @@
         </div>
 
         <template v-else>
-        <!-- New dish (owner 2026-09-28 self-serve): create a dish straight from here -->
+        <!-- New item (owner 2026-09-28): create a dish or ready-made item -->
         <div style="padding:8px 12px 0">
-          <van-button type="primary" block icon="plus" @click="openNewDish">➕ ဟင်းအသစ် / New dish</van-button>
+          <van-button type="primary" block icon="plus" @click="openNewDish">➕ အသစ် / New item</van-button>
         </div>
         <!-- header summary: overall food-cost % for the month -->
         <div class="psv-card psv-recipe-sum" style="margin:8px">
@@ -4685,20 +4685,39 @@
               <div>Est. cost <b>{{ fKs(summary.theoretical_cost) }}</b> Ks</div>
             </div>
           </div>
+          <div class="psv-recipe-sum__split" style="margin-top:8px;font-size:12px;color:var(--psv-text-dim,#64748b)">
+            <div>🍳 ဟင်းပွဲ (dish) · rev <b>{{ fKs(splitDish.revenue) }}</b> · cost <b>{{ fKs(splitDish.theoretical_cost) }}</b></div>
+            <div>🛒 အဆင်သင့် (ready) · rev <b>{{ fKs(splitResale.revenue) }}</b> · cost <b>{{ fKs(splitResale.theoretical_cost) }}</b></div>
+          </div>
           <div v-if="sumWarn" class="psv-recipe-sum__warn">⚠️ Food cost above 35% — review recipes & pricing</div>
-          <div v-else-if="!costed.length" class="psv-recipe-sum__hint">Add recipes from “All items” to see costing.</div>
+          <div v-else-if="!dishes.length && !resale.length" class="psv-recipe-sum__hint">Add items above to see costing.</div>
         </div>
 
         <van-tabs v-model:active="tab" sticky>
-          <van-tab title="Costed">
+          <van-tab title="🍳 ဟင်းပွဲ">
             <van-pull-refresh v-model="refreshing" @refresh="loadAll">
-              <van-empty v-if="!costed.length && !loading" description="No recipes yet" />
+              <van-empty v-if="!dishes.length && !loading" description="No made dishes yet" />
               <van-cell-group v-else inset style="margin-top:8px">
-                <van-cell v-for="it in costed" :key="it.item_name" :title="it.item_name" is-link @click="openEditor(it)">
-                  <template #label>
-                    <span>Cost {{ fKs(it.portion_cost) }} · Margin {{ fKs(it.margin) }} Ks</span>
+                <van-cell v-for="it in dishes" :key="it.item_name" :title="it.item_name" is-link @click="openEditor(it)">
+                  <template #label><span>{{ dishLabel(it) }}</span></template>
+                  <template #value>
+                    <span v-if="it.has_recipe" class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span>
+                    <span v-else class="pv-amount">{{ fKs(it.selling_price) }} Ks</span>
                   </template>
-                  <template #value><span class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span></template>
+                </van-cell>
+              </van-cell-group>
+            </van-pull-refresh>
+          </van-tab>
+          <van-tab title="🛒 အဆင်သင့်">
+            <van-pull-refresh v-model="refreshing" @refresh="loadAll">
+              <van-empty v-if="!resale.length && !loading" description="No ready-made items yet" />
+              <van-cell-group v-else inset style="margin-top:8px">
+                <van-cell v-for="it in resale" :key="it.item_name" :title="it.item_name" is-link @click="openEditor(it)">
+                  <template #label><span>{{ resaleLabel(it) }}</span></template>
+                  <template #value>
+                    <span v-if="it.no_purchase_yet" class="pv-amount">{{ fKs(it.selling_price) }} Ks</span>
+                    <span v-else class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span>
+                  </template>
                 </van-cell>
               </van-cell-group>
             </van-pull-refresh>
@@ -4708,11 +4727,11 @@
               <van-cell-group inset style="margin-top:8px">
                 <van-cell v-for="it in all" :key="it.item_name" :title="it.item_name" is-link @click="openEditor(it)">
                   <template #label>
-                    <span v-if="it.has_recipe">Cost {{ fKs(it.portion_cost) }} · Margin {{ fKs(it.margin) }} Ks</span>
-                    <span v-else class="psv-dim">No recipe — tap to add</span>
+                    <span class="psv-pill" :class="it.item_type === 'dish' ? 'psv-pill--ok' : 'psv-pill--dim'" style="margin-right:6px">{{ typeBadge(it) }}</span>
+                    <span>{{ costLabel(it) }}</span>
                   </template>
                   <template #value>
-                    <span v-if="it.has_recipe" class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span>
+                    <span v-if="hasCostPill(it)" class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span>
                     <span v-else class="pv-amount">{{ fKs(it.selling_price) }} Ks</span>
                   </template>
                 </van-cell>
@@ -4726,6 +4745,10 @@
           <div class="pv-page" v-if="editor.item">
             <van-nav-bar :title="editor.item.item_name" left-arrow @click-left="closeEditor" />
             <div class="psv-card" style="margin:8px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <span class="psv-pill" :class="editor.item.item_type === 'dish' ? 'psv-pill--ok' : 'psv-pill--dim'">{{ typeBadge(editor.item) }}</span>
+                <van-button size="small" plain @click="switchType">{{ editor.item.item_type === 'dish' ? 'Switch to 🛒 Ready-made' : 'Switch to 🍳 Made dish' }}</van-button>
+              </div>
               <div class="psv-recipe-sum__row">
                 <div style="flex:1">
                   <div class="psv-recipe-sum__lbl">Selling price</div>
@@ -4737,15 +4760,19 @@
                   </div>
                 </div>
                 <div class="psv-recipe-sum__meta">
-                  <div>Cost <b>{{ fKs(editorTotals.portion_cost) }}</b> Ks</div>
-                  <div>Food cost <b :style="{ color: sumColor }">{{ pct(editorTotals) }}</b></div>
+                  <div v-if="editor.item.item_type === 'dish'">Cost <b>{{ fKs(editorTotals.portion_cost) }}</b> Ks</div>
+                  <div v-else-if="editor.item.no_purchase_yet" class="psv-dim">No purchase yet</div>
+                  <div v-else>Cost <b>{{ fKs(editor.item.unit_cost) }}</b> Ks</div>
+                  <div>Food cost <b :style="{ color: sumColor }">{{ editor.item.item_type === 'dish' ? pct(editorTotals) : pct(editor.item) }}</b></div>
                 </div>
               </div>
-              <div v-if="editorTotals.missing && editorTotals.missing.length" class="psv-recipe-sum__warn">
+              <div v-if="editor.item.item_type === 'dish' && editorTotals.missing && editorTotals.missing.length" class="psv-recipe-sum__warn">
                 ⚠️ Missing cost: {{ editorTotals.missing.join(', ') }}
               </div>
+              <div v-if="editor.item.item_type === 'resale'" class="psv-note" style="margin:4px 0">🛒 Ready-made — cost from purchase price (no recipe needed).</div>
             </div>
 
+            <template v-if="editor.item.item_type === 'dish'">
             <van-cell-group inset style="margin-top:8px">
               <van-cell v-for="(r, ri) in editor.rows" :key="ri" :title="r.ingredient">
                 <template #label>
@@ -4772,6 +4799,7 @@
             <div style="padding:0 16px 20px">
               <van-button type="primary" block :loading="editor.saving" @click="saveRecipe">Save recipe</van-button>
             </div>
+            </template>
           </div>
         </van-popup>
 
@@ -4812,14 +4840,21 @@
         <PSVPicker v-model:show="ingNamePickShow" title="Pick ingredient" searchable
                    :items="ingNamePickItems" @confirm="(v) => { newIng.name = v; }" />
 
-        <!-- New dish form (owner 2026-09-28) -->
+        <!-- New item form (owner 2026-09-28): type picker dish / ready-made -->
         <van-popup v-model:show="newDish.show" position="bottom" round class="psv-pick">
           <div style="padding:16px">
-            <div class="psv-pick__title" style="margin-bottom:12px">➕ ဟင်းအသစ် / New dish</div>
+            <div class="psv-pick__title" style="margin-bottom:12px">➕ အသစ် / New item</div>
             <van-field v-model="newDish.name" label="Name" placeholder="e.g. ကြေးအိုးထမင်း" />
             <van-field v-model="newDish.category" label="Category" placeholder="Food" />
             <van-field v-model.number="newDish.selling_price" type="number" label="Selling price (Ks)" placeholder="3000" />
-            <div class="psv-dim" style="font-size:11px;padding:4px 12px">New dish starts at 0 stock — it shows in the menu as soon as you stock it in.</div>
+            <div style="padding:0 12px 6px">
+              <div class="psv-dim" style="font-size:11px;margin-bottom:4px">Type</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <span class="psv-dchip" :class="{ 'psv-dchip--on': newDish.item_type === 'dish' }" @click="newDish.item_type = 'dish'">🍳 Made dish</span>
+                <span class="psv-dchip" :class="{ 'psv-dchip--on': newDish.item_type === 'resale' }" @click="newDish.item_type = 'resale'">🛒 Ready-made</span>
+              </div>
+            </div>
+            <div class="psv-dim" style="font-size:11px;padding:4px 12px">New item starts at 0 stock — it shows in the menu as soon as you stock it in.</div>
             <div style="display:flex;gap:8px;margin-top:12px">
               <van-button block plain @click="newDish.show = false">Cancel</van-button>
               <van-button block type="primary" :loading="newDish.saving" @click="saveNewDish">Create</van-button>
@@ -4840,7 +4875,7 @@
       const ingPickerShow = ref(false);
       const editor = reactive({ show: false, item: null, rows: [], saving: false });
       const newIng = reactive({ show: false, name: "", base_unit: "g", purchase_unit: "", base_per_purchase: null, saving: false });
-      const newDish = reactive({ show: false, name: "", category: "Food", selling_price: null, saving: false });
+      const newDish = reactive({ show: false, name: "", category: "Food", selling_price: null, saving: false, item_type: "dish" });
       const editingPrice = ref(false);
       const priceDraft = ref(null);
       const priceSaving = ref(false);
@@ -4850,6 +4885,10 @@
 
       const all = computed(() => list.value);
       const costed = computed(() => list.value.filter((i) => i.has_recipe));
+      const dishes = computed(() => list.value.filter((i) => i.item_type === "dish"));
+      const resale = computed(() => list.value.filter((i) => i.item_type !== "dish"));
+      const splitDish = computed(() => (summary.value.split && summary.value.split.dish) || {});
+      const splitResale = computed(() => (summary.value.split && summary.value.split.resale) || {});
       const sumPct = computed(() => (summary.value.food_cost_pct == null ? "—" : (Number(summary.value.food_cost_pct) || 0) + "%"));
       const sumWarn = computed(() => summary.value.food_cost_pct != null && Number(summary.value.food_cost_pct) > 35);
       const sumColor = computed(() => {
@@ -4873,6 +4912,26 @@
       }
       function costSub(cost, unit) {
         return cost == null ? "no purchase yet" : (fKs(cost) + " Ks / " + (unit || "g"));
+      }
+      function typeBadge(it) {
+        return (it && it.item_type === "dish") ? "🍳 ဟင်းပွဲ" : "🛒 အဆင်သင့်";
+      }
+      function dishLabel(it) {
+        if (!it) return "";
+        return it.has_recipe ? ("Cost " + fKs(it.portion_cost) + " · Margin " + fKs(it.margin) + " Ks") : "No recipe — tap to add";
+      }
+      function resaleLabel(it) {
+        if (!it) return "";
+        return it.no_purchase_yet ? "No purchase yet" : ("Cost " + fKs(it.unit_cost) + " · Margin " + fKs(it.margin) + " Ks");
+      }
+      function costLabel(it) {
+        if (!it) return "";
+        return it.item_type === "dish" ? dishLabel(it) : resaleLabel(it);
+      }
+      function hasCostPill(it) {
+        if (!it) return false;
+        if (it.item_type === "dish") return !!it.has_recipe;
+        return !it.no_purchase_yet;
       }
       const ingPickerItems = computed(() => {
         const out = []; const seen = {};
@@ -5001,6 +5060,7 @@
       }
       function openNewDish() {
         newDish.name = ""; newDish.category = "Food"; newDish.selling_price = null; newDish.saving = false;
+        newDish.item_type = "dish";
         newDish.show = true;
       }
       async function saveNewDish() {
@@ -5011,12 +5071,14 @@
         const category = (newDish.category || "Food").trim() || "Food";
         newDish.saving = true; haptic("medium");
         try {
-          const d = PSV.unwrap(await PSV.api("/api/menu/item", { method: "POST", headers: HJSON, body: JSON.stringify({ item_name: name, category: category, unit_price: price }) }));
+          const d = PSV.unwrap(await PSV.api("/api/menu/item", { method: "POST", headers: HJSON, body: JSON.stringify({ item_name: name, category: category, unit_price: price, item_type: newDish.item_type || "dish" }) }));
           PSV.invalidate("/api/menu");
           newDish.show = false;
           await loadAll();
-          showToast("Dish created ✓", "success");
-          await openEditor({ item_name: (d && d.item_name) || name, selling_price: price, category: category, has_recipe: false });
+          showToast("Item created ✓", "success");
+          if ((newDish.item_type || "dish") === "dish") {
+            await openEditor({ item_name: (d && d.item_name) || name, selling_price: price, category: category, has_recipe: false, item_type: "dish" });
+          }
         } catch (e) { showToast("Error: " + e.message, "fail"); }
         finally { newDish.saving = false; }
       }
@@ -5037,6 +5099,36 @@
           showToast("Price updated ✓", "success");
         } catch (e) { showToast("Error: " + e.message, "fail"); }
         finally { priceSaving.value = false; }
+      }
+      async function switchType() {
+        if (!editor.item) return;
+        const isDish = editor.item.item_type === "dish";
+        const target = isDish ? "resale" : "dish";
+        let ok;
+        if (isDish) {
+          ok = await confirmBox(
+            "Switch to Ready-made?",
+            "This item will be costed from its purchase price (no recipe needed). Any saved recipe rows will be removed.",
+            "Switch", "Cancel", true);
+        } else {
+          ok = await confirmBox(
+            "Switch to Made dish?",
+            "This item will be costed from a recipe. You'll add ingredients next.",
+            "Switch", "Cancel");
+        }
+        if (!ok) return;
+        try {
+          if (isDish && editor.item.has_recipe) {
+            for (const r of editor.rows) {
+              if (r && r.id) await PSV.api("/api/menu/recipe?id=" + r.id, { method: "DELETE" }).catch(() => {});
+            }
+          }
+          await PSV.api("/api/menu/item", { method: "PATCH", headers: HJSON, body: JSON.stringify({ item_name: editor.item.item_name, item_type: target }) });
+          PSV.invalidate("/api/menu");
+          editor.show = false;
+          await loadAll();
+          showToast(isDish ? "Switched to Ready-made ✓" : "Switched to Made dish ✓", "success");
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
       }
       async function saveIngredient() {
         const name = (newIng.name || "").trim();
@@ -5076,12 +5168,14 @@
 
       onMounted(() => { if (isAdmin.value) { loadAll(); loadIngredients(); } });
       return {
-        tab, loading, refreshing, list, all, costed, summary, month, sumPct, sumWarn, sumColor,
+        tab, loading, refreshing, list, all, costed, dishes, resale, splitDish, splitResale,
+        summary, month, sumPct, sumWarn, sumColor,
         pct, pillClass, fKs, openEditor, closeEditor, lineCost, editorTotals,
+        typeBadge, dishLabel, resaleLabel, costLabel, hasCostPill,
         ingPickerShow, ingPickerItems, pickIngredient, removeRow,
         newIng, saveIngredient, saveRecipe, editor, isAdmin,
         newDish, openNewDish, saveNewDish,
-        editingPrice, priceDraft, priceSaving, startEditPrice, savePrice,
+        editingPrice, priceDraft, priceSaving, startEditPrice, savePrice, switchType,
         ingNamePickShow, ingNamePickItems, purchasePresets, setPurchase, liveUnitCost,
       };
     },
@@ -6187,6 +6281,7 @@
                     <span v-else class="psv-acc-card__type">{{ a.type || 'Account' }}</span>
                   </div>
                   <div class="psv-acc-card__bal psv-tabnum">{{ fKs(a.balance) }} <span class="psv-acc-card__unit">Ks</span></div>
+                  <div v-if="isAdmin && a.fee_pct > 0" class="psv-acc-card__fee" style="margin-top:4px;font-size:12px;line-height:1.4;color:var(--pv-muted,#94a3b8);font-variant-numeric:tabular-nums">− {{ a.fee_pct }}% fee {{ fKs(Math.round(a.fee_amount)) }} · net {{ fKs(Math.round(a.net_balance)) }} Ks</div>
                   <div class="psv-acc-card__meta">{{ a.last ? ('Updated ' + fmtWhen(a.last)) : (a.owner_only ? 'Owner account' : 'Shop account') }}</div>
                 </div>
               </div>
@@ -6213,6 +6308,10 @@
             owner_only: !!(r.owner_only || r.ownerOnly || fallbackOwnerOnly),
             active: !(r.active === false),
             last: r.last_movement || r.last_updated || null,
+            fee_pct: Number(r.fee_pct) || 0,
+            fee_amount: Number(r.fee_amount) || 0,
+            net_balance: (r.net_balance != null) ? Number(r.net_balance) : 0,
+            fee_note: r.fee_note || "",
           };
         });
       }

@@ -420,7 +420,10 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                     # Reverse forfeit cash_movement — insert eject entry
                     _dep_amt = int(_dep_row.get('deposit_amount', 0) or 0)
                     _dep_meth = (_dep_row.get('deposit_method', '') or 'kpay').lower()
-                    _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                    # 2026-09-28: add MMQR + Cash and never silently fall back to KPay
+                    # (an mmqr_cb deposit used to be labelled KPay here too).
+                    _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay",
+                                   "cash": "Cash", "mmqr_cb": "MMQR - CB"}.get(_dep_meth) or str(_dep_meth or "KPay")
                     if _dep_amt > 0:
                         insert_cash_movement_if_absent(
                             "eject", _meth_label, _dep_amt,
@@ -650,7 +653,10 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                     # Reverse forfeit cash_movement — insert eject entry
                     _dep_amt = int(_dep_row.get('deposit_amount', 0) or 0)
                     _dep_meth = (_dep_row.get('deposit_method', '') or 'kpay').lower()
-                    _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                    # 2026-09-28: add MMQR + Cash and never silently fall back to KPay
+                    # (an mmqr_cb deposit used to be labelled KPay here too).
+                    _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay",
+                                   "cash": "Cash", "mmqr_cb": "MMQR - CB"}.get(_dep_meth) or str(_dep_meth or "KPay")
                     if _dep_amt > 0:
                         insert_cash_movement_if_absent(
                             "eject", _meth_label, _dep_amt,
