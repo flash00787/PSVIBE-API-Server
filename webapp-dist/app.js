@@ -564,7 +564,7 @@
       const summary = reactive({ todayRevenue: 0, activeConsoles: 0, todaySales: 0, totalMembers: 0, bookings: 0, pendingDeposits: 0, reconcile: 0 });
       const nativeMode = NATIVE;
       const initials = computed(() => String(staffName.value || "?").trim().slice(0, 2).toUpperCase());
-      const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay"];
+      const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay", "MMQR - CB"];
       const topup = reactive({ picker: false, dlg: false, q: "", members: [], member_id: "", member_name: "", member_tier: "", amount: 0, splits: [], payPicker: false, payAmountPicker: false, pendingMethod: "", payAmountInput: null, payColumns: PAY_METHODS.map((p) => ({ text: p, value: p })), base_rate: 10000, bonus_table: [], master_threshold: 300000, immortal_threshold: 1000000, member_total_spend: 0, busy: false });
       const topupTier = computed(() => topup.member_tier || "Warrior");
       const topupPaid = computed(() => topup.splits.reduce((s, x) => s + (Number(x.amount) || 0), 0));
@@ -1301,7 +1301,7 @@
       </div>
     `,
     setup(_, { emit }) {
-      const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay"];
+      const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay", "MMQR - CB"];
       const form = reactive({
         voucher_no: PSV.genVoucherNo(), member_search: "", member_id: "",
         console_id: "", game_name: "", mins: 0, base_rate: 0, multiplier: 1.0,
@@ -2917,6 +2917,7 @@
         { value: "kpay", label: "📱 KPay" },
         { value: "wavepay", label: "📱 WavePay" },
         { value: "aya_pay", label: "💳 AYA Pay" },
+        { value: "mmqr_cb", label: "🏦 MMQR - CB" },
       ];
       const proofOpen = ref(false);
       const proofFull = ref(false);
@@ -3147,7 +3148,7 @@
       function openRefund(b) {
         refundTarget.value = b;
         const m = bkKey(b.deposit_method || b.depositMethod);
-        refundPick.value = (m === "wavepay" || m === "aya_pay" || m === "kpay") ? m : "kpay";
+        refundPick.value = (m === "wavepay" || m === "aya_pay" || m === "kpay" || m === "mmqr_cb") ? m : "kpay";
         refundOpen.value = true;
         haptic("light");
       }
@@ -3399,7 +3400,7 @@
       </div>
     `,
     setup(_, { emit }) {
-      const DEP_METHODS = ["kpay", "wavepay", "aya_pay"];
+      const DEP_METHODS = ["kpay", "wavepay", "aya_pay", "mmqr_cb"];
       const form = reactive({ customer_name: "", member_id: "", console_id: "", game_name: "", booking_date: PSV.todayMMT(), start_time: "", duration_mins: 60, add_deposit: false, deposit_amount: 0, deposit_method: "kpay", notes: "" });
       const consoles = ref([]);
       const consolePicker = ref(false);
@@ -3411,8 +3412,8 @@
       const memberQuery = ref("");
       const submitting = ref(false);
       const gamesList = ref([]);
-      const depColumns = DEP_METHODS.map((p) => ({ text: p.toUpperCase(), value: p }));
-      function fmtDepositMethod(m) { if (!m) return ""; const s = String(m); return s === "aya_pay" ? "AYA PAY" : s.toUpperCase(); }
+      const depColumns = DEP_METHODS.map((p) => ({ text: fmtDepositMethod(p), value: p }));
+      function fmtDepositMethod(m) { if (!m) return ""; const s = String(m); return s === "aya_pay" ? "AYA PAY" : s === "mmqr_cb" ? "MMQR - CB" : s.toUpperCase(); }
       const gameColumns = computed(() => gamesList.value.map((g) => ({ text: g.game_title || g.title || g.name, value: g.game_title || g.title || g.name })));
       // WAVE 5b — premium picker item lists (same members/games arrays; markup only).
       const memberPickItems = computed(() => members.value.map((m) => ({
@@ -3721,7 +3722,7 @@
       const loading = ref(true);
       const refreshing = ref(false);
       const busy = ref(null);
-      const DEP_LABELS = { kpay: "KPay", wavepay: "WavePay", aya_pay: "AYA Pay", cash: "Cash" };
+      const DEP_LABELS = { kpay: "KPay", wavepay: "WavePay", aya_pay: "AYA Pay", mmqr_cb: "MMQR - CB", cash: "Cash" };
       function methodLabel(m) { return DEP_LABELS[String(m || "").toLowerCase()] || (m || "-"); }
       function fmtEnd(ts) {
         if (!ts) return "-";
@@ -4516,7 +4517,7 @@
       const payPicker = ref(false);
       const rowItemPicker = ref(null);
       const submitting = ref(false);
-      const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay"];
+      const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay", "MMQR - CB"];
       const payColumns = PAY_METHODS.map((p) => ({ text: p, value: p }));
       const form = reactive({ payment_method: "Cash" });
       const rows = ref([{ item_name: "", custom_name: "", quantity: 0, unit_cost: 0, isNew: false }]);
@@ -4803,7 +4804,7 @@
       </div>
     `,
     setup() {
-      const PAY = ["Cash", "KPay", "WavePay", "AYA Pay"];
+      const PAY = ["Cash", "KPay", "WavePay", "AYA Pay", "MMQR - CB"];
       const payColumns = PAY.map((p) => ({ text: p, value: p }));
       const CATEGORIES = ["Rent", "Staff Salary", "Electricity", "Water", "Internet", "Maintenance", "Marketing", "Software/License", "Snacks/Drinks", "Transaction Charges", "Others"];
       const _role = String((PSV.getStaff() || {}).role || "").trim().toLowerCase();
@@ -5782,7 +5783,7 @@
   };
 
   // ══ WAVE 5 — payment-account helpers ═══════════════════════
-  const ACC_ICONS = { "Cash": "💰", "WavePay": "📱", "KPay": "💳", "AYA Pay": "💳", "ACM's Acc": "🏦", "KBZ Bank": "🏦" };
+  const ACC_ICONS = { "Cash": "💰", "WavePay": "📱", "KPay": "💳", "AYA Pay": "💳", "MMQR - CB": "🏦", "ACM's Acc": "🏦", "KBZ Bank": "🏦" };
   const accIcon = (name) => ACC_ICONS[String(name || "")] || "🏦";
   function fmtWhen(iso) {
     if (!iso) return "";
@@ -6540,7 +6541,7 @@
   //  Styling lives in native-theme.css under html.psv-native.
   //  All API paths reuse the existing endpoints — UI only.
   // ══════════════════════════════════════════════════════
-  const DEPOSIT_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay"];
+  const DEPOSIT_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay", "MMQR - CB"];
 
   // ── VIEW: Deposit (app mode top-up) ─────────────────────
   const Deposit = {
