@@ -4552,7 +4552,11 @@
       const rowItemPicker = ref(null);
       const submitting = ref(false);
       const PAY_METHODS = ["Cash", "MMQR - CB"];
-      const payColumns = PAY_METHODS.map((p) => ({ text: p, value: p }));
+      // Owner/admin only (2026-09-28): the owner commonly buys stock with his own money,
+      // so Stock-In offers ACM's Acc to admins (staff must not touch the owner account).
+      const _stkIsAdmin = String((PSV.getStaff() || {}).role || "").toLowerCase() === "admin";
+      const _stkMethods = _stkIsAdmin ? PAY_METHODS.concat(["ACM's Acc"]) : PAY_METHODS.slice();
+      const payColumns = _stkMethods.map((p) => ({ text: p, value: p }));
       const form = reactive({ payment_method: "Cash" });
       const rows = ref([{ item_name: "", custom_name: "", quantity: 0, unit_cost: 0, isNew: false }]);
       // Owner 2026-09-20 16:26: "stock in မှာ food list က အကုန် မမြင်ရဘူး / category အလိုက် ခွဲပေးပါ".
