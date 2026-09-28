@@ -3506,10 +3506,10 @@
   // App mode: English-only, category sections, roadmap items greyed "Soon".
   // Telegram mode: unchanged legacy grid (MORE_ITEMS) — no visual regression.
   const MORE_ITEMS = [
+    { path: "/recipes", icon: "🍳", label: "Recipe & Cost", adminOnly: true },
     { path: "/consoles", icon: "🕹️", label: "Consoles" },
     { path: "/food-orders", icon: "🍔", label: "Food Orders" },
     { path: "/inventory", icon: "📦", label: "Inventory" },
-    { path: "/recipes", icon: "🍳", label: "Recipe & Cost", adminOnly: true },
     { path: "/reports", icon: "📊", label: "Reports" },
     { path: "/attendance", icon: "🕐", label: "Attendance" },
     { path: "/opex", icon: "💸", label: "OPEX" },
@@ -3523,6 +3523,9 @@
     { path: "/notifications", icon: "🔔", label: "Alerts" },
   ];
   const MENU_GROUPS = [
+    { id: "kitchen", emoji: "🍳", en: "Kitchen", tone: "gold", items: [
+      { en: "Recipe & cost", sub: "Add dishes, ingredients & costing", icon: "🍳", path: "/recipes", adminOnly: true },
+    ] },
     { id: "sales", emoji: "🎮", en: "Sales", tone: "gold", items: [
       { en: "New walk-in sale", sub: "Open the sale form", icon: "🛒", path: "/sales" },
       { en: "End-of-session sale", sub: "Check out a console session", icon: "🎫", path: "/sales" },
@@ -3676,7 +3679,13 @@
         const r = String((staff && staff.role) || "-") || "-";
         return "PS VIBE · build " + (PSV.appBuild || "?") + " · role: " + r;
       });
-      return { groups: MENU_GROUPS, staff, initials, tap, logout, badge, lowStock, isAdmin, ownerBadge, effTag, buildInfo };
+      // Pre-filter groups by role (owner 2026-09-28): drop admin-only tiles for
+      // non-admins AND drop any group that ends up empty, so a staff/非-admin never
+      // sees an empty "Kitchen" group heading with nothing under it.
+      const groups = computed(() => MENU_GROUPS
+        .map((g) => ({ ...g, items: g.items.filter((it) => !(it.adminOnly && !isAdmin.value)) }))
+        .filter((g) => g.items && g.items.length));
+      return { groups, staff, initials, tap, logout, badge, lowStock, isAdmin, ownerBadge, effTag, buildInfo };
     },
   };
 
@@ -3696,9 +3705,18 @@
     `,
     setup() {
       function go(p) { haptic("light"); router.push(p); }
-      const staff = PSV.getStaff() || {};
-      const isAdmin = String(staff.role || "").toLowerCase() === "admin";
-      const items = computed(() => MORE_ITEMS.filter((it) => !it.adminOnly || isAdmin));
+      // Role gate for admin-only entries. Read reactively AND fall back to /auth/me:
+      // a device that logged in before roles were stored can carry a stale/blank role,
+      // which used to hide admin-only entries even for real admins (owner 2026-09-28).
+      const roleRef = ref(String((PSV.getStaff() || {}).role || ""));
+      const isAdmin = computed(() => String(roleRef.value || "").toLowerCase() === "admin");
+      (async () => {
+        try {
+          const me = PSV.unwrap(await PSV.api("/auth/me")) || {};
+          if (me && me.role) roleRef.value = me.role;
+        } catch (_e) { /* keep the stored role */ }
+      })();
+      const items = computed(() => MORE_ITEMS.filter((it) => !it.adminOnly || isAdmin.value));
       return { items, go, nativeMode: NATIVE };
     },
   };
@@ -4651,6 +4669,10 @@
         </div>
 
         <template v-else>
+        <!-- New dish (owner 2026-09-28 self-serve): create a dish straight from here -->
+        <div style="padding:8px 12px 0">
+          <van-button type="primary" block icon="plus" @click="openNewDish">➕ ဟင်းအသစ် / New dish</van-button>
+        </div>
         <!-- header summary: overall food-cost % for the month -->
         <div class="psv-card psv-recipe-sum" style="margin:8px">
           <div class="psv-recipe-sum__row">
@@ -4705,9 +4727,14 @@
             <van-nav-bar :title="editor.item.item_name" left-arrow @click-left="closeEditor" />
             <div class="psv-card" style="margin:8px">
               <div class="psv-recipe-sum__row">
-                <div>
+                <div style="flex:1">
                   <div class="psv-recipe-sum__lbl">Selling price</div>
-                  <div class="psv-recipe-sum__pct">{{ fKs(editor.item.selling_price) }} Ks</div>
+                  <div v-if="!editingPrice" class="psv-recipe-sum__pct" @click="startEditPrice">{{ fKs(editor.item.selling_price) }} Ks <span style="font-size:12px;opacity:.7">✎</span></div>
+                  <div v-else style="display:flex;gap:8px;align-items:center;margin-top:6px">
+                    <input v-model.number="priceDraft" type="number" inputmode="decimal" class="psv-mini-in" style="width:130px" />
+                    <van-button size="small" type="primary" :loading="priceSaving" @click="savePrice">Save</van-button>
+                    <van-button size="small" plain @click="editingPrice = false">Cancel</van-button>
+                  </div>
                 </div>
                 <div class="psv-recipe-sum__meta">
                   <div>Cost <b>{{ fKs(editorTotals.portion_cost) }}</b> Ks</div>
@@ -4752,18 +4779,50 @@
                    :items="ingPickerItems"
                    @confirm="(v) => pickIngredient(v)" />
 
-        <!-- New ingredient form (base unit + conversion) -->
+        <!-- New ingredient form (base unit + conversion) — owner self-serve presets -->
         <van-popup v-model:show="newIng.show" position="bottom" round class="psv-pick">
           <div style="padding:16px">
             <div class="psv-pick__title" style="margin-bottom:12px">New ingredient</div>
-            <van-field v-model="newIng.name" label="Name" placeholder="e.g. ဆန် (rice)" />
-            <van-field v-model="newIng.base_unit" label="Base unit" placeholder="g / ml / pcs" />
-            <van-field v-model="newIng.purchase_unit" label="Purchase unit" placeholder="ပိဿာ / kg / litre" />
-            <van-field v-model.number="newIng.base_per_purchase" type="number" label="Units / purchase" placeholder="e.g. 1632 (ပိဿာ→g)" />
-            <div class="psv-dim" style="font-size:11px;padding:4px 12px">Leave “Units / purchase” empty to auto-fill from a known unit (ပိဿာ=1632, ကျပ်သား=10, kg=1000, litre=1000).</div>
+            <van-field v-model="newIng.name" label="Name" placeholder="e.g. ဆန် (rice) — or pick below" />
+            <div style="padding:0 12px 4px">
+              <van-button size="small" plain icon="search" @click="ingNamePickShow = true">Pick from stock-in</van-button>
+            </div>
+            <div style="padding:0 12px 6px">
+              <div class="psv-dim" style="font-size:11px;margin-bottom:4px">Base unit</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <span v-for="u in ['g','ml','pcs']" :key="u" class="psv-dchip" :class="{ 'psv-dchip--on': newIng.base_unit === u }" @click="newIng.base_unit = u">{{ u }}</span>
+              </div>
+            </div>
+            <div style="padding:0 12px 6px">
+              <div class="psv-dim" style="font-size:11px;margin-bottom:4px">Purchase unit</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <span v-for="p in purchasePresets" :key="p.u" class="psv-dchip" :class="{ 'psv-dchip--on': newIng.purchase_unit === p.u }" @click="setPurchase(p)">{{ p.label }}</span>
+              </div>
+            </div>
+            <van-field v-model.number="newIng.base_per_purchase" type="number" label="Units / purchase" placeholder="auto from preset" />
+            <div v-if="liveUnitCost" class="psv-note" style="margin:4px 12px">💡 ≈ <b>{{ liveUnitCost }}</b> Ks per {{ newIng.base_unit || 'g' }}</div>
             <div style="display:flex;gap:8px;margin-top:12px">
               <van-button block plain @click="newIng.show = false">Cancel</van-button>
               <van-button block type="primary" :loading="newIng.saving" @click="saveIngredient">Add</van-button>
+            </div>
+          </div>
+        </van-popup>
+
+        <!-- Ingredient name picker (stock-in items + existing ingredients) -->
+        <PSVPicker v-model:show="ingNamePickShow" title="Pick ingredient" searchable
+                   :items="ingNamePickItems" @confirm="(v) => { newIng.name = v; }" />
+
+        <!-- New dish form (owner 2026-09-28) -->
+        <van-popup v-model:show="newDish.show" position="bottom" round class="psv-pick">
+          <div style="padding:16px">
+            <div class="psv-pick__title" style="margin-bottom:12px">➕ ဟင်းအသစ် / New dish</div>
+            <van-field v-model="newDish.name" label="Name" placeholder="e.g. ကြေးအိုးထမင်း" />
+            <van-field v-model="newDish.category" label="Category" placeholder="Food" />
+            <van-field v-model.number="newDish.selling_price" type="number" label="Selling price (Ks)" placeholder="3000" />
+            <div class="psv-dim" style="font-size:11px;padding:4px 12px">New dish starts at 0 stock — it shows in the menu as soon as you stock it in.</div>
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <van-button block plain @click="newDish.show = false">Cancel</van-button>
+              <van-button block type="primary" :loading="newDish.saving" @click="saveNewDish">Create</van-button>
             </div>
           </div>
         </van-popup>
@@ -4781,6 +4840,11 @@
       const ingPickerShow = ref(false);
       const editor = reactive({ show: false, item: null, rows: [], saving: false });
       const newIng = reactive({ show: false, name: "", base_unit: "g", purchase_unit: "", base_per_purchase: null, saving: false });
+      const newDish = reactive({ show: false, name: "", category: "Food", selling_price: null, saving: false });
+      const editingPrice = ref(false);
+      const priceDraft = ref(null);
+      const priceSaving = ref(false);
+      const ingNamePickShow = ref(false);
       const staff = PSV.getStaff() || {};
       const isAdmin = computed(() => String((staff && staff.role) || "").toLowerCase() === "admin");
 
@@ -4824,6 +4888,42 @@
         return out;
       });
 
+      const ingNamePickItems = computed(() => {
+        const out = []; const seen = {};
+        for (const i of ingData.ingredients) { seen[i.name] = 1; out.push({ value: i.name, label: i.name, sub: costSub(i.cost_per_base_unit, i.base_unit), group: "Ingredients" }); }
+        for (const s of ingData.suggested) { if (seen[s.name]) continue; seen[s.name] = 1; out.push({ value: s.name, label: s.name, sub: costSub(s.cost_per_base_unit, "g"), group: "Stock-in items" }); }
+        return out;
+      });
+
+      // One-tap purchase-unit presets (owner 2026-09-28): ပိဿာ=1632g, ကျပ်သား=10g,
+      // kg=1000g, litre=1000ml, pack (no fixed size), pcs=1.
+      const purchasePresets = [
+        { u: "ပိဿာ", label: "ပိဿာ (1632 g)" },
+        { u: "ကျပ်သား", label: "ကျပ်သား (10 g)" },
+        { u: "kg", label: "kg (1000 g)" },
+        { u: "litre", label: "litre (1000 ml)" },
+        { u: "pack", label: "pack" },
+        { u: "pcs", label: "pcs" },
+      ];
+      const PRESET_BPP = { "ပိဿာ": 1632, "ကျပ်သား": 10, "kg": 1000, "litre": 1000, "pcs": 1 };
+      function setPurchase(p) {
+        newIng.purchase_unit = p.u;
+        newIng.base_per_purchase = (PRESET_BPP[p.u] == null) ? null : PRESET_BPP[p.u];
+      }
+      function ingWavg(name) {
+        const hit = [...ingData.ingredients, ...ingData.suggested].find((i) => i.name === name);
+        if (!hit) return null;
+        const w = Number(hit.weighted_avg_cost);
+        return (w == null || isNaN(w)) ? null : w;
+      }
+      const liveUnitCost = computed(() => {
+        const wavg = ingWavg(newIng.name);
+        const bpp = Number(newIng.base_per_purchase);
+        if (wavg == null || !bpp || bpp <= 0) return null;
+        const per = wavg / bpp;
+        return per >= 100 ? String(Math.round(per)) : String(Math.round(per * 100) / 100);
+      });
+
       async function loadAll() {
         loading.value = true;
         try {
@@ -4858,13 +4958,17 @@
       function closeEditor() { editor.show = false; editor.item = null; editor.rows = []; loadAll(); }
 
       function lineCost(r) {
+        if (r && r.unit_cost_per_base != null) {
+          const lc = Number(r.qty_per_portion || 0) * Number(r.unit_cost_per_base) * (1 + Number(r.waste_pct || 0) / 100);
+          return fKs(lc) + " Ks";
+        }
         return r && r.line_cost != null ? fKs(r.line_cost) + " Ks" : "—";
       }
       const editorTotals = computed(() => {
         let total = 0; let missing = [];
         for (const r of editor.rows) {
-          if (r.line_cost == null) { missing.push(r.ingredient); continue; }
-          total += Number(r.line_cost) || 0;
+          if (r.unit_cost_per_base == null) { missing.push(r.ingredient); continue; }
+          total += Number(r.qty_per_portion || 0) * Number(r.unit_cost_per_base) * (1 + Number(r.waste_pct || 0) / 100);
         }
         const selling = Number((editor.item && editor.item.selling_price) || 0);
         const pctv = selling > 0 && !missing.length ? Math.round((total / selling) * 1000) / 10 : null;
@@ -4878,7 +4982,13 @@
           return;
         }
         if (!editor.rows.some((r) => r.ingredient === v)) {
-          editor.rows.push({ id: null, ingredient: v, qty_per_portion: 1, waste_pct: 0, base_unit: "g", line_cost: null, unit_cost_per_base: null });
+          const hit = [...ingData.ingredients, ...ingData.suggested].find((i) => i.name === v);
+          editor.rows.push({
+            id: null, ingredient: v, qty_per_portion: 1, waste_pct: 0,
+            base_unit: (hit && hit.base_unit) || "g",
+            line_cost: null,
+            unit_cost_per_base: (hit && hit.cost_per_base_unit != null) ? Number(hit.cost_per_base_unit) : null,
+          });
         }
         haptic("light");
       }
@@ -4888,6 +4998,45 @@
         if (r && r.id) {
           PSV.api("/api/menu/recipe?id=" + r.id, { method: "DELETE" }).then(() => PSV.invalidate("/api/menu")).catch(() => {});
         }
+      }
+      function openNewDish() {
+        newDish.name = ""; newDish.category = "Food"; newDish.selling_price = null; newDish.saving = false;
+        newDish.show = true;
+      }
+      async function saveNewDish() {
+        const name = (newDish.name || "").trim();
+        if (!name) { showToast("Name is required", "fail"); return; }
+        const price = Number(newDish.selling_price);
+        if (isNaN(price) || price < 0) { showToast("Enter a valid selling price (≥ 0)", "fail"); return; }
+        const category = (newDish.category || "Food").trim() || "Food";
+        newDish.saving = true; haptic("medium");
+        try {
+          const d = PSV.unwrap(await PSV.api("/api/menu/item", { method: "POST", headers: HJSON, body: JSON.stringify({ item_name: name, category: category, unit_price: price }) }));
+          PSV.invalidate("/api/menu");
+          newDish.show = false;
+          await loadAll();
+          showToast("Dish created ✓", "success");
+          await openEditor({ item_name: (d && d.item_name) || name, selling_price: price, category: category, has_recipe: false });
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
+        finally { newDish.saving = false; }
+      }
+      function startEditPrice() {
+        editingPrice.value = true;
+        priceDraft.value = Number((editor.item && editor.item.selling_price) || 0);
+      }
+      async function savePrice() {
+        if (!editor.item) return;
+        const p = Number(priceDraft.value);
+        if (isNaN(p) || p < 0) { showToast("Enter a valid price (≥ 0)", "fail"); return; }
+        priceSaving.value = true; haptic("light");
+        try {
+          await PSV.api("/api/menu/item", { method: "PATCH", headers: HJSON, body: JSON.stringify({ item_name: editor.item.item_name, unit_price: p }) });
+          PSV.invalidate("/api/menu");
+          editor.item.selling_price = p;
+          editingPrice.value = false;
+          showToast("Price updated ✓", "success");
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
+        finally { priceSaving.value = false; }
       }
       async function saveIngredient() {
         const name = (newIng.name || "").trim();
@@ -4931,6 +5080,9 @@
         pct, pillClass, fKs, openEditor, closeEditor, lineCost, editorTotals,
         ingPickerShow, ingPickerItems, pickIngredient, removeRow,
         newIng, saveIngredient, saveRecipe, editor, isAdmin,
+        newDish, openNewDish, saveNewDish,
+        editingPrice, priceDraft, priceSaving, startEditPrice, savePrice,
+        ingNamePickShow, ingNamePickItems, purchasePresets, setPurchase, liveUnitCost,
       };
     },
   };

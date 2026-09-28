@@ -35,6 +35,8 @@ from routes.menu_cost import (
     food_cost_metrics,
     food_cost_status,
     lookup_conversion,
+    normalize_item_name,
+    parse_selling_price,
     BASE_UNIT_CONVERSIONS,
     _d,
 )
@@ -243,6 +245,98 @@ async def menu_costs(request: Request, recipe_only: int = Query(0),
 
     items.sort(key=lambda i: (not i["has_recipe"], i["item_name"]))
     return {"success": True, "data": items}
+
+
+@router.post("/item")
+async def create_menu_item(body: dict = Body(...), request: Request = None,
+                           user: dict = Depends(require_admin_user)):
+    """ADMIN-only: create a menu item = a new ``inventory`` row (a sellable dish).
+
+    This is the missing piece for self-serve dish entry — today a dish must already
+    exist in ``inventory`` before it can be costed.  Creates it with ``quantity 0``
+    (it becomes sellable via the POS as soon as stock is received, exactly like any
+    other inventory item) and ``unit_price`` = selling price.  Additive only.
+
+    body: {item_name, category? (default 'Food'), unit_price? (selling price, ≥ 0)}
+    """
+    branch = _branch(request)
+    name = normalize_item_name(body.get("item_name", body.get("name")))
+    if not name:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "item_name is required", "code": 422})
+    category = str(body.get("category") or "").strip() or "Food"
+    price = parse_selling_price(body.get("unit_price", body.get("selling_price")))
+    if price is None:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "unit_price (selling price) must be a number ≥ 0", "code": 422})
+
+    existing = _q1("SELECT id FROM inventory WHERE item_name=%s", (name,))
+    if existing:
+        raise HTTPException(status_code=409, detail={"success": False, "error": f"'{name}' already exists in the menu", "code": 409})
+
+    new_id = _ex(
+        "INSERT INTO inventory (branch_id, item_name, category, quantity, unit_price, reorder_level) "
+        "VALUES (%s,%s,%s,%s,%s,%s)",
+        (branch, name, category, 0, price, 0),
+    )
+    row = _q1("SELECT id, item_name, category, quantity, unit_price FROM inventory WHERE id=%s", (new_id,))
+    return {"success": True, "data": {
+        "id": row["id"],
+        "item_name": row["item_name"],
+        "category": row["category"],
+        "quantity": _num(row["quantity"]),
+        "selling_price": _num(row["unit_price"]),
+    }}
+
+
+@router.patch("/item")
+async def update_menu_item(body: dict = Body(...), request: Request = None,
+                           user: dict = Depends(require_admin_user)):
+    """ADMIN-only: rename / change category / change selling price of a menu item.
+
+    ``item_name`` identifies the CURRENT row (case-insensitive via MySQL collation).
+    Optional update fields: ``new_name`` (rename), ``category``, ``unit_price``
+    (selling price).  At least one update field must be supplied.  Rename collision
+    (with a *different* item) is rejected with 409.
+    """
+    branch = _branch(request)
+    current = normalize_item_name(body.get("item_name"))
+    if not current:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "item_name (current name) is required", "code": 422})
+
+    existing = _q1("SELECT id, item_name, category, unit_price FROM inventory WHERE item_name=%s", (current,))
+    if not existing:
+        raise HTTPException(status_code=404, detail={"success": False, "error": f"'{current}' not found in the menu", "code": 404})
+
+    _new_raw = body.get("new_name")
+    new_name = normalize_item_name(_new_raw) if _new_raw is not None else None
+    _cat_raw = body.get("category")
+    category = (str(_cat_raw).strip() or None) if _cat_raw is not None else None
+    has_price = ("unit_price" in body) or ("selling_price" in body)
+    price = parse_selling_price(body.get("unit_price", body.get("selling_price"))) if has_price else None
+    if has_price and price is None:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "unit_price (selling price) must be a number ≥ 0", "code": 422})
+
+    if new_name is None and category is None and price is None:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "no update fields supplied (new_name / category / unit_price)", "code": 422})
+
+    # Rename collision: only when the name actually changes (case-insensitive).
+    if new_name and str(new_name).lower() != str(existing["item_name"]).lower():
+        clash = _q1("SELECT id FROM inventory WHERE item_name=%s AND id<>%s", (new_name, existing["id"]))
+        if clash:
+            raise HTTPException(status_code=409, detail={"success": False, "error": f"'{new_name}' already exists in the menu", "code": 409})
+
+    final_name = new_name or existing["item_name"]
+    final_cat = category if category is not None else existing["category"]
+    final_price = price if price is not None else existing["unit_price"]
+
+    _ex("UPDATE inventory SET item_name=%s, category=%s, unit_price=%s WHERE id=%s",
+        (final_name, final_cat, final_price, existing["id"]))
+
+    return {"success": True, "data": {
+        "id": existing["id"],
+        "item_name": final_name,
+        "category": final_cat,
+        "selling_price": _num(final_price),
+    }}
 
 
 @router.get("/recipe")

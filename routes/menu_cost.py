@@ -68,6 +68,33 @@ def lookup_conversion(purchase_unit):
     return BASE_UNIT_CONVERSIONS.get(_norm(purchase_unit))
 
 
+def normalize_item_name(name):
+    """Return the stripped menu-item name, or None when empty / whitespace-only.
+
+    Pure + unit-testable — used by ``POST/PATCH /api/menu/item`` so the create / rename
+    validation has no DB dependency.
+    """
+    n = str(name or "").strip()
+    return n or None
+
+
+def parse_selling_price(value):
+    """Return a Decimal selling price when ``value`` is a non-negative number, else None.
+
+    Pure + unit-testable — rejects negative prices and non-numeric strings at the
+    validation layer before anything touches the DB.
+    """
+    if value is None:
+        return None
+    try:
+        p = _d(value)
+    except Exception:
+        return None
+    if p < 0:
+        return None
+    return p
+
+
 def weighted_average_cost(purchases):
     """Moving weighted average cost from stock_in purchase rows.
 
