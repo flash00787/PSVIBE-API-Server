@@ -456,7 +456,7 @@ async def api_booking_checkin(req: dict, request: Request, auth=Depends(verify_a
                 # leaving phantom forfeit injects for redeemed deposits)
                 _dep_amt = int(_dep_check.get('deposit_amount', 0) or 0)
                 _dep_meth = (_dep_check.get('deposit_method', '') or 'kpay').lower()
-                _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB"}.get(_dep_meth, "KPay")
                 if _dep_amt > 0:
                     insert_cash_movement_if_absent(
                         "eject", _meth_label, _dep_amt,
@@ -606,6 +606,8 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
             add_deposit = req.get("add_deposit", False)
             deposit_amount = int(req.get("deposit_amount", 0) or 0)
             deposit_method = (req.get("deposit_method") or "").strip().lower()
+            if deposit_method == "mmqr":
+                deposit_method = "mmqr_cb"
 
             # ── Validation ──
             if not console_id:
@@ -623,8 +625,8 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
             if add_deposit:
                 if deposit_amount <= 0:
                     return error_response(message="Deposit amount must be greater than 0")
-                if deposit_method not in ("kpay", "wavepay", "aya_pay"):
-                    return error_response(message="Invalid deposit_method. Must be kpay, wavepay, or aya_pay")
+                if deposit_method not in ("kpay", "wavepay", "aya_pay", "mmqr_cb"):
+                    return error_response(message="Invalid deposit_method. Must be kpay, wavepay, aya_pay, or mmqr_cb")
 
             # ── Parse date/time ──
             from datetime import datetime as _dt, timedelta as _td
@@ -1068,7 +1070,7 @@ async def api_update_booking_status(booking_id: int, req: dict, request: Request
             if status == "cancelled" and _dep_status == "verified":
                 _dep_amt = int(_dep_bk.get('deposit_amount') or 0)
                 _dep_meth = (_dep_bk.get('deposit_method') or 'kpay').lower()
-                _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB"}.get(_dep_meth, "KPay")
                 if _dep_amt > 0:
                     try:
                         insert_cash_movement_if_absent(
@@ -1093,7 +1095,7 @@ async def api_update_booking_status(booking_id: int, req: dict, request: Request
                     # Reverse forfeit cash_movement — insert eject entry (🐛 2026-07-28)
                     _dep_amt = int(_dep_row.get('deposit_amount', 0) or 0)
                     _dep_meth = (_dep_row.get('deposit_method', '') or 'kpay').lower()
-                    _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                    _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB"}.get(_dep_meth, "KPay")
                     if _dep_amt > 0:
                         insert_cash_movement_if_absent(
                             "eject", _meth_label, _dep_amt,
@@ -2306,7 +2308,7 @@ async def api_booking_cancel(req: dict, request: Request, auth=Depends(verify_ap
         # Boss policy 2026-07-31: ONLY verified deposits forfeit as revenue;
         # unverified ('paid') voids to 'none' (NOT revenue, no cash movement)
         if _pre_deposit_status == 'verified' and _pre_deposit_amount > 0:
-            _method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_pre_deposit_method, "KPay")
+            _method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB"}.get(_pre_deposit_method, "KPay")
             try:
                 insert_cash_movement_if_absent(
                     "inject", _method_label, _pre_deposit_amount,
@@ -2429,6 +2431,10 @@ def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, st
             "kbz_bank": "KBZ Bank",
             "acm acc": "ACM's Acc",
             "acm_acc": "ACM's Acc",
+            "mmqr_cb": "MMQR - CB",
+            "mmqr cb": "MMQR - CB",
+            "mmqr - cb": "MMQR - CB",
+            "mmqr": "MMQR - CB",
         }
         account = acct_map.get(method.strip().lower().replace("  ", " "), method)
         if val > 0:
@@ -3025,7 +3031,7 @@ async def api_booking_refund(booking_id: int, auth=Depends(verify_api_key), requ
         # Determine refund payment method for cash_movements (default = deposit method)
         deposit_method = booking.get("deposit_method", "kpay") or "kpay"
         refund_method = ((body or {}).get("refund_method") or deposit_method).strip().lower()
-        _method_map = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "cash": "Cash"}
+        _method_map = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "cash": "Cash", "mmqr_cb": "MMQR - CB"}
         method_label = _method_map.get(refund_method, _method_map.get(deposit_method, deposit_method))
 
         # Update booking: deposit_status = 'refunded', add note
@@ -3168,7 +3174,7 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
                     try:
                         _dep_amt = int(_pre.get('deposit_amount', 0) or 0)
                         _dep_meth = (_pre.get('deposit_method', '') or 'kpay').lower()
-                        _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
+                        _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB"}.get(_dep_meth, "KPay")
                         if _dep_amt > 0:
                             insert_cash_movement_if_absent(
                                 "inject", _meth_label, _dep_amt,
@@ -3345,13 +3351,15 @@ async def api_deposit_submit(booking_id: int, req: dict, auth=Depends(verify_api
     Updates booking deposit_status to 'paid' and notifies staff."""
     try:
         deposit_method = req.get("deposit_method", "")
+        if deposit_method == "mmqr":
+            deposit_method = "mmqr_cb"
         deposit_ref = req.get("deposit_ref", "")
         deposit_ref_type = req.get("deposit_ref_type", "text")
         deposit_amount = req.get("deposit_amount", 0)
         
         # Validate
-        if deposit_method not in ("kpay", "wavepay", "aya_pay"):
-            return error_response(message="Invalid deposit_method. Must be kpay, wavepay, or aya_pay")
+        if deposit_method not in ("kpay", "wavepay", "aya_pay", "mmqr_cb"):
+            return error_response(message="Invalid deposit_method. Must be kpay, wavepay, aya_pay, or mmqr_cb")
         if not deposit_ref:
             return error_response(message="deposit_ref is required")
         if deposit_ref_type not in ("text", "image", "both"):
@@ -3398,7 +3406,7 @@ async def api_deposit_submit(booking_id: int, req: dict, auth=Depends(verify_api
                     bk_time = str(s)[:5] if s else ""
             deposit_amt = int(deposit_amount or 0)
             member = row.get("member_id", "") or "Customer"
-            method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(deposit_method, deposit_method)
+            method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB"}.get(deposit_method, deposit_method)
             msg = (
                 f"\U0001f4b3 <b>Deposit Submitted — BK#{booking_id}</b>\n\n"
                 f"\U0001f464 {member}\n"
@@ -3519,7 +3527,7 @@ async def api_deposit_verify(booking_id: int, req: dict, request: Request, auth=
         )
         
         # Create cash_movements inject entry
-        method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(deposit_method, deposit_method)
+        method_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB"}.get(deposit_method, deposit_method)
         note = f"Deposit #{booking_id} via {method_label}"
         _mysql_exec(
             "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, category, created_at) "
@@ -3663,7 +3671,7 @@ async def api_deposit_settle(booking_id: int, req: dict, auth=Depends(verify_api
         if not isinstance(remaining_payments, list) or not remaining_payments:
             return error_response(message="remaining_payments list is required")
         
-        valid_methods = {"kpay", "wavepay", "cash", "aya_pay"}
+        valid_methods = {"kpay", "wavepay", "cash", "aya_pay", "mmqr_cb", "mmqr"}
         for pmt in remaining_payments:
             if pmt.get("method", "").lower() not in valid_methods:
                 return error_response(message=f"Invalid payment method: {pmt.get('method', '')}")
@@ -3687,7 +3695,7 @@ async def api_deposit_settle(booking_id: int, req: dict, auth=Depends(verify_api
         deposit_method = row.get("deposit_method", "kpay") or "kpay"
         
         # Build payment_method string for sales_daily
-        method_label_map = {"kpay": "KPay", "wavepay": "WavePay", "cash": "Cash", "aya_pay": "AYA Pay"}
+        method_label_map = {"kpay": "KPay", "wavepay": "WavePay", "cash": "Cash", "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB", "mmqr": "MMQR - CB"}
         deposit_label = method_label_map.get(deposit_method, "KPay")
         
         # Format: "KWPay:7500(DepositRedeemed)|Cash:2500"
