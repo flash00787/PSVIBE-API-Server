@@ -27,6 +27,12 @@ router = APIRouter(prefix="/api", tags=["Finance"])
 # Set to True to re-enable depreciation in the P&L statement.
 INCLUDE_DEPRECIATION_IN_PNL = False
 
+# 2026-09-28 Osmo: KPay / WavePay / AYA Pay are INACTIVE payment accounts.
+# They are still computed + reported everywhere (balances stay visible to the
+# owner), but every payload flags them `active: false` so the UI can dim them
+# and staff pickers can exclude them. Mirrors account_routes._INACTIVE_ACCOUNTS.
+_INACTIVE_ACCOUNT_LABELS = {"WavePay", "KPay", "AYA Pay"}
+
 
 @router.get("/dashboard/financial-report")
 async def dashboard_financial_report(
@@ -288,6 +294,8 @@ async def dashboard_dispose_asset(asset_id: int, req: dict = {}, user: dict = De
 async def get_finance_balances(year: int = Query(None), month: int = Query(None), user: dict = Depends(get_current_user)):
     """Returns live balance for each payment account."""
     accounts = [{"key": "cash", "label": "Cash", "icon": "💰", "type": "operating"},{"key": "wave", "label": "WavePay", "icon": "📱", "type": "digital"},{"key": "aya_pay", "label": "AYA Pay", "icon": "💳", "type": "bank"},{"key": "kpay", "label": "KPay", "icon": "💳", "type": "digital"},{"key": "mmqr_cb", "label": "MMQR - CB", "icon": "🏦", "type": "bank"},{"key": "kbz_bank", "label": "KBZ Bank", "icon": "🏦", "type": "capital"},{"key": "acm_acc", "label": "ACM's Acc", "icon": "🏦", "type": "transfer"}]
+    for acc in accounts:
+        acc["active"] = acc["label"] not in _INACTIVE_ACCOUNT_LABELS
     # Month filter: default to cumulative (from business start) when no month/year specified
     from datetime import datetime, timedelta, timezone as _tz
     _mmt_offset = timedelta(hours=6, minutes=30)
@@ -481,7 +489,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                 ded_prepaid = float(_prepaid_total.get("total", 0) or 0)
                 add_proceeds = float(_disposal_proceeds.get("total", 0) or 0)
                 balance = balance - ded_assets - ded_advances - ded_prepaid + add_proceeds
-            result.append({"key": key, "label": acc["label"], "icon": acc["icon"], "type": acc["type"], "income": round(income, 0), "opex": round(opex, 0), "transfers_in": round(trans_in, 0), "transfers_out": round(trans_out, 0), "injections": round(inject, 0), "ejections": round(eject, 0), "dividends": round(div, 0), "stock_in_payments": round(si_pay, 0), "capital_asset_purchases": round(ded_assets, 0), "capital_advances": round(ded_advances, 0), "capital_prepaid": round(ded_prepaid, 0), "capital_disposal_proceeds": round(add_proceeds, 0), "balance": round(balance, 0)})
+            result.append({"key": key, "label": acc["label"], "icon": acc["icon"], "type": acc["type"], "active": acc["active"], "income": round(income, 0), "opex": round(opex, 0), "transfers_in": round(trans_in, 0), "transfers_out": round(trans_out, 0), "injections": round(inject, 0), "ejections": round(eject, 0), "dividends": round(div, 0), "stock_in_payments": round(si_pay, 0), "capital_asset_purchases": round(ded_assets, 0), "capital_advances": round(ded_advances, 0), "capital_prepaid": round(ded_prepaid, 0), "capital_disposal_proceeds": round(add_proceeds, 0), "balance": round(balance, 0)})
 
         # 🆕 Add back active deposits (paid/verified, not yet redeemed/forfeited)
         # Anti-double-count subtracts ALL "Deposit #" injects, but active deposits
@@ -706,6 +714,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             {"key": "kbz_bank", "label": "KBZ Bank"},
             {"key": "acm_acc", "label": "ACM's Acc"}
         ]
+        for acc in accounts:
+            acc["active"] = acc["label"] not in _INACTIVE_ACCOUNT_LABELS
         # Map key -> DB account name for cash_movements queries
         db_acct = {"cash":"Cash","wave":"Wave","kpay":"KPay","aya_pay":"AYA Pay","mmqr_cb":"MMQR - CB","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
         bank_items = []
@@ -811,7 +821,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 ded_prep = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid WHERE created_at < %s", (_end,))["t"] or 0)
                 bal = bal - ded_assets - ded_adv - ded_prep
 
-            bank_items.append({"account": a["label"], "balance": round(bal,0)})
+            bank_items.append({"account": a["label"], "balance": round(bal,0), "active": a["active"]})
             total_ca += bal
 
         # 🆕 Active deposit add-back (same as finance/balances) — scoped to month end

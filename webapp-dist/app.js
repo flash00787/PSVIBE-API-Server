@@ -564,7 +564,7 @@
       const summary = reactive({ todayRevenue: 0, activeConsoles: 0, todaySales: 0, totalMembers: 0, bookings: 0, pendingDeposits: 0, reconcile: 0 });
       const nativeMode = NATIVE;
       const initials = computed(() => String(staffName.value || "?").trim().slice(0, 2).toUpperCase());
-      const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay", "MMQR - CB"];
+      const PAY_METHODS = ["Cash", "MMQR - CB"];
       const topup = reactive({ picker: false, dlg: false, q: "", members: [], member_id: "", member_name: "", member_tier: "", amount: 0, splits: [], payPicker: false, payAmountPicker: false, pendingMethod: "", payAmountInput: null, payColumns: PAY_METHODS.map((p) => ({ text: p, value: p })), base_rate: 10000, bonus_table: [], master_threshold: 300000, immortal_threshold: 1000000, member_total_spend: 0, busy: false });
       const topupTier = computed(() => topup.member_tier || "Warrior");
       const topupPaid = computed(() => topup.splits.reduce((s, x) => s + (Number(x.amount) || 0), 0));
@@ -1301,7 +1301,7 @@
       </div>
     `,
     setup(_, { emit }) {
-      const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay", "MMQR - CB"];
+      const PAY_METHODS = ["Cash", "MMQR - CB"];
       const form = reactive({
         voucher_no: PSV.genVoucherNo(), member_search: "", member_id: "",
         console_id: "", game_name: "", mins: 0, base_rate: 0, multiplier: 1.0,
@@ -2923,9 +2923,6 @@
       const refundTarget = ref(null);
       const refundMethods = [
         { value: "cash", label: "💵 Cash" },
-        { value: "kpay", label: "📱 KPay" },
-        { value: "wavepay", label: "📱 WavePay" },
-        { value: "aya_pay", label: "💳 AYA Pay" },
         { value: "mmqr_cb", label: "🏦 MMQR - CB" },
       ];
       const proofOpen = ref(false);
@@ -3157,7 +3154,7 @@
       function openRefund(b) {
         refundTarget.value = b;
         const m = bkKey(b.deposit_method || b.depositMethod);
-        refundPick.value = (m === "wavepay" || m === "aya_pay" || m === "kpay" || m === "mmqr_cb") ? m : "kpay";
+        refundPick.value = (m === "mmqr_cb") ? "mmqr_cb" : "cash";
         refundOpen.value = true;
         haptic("light");
       }
@@ -3409,8 +3406,8 @@
       </div>
     `,
     setup(_, { emit }) {
-      const DEP_METHODS = ["kpay", "wavepay", "aya_pay", "mmqr_cb"];
-      const form = reactive({ customer_name: "", member_id: "", console_id: "", game_name: "", booking_date: PSV.todayMMT(), start_time: "", duration_mins: 60, add_deposit: false, deposit_amount: 0, deposit_method: "kpay", notes: "" });
+      const DEP_METHODS = ["mmqr_cb"];
+      const form = reactive({ customer_name: "", member_id: "", console_id: "", game_name: "", booking_date: PSV.todayMMT(), start_time: "", duration_mins: 60, add_deposit: false, deposit_amount: 0, deposit_method: "mmqr_cb", notes: "" });
       const consoles = ref([]);
       const consolePicker = ref(false);
       const depPicker = ref(false);
@@ -4526,7 +4523,7 @@
       const payPicker = ref(false);
       const rowItemPicker = ref(null);
       const submitting = ref(false);
-      const PAY_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay", "MMQR - CB"];
+      const PAY_METHODS = ["Cash", "MMQR - CB"];
       const payColumns = PAY_METHODS.map((p) => ({ text: p, value: p }));
       const form = reactive({ payment_method: "Cash" });
       const rows = ref([{ item_name: "", custom_name: "", quantity: 0, unit_cost: 0, isNew: false }]);
@@ -4813,7 +4810,7 @@
       </div>
     `,
     setup() {
-      const PAY = ["Cash", "KPay", "WavePay", "AYA Pay", "MMQR - CB"];
+      const PAY = ["Cash", "MMQR - CB"];
       const payColumns = PAY.map((p) => ({ text: p, value: p }));
       const CATEGORIES = ["Rent", "Staff Salary", "Electricity", "Water", "Internet", "Maintenance", "Marketing", "Software/License", "Snacks/Drinks", "Transaction Charges", "Others"];
       const _role = String((PSV.getStaff() || {}).role || "").trim().toLowerCase();
@@ -5718,11 +5715,12 @@
             <template v-else>
               <div class="psv-readonly">🔒 Read-only — balances shown for reference only</div>
               <div class="psv-acc-grid">
-                <div v-for="a in accounts" :key="a.label" class="psv-acc-card">
+                <div v-for="a in accounts" :key="a.label" class="psv-acc-card" :style="a.active === false ? 'opacity:0.55' : ''">
                   <div class="psv-acc-card__top">
                     <span class="psv-acc-card__ico">{{ a.icon }}</span>
                     <span class="psv-acc-card__label">{{ a.label }}</span>
                     <span v-if="a.owner_only" class="psv-soon" style="margin-left:auto">Owner only</span>
+                    <span v-else-if="a.active === false" class="psv-soon" style="margin-left:auto">Inactive</span>
                     <span v-else class="psv-acc-card__type">{{ a.type || 'Account' }}</span>
                   </div>
                   <div class="psv-acc-card__bal psv-tabnum">{{ fKs(a.balance) }} <span class="psv-acc-card__unit">Ks</span></div>
@@ -5750,6 +5748,7 @@
             type: r.type || (r.owner_only ? "Owner-only" : ""),
             balance: Number(r.balance) || 0,
             owner_only: !!(r.owner_only || r.ownerOnly || fallbackOwnerOnly),
+            active: !(r.active === false),
             last: r.last_movement || r.last_updated || null,
           };
         });
@@ -5919,7 +5918,8 @@
               <div class="psv-field-label">From account</div>
               <div class="psv-xfer-acct">
                 <span class="psv-xfer-acct__ico">{{ iconOf(from) }}</span>
-                <span class="psv-xfer-acct__name">{{ from || 'Select account' }}</span>
+                <span class="psv-xfer-acct__name" :style="from && activeOf(from) === false ? 'opacity:0.55' : ''">{{ from || 'Select account' }}</span>
+                <span v-if="from && activeOf(from) === false" class="psv-soon" style="margin-left:auto">Inactive</span>
                 <span class="psv-xfer-acct__bal psv-tabnum">{{ balOf(from) != null ? fKs(balOf(from)) + ' Ks' : '—' }}</span>
               </div>
               <div class="psv-xfer-actions">
@@ -5932,7 +5932,8 @@
               <div class="psv-field-label">To account</div>
               <div class="psv-xfer-acct">
                 <span class="psv-xfer-acct__ico">{{ iconOf(to) }}</span>
-                <span class="psv-xfer-acct__name">{{ to || 'Select account' }}</span>
+                <span class="psv-xfer-acct__name" :style="to && activeOf(to) === false ? 'opacity:0.55' : ''">{{ to || 'Select account' }}</span>
+                <span v-if="to && activeOf(to) === false" class="psv-soon" style="margin-left:auto">Inactive</span>
                 <span class="psv-xfer-acct__bal psv-tabnum">{{ balOf(to) != null ? fKs(balOf(to)) + ' Ks' : '—' }}</span>
               </div>
               <div class="psv-xfer-actions">
@@ -6010,9 +6011,10 @@
       const balances = computed(() => { const m = {}; accounts.value.forEach((a) => { m[a.label] = Number(a.balance) || 0; }); return m; });
       function balOf(name) { return (name && (name in balances.value)) ? balances.value[name] : null; }
       function iconOf(name) { return accIcon(name); }
+      function activeOf(name) { const a = accounts.value.find((x) => x.label === name); return a ? a.active !== false : true; }
       const fromAfter = computed(() => Math.max(0, (balOf(from.value) || 0) - amount.value));
       const toAfter = computed(() => (balOf(to.value) || 0) + amount.value);
-      const columns = computed(() => accounts.value.map((a) => ({ text: a.label + (a.owner_only ? " (owner)" : ""), value: a.label })));
+      const columns = computed(() => accounts.value.map((a) => ({ text: a.label + (a.owner_only ? " (owner)" : (a.active === false ? " (inactive)" : "")), value: a.label })));
       const quick = computed(() => {
         const b = balOf(from.value) || 0;
         return [5000, 10000, 20000, 50000, 100000, 200000].filter((x) => x <= b).slice(-4);
@@ -6030,7 +6032,7 @@
           const list = Array.isArray(d) ? d : (d.accounts || []);
           accounts.value = list.map((a) => {
             const label = a.label || a.account || a.key || "Account";
-            return { label: label, balance: Number(a.balance) || 0, owner_only: !!(a.owner_only || a.ownerOnly || /ACM|KBZ/i.test(label)) };
+            return { label: label, balance: Number(a.balance) || 0, owner_only: !!(a.owner_only || a.ownerOnly || /ACM|KBZ/i.test(label)), active: !(a.active === false) };
           });
           role.value = d.role || ((PSV.getStaff() || {}).role) || "staff";
           if (!from.value || !accounts.value.some((a) => a.label === from.value)) from.value = accounts.value[0] ? accounts.value[0].label : "";
@@ -6111,7 +6113,7 @@
       return {
         loading, refreshing, accounts, role, from, to, amountStr, note, pickShow, pickWhich, confirmShow, busy,
         errMsg, loadErr, done, amount, quick, columns, allowedNames, canReview, fromAfter, toAfter,
-        balOf, iconOf, pick, onPick, swap, openConfirm, doTransfer, transferAgain, goBack, load, fKs, fmtWhen,
+        balOf, iconOf, activeOf, pick, onPick, swap, openConfirm, doTransfer, transferAgain, goBack, load, fKs, fmtWhen,
       };
     },
   };
@@ -6550,7 +6552,7 @@
   //  Styling lives in native-theme.css under html.psv-native.
   //  All API paths reuse the existing endpoints — UI only.
   // ══════════════════════════════════════════════════════
-  const DEPOSIT_METHODS = ["Cash", "KPay", "WavePay", "AYA Pay", "MMQR - CB"];
+  const DEPOSIT_METHODS = ["Cash", "MMQR - CB"];
 
   // ── VIEW: Deposit (app mode top-up) ─────────────────────
   const Deposit = {

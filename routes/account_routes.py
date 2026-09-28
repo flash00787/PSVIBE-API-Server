@@ -44,11 +44,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 # ── Account catalogue ────────────────────────────────────────────────────────
-# Operational accounts every staff member may use.
-_OPERATIONAL = ["Cash", "WavePay", "KPay", "AYA Pay", "MMQR - CB"]
+# ACTIVE operational accounts every staff member may select/use (2026-09-28 Osmo:
+# KPay / WavePay / AYA Pay are now INACTIVE — money stays visible to the owner,
+# but staff can no longer select them).
+_OPERATIONAL = ["Cash", "MMQR - CB"]
+# Inactive accounts: balances remain visible + admin can still transfer, but staff
+# cannot pick them in any payment/balance picker.
+_INACTIVE_ACCOUNTS = ["KPay", "WavePay", "AYA Pay"]
 # Owner-only accounts (never visible/usable to staff).
 _OWNER_ONLY = ["ACM's Acc", "KBZ Bank"]
-ALL_ACCOUNTS = _OPERATIONAL + _OWNER_ONLY
+ALL_ACCOUNTS = _OPERATIONAL + _INACTIVE_ACCOUNTS + _OWNER_ONLY
 
 # display label -> finance calculator account key (used for balance lookup)
 _KEY_BY_NAME = {
@@ -68,6 +73,10 @@ _table_ready = False
 
 def _is_admin(user: dict) -> bool:
     return str((user or {}).get("role") or "").strip().lower() == "admin"
+
+
+def _is_active_account(name: str) -> bool:
+    return name not in _INACTIVE_ACCOUNTS
 
 
 def _allowed_accounts(user: dict):
@@ -196,13 +205,22 @@ def _ensure_daily_balances_table() -> None:
 
 @router.get("/daily-balances/today")
 async def daily_balances_today(user: dict = Depends(get_staff_or_dashboard_user)):
-    """Today's daily balance open/close state for the 5 operational accounts."""
+    """Today's daily balance open/close state for the ACTIVE operational accounts.
+
+    2026-09-28 Osmo: KPay / WavePay / AYA Pay are inactive — only Cash + MMQR - CB
+    are auto-created/returned here. Historical (past-day) rows for the inactive
+    accounts stay readable via /daily-balances/history; no rows are deleted.
+    """
     _ensure_daily_balances_table()
     today = _mmt_today_str()
     for acc in _OPERATIONAL:
         if not _q("SELECT id FROM daily_account_balances WHERE balance_date=%s AND account=%s", (today, acc)):
             _ex("INSERT INTO daily_account_balances (balance_date, account, status) VALUES (%s,%s,'open')", (today, acc))
     rows = _q("SELECT * FROM daily_account_balances WHERE balance_date=%s ORDER BY id", (today,))
+    # Only ACTIVE accounts participate in today's open/close ritual; inactive ones
+    # (with rows already created earlier today) are excluded from this list but
+    # remain in the DB (and in history).
+    rows = [r for r in rows if r["account"] in _OPERATIONAL]
     bals = await _balances_by_name()
     out = []
     for r in rows:
@@ -220,6 +238,7 @@ async def daily_balances_today(user: dict = Depends(get_staff_or_dashboard_user)
         out.append({
             "account": acc,
             "status": r["status"],
+            "active": _is_active_account(acc),
             "opening_balance": round(opening),
             "closing_balance": round(closing),
             "variance": variance,
@@ -239,7 +258,7 @@ async def daily_balances_open(body: dict = Body(...), user: dict = Depends(get_s
     today = _mmt_today_str()
     account = str(body.get("account") or "").strip()
     if account not in _OPERATIONAL:
-        raise HTTPException(status_code=400, detail="Account must be one of Cash / WavePay / KPay / AYA Pay / MMQR - CB")
+        raise HTTPException(status_code=400, detail="Account must be one of Cash / MMQR - CB (KPay / WavePay / AYA Pay are inactive)")
     try:
         opening = float(body.get("opening_balance", 0))
     except (TypeError, ValueError):
@@ -267,7 +286,7 @@ async def daily_balances_close(body: dict = Body(...), user: dict = Depends(get_
     today = _mmt_today_str()
     account = str(body.get("account") or "").strip()
     if account not in _OPERATIONAL:
-        raise HTTPException(status_code=400, detail="Account must be one of Cash / WavePay / KPay / AYA Pay / MMQR - CB")
+        raise HTTPException(status_code=400, detail="Account must be one of Cash / MMQR - CB (KPay / WavePay / AYA Pay are inactive)")
     try:
         closing = float(body.get("closing_balance", 0))
     except (TypeError, ValueError):
@@ -342,12 +361,13 @@ async def list_transferable(user: dict = Depends(get_staff_or_dashboard_user)):
             "label": name,
             "balance": round(bals.get(name, 0)),
             "owner_only": name in _OWNER_ONLY,
+            "active": _is_active_account(name),
         }
         for name in allowed
     ]
     # Explicit per-account balances block (keyed by label) + list of owner-only ones.
     balances_block = {
-        a["account"]: {"balance": a["balance"], "owner_only": a["owner_only"]}
+        a["account"]: {"balance": a["balance"], "owner_only": a["owner_only"], "active": a["active"]}
         for a in accounts_out
     }
     return {
@@ -389,6 +409,7 @@ async def list_balances(user: dict = Depends(get_staff_or_dashboard_user)):
             "label": name,
             "balance": round(bals.get(name, 0)),
             "owner_only": name in _OWNER_ONLY,
+            "active": _is_active_account(name),
             "last_movement": last.get(name) if name in _OWNER_ONLY else None,
         }
         for name in allowed
@@ -399,7 +420,7 @@ async def list_balances(user: dict = Depends(get_staff_or_dashboard_user)):
         "owner_only_view": role == "admin",
         "accounts": rows,
         "balances": {
-            r["account"]: {"balance": r["balance"], "owner_only": r["owner_only"]}
+            r["account"]: {"balance": r["balance"], "owner_only": r["owner_only"], "active": r["active"]}
             for r in rows
         },
         # kept for backward-compat with the old owner-only alias consumers
@@ -433,9 +454,10 @@ async def create_transfer(body: dict = Body(...), user: dict = Depends(get_staff
         raise HTTPException(status_code=400, detail=f"Unknown account: {', '.join(bad)}")
     for a in (from_account, to_account):
         if a not in allowed:
+            reason = "owner-only" if a in _OWNER_ONLY else "inactive"
             raise HTTPException(
                 status_code=403,
-                detail=f"Not permitted for your role ({role}) — '{a}' is owner-only. "
+                detail=f"Not permitted for your role ({role}) — '{a}' is {reason}. "
                        f"Allowed: {', '.join(allowed)}",
             )
     try:
