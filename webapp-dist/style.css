@@ -610,3 +610,21 @@ html, body {
 html.psv-native .psv-mini-in { background: var(--psv-surface); border-color: var(--psv-border); color: var(--psv-text); }
 html.psv-native .psv-recipe-sum__meta b { color: var(--psv-text); }
 html.psv-native .psv-recipe-sum__warn { background: rgba(251,191,36,.16); color: #fcd34d; border-color: rgba(251,191,36,.42); }
+
+/* ── Recipe & Cost — prominent cost block (owner 2026-09-28 Osmo: "ကြည့်ရခက်နေတယ်") ── */
+.psv-cost-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.psv-cost-cell { background: rgba(127,127,127,.06); border: 1px solid var(--pv-card-border, #e2e8f0); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.psv-cost-cell__lbl { font-size: 10.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; color: var(--pv-muted, #64748b); }
+.psv-cost-cell__val { font-size: 18px; font-weight: 800; margin-top: 3px; color: var(--van-text-color, #0f172a); line-height: 1.15; overflow-wrap: anywhere; }
+.psv-cost-cell--accent { background: rgba(240,180,41,.10); border-color: rgba(240,180,41,.35); }
+.psv-cost-cell--accent .psv-cost-cell__val { font-size: 21px; color: #b45309; }
+.psv-cost-cell__edit { font-size: 12px; opacity: .55; font-weight: 600; }
+html.psv-native .psv-cost-cell { background: var(--psv-surface); border-color: var(--psv-border); }
+html.psv-native .psv-cost-cell__val { color: var(--psv-text); }
+html.psv-native .psv-cost-cell--accent { background: rgba(240,180,41,.14); border-color: rgba(240,180,41,.4); }
+html.psv-native .psv-cost-cell--accent .psv-cost-cell__val { color: #fcd34d; }
+
+/* ── Ingredient / product reclassify toggle (🧺 Ingredients tab) ── */
+.psv-kind { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--pv-card-border, #2b3550); background: rgba(255,255,255,.04); color: #c9d2e3; font-size: 15px; cursor: pointer; user-select: none; margin-left: 6px; opacity: .55; }
+.psv-kind--on { opacity: 1; background: #1f6feb; border-color: #1f6feb; }
+.psv-kind:active { transform: scale(.94); }

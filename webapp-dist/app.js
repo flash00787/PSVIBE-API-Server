@@ -4655,6 +4655,12 @@
   // ── VIEW: Recipe & Cost — made-dish food costing (owner 2026-09-28) ──
   // Lists every inventory item with selling price, cost/plate, food-cost % and
   // margin; tapping an item opens a recipe editor (ingredient rows + conversions).
+  // ── VIEW: Recipe & Cost — made-dish food costing (owner 2026-09-28) ──
+  // Lists every inventory item with selling price, cost/plate, food-cost % and
+  // margin; tapping an item opens a recipe editor (ingredient rows + conversions).
+  // (owner 2026-09-28 Osmo "ခုက ရောနေသလို ဖြစ်နေတယ်"): ingredient-vs-product
+  // split, real purchase-unit display, prominent cost block, and a 🧺 Ingredients
+  // review tab where items can be reclassified.
   const RecipeCost = {
     components: { PageHeader },
     template: `
@@ -4738,6 +4744,34 @@
               </van-cell-group>
             </van-pull-refresh>
           </van-tab>
+          <van-tab title="🧺 Ingredients">
+            <van-pull-refresh v-model="refreshing" @refresh="loadIngredients">
+              <div class="psv-note" style="margin:10px 16px 4px">
+                🍚 <b>ဟင်းခံပစ္စည်း</b> = recipe ထဲ ထည့်ရတဲ့ ကုန်ကြမ်း (ဆန်၊ ဆီ၊ ကြက်ဥ၊ အသား…)<br/>
+                🛒 <b>ပစ္စည်း</b> = ရောင်းစရာ အထုပ်/အဘူး (ကိတ်၊ အာလူးကြော်၊ အချိုရည်…)<br/>
+                မှားနေရင် အောက်က ခလုတ်နဲ့ ပြောင်းလို့ရတယ်။ ယူနစ်သတ်မှတ်ဖို့ ကုန်ကြမ်းကို နှိပ်ပါ။
+              </div>
+              <van-cell-group inset title="🍚 ဟင်းခံပစ္စည်းများ (Ingredients)" style="margin-top:8px">
+                <van-cell v-for="it in reviewIngredients" :key="it.name" :title="it.name" is-link @click="openUnitEditor(it)">
+                  <template #label><span>{{ unitCostText(it) }}</span></template>
+                  <template #value>
+                    <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'ingredient' }" @click.stop="setKind(it, 'ingredient')">🍚</span>
+                    <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'product' }" @click.stop="setKind(it, 'product')">🛒</span>
+                  </template>
+                </van-cell>
+                <van-cell v-if="!reviewIngredients.length" title="No ingredients yet — stock in raw items to see them here" label="Use Stock-In (📥) to add rice, oil, eggs…" />
+              </van-cell-group>
+              <van-cell-group inset title="🛒 ရောင်းစရာ ပစ္စည်းများ (Products)" style="margin-top:14px">
+                <van-cell v-for="it in reviewProducts" :key="it.name" :title="it.name" is-link @click="openUnitEditor(it)">
+                  <template #label><span>{{ unitCostText(it) }}</span></template>
+                  <template #value>
+                    <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'ingredient' }" @click.stop="setKind(it, 'ingredient')">🍚</span>
+                    <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'product' }" @click.stop="setKind(it, 'product')">🛒</span>
+                  </template>
+                </van-cell>
+              </van-cell-group>
+            </van-pull-refresh>
+          </van-tab>
         </van-tabs>
 
         <!-- Recipe editor (full-screen sheet) -->
@@ -4745,31 +4779,42 @@
           <div class="pv-page" v-if="editor.item">
             <van-nav-bar :title="editor.item.item_name" left-arrow @click-left="closeEditor" />
             <div class="psv-card" style="margin:8px">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
                 <span class="psv-pill" :class="editor.item.item_type === 'dish' ? 'psv-pill--ok' : 'psv-pill--dim'">{{ typeBadge(editor.item) }}</span>
-                <van-button size="small" plain @click="switchType">{{ editor.item.item_type === 'dish' ? 'Switch to 🛒 Ready-made' : 'Switch to 🍳 Made dish' }}</van-button>
+                <van-button size="small" plain @click="switchType">{{ switchLabel }}</van-button>
               </div>
-              <div class="psv-recipe-sum__row">
-                <div style="flex:1">
-                  <div class="psv-recipe-sum__lbl">Selling price</div>
-                  <div v-if="!editingPrice" class="psv-recipe-sum__pct" @click="startEditPrice">{{ fKs(editor.item.selling_price) }} Ks <span style="font-size:12px;opacity:.7">✎</span></div>
-                  <div v-else style="display:flex;gap:8px;align-items:center;margin-top:6px">
-                    <input v-model.number="priceDraft" type="number" inputmode="decimal" class="psv-mini-in" style="width:130px" />
-                    <van-button size="small" type="primary" :loading="priceSaving" @click="savePrice">Save</van-button>
-                    <van-button size="small" plain @click="editingPrice = false">Cancel</van-button>
+              <div class="psv-dim" style="margin:0 0 8px;line-height:1.4">{{ switchHint }}</div>
+
+              <!-- Prominent cost block (owner 2026-09-28: was too faint) -->
+              <div class="psv-cost-grid">
+                <div class="psv-cost-cell">
+                  <div class="psv-cost-cell__lbl">Selling price · ရောင်းဈေး</div>
+                  <div class="psv-cost-cell__val" @click="startEditPrice">
+                    <template v-if="!editingPrice">{{ fKs(editor.item.selling_price) }} Ks <span class="psv-cost-cell__edit">✎</span></template>
+                    <span v-else style="display:flex;gap:6px;align-items:center">
+                      <input v-model.number="priceDraft" type="number" inputmode="decimal" class="psv-mini-in" style="width:110px" />
+                      <van-button size="mini" type="primary" :loading="priceSaving" @click.stop="savePrice">Save</van-button>
+                      <van-button size="mini" plain @click.stop="editingPrice = false">✕</van-button>
+                    </span>
                   </div>
                 </div>
-                <div class="psv-recipe-sum__meta">
-                  <div v-if="editor.item.item_type === 'dish'">Cost <b>{{ fKs(editorTotals.portion_cost) }}</b> Ks</div>
-                  <div v-else-if="editor.item.no_purchase_yet" class="psv-dim">No purchase yet</div>
-                  <div v-else>Cost <b>{{ fKs(editor.item.unit_cost) }}</b> Ks</div>
-                  <div>Food cost <b :style="{ color: sumColor }">{{ editor.item.item_type === 'dish' ? pct(editorTotals) : pct(editor.item) }}</b></div>
+                <div class="psv-cost-cell psv-cost-cell--accent">
+                  <div class="psv-cost-cell__lbl">Cost · ကုန်ကျစရိတ်</div>
+                  <div class="psv-cost-cell__val">{{ editorCostText }}</div>
+                </div>
+                <div class="psv-cost-cell">
+                  <div class="psv-cost-cell__lbl">Food cost · %</div>
+                  <div class="psv-cost-cell__val" :style="{ color: editorPctColor }">{{ editorPctText }}</div>
+                </div>
+                <div class="psv-cost-cell">
+                  <div class="psv-cost-cell__lbl">Margin · အမြတ်</div>
+                  <div class="psv-cost-cell__val">{{ editorMarginText }}</div>
                 </div>
               </div>
               <div v-if="editor.item.item_type === 'dish' && editorTotals.missing && editorTotals.missing.length" class="psv-recipe-sum__warn">
                 ⚠️ Missing cost: {{ editorTotals.missing.join(', ') }}
               </div>
-              <div v-if="editor.item.item_type === 'resale'" class="psv-note" style="margin:4px 0">🛒 Ready-made — cost from purchase price (no recipe needed).</div>
+              <div v-if="editor.item.item_type === 'resale'" class="psv-note" style="margin:8px 0 0">🛒 Ready-made — cost from purchase price (no recipe needed).</div>
             </div>
 
             <template v-if="editor.item.item_type === 'dish'">
@@ -4792,11 +4837,14 @@
               </van-cell>
             </van-cell-group>
 
-            <div style="padding:10px 16px">
+            <div style="padding:10px 16px 0">
               <van-button block plain type="primary" icon="plus" @click="ingPickerShow = true">Add ingredient</van-button>
             </div>
+            <div style="padding:6px 16px 0" class="psv-dim" @click="goStockIn">
+              ➕ <u>Ingredient အသစ်</u> — Stock-In မှာ ဝယ်ယူပြီး ထည့်ပါ ➜
+            </div>
 
-            <div style="padding:0 16px 20px">
+            <div style="padding:10px 16px 20px">
               <van-button type="primary" block :loading="editor.saving" @click="saveRecipe">Save recipe</van-button>
             </div>
             </template>
@@ -4871,10 +4919,10 @@
       const list = ref([]);
       const summary = ref({ revenue: 0, theoretical_cost: 0, food_cost_pct: null });
       const month = ref(PSV.monthMMT());
-      const ingData = reactive({ ingredients: [], suggested: [] });
+      const ingData = reactive({ items: [], suggested: [] });
       const ingPickerShow = ref(false);
       const editor = reactive({ show: false, item: null, rows: [], saving: false });
-      const newIng = reactive({ show: false, name: "", base_unit: "g", purchase_unit: "", base_per_purchase: null, saving: false });
+      const newIng = reactive({ show: false, name: "", base_unit: "g", purchase_unit: "", base_per_purchase: null, kind: null, saving: false });
       const newDish = reactive({ show: false, name: "", category: "Food", selling_price: null, saving: false, item_type: "dish" });
       const editingPrice = ref(false);
       const priceDraft = ref(null);
@@ -4899,6 +4947,9 @@
         return "#f87171";
       });
 
+      const reviewIngredients = computed(() => ingData.items.filter((i) => i.kind === "ingredient"));
+      const reviewProducts = computed(() => ingData.items.filter((i) => i.kind === "product"));
+
       function pct(it) {
         if (!it || it.food_cost_pct == null) return "—";
         return (Number(it.food_cost_pct) || 0) + "%";
@@ -4909,9 +4960,6 @@
         if (s === "warn") return "psv-pill--warn";
         if (s === "high") return "psv-pill--danger";
         return "psv-pill--dim";
-      }
-      function costSub(cost, unit) {
-        return cost == null ? "no purchase yet" : (fKs(cost) + " Ks / " + (unit || "g"));
       }
       function typeBadge(it) {
         return (it && it.item_type === "dish") ? "🍳 ဟင်းပွဲ" : "🛒 အဆင်သင့်";
@@ -4933,35 +4981,42 @@
         if (it.item_type === "dish") return !!it.has_recipe;
         return !it.no_purchase_yet;
       }
+      // Unit-cost text for a stock item (real purchase unit, or per base unit
+      // when a conversion is configured — never a fake "/g").
+      function unitCostText(it) {
+        if (!it) return "";
+        const u = it.unit_label || "pcs";
+        return it.display_cost == null ? ("No purchase yet · " + u) : (fKs(it.display_cost) + " Ks / " + u);
+      }
       const ingPickerItems = computed(() => {
-        const out = []; const seen = {};
-        for (const i of ingData.ingredients) {
-          seen[i.name] = 1;
-          out.push({ value: i.name, label: i.name, sub: costSub(i.cost_per_base_unit, i.base_unit), group: "Ingredients" });
+        const out = [];
+        for (const i of ingData.items) {
+          if (i.kind !== "ingredient") continue;
+          out.push({ value: i.name, label: i.name, sub: unitCostText(i), group: "ဟင်းခံပစ္စည်းများ (Ingredients)" });
         }
-        for (const s of ingData.suggested) {
-          if (seen[s.name]) continue; seen[s.name] = 1;
-          out.push({ value: s.name, label: s.name, sub: costSub(s.cost_per_base_unit, "g"), group: "Stock-in items" });
-        }
-        out.push({ value: "__new__", label: "➕ New ingredient…", sub: "Set base unit & conversion", group: "➕ Add" });
+        out.push({ value: "__new__", label: "➕ New ingredient…", sub: "Set base unit & conversion", group: "➕ Add", icon: "🧂" });
+        out.push({ value: "__stockin__", label: "➕ Ingredient အသစ် — Stock-In မှာ ထည့်ပါ ➜", sub: "ဝယ်ယူပြီးတဲ့ ကုန်ကြမ်း မရှိသေးရင် Stock-In သွားပါ", group: "➕ Add", icon: "📥" });
         return out;
       });
 
       const ingNamePickItems = computed(() => {
-        const out = []; const seen = {};
-        for (const i of ingData.ingredients) { seen[i.name] = 1; out.push({ value: i.name, label: i.name, sub: costSub(i.cost_per_base_unit, i.base_unit), group: "Ingredients" }); }
-        for (const s of ingData.suggested) { if (seen[s.name]) continue; seen[s.name] = 1; out.push({ value: s.name, label: s.name, sub: costSub(s.cost_per_base_unit, "g"), group: "Stock-in items" }); }
+        const out = [];
+        for (const i of ingData.items) {
+          if (i.kind !== "ingredient") continue;
+          out.push({ value: i.name, label: i.name, sub: unitCostText(i), group: "ဟင်းခံပစ္စည်းများ (Ingredients)" });
+        }
         return out;
       });
 
       // One-tap purchase-unit presets (owner 2026-09-28): ပိဿာ=1632g, ကျပ်သား=10g,
-      // kg=1000g, litre=1000ml, pack (no fixed size), pcs=1.
+      // kg=1000g, litre=1000ml, ထုပ်/ဗူး (no fixed size), pcs=1.
       const purchasePresets = [
         { u: "ပိဿာ", label: "ပိဿာ (1632 g)" },
         { u: "ကျပ်သား", label: "ကျပ်သား (10 g)" },
         { u: "kg", label: "kg (1000 g)" },
-        { u: "litre", label: "litre (1000 ml)" },
-        { u: "pack", label: "pack" },
+        { u: "litre", label: "လီတာ litre (1000 ml)" },
+        { u: "ထုပ်", label: "ထုပ် pack" },
+        { u: "ဗူး", label: "ဗူး bottle/tin" },
         { u: "pcs", label: "pcs" },
       ];
       const PRESET_BPP = { "ပိဿာ": 1632, "ကျပ်သား": 10, "kg": 1000, "litre": 1000, "pcs": 1 };
@@ -4970,7 +5025,7 @@
         newIng.base_per_purchase = (PRESET_BPP[p.u] == null) ? null : PRESET_BPP[p.u];
       }
       function ingWavg(name) {
-        const hit = [...ingData.ingredients, ...ingData.suggested].find((i) => i.name === name);
+        const hit = ingData.items.find((i) => i.name === name);
         if (!hit) return null;
         const w = Number(hit.weighted_avg_cost);
         return (w == null || isNaN(w)) ? null : w;
@@ -4981,6 +5036,52 @@
         if (wavg == null || !bpp || bpp <= 0) return null;
         const per = wavg / bpp;
         return per >= 100 ? String(Math.round(per)) : String(Math.round(per * 100) / 100);
+      });
+
+      const switchLabel = computed(() => (editor.item && editor.item.item_type === "dish")
+        ? "🛒 အဆင်သင့်ပစ္စည်းအဖြစ် ပြောင်း (Ready-made)"
+        : "🍳 ဟင်းပွဲအဖြစ် ပြောင်း (Made dish)");
+      const switchHint = computed(() => (editor.item && editor.item.item_type === "dish")
+        ? "အခု ဟင်းပွဲ (recipe နဲ့ တွက်) — ပြောင်းရင် ဝယ်ဈေးနဲ့ တွက်ပါမယ်။"
+        : "အခု အဆင်သင့်ပစ္စည်း (ဝယ်ဈေးနဲ့ တွက်) — ပြောင်းရင် recipe နဲ့ တွက်ပါမယ်။");
+
+      // Prominent cost block values (dish = live recipe totals; resale = purchase cost).
+      const editorStats = computed(() => {
+        const it = editor.item;
+        if (!it) return { cost: null, food_cost_pct: null, margin: null };
+        if (it.item_type === "dish") {
+          const t = editorTotals.value;
+          if (t.missing.length) return { cost: null, food_cost_pct: null, margin: null };
+          const selling = Number(it.selling_price || 0);
+          const margin = selling > 0 ? Math.round((selling - t.portion_cost) * 100) / 100 : null;
+          return { cost: t.portion_cost, food_cost_pct: t.food_cost_pct, margin };
+        }
+        if (it.no_purchase_yet) return { cost: null, food_cost_pct: null, margin: null };
+        const c = Number(it.unit_cost || 0);
+        const selling = Number(it.selling_price || 0);
+        const pctv = selling > 0 ? Math.round((c / selling) * 1000) / 10 : null;
+        return { cost: c, food_cost_pct: pctv, margin: Math.round((selling - c) * 100) / 100 };
+      });
+      function editorCostText() {
+        if (editor.item && editor.item.item_type === "resale" && editor.item.no_purchase_yet) return "No purchase yet";
+        const c = editorStats.value.cost;
+        return c == null ? "—" : (fKs(c) + " Ks");
+      }
+      function editorPctText() {
+        const p = editorStats.value.food_cost_pct;
+        return p == null ? "—" : (p + "%");
+      }
+      function editorMarginText() {
+        if (editor.item && editor.item.item_type === "resale" && editor.item.no_purchase_yet) return "—";
+        const m = editorStats.value.margin;
+        return m == null ? "—" : (fKs(m) + " Ks");
+      }
+      const editorPctColor = computed(() => {
+        const p = editorStats.value.food_cost_pct;
+        if (p == null) return "var(--psv-text-dim, #64748b)";
+        if (p <= 35) return "#047857";
+        if (p <= 40) return "#b45309";
+        return "#b91c1c";
       });
 
       async function loadAll() {
@@ -4998,9 +5099,10 @@
       }
       async function loadIngredients() {
         try {
-          const d = PSV.unwrap(await PSV.apiCached("/api/menu/ingredients", {}, 20000));
-          if (d) { ingData.ingredients = d.ingredients || []; ingData.suggested = d.suggested || []; }
+          const d = PSV.unwrap(await PSV.apiCached("/api/menu/ingredients?kind=all", {}, 20000));
+          if (d) { ingData.items = d.items || []; ingData.suggested = d.suggested || []; }
         } catch (e) {}
+        refreshing.value = false;
       }
 
       async function openEditor(it) {
@@ -5034,14 +5136,17 @@
         return { portion_cost: Math.round(total * 100) / 100, food_cost_pct: pctv, missing };
       });
 
+      function goStockIn() { haptic("light"); router.push("/inventory"); }
+
       function pickIngredient(v) {
         if (v === "__new__") {
-          newIng.name = ""; newIng.base_unit = "g"; newIng.purchase_unit = ""; newIng.base_per_purchase = null;
+          newIng.name = ""; newIng.base_unit = "g"; newIng.purchase_unit = ""; newIng.base_per_purchase = null; newIng.kind = null;
           newIng.show = true;
           return;
         }
+        if (v === "__stockin__") { goStockIn(); return; }
         if (!editor.rows.some((r) => r.ingredient === v)) {
-          const hit = [...ingData.ingredients, ...ingData.suggested].find((i) => i.name === v);
+          const hit = ingData.items.find((i) => i.name === v);
           editor.rows.push({
             id: null, ingredient: v, qty_per_portion: 1, waste_pct: 0,
             base_unit: (hit && hit.base_unit) || "g",
@@ -5107,14 +5212,14 @@
         let ok;
         if (isDish) {
           ok = await confirmBox(
-            "Switch to Ready-made?",
-            "This item will be costed from its purchase price (no recipe needed). Any saved recipe rows will be removed.",
-            "Switch", "Cancel", true);
+            "အဆင်သင့်ပစ္စည်းအဖြစ် ပြောင်းမလား? (Ready-made)",
+            "ဒီပစ္စည်းကို ဝယ်ဈေးနဲ့ ကုန်ကျစရိတ်တွက်ပါမယ် (recipe မလို)။ သိမ်းထားတဲ့ recipe တန်းတွေ ဖျက်ပါမယ်။",
+            "ပြောင်းမယ်", "မလုပ်တော့ဘူး", true);
         } else {
           ok = await confirmBox(
-            "Switch to Made dish?",
-            "This item will be costed from a recipe. You'll add ingredients next.",
-            "Switch", "Cancel");
+            "ဟင်းပွဲအဖြစ် ပြောင်းမလား? (Made dish)",
+            "ဒီပစ္စည်းကို recipe နဲ့ ကုန်ကျစရိတ်တွက်ပါမယ်။ Ingredient တွေ ထည့်ရပါမယ်။",
+            "ပြောင်းမယ်", "မလုပ်တော့ဘူး");
         }
         if (!ok) return;
         try {
@@ -5127,8 +5232,29 @@
           PSV.invalidate("/api/menu");
           editor.show = false;
           await loadAll();
-          showToast(isDish ? "Switched to Ready-made ✓" : "Switched to Made dish ✓", "success");
+          showToast(isDish ? "အဆင်သင့်ပစ္စည်းအဖြစ် ပြောင်းပြီး ✓" : "ဟင်းပွဲအဖြစ် ပြောင်းပြီး ✓", "success");
         } catch (e) { showToast("Error: " + e.message, "fail"); }
+      }
+      async function setKind(it, kind) {
+        if (!it || it.kind === kind) return;
+        haptic("light");
+        try {
+          await PSV.api("/api/menu/ingredients/kind", { method: "POST", headers: HJSON, body: JSON.stringify({ name: it.name, kind }) });
+          PSV.invalidate("/api/menu");
+          it.kind = kind;
+          it.explicit_kind = kind;
+          await loadIngredients();
+          showToast(kind === "ingredient" ? "🍚 ဟင်းခံအဖြစ် သတ်မှတ်ပြီး ✓" : "🛒 ပစ္စည်းအဖြစ် သတ်မှတ်ပြီး ✓", "success");
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
+      }
+      function openUnitEditor(it) {
+        if (!it) return;
+        newIng.name = it.name;
+        newIng.base_unit = it.base_unit || "g";
+        newIng.purchase_unit = it.purchase_unit || "";
+        newIng.base_per_purchase = (it.base_per_purchase != null && Number(it.base_per_purchase) > 1) ? Number(it.base_per_purchase) : null;
+        newIng.kind = it.kind || null;
+        newIng.show = true;
       }
       async function saveIngredient() {
         const name = (newIng.name || "").trim();
@@ -5136,6 +5262,7 @@
         newIng.saving = true;
         try {
           const body = { name: name, base_unit: newIng.base_unit || "g", purchase_unit: newIng.purchase_unit || null };
+          if (newIng.kind) body.kind = newIng.kind;
           if (newIng.base_per_purchase != null && Number(newIng.base_per_purchase) > 0) body.base_per_purchase = Number(newIng.base_per_purchase);
           await PSV.api("/api/menu/ingredients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
           PSV.invalidate("/api/menu");
@@ -5172,11 +5299,13 @@
         summary, month, sumPct, sumWarn, sumColor,
         pct, pillClass, fKs, openEditor, closeEditor, lineCost, editorTotals,
         typeBadge, dishLabel, resaleLabel, costLabel, hasCostPill,
+        unitCostText, reviewIngredients, reviewProducts, setKind, openUnitEditor,
         ingPickerShow, ingPickerItems, pickIngredient, removeRow,
-        newIng, saveIngredient, saveRecipe, editor, isAdmin,
+        newIng, saveIngredient, saveRecipe, editor, isAdmin, goStockIn,
         newDish, openNewDish, saveNewDish,
         editingPrice, priceDraft, priceSaving, startEditPrice, savePrice, switchType,
         ingNamePickShow, ingNamePickItems, purchasePresets, setPurchase, liveUnitCost,
+        switchLabel, switchHint, editorStats, editorCostText, editorPctText, editorMarginText, editorPctColor,
       };
     },
   };

@@ -43,6 +43,9 @@ BASE_UNIT_CONVERSIONS = {
     "kg": Decimal("1000"), "kilogram": Decimal("1000"), "kilograms": Decimal("1000"),
     "ပိဿာ": Decimal("1632"), "viss": Decimal("1632"), "peittha": Decimal("1632"),
     "ကျပ်သား": Decimal("10"), "kyattha": Decimal("10"), "kyat tha": Decimal("10"),
+    "လီတာ": Decimal("1000"),  # Burmese litre = 1000 ml
+    "ထုပ်": Decimal("1"),  # pack / bundle — no fixed size, cost per pack
+    "ဗူး": Decimal("1"),  # bottle / tin — no fixed size, cost per bottle/tin
     "ml": Decimal("1"), "millilitre": Decimal("1"), "milliliter": Decimal("1"),
     "l": Decimal("1000"), "litre": Decimal("1000"), "liter": Decimal("1000"),
     "pcs": Decimal("1"), "pc": Decimal("1"), "piece": Decimal("1"), "pieces": Decimal("1"),
@@ -253,3 +256,90 @@ def food_cost_status(pct):
     if p <= Decimal("40"):
         return "warn"
     return "high"
+
+
+# ── Ingredient vs product (owner 2026-09-28 Osmo: "ခုက ရောနေသလို ဖြစ်နေတယ်") ──
+# A stock item is EITHER a recipe ingredient (raw: rice, oil, tea-leaf, eggs,
+# meat…) OR a sellable product (packaged: cakes, chips, soft drinks…).  The
+# recipe picker must offer ingredients only.  Kind is persisted on the
+# ``ingredients`` table (column ``kind``) and defaults by heuristic: an item that
+# also exists as a sellable inventory row -> product, otherwise ingredient.
+INGREDIENT_KINDS = ("ingredient", "product")
+
+
+def normalize_kind(value):
+    """Return the canonical kind ("ingredient"|"product") or None for invalid input.
+
+    Accepts friendly aliases so the UI / API can send human labels:
+      ingredient <- ingredient | ingredients | raw | ဟင်းခံ | ဟင်းခံပစ္စည်း
+      product    <- product | products | resale | sellable | ready | packaged
+    Unknown / empty / None -> None (caller falls back to the heuristic).
+    """
+    t = str(value or "").strip().lower()
+    if t in ("ingredient", "ingredients", "raw", "ဟင်းခံ", "ဟင်းခံပစ္စည်း", "ဟင်းခံပစ္စည်းများ"):
+        return "ingredient"
+    if t in ("product", "products", "resale", "sellable", "ready", "ready-made", "ready_made", "readymade", "packaged"):
+        return "product"
+    return None
+
+
+def classify_item_kind(explicit_kind, is_sellable):
+    """Effective kind for a stock item (owner 2026-09-28).
+
+    Explicit kind (persisted on ``ingredients.kind``) always wins.  Otherwise the
+    default heuristic: an item that is also a sellable inventory row -> product;
+    anything else -> ingredient (raw).  This keeps existing data behaving
+    sensibly WITHOUT a backfill — packaged goods already sit in ``inventory`` and
+    therefore become products, while raw stock like eggs / rice / oil stays
+    ingredient.
+    """
+    k = normalize_kind(explicit_kind)
+    if k:
+        return k
+    return "product" if is_sellable else "ingredient"
+
+
+def filter_items_by_kind(items, kind):
+    """Pure kind filter for /api/menu/ingredients (ingredient | product | all / None).
+
+    ``items`` is an iterable of dicts carrying a ``kind`` key.  Unknown values
+    behave as "all" (no filtering)."""
+    k = normalize_kind(kind)
+    if k is None:
+        return list(items)
+    return [i for i in items if (i or {}).get("kind") == k]
+
+
+def ingredient_display(weighted_avg, purchase_unit, base_unit, base_per_purchase):
+    """How to show an ingredient's unit cost (owner 2026-09-28: stop "/g" for all).
+
+    Returns a dict:
+      * has_conversion — True when a real base-unit conversion is configured
+                         (base_per_purchase > 1), e.g. ပိဿာ = 1632 g.
+      * unit_label     — the unit the cost is expressed in:
+                           conversion configured -> base unit (g / ml)
+                           no conversion         -> the REAL purchase unit
+                                                     (ပိဿာ / ကျပ်သား / kg / ထုပ် / ဗူး / …)
+      * cost_basis     — 'base' | 'purchase' (which number to display)
+      * display_cost   — the cost figure matching unit_label (None = unknown)
+
+    No conversion -> cost is shown per PURCHASE unit (never a fake per-gram figure).
+    Pure + unit-testable.
+    """
+    bpp = _d(base_per_purchase) if base_per_purchase is not None else None
+    if bpp is not None and bpp > 1:
+        unit = str(base_unit or "g").strip() or "g"
+        cpb = cost_per_base_unit(weighted_avg, bpp) if weighted_avg is not None else None
+        return {
+            "has_conversion": True,
+            "unit_label": unit,
+            "cost_basis": "base",
+            "display_cost": cpb,
+        }
+    unit = str(purchase_unit or "pcs").strip() or "pcs"
+    return {
+        "has_conversion": False,
+        "unit_label": unit,
+        "cost_basis": "purchase",
+        "display_cost": weighted_avg,
+    }

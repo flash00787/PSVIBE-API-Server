@@ -41,6 +41,10 @@ from routes.menu_cost import (
     classify_item_type,
     resale_unit_cost,
     filter_items_by_type,
+    normalize_kind,
+    classify_item_kind,
+    filter_items_by_kind,
+    ingredient_display,
     BASE_UNIT_CONVERSIONS,
     _d,
 )
@@ -104,6 +108,7 @@ def _ensure_tables() -> None:
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     branch_id INT NOT NULL DEFAULT 1,
                     name VARCHAR(200) NOT NULL,
+                    kind VARCHAR(12) NOT NULL DEFAULT 'ingredient',
                     base_unit VARCHAR(10) NOT NULL DEFAULT 'g',
                     purchase_unit VARCHAR(20) DEFAULT NULL,
                     base_per_purchase DECIMAL(14,4) NOT NULL DEFAULT 1,
@@ -113,6 +118,20 @@ def _ensure_tables() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+            # Idempotent ``kind`` column on ingredients (owner 2026-09-28 Osmo:
+            # ingredient vs product split).  Additive only — never touches data.
+            cur.execute(
+                """
+                SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ingredients'
+                  AND COLUMN_NAME = 'kind'
+                """
+            )
+            col = cur.fetchone()
+            if not col or int(col["c"] or 0) == 0:
+                cur.execute(
+                    "ALTER TABLE ingredients ADD COLUMN kind VARCHAR(12) NOT NULL DEFAULT 'ingredient' AFTER name"
+                )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS menu_recipes (
@@ -211,6 +230,64 @@ def _recipes_by_menu(branch_id: int, menu_item: str = None):
 def _inventory_map(branch_id: int):
     rows = _q("SELECT id, item_name, category, unit_price, quantity, item_type FROM inventory WHERE branch_id=%s", (branch_id,))
     return {r["item_name"]: r for r in rows}
+
+
+def _sellable_inventory_names(branch_id: int):
+    """Names of inventory items that are sellable PRODUCTS (not made dishes)."""
+    return {
+        name for name, r in _inventory_map(branch_id).items()
+        if (str(r.get("item_type") or "resale").strip().lower()) != "dish"
+    }
+
+
+def _stock_items(branch_id: int):
+    """Full stock-item catalog (owner 2026-09-28): every purchased (stock_in) item
+    + every explicit ``ingredients`` row, each with an effective kind
+    (ingredient|product) and unit-cost display info.
+
+    The recipe picker reads this filtered by kind (ingredient only).  The
+    ingredient review tab reads all of it so the owner can reclassify items.
+    """
+    stock = _stockin_wavg(branch_id)
+    ing_rows = _q(
+        "SELECT id, name, kind, base_unit, purchase_unit, base_per_purchase, updated_at "
+        "FROM ingredients WHERE branch_id=%s",
+        (branch_id,),
+    )
+    conv = {r["name"]: r for r in ing_rows}
+    inv_names = _sellable_inventory_names(branch_id)
+
+    names = set(stock.keys()) | set(conv.keys()) | inv_names
+    items = []
+    for name in sorted(names):
+        cr = conv.get(name) or {}
+        s = stock.get(name) or {}
+        explicit_kind = (str(cr.get("kind") or "").strip() or None)
+        is_sellable = name in inv_names
+        kind = classify_item_kind(explicit_kind, is_sellable)
+        wavg = s.get("weighted_avg")
+        bpp = cr.get("base_per_purchase") if cr.get("base_per_purchase") is not None else None
+        disp = ingredient_display(wavg, cr.get("purchase_unit"), cr.get("base_unit"), bpp)
+        cpb = cost_per_base_unit(wavg, bpp) if (wavg is not None and bpp is not None and _d(bpp) > 0) else None
+        items.append({
+            "id": cr.get("id"),
+            "name": name,
+            "kind": kind,
+            "explicit_kind": explicit_kind,
+            "is_sellable": is_sellable,
+            "base_unit": cr.get("base_unit") or "g",
+            "purchase_unit": cr.get("purchase_unit"),
+            "base_per_purchase": _num(bpp if bpp is not None else Decimal("1")),
+            "has_conversion": disp["has_conversion"],
+            "unit_label": disp["unit_label"],
+            "cost_basis": disp["cost_basis"],
+            "display_cost": _num(disp["display_cost"]),
+            "weighted_avg_cost": _num(wavg),
+            "cost_per_base_unit": _num(cpb),
+            "last_purchase": str(s.get("last_in")) if s.get("last_in") else None,
+            "total_qty": _num(s.get("total_qty")),
+        })
+    return items, conv
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -502,48 +579,35 @@ async def delete_recipe(id: int = Query(...), request: Request = None,
 
 
 @router.get("/ingredients")
-async def menu_ingredients(request: Request, user: dict = Depends(require_admin_user)):
-    """Ingredient master + computed unit cost per base unit + a suggested list of
-    stock_in item names that have no conversion row yet (so staff can set one)."""
+async def menu_ingredients(request: Request, kind: str = Query("all"),
+                           user: dict = Depends(require_admin_user)):
+    """Stock-item catalog with kind split + unit-cost display (owner 2026-09-28).
+
+    ``kind`` filters the result: ingredient | product | all (default all).
+    The recipe picker calls ``?kind=ingredient`` so packaged products are NEVER
+    offered as recipe ingredients.
+
+    Response data:
+      * items      — full catalog filtered by ``kind``, each entry carries an
+                     effective ``kind``, ``is_sellable``, ``unit_label`` +
+                     ``display_cost`` (real purchase unit or per-base-unit when a
+                     conversion is configured).
+      * ingredients — explicit ``ingredients`` master rows (kind-aware).
+      * suggested   — purchased stock_in items with no conversion row yet
+                      (backward-compatible with the self-serve dish probe).
+    """
     _ensure_tables()
     branch = _branch(request)
-    costs, conv = _ingredient_costs(branch)
-    ing_rows = _q("SELECT id, name, base_unit, purchase_unit, base_per_purchase, updated_at FROM ingredients WHERE branch_id=%s ORDER BY name", (branch,))
-
-    # Ingredient master entries (existing conversions), merged with computed cost.
-    master = []
-    seen_names = set()
-    for r in ing_rows:
-        seen_names.add(r["name"])
-        c = costs.get(r["name"]) or {}
-        master.append({
-            "id": r["id"],
-            "name": r["name"],
-            "base_unit": r["base_unit"] or "g",
-            "purchase_unit": r["purchase_unit"],
-            "base_per_purchase": _num(r["base_per_purchase"]),
-            "cost_per_base_unit": _num(c.get("cost_per_base_unit")),
-            "weighted_avg_cost": _num(c.get("weighted_avg")),
-            "last_purchase": str(c.get("last_in")) if c.get("last_in") else None,
-        })
-
-    # Suggested: stock_in items that have purchases but no conversion row yet.
-    suggested = []
-    for name, c in sorted(costs.items(), key=lambda kv: kv[0]):
-        if name in seen_names:
-            continue
-        suggested.append({
-            "name": name,
-            "weighted_avg_cost": _num(c.get("weighted_avg")),
-            "cost_per_base_unit": _num(c.get("cost_per_base_unit")),
-            "last_purchase": str(c.get("last_in")) if c.get("last_in") else None,
-            "suggested_base_unit": "g",
-            "suggested_conversion": None,
-        })
+    items, _conv = _stock_items(branch)
+    filtered = filter_items_by_kind(items, kind)
+    master = [i for i in items if i.get("id") is not None]
+    suggested = [i for i in items if i.get("id") is None and i.get("weighted_avg_cost") is not None]
 
     return {
         "success": True,
         "data": {
+            "kind": normalize_kind(kind) or "all",
+            "items": filtered,
             "ingredients": master,
             "suggested": suggested,
             "known_units": [
@@ -555,14 +619,46 @@ async def menu_ingredients(request: Request, user: dict = Depends(require_admin_
     }
 
 
+@router.post("/ingredients/kind")
+async def set_ingredient_kind(body: dict = Body(...), request: Request = None,
+                              user: dict = Depends(require_admin_user)):
+    """ADMIN-only: reclassify a stock item as ingredient vs product (persisted).
+
+    body: {name, kind} where kind is 'ingredient' | 'product' (aliases accepted).
+    Idempotent — creates a bare ``ingredients`` row (default conversion) when the
+    item has no row yet, otherwise only flips ``kind`` (never clobbers a saved
+    conversion)."""
+    _ensure_tables()
+    branch = _branch(request)
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "name is required", "code": 422})
+    k = normalize_kind(body.get("kind"))
+    if not k:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "kind must be 'ingredient' or 'product'", "code": 422})
+
+    existing = _q1("SELECT id FROM ingredients WHERE branch_id=%s AND name=%s", (branch, name))
+    if existing:
+        _ex("UPDATE ingredients SET kind=%s WHERE id=%s", (k, existing["id"]))
+        iid = existing["id"]
+    else:
+        iid = _ex(
+            "INSERT INTO ingredients (branch_id, name, kind) VALUES (%s,%s,%s)",
+            (branch, name, k),
+        )
+    return {"success": True, "data": {"id": iid, "name": name, "kind": k}}
+
+
 @router.post("/ingredients")
 async def upsert_ingredient(body: dict = Body(...), request: Request = None,
                             user: dict = Depends(require_admin_user)):
-    """Upsert {name, base_unit, purchase_unit, base_per_purchase}.
+    """Upsert {name, base_unit, purchase_unit, base_per_purchase, kind?}.
 
     When base_per_purchase is omitted/0, it is auto-filled from the known
     purchase-unit conversion table (ပိဿာ=1632, ကျပ်သား=10, kg=1000, litre=1000),
-    else defaults to 1 (cost per purchased unit)."""
+    else defaults to 1 (cost per purchased unit).  ``kind`` is optional; a new
+    row without an explicit kind is auto-classified (sellable -> product, else
+    ingredient), and an existing row keeps its kind unless one is supplied."""
     _ensure_tables()
     branch = _branch(request)
     name = str(body.get("name") or "").strip()
@@ -577,17 +673,24 @@ async def upsert_ingredient(body: dict = Body(...), request: Request = None,
     else:
         bpp = _d(bpp)
 
-    existing = _q1("SELECT id FROM ingredients WHERE branch_id=%s AND name=%s", (branch, name))
+    kind = normalize_kind(body.get("kind"))
+
+    existing = _q1("SELECT id, kind FROM ingredients WHERE branch_id=%s AND name=%s", (branch, name))
     if existing:
-        _ex("UPDATE ingredients SET base_unit=%s, purchase_unit=%s, base_per_purchase=%s WHERE id=%s",
-            (base_unit, purchase_unit, bpp, existing["id"]))
+        final_kind = kind or (str(existing.get("kind") or "").strip() or "ingredient")
+        _ex("UPDATE ingredients SET base_unit=%s, purchase_unit=%s, base_per_purchase=%s, kind=%s WHERE id=%s",
+            (base_unit, purchase_unit, bpp, final_kind, existing["id"]))
         iid = existing["id"]
     else:
+        if kind is None:
+            # default heuristic: sellable inventory item -> product, else ingredient
+            kind = classify_item_kind(None, name in _sellable_inventory_names(branch))
+        final_kind = kind
         iid = _ex(
-            "INSERT INTO ingredients (branch_id, name, base_unit, purchase_unit, base_per_purchase) VALUES (%s,%s,%s,%s,%s)",
-            (branch, name, base_unit, purchase_unit, bpp),
+            "INSERT INTO ingredients (branch_id, name, kind, base_unit, purchase_unit, base_per_purchase) VALUES (%s,%s,%s,%s,%s,%s)",
+            (branch, name, kind, base_unit, purchase_unit, bpp),
         )
-    return {"success": True, "data": {"id": iid, "name": name, "base_unit": base_unit, "purchase_unit": purchase_unit, "base_per_purchase": _num(bpp)}}
+    return {"success": True, "data": {"id": iid, "name": name, "kind": final_kind, "base_unit": base_unit, "purchase_unit": purchase_unit, "base_per_purchase": _num(bpp)}}
 
 
 @router.get("/food-cost-report")
