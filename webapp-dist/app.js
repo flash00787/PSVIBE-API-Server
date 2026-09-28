@@ -4552,10 +4552,9 @@
       const rowItemPicker = ref(null);
       const submitting = ref(false);
       const PAY_METHODS = ["Cash", "MMQR - CB"];
-      // Owner/admin only (2026-09-28): the owner commonly buys stock with his own money,
-      // so Stock-In offers ACM's Acc to admins (staff must not touch the owner account).
-      const _stkIsAdmin = String((PSV.getStaff() || {}).role || "").toLowerCase() === "admin";
-      const _stkMethods = _stkIsAdmin ? PAY_METHODS.concat(["ACM's Acc"]) : PAY_METHODS.slice();
+      // Owner 2026-09-28 17:51: ACM's Acc is offered to EVERY role here — the owner wants
+      // staff to be able to record stock bought with the owner's money.
+      const _stkMethods = PAY_METHODS.concat(["ACM's Acc"]);
       const payColumns = _stkMethods.map((p) => ({ text: p, value: p }));
       const form = reactive({ payment_method: "Cash" });
       const rows = ref([{ item_name: "", custom_name: "", quantity: 0, unit_cost: 0, isNew: false }]);
@@ -5664,7 +5663,8 @@
       </div>
     `,
     setup() {
-      const PAY = ["Cash", "MMQR - CB"];
+      // Owner 2026-09-28 17:51: expenses paid from the owner's own account
+      const PAY = ["Cash", "MMQR - CB", "ACM's Acc"];
       const payColumns = PAY.map((p) => ({ text: p, value: p }));
       const CATEGORIES = ["Rent", "Staff Salary", "Electricity", "Water", "Internet", "Maintenance", "Marketing", "Software/License", "Snacks/Drinks", "Transaction Charges", "Others"];
       const _role = String((PSV.getStaff() || {}).role || "").trim().toLowerCase();
