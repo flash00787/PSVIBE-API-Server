@@ -2472,6 +2472,15 @@
         if (TL_LIVE.indexOf(k) >= 0) return true;                 // live session
         if (tlIsForfeit(b)) return true;                          // forfeit (capped to 1 h in minutesOf)
         if (TL_UPCOMING.indexOf(k) >= 0) {
+          // Osmo 2026-09-28: a pending booking must NOT render until its deposit is paid.
+          // Members skip the deposit (visible immediately); paid/verified deposits are visible.
+          // A guest pending booking with no paid deposit is hidden (server also filters it).
+          if (k === "pending") {
+            const ds = String(b.deposit_status || b.depositStatus || "").toLowerCase().trim();
+            const mid = String(b.member_id || b.memberId || "").trim();
+            const paid = ds === "paid" || ds === "verified";
+            if (!paid && !mid) return false;
+          }
           // Owner 2026-09-20 17:07: the Timeline can display Tomorrow (or any picked date), but the
           // window-end test below compares against the CURRENT wall clock — so a confirmed booking
           // on a future day (e.g. tomorrow 13:00-14:00 at 17:07 today) looked "already over" and was

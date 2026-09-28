@@ -321,7 +321,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 _start_cur.execute(
                     "SELECT id, status FROM console_bookings WHERE console_id=%s"
                     " AND id != %s"
-                    " AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != ''))))"
+                    " AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '') OR created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE))))"
                     " AND planned_start < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
                     " AND planned_end > DATE_ADD(%s, INTERVAL 30 MINUTE)"
                     " LIMIT 1 FOR UPDATE",
@@ -330,7 +330,7 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
             else:
                 _start_cur.execute(
                     "SELECT id, status FROM console_bookings WHERE console_id=%s"
-                    " AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != ''))))"
+                    " AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '') OR created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE))))"
                     " AND planned_start < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
                     " AND planned_end > DATE_ADD(%s, INTERVAL 30 MINUTE)"
                     " LIMIT 1 FOR UPDATE",
@@ -556,7 +556,7 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 cur.execute(
                     "SELECT id, status FROM console_bookings WHERE console_id=%s"
                     " AND id != %s"
-                    " AND (status IN ('confirmed','pending_check_in','checked_in') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != ''))))"
+                    " AND (status IN ('confirmed','pending_check_in','checked_in') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '') OR created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE))))"
                     " AND planned_start < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
                     " AND planned_end > DATE_ADD(%s, INTERVAL 30 MINUTE)"
                     " LIMIT 1 FOR UPDATE",
@@ -565,7 +565,7 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
             else:
                 cur.execute(
                     "SELECT id, status FROM console_bookings WHERE console_id=%s"
-                    " AND (status IN ('confirmed','pending_check_in','checked_in') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != ''))))"
+                    " AND (status IN ('confirmed','pending_check_in','checked_in') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '') OR created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE))))"
                     " AND planned_start < DATE_SUB(DATE_ADD(%s, INTERVAL %s MINUTE), INTERVAL 30 MINUTE)"
                     " AND planned_end > DATE_ADD(%s, INTERVAL 30 MINUTE)"
                     " LIMIT 1 FOR UPDATE",
@@ -786,7 +786,7 @@ async def api_sessions_move(req: dict, request: Request, auth=Depends(verify_api
                     _cur.execute(
                         "SELECT id FROM console_bookings WHERE console_id=%s AND id != %s "
                         "AND (status IN ('confirmed','pending_check_in','checked_in','Active') "
-                        "OR (status='pending' AND (deposit_status='paid' OR (member_id IS NOT NULL AND member_id != '')))) "
+                        "OR (status='pending' AND (deposit_status='paid' OR (member_id IS NOT NULL AND member_id != '') OR created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE)))) "
                         "AND NOT (planned_end <= %s OR planned_start >= %s) LIMIT 1 FOR UPDATE",
                         (to_console_id, booking_id, _bk["start_time"], _bk["end_time"])
                     )

@@ -785,7 +785,7 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
                 if console_id:
                     # Specific console: check this one directly
                     cur.execute(
-                        "SELECT id FROM console_bookings WHERE console_id=%s AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '')))) AND planned_start < %s AND planned_end > %s LIMIT 1 FOR UPDATE",
+                        "SELECT id FROM console_bookings WHERE console_id=%s AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '') OR created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE)))) AND planned_start < %s AND planned_end > %s LIMIT 1 FOR UPDATE",
                         (console_id, end_dt, start_dt)
                     )
                     if cur.fetchone():
@@ -800,7 +800,7 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
                     if _cids:
                         _placeholders = ",".join(["%s"] * len(_cids))
                         cur.execute(
-                            f"SELECT DISTINCT console_id FROM console_bookings WHERE console_id IN ({_placeholders}) AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '')))) AND planned_start < %s AND planned_end > %s FOR UPDATE",
+                            f"SELECT DISTINCT console_id FROM console_bookings WHERE console_id IN ({_placeholders}) AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '') OR created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE)))) AND planned_start < %s AND planned_end > %s FOR UPDATE",
                             tuple(_cids) + (end_dt, start_dt)
                         )
                         _conflict_ids = {r["console_id"] for r in cur.fetchall()}
@@ -1004,7 +1004,7 @@ async def api_update_booking_status(booking_id: int, req: dict, request: Request
                     if _check_cid:
                         _app_cur.execute(
                             "SELECT id FROM console_bookings WHERE console_id=%s"
-                            " AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != ''))))"
+                            " AND (status IN ('confirmed','pending_check_in','checked_in','Active') OR (status = 'pending' AND (deposit_status = 'paid' OR (member_id IS NOT NULL AND member_id != '') OR created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE))))"
                             " AND id != %s"
                             " AND NOT (planned_end <= %s OR planned_start >= %s)"
                             " LIMIT 1 FOR UPDATE",
@@ -1410,7 +1410,10 @@ _TIMELINE_SQL = (
     "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, "
     "cb.deposit_status "
     "FROM console_bookings cb" + _LATEST_SESSION_JOIN +
-    " WHERE cb.booking_date=%s ORDER BY start_dt ASC"
+    " WHERE cb.booking_date=%s "
+    "AND (LOWER(cb.status) <> 'pending' OR cb.deposit_status IN ('paid','verified') "
+    "     OR (cb.member_id IS NOT NULL AND cb.member_id != '')) "
+    "ORDER BY start_dt ASC"
 )
 
 
@@ -2796,7 +2799,7 @@ async def api_booking_reschedule(booking_id: int, req: dict, request: Request, a
     _conf = _mysql_query(
         "SELECT cb.id FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id=cb.id "
         "WHERE cb.console_id=%s "
-        "AND (cb.status IN ('confirmed','pending_check_in','checked_in','Active') OR (cb.status = 'pending' AND (cb.deposit_status = 'paid' OR (cb.member_id IS NOT NULL AND cb.member_id != '')))) "
+        "AND (cb.status IN ('confirmed','pending_check_in','checked_in','Active') OR (cb.status = 'pending' AND (cb.deposit_status = 'paid' OR (cb.member_id IS NOT NULL AND cb.member_id != '') OR cb.created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE)))) "
         "AND cb.id != %s "
         "AND NOT (COALESCE(cs.actual_end, cb.planned_end) <= %s OR COALESCE(cs.actual_start, cb.planned_start) >= %s) "
         "LIMIT 1",
@@ -2924,7 +2927,7 @@ async def api_booking_conflicts(req: dict, auth=Depends(verify_api_key)):
         
         # Query conflicting bookings (exclude cancelled/done)
         where_clause = """
-            (cb.status IN ('confirmed','pending_check_in','checked_in','Active') OR (cb.status = 'pending' AND (cb.deposit_status = 'paid' OR (cb.member_id IS NOT NULL AND cb.member_id != ''))))
+            (cb.status IN ('confirmed','pending_check_in','checked_in','Active') OR (cb.status = 'pending' AND (cb.deposit_status = 'paid' OR (cb.member_id IS NOT NULL AND cb.member_id != '') OR cb.created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE))))
             AND NOT (COALESCE(cs.actual_end, cb.planned_end) <= %s OR COALESCE(cs.actual_start, cb.planned_start) >= %s)
         """
         params = [start_dt, end_dt]
@@ -3118,7 +3121,6 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
     """
     try:
         _now = now_mmt()
-        _now_utc = datetime.now(timezone.utc)
         _grace_minutes = 15
         
         # Find bookings past start_time + grace with no check-in
@@ -3200,9 +3202,9 @@ async def api_auto_cancel_no_show(auth=Depends(verify_api_key)):
             WHERE status='pending'
               AND (deposit_status IS NULL OR deposit_status='none' OR deposit_amount IS NULL OR deposit_amount=0)
               AND (member_id IS NULL OR member_id = '')
-              AND created_at < DATE_SUB(%s, INTERVAL 15 MINUTE)
+              AND created_at < DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE)
             ORDER BY id ASC
-        """, (_now_utc,))
+        """)
         
         timeout_ids = []
         for row in (_pending_expired or []):
