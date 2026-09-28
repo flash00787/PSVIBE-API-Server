@@ -61,6 +61,7 @@ from routes.telegram_webapp import router as telegram_webapp_router
 from routes.staff_app_routes import router as staff_app_router
 from routes.account_routes import router as account_router
 from routes.reconciliation_routes import router as reconciliation_router
+from routes.menu_routes import router as menu_router
 from dashboard_routes import router as dashboard_router
 from kora_cmds import router as kora_cmds_router
 from digest_routes import router as digest_router
@@ -326,6 +327,7 @@ app.include_router(telegram_webapp_router)
 app.include_router(staff_app_router)
 app.include_router(account_router)
 app.include_router(reconciliation_router)
+app.include_router(menu_router)
 
 
 @app.get("/firebase-service-account.json", include_in_schema=False)

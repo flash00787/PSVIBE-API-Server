@@ -3509,6 +3509,7 @@
     { path: "/consoles", icon: "🕹️", label: "Consoles" },
     { path: "/food-orders", icon: "🍔", label: "Food Orders" },
     { path: "/inventory", icon: "📦", label: "Inventory" },
+    { path: "/recipes", icon: "🍳", label: "Recipe & Cost", adminOnly: true },
     { path: "/reports", icon: "📊", label: "Reports" },
     { path: "/attendance", icon: "🕐", label: "Attendance" },
     { path: "/opex", icon: "💸", label: "OPEX" },
@@ -3561,6 +3562,7 @@
       { en: "Stock-out", sub: "Manual stock-out", icon: "📤", path: "/stock-out" },
       { en: "Low-stock alerts", sub: "Items running low", icon: "⚠️", path: "/stock-alerts" },
       { en: "Stock check", sub: "Reconcile stock", icon: "🧮", path: "/stock-check" },
+      { en: "Recipe & cost", sub: "Dish costing & margin", icon: "🍳", path: "/recipes", adminOnly: true },
     ] },
     { id: "print", emoji: "🖨", en: "Printing", tone: "indigo", items: [
       { en: "Print voucher", sub: "Print a sale voucher", icon: "🧾", path: "/print" },
@@ -3608,6 +3610,7 @@
           </div>
           <div class="psv-menu-grid">
             <div v-for="it in g.items" :key="it.en" class="psv-menu-tile"
+                 v-show="!(it.adminOnly && !isAdmin)"
                  :class="{ 'is-soon': effTag(it) }" @click="tap(it)">
               <span class="psv-menu-tile__ico">{{ it.icon }}</span>
               <span class="psv-menu-tile__t">{{ it.en }}</span>
@@ -3654,6 +3657,10 @@
       function tap(it) {
         haptic("light");
         if (it.action === "logout") { logout(); return; }
+        if (it.adminOnly && !isAdmin.value) {
+          showToast("🔒 " + (it.en || "Admin only") + " — admin only", "text");
+          return;
+        }
         // Owner 2026-09-20 16:50 ("Staff role မှာ salary advance ကို ပိတ်ထားပါ", admin = owner):
         // owner-only rows must be blocked BEFORE the path branch, otherwise the guard never
         // runs (staff used to land on the Salary screen).
@@ -3689,7 +3696,10 @@
     `,
     setup() {
       function go(p) { haptic("light"); router.push(p); }
-      return { items: MORE_ITEMS, go, nativeMode: NATIVE };
+      const staff = PSV.getStaff() || {};
+      const isAdmin = String(staff.role || "").toLowerCase() === "admin";
+      const items = computed(() => MORE_ITEMS.filter((it) => !it.adminOnly || isAdmin));
+      return { items, go, nativeMode: NATIVE };
     },
   };
 
@@ -4621,6 +4631,307 @@
         finally { submitting.value = false; }
       }
       return { tab, stock, loading, refreshing, payPicker, rowItemPicker, rowItemPickerShow, submitting, payColumns, itemColumns, rows, form, addRow, loadStock, pickPay, pickRowItem, submit, validCount, totalCost, fKs };
+    },
+  };
+
+  // ── VIEW: Recipe & Cost — made-dish food costing (owner 2026-09-28) ──
+  // Lists every inventory item with selling price, cost/plate, food-cost % and
+  // margin; tapping an item opens a recipe editor (ingredient rows + conversions).
+  const RecipeCost = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="Recipe & Cost" back="/more" />
+
+        <!-- Admin-only guard (owner 2026-09-28): non-admin sees nothing about food cost. -->
+        <div v-if="!isAdmin" class="psv-owner-card" style="margin:16px">
+          <div class="psv-owner-card__ico">🔒</div>
+          <div class="psv-owner-card__t">Admin only</div>
+          <div class="psv-owner-card__s">Recipe &amp; cost is restricted to admins. Ask an owner / admin to view food costing.</div>
+        </div>
+
+        <template v-else>
+        <!-- header summary: overall food-cost % for the month -->
+        <div class="psv-card psv-recipe-sum" style="margin:8px">
+          <div class="psv-recipe-sum__row">
+            <div>
+              <div class="psv-recipe-sum__lbl">Food cost · {{ month }}</div>
+              <div class="psv-recipe-sum__pct" :style="{ color: sumColor }">{{ sumPct }}</div>
+            </div>
+            <div class="psv-recipe-sum__meta">
+              <div>Revenue <b>{{ fKs(summary.revenue) }}</b> Ks</div>
+              <div>Est. cost <b>{{ fKs(summary.theoretical_cost) }}</b> Ks</div>
+            </div>
+          </div>
+          <div v-if="sumWarn" class="psv-recipe-sum__warn">⚠️ Food cost above 35% — review recipes & pricing</div>
+          <div v-else-if="!costed.length" class="psv-recipe-sum__hint">Add recipes from “All items” to see costing.</div>
+        </div>
+
+        <van-tabs v-model:active="tab" sticky>
+          <van-tab title="Costed">
+            <van-pull-refresh v-model="refreshing" @refresh="loadAll">
+              <van-empty v-if="!costed.length && !loading" description="No recipes yet" />
+              <van-cell-group v-else inset style="margin-top:8px">
+                <van-cell v-for="it in costed" :key="it.item_name" :title="it.item_name" is-link @click="openEditor(it)">
+                  <template #label>
+                    <span>Cost {{ fKs(it.portion_cost) }} · Margin {{ fKs(it.margin) }} Ks</span>
+                  </template>
+                  <template #value><span class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span></template>
+                </van-cell>
+              </van-cell-group>
+            </van-pull-refresh>
+          </van-tab>
+          <van-tab title="All items">
+            <van-pull-refresh v-model="refreshing" @refresh="loadAll">
+              <van-cell-group inset style="margin-top:8px">
+                <van-cell v-for="it in all" :key="it.item_name" :title="it.item_name" is-link @click="openEditor(it)">
+                  <template #label>
+                    <span v-if="it.has_recipe">Cost {{ fKs(it.portion_cost) }} · Margin {{ fKs(it.margin) }} Ks</span>
+                    <span v-else class="psv-dim">No recipe — tap to add</span>
+                  </template>
+                  <template #value>
+                    <span v-if="it.has_recipe" class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span>
+                    <span v-else class="pv-amount">{{ fKs(it.selling_price) }} Ks</span>
+                  </template>
+                </van-cell>
+              </van-cell-group>
+            </van-pull-refresh>
+          </van-tab>
+        </van-tabs>
+
+        <!-- Recipe editor (full-screen sheet) -->
+        <van-popup v-model:show="editor.show" position="bottom" :style="{ height: '100%' }" class="psv-editor">
+          <div class="pv-page" v-if="editor.item">
+            <van-nav-bar :title="editor.item.item_name" left-arrow @click-left="closeEditor" />
+            <div class="psv-card" style="margin:8px">
+              <div class="psv-recipe-sum__row">
+                <div>
+                  <div class="psv-recipe-sum__lbl">Selling price</div>
+                  <div class="psv-recipe-sum__pct">{{ fKs(editor.item.selling_price) }} Ks</div>
+                </div>
+                <div class="psv-recipe-sum__meta">
+                  <div>Cost <b>{{ fKs(editorTotals.portion_cost) }}</b> Ks</div>
+                  <div>Food cost <b :style="{ color: sumColor }">{{ pct(editorTotals) }}</b></div>
+                </div>
+              </div>
+              <div v-if="editorTotals.missing && editorTotals.missing.length" class="psv-recipe-sum__warn">
+                ⚠️ Missing cost: {{ editorTotals.missing.join(', ') }}
+              </div>
+            </div>
+
+            <van-cell-group inset style="margin-top:8px">
+              <van-cell v-for="(r, ri) in editor.rows" :key="ri" :title="r.ingredient">
+                <template #label>
+                  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                    <span style="min-width:110px">Qty ({{ r.base_unit || 'g' }})</span>
+                    <input class="psv-mini-in" type="number" inputmode="decimal" v-model.number="r.qty_per_portion" />
+                    <span>Waste %</span>
+                    <input class="psv-mini-in" type="number" inputmode="decimal" v-model.number="r.waste_pct" />
+                  </div>
+                </template>
+                <template #value>
+                  <span style="display:flex;align-items:center;gap:6px">
+                    <span class="psv-dim">{{ lineCost(r) }}</span>
+                    <van-icon name="cross" @click="removeRow(ri)" style="color:#f87171" />
+                  </span>
+                </template>
+              </van-cell>
+            </van-cell-group>
+
+            <div style="padding:10px 16px">
+              <van-button block plain type="primary" icon="plus" @click="ingPickerShow = true">Add ingredient</van-button>
+            </div>
+
+            <div style="padding:0 16px 20px">
+              <van-button type="primary" block :loading="editor.saving" @click="saveRecipe">Save recipe</van-button>
+            </div>
+          </div>
+        </van-popup>
+
+        <PSVPicker v-model:show="ingPickerShow" title="Add ingredient" searchable
+                   :items="ingPickerItems"
+                   @confirm="(v) => pickIngredient(v)" />
+
+        <!-- New ingredient form (base unit + conversion) -->
+        <van-popup v-model:show="newIng.show" position="bottom" round class="psv-pick">
+          <div style="padding:16px">
+            <div class="psv-pick__title" style="margin-bottom:12px">New ingredient</div>
+            <van-field v-model="newIng.name" label="Name" placeholder="e.g. ဆန် (rice)" />
+            <van-field v-model="newIng.base_unit" label="Base unit" placeholder="g / ml / pcs" />
+            <van-field v-model="newIng.purchase_unit" label="Purchase unit" placeholder="ပိဿာ / kg / litre" />
+            <van-field v-model.number="newIng.base_per_purchase" type="number" label="Units / purchase" placeholder="e.g. 1632 (ပိဿာ→g)" />
+            <div class="psv-dim" style="font-size:11px;padding:4px 12px">Leave “Units / purchase” empty to auto-fill from a known unit (ပိဿာ=1632, ကျပ်သား=10, kg=1000, litre=1000).</div>
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <van-button block plain @click="newIng.show = false">Cancel</van-button>
+              <van-button block type="primary" :loading="newIng.saving" @click="saveIngredient">Add</van-button>
+            </div>
+          </div>
+        </van-popup>
+        </template>
+      </div>
+    `,
+    setup() {
+      const tab = ref(0);
+      const loading = ref(true);
+      const refreshing = ref(false);
+      const list = ref([]);
+      const summary = ref({ revenue: 0, theoretical_cost: 0, food_cost_pct: null });
+      const month = ref(PSV.monthMMT());
+      const ingData = reactive({ ingredients: [], suggested: [] });
+      const ingPickerShow = ref(false);
+      const editor = reactive({ show: false, item: null, rows: [], saving: false });
+      const newIng = reactive({ show: false, name: "", base_unit: "g", purchase_unit: "", base_per_purchase: null, saving: false });
+      const staff = PSV.getStaff() || {};
+      const isAdmin = computed(() => String((staff && staff.role) || "").toLowerCase() === "admin");
+
+      const all = computed(() => list.value);
+      const costed = computed(() => list.value.filter((i) => i.has_recipe));
+      const sumPct = computed(() => (summary.value.food_cost_pct == null ? "—" : (Number(summary.value.food_cost_pct) || 0) + "%"));
+      const sumWarn = computed(() => summary.value.food_cost_pct != null && Number(summary.value.food_cost_pct) > 35);
+      const sumColor = computed(() => {
+        const p = Number(summary.value.food_cost_pct);
+        if (summary.value.food_cost_pct == null) return "var(--psv-text-dim, #64748b)";
+        if (p <= 35) return "#34d399";
+        if (p <= 40) return "#fbbf24";
+        return "#f87171";
+      });
+
+      function pct(it) {
+        if (!it || it.food_cost_pct == null) return "—";
+        return (Number(it.food_cost_pct) || 0) + "%";
+      }
+      function pillClass(it) {
+        const s = (it && it.status) || "unknown";
+        if (s === "ok") return "psv-pill--ok";
+        if (s === "warn") return "psv-pill--warn";
+        if (s === "high") return "psv-pill--danger";
+        return "psv-pill--dim";
+      }
+      function costSub(cost, unit) {
+        return cost == null ? "no purchase yet" : (fKs(cost) + " Ks / " + (unit || "g"));
+      }
+      const ingPickerItems = computed(() => {
+        const out = []; const seen = {};
+        for (const i of ingData.ingredients) {
+          seen[i.name] = 1;
+          out.push({ value: i.name, label: i.name, sub: costSub(i.cost_per_base_unit, i.base_unit), group: "Ingredients" });
+        }
+        for (const s of ingData.suggested) {
+          if (seen[s.name]) continue; seen[s.name] = 1;
+          out.push({ value: s.name, label: s.name, sub: costSub(s.cost_per_base_unit, "g"), group: "Stock-in items" });
+        }
+        out.push({ value: "__new__", label: "➕ New ingredient…", sub: "Set base unit & conversion", group: "➕ Add" });
+        return out;
+      });
+
+      async function loadAll() {
+        loading.value = true;
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/menu/costs", {}, 20000));
+          list.value = Array.isArray(d) ? d : [];
+        } catch (e) { list.value = []; }
+        try {
+          const r = PSV.unwrap(await PSV.apiCached("/api/menu/food-cost-report?month=" + month.value, {}, 20000));
+          summary.value = r || summary.value;
+        } catch (e) {}
+        loading.value = false;
+        refreshing.value = false;
+      }
+      async function loadIngredients() {
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/menu/ingredients", {}, 20000));
+          if (d) { ingData.ingredients = d.ingredients || []; ingData.suggested = d.suggested || []; }
+        } catch (e) {}
+      }
+
+      async function openEditor(it) {
+        haptic("light");
+        editor.item = it;
+        editor.rows = [];
+        editor.show = true;
+        await loadIngredients();
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/menu/recipe?item=" + encodeURIComponent(it.item_name), {}, 20000));
+          editor.rows = (d && d.rows) ? d.rows.map((r) => ({ ...r, qty_per_portion: Number(r.qty_per_portion), waste_pct: Number(r.waste_pct) })) : [];
+        } catch (e) { editor.rows = []; }
+      }
+      function closeEditor() { editor.show = false; editor.item = null; editor.rows = []; loadAll(); }
+
+      function lineCost(r) {
+        return r && r.line_cost != null ? fKs(r.line_cost) + " Ks" : "—";
+      }
+      const editorTotals = computed(() => {
+        let total = 0; let missing = [];
+        for (const r of editor.rows) {
+          if (r.line_cost == null) { missing.push(r.ingredient); continue; }
+          total += Number(r.line_cost) || 0;
+        }
+        const selling = Number((editor.item && editor.item.selling_price) || 0);
+        const pctv = selling > 0 && !missing.length ? Math.round((total / selling) * 1000) / 10 : null;
+        return { portion_cost: Math.round(total * 100) / 100, food_cost_pct: pctv, missing };
+      });
+
+      function pickIngredient(v) {
+        if (v === "__new__") {
+          newIng.name = ""; newIng.base_unit = "g"; newIng.purchase_unit = ""; newIng.base_per_purchase = null;
+          newIng.show = true;
+          return;
+        }
+        if (!editor.rows.some((r) => r.ingredient === v)) {
+          editor.rows.push({ id: null, ingredient: v, qty_per_portion: 1, waste_pct: 0, base_unit: "g", line_cost: null, unit_cost_per_base: null });
+        }
+        haptic("light");
+      }
+      function removeRow(ri) {
+        const r = editor.rows[ri];
+        editor.rows.splice(ri, 1);
+        if (r && r.id) {
+          PSV.api("/api/menu/recipe?id=" + r.id, { method: "DELETE" }).then(() => PSV.invalidate("/api/menu")).catch(() => {});
+        }
+      }
+      async function saveIngredient() {
+        const name = (newIng.name || "").trim();
+        if (!name) { showToast("Name is required", "fail"); return; }
+        newIng.saving = true;
+        try {
+          const body = { name: name, base_unit: newIng.base_unit || "g", purchase_unit: newIng.purchase_unit || null };
+          if (newIng.base_per_purchase != null && Number(newIng.base_per_purchase) > 0) body.base_per_purchase = Number(newIng.base_per_purchase);
+          await PSV.api("/api/menu/ingredients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          PSV.invalidate("/api/menu");
+          newIng.show = false;
+          await loadIngredients();
+          if (!editor.rows.some((r) => r.ingredient === name)) {
+            editor.rows.push({ id: null, ingredient: name, qty_per_portion: 1, waste_pct: 0, base_unit: newIng.base_unit || "g", line_cost: null, unit_cost_per_base: null });
+          }
+          showToast("Ingredient added", "success");
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
+        finally { newIng.saving = false; }
+      }
+      async function saveRecipe() {
+        if (!editor.item) return;
+        editor.saving = true; haptic("medium");
+        try {
+          for (const r of editor.rows) {
+            if (!r.ingredient) continue;
+            await PSV.api("/api/menu/recipe", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ menu_item: editor.item.item_name, ingredient: r.ingredient, qty_per_portion: Number(r.qty_per_portion) || 0, waste_pct: Number(r.waste_pct) || 0 }),
+            });
+          }
+          PSV.invalidate("/api/menu");
+          showToast("Recipe saved ✓", "success");
+          closeEditor();
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
+        finally { editor.saving = false; }
+      }
+
+      onMounted(() => { if (isAdmin.value) { loadAll(); loadIngredients(); } });
+      return {
+        tab, loading, refreshing, list, all, costed, summary, month, sumPct, sumWarn, sumColor,
+        pct, pillClass, fKs, openEditor, closeEditor, lineCost, editorTotals,
+        ingPickerShow, ingPickerItems, pickIngredient, removeRow,
+        newIng, saveIngredient, saveRecipe, editor, isAdmin,
+      };
     },
   };
 
@@ -6471,6 +6782,7 @@
     router.register("/consoles", Consoles);
     router.register("/food-orders", FoodOrders);
     router.register("/inventory", Inventory);
+    router.register("/recipes", RecipeCost);
     router.register("/reports", Reports);
     router.register("/attendance", Attendance);
     router.register("/opex", Opex);
@@ -7422,6 +7734,7 @@
     app.component("Consoles", Consoles);
     app.component("FoodOrders", FoodOrders);
     app.component("Inventory", Inventory);
+    app.component("RecipeCost", RecipeCost);
     app.component("Reports", Reports);
     app.component("Attendance", Attendance);
     app.component("Opex", Opex);
