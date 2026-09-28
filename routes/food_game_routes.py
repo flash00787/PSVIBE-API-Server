@@ -10,11 +10,27 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=['Food & Games'])
 
+FOOD_CATEGORIES = ("Food", "Drinks", "Instant Noodles", "Snacks", "Candy", "Other", "Soft Drinks", "Coffee")
+_FOOD_CAT_PLACEHOLDERS = ",".join(["%s"] * len(FOOD_CATEGORIES))
+
+# POS sellable predicate (owner 2026-09-28 Osmo): a made dish (item_type='dish') is
+# made-to-order and NEVER stock-gated (it starts at quantity 0 yet must be sellable in
+# the Food Menu / Food & drink sale / session food note); resale (ready-made) items stay
+# stock-gated (quantity > 0); ingredients (kind='ingredient') are never sellable.
+SELLABLE_FOOD_WHERE = (
+    f"(item_type='dish' OR (category IN ({_FOOD_CAT_PLACEHOLDERS}) AND quantity > 0)) "
+    "AND item_name NOT IN (SELECT name FROM ingredients WHERE kind='ingredient')"
+)
+
+
 @router.get("/fetch_food_prices", response_model=GenericResponse, tags=["Food"], summary="Fetch food prices [MySQL]")
 async def api_fetch_food_prices(auth=Depends(verify_api_key)):
-    """Fetch food prices from inventory table WHERE category=Food AND quantity > 0."""
+    """Fetch food prices from inventory: made dishes always (never stock-gated),
+    resale items only when in stock (quantity > 0)."""
     try:
-        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0 AND item_name NOT IN (SELECT name FROM ingredients WHERE kind='ingredient')", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
+        rows = _mysql_query(
+            f"SELECT item_name, unit_price FROM inventory WHERE {SELLABLE_FOOD_WHERE}",
+            FOOD_CATEGORIES)
         result = {}
         for r in rows:
             name = r["item_name"]
@@ -36,7 +52,9 @@ async def api_fetch_food_menu(all: int = 0, auth=Depends(verify_api_key)):
         if int(all or 0) == 1:
             rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory WHERE item_name NOT IN (SELECT name FROM ingredients WHERE kind='ingredient') ORDER BY category, item_name")
         else:
-            rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0 AND item_name NOT IN (SELECT name FROM ingredients WHERE kind='ingredient') ORDER BY category, item_name", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
+            rows = _mysql_query(
+                f"SELECT item_name, unit_price, category FROM inventory WHERE {SELLABLE_FOOD_WHERE} ORDER BY category, item_name",
+                FOOD_CATEGORIES)
         result = {}
         for r in rows:
             cat = r["category"]
@@ -52,9 +70,12 @@ async def api_fetch_food_menu(all: int = 0, auth=Depends(verify_api_key)):
 
 @router.get("/fetch_food_costs", response_model=GenericResponse, tags=["Food"], summary="Fetch food costs [MySQL]")
 async def api_fetch_food_costs(auth=Depends(verify_api_key)):
-    """Fetch food costs from inventory table WHERE category='Food' AND quantity > 0."""
+    """Fetch food costs from inventory: made dishes always (never stock-gated),
+    resale items only when in stock (quantity > 0)."""
     try:
-        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0 AND item_name NOT IN (SELECT name FROM ingredients WHERE kind='ingredient')", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
+        rows = _mysql_query(
+            f"SELECT item_name, unit_price FROM inventory WHERE {SELLABLE_FOOD_WHERE}",
+            FOOD_CATEGORIES)
         result = {}
         for r in rows:
             name = r["item_name"]

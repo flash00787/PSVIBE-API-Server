@@ -987,7 +987,7 @@ async def api_stock_in(req: dict, auth=Depends(verify_api_key)):
             ing = _mysql_query_one("SELECT id FROM ingredients WHERE name=%s", (item_name,))
             hist = _mysql_query_one("SELECT id FROM stock_in WHERE item_name=%s LIMIT 1", (item_name,))
             if not ing and not hist:
-                return error_response(message=f"'{item_name}' is not registered yet — add it in the Menu Register (မီနူး စာရင်း) first.")
+                return error_response(message=f"'{item_name}' is not registered yet — add it in Recipe & Cost first.")
 
         # Insert into stock_in
         _mysql_exec(
@@ -1087,7 +1087,7 @@ async def api_stock_in_batch(req: dict, auth=Depends(verify_api_key)):
         # ── Resolve every target BEFORE inserting anything (owner 2026-09-28 Osmo):
         # Stock-In only records purchases of EXISTING items — it never creates a
         # new inventory row and never touches inventory.unit_price (the selling
-        # price is set in the Menu Register).  Ingredients / stock-only items stay
+        # price is set in Recipe & Cost).  Ingredients / stock-only items stay
         # purchasable; unknown names are rejected up front (no partial writes).
         unknown = []
         targets = []
@@ -1103,7 +1103,7 @@ async def api_stock_in_batch(req: dict, auth=Depends(verify_api_key)):
             else:
                 unknown.append(it["item_name"])
         if unknown:
-            return error_response(message="Not registered — add these in the Menu Register (မီနူး စာရင်း) first: " + ", ".join(unknown))
+            return error_response(message="Not registered — add these in Recipe & Cost first: " + ", ".join(unknown))
 
         # ── Insert stock_in rows (one per item, same batch base_id + seq suffix ──
         # stock_in.batch_id is UNIQUE → per-item suffix keeps grouping without collision

@@ -123,6 +123,27 @@ def classify_item_type(explicit_type, has_recipe):
     return "resale"
 
 
+def food_menu_include(item_type, quantity, is_ingredient=False):
+    """Pure POS food-list inclusion rule (owner 2026-09-28 Osmo).
+
+    A newly created dish (ဟင်းပွဲ, ``item_type='dish'``) starts at quantity 0 but is
+    made-to-order, so it must still appear in the Food Menu / Food & drink sale /
+    session food note — a dish is NEVER stock-gated.  Resale (ready-made) items stay
+    stock-gated (quantity > 0), and ingredients (kind='ingredient') are never sellable.
+
+      dish + qty 0    -> True   (made-to-order, still sellable)
+      dish + qty > 0  -> True
+      resale + qty>0  -> True   (in stock)
+      resale + qty 0  -> False  (out of stock)
+      ingredient      -> False  (never sellable)
+    """
+    if is_ingredient:
+        return False
+    if normalize_item_type(item_type) == "dish":
+        return True
+    return _d(quantity) > 0
+
+
 def resale_unit_cost(purchases):
     """Purchase unit cost for a RESALE item = weighted average of stock_in rows.
 

@@ -127,7 +127,7 @@ def main():
     db3 = FakeStockDB(); install(db3)
     r3 = run(ar.api_stock_in(req={"item_name": "Brand New Item", "quantity": 2, "unit_cost": 10.0, "payment_method": ""}, auth="x"))
     check("unknown item: error (success False)", r3.get("success"), False)
-    check("unknown item: error mentions Menu Register", "Menu Register" in r3.get("error", ""), True)
+    check("unknown item: error mentions Recipe & Cost", "Recipe & Cost" in r3.get("error", ""), True)
     check("unknown item: no stock_in row written", len(db3.stock_in_rows), 0)
     check("unknown item: no inventory row written", len(db3.inventory), 0)
 
