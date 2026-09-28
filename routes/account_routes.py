@@ -3,12 +3,12 @@
 Owner requirements (Osmo 2026-09-19):
   * Account Balances view → ONLY "ACM's Acc" + "KBZ Bank", owner/admin only.
   * Account→account balance transfer, with role rules:
-        staff  → Cash / WavePay / KPay / AYA Pay
+        staff  → Cash / WavePay / KPay / AYA Pay / MMQR - CB
         admin  → ALL accounts (also ACM's Acc, KBZ Bank)
 
 Endpoints (mounted under /api/accounts):
   GET  /api/accounts/transferable   — accounts the caller may move money between (+ balances)
-  GET  /api/accounts/balances       — role-aware read-only balances (staff: 4 shop accts; admin: all 6, owner-only flagged)
+  GET  /api/accounts/balances       — role-aware read-only balances (staff: 5 shop accts; admin: all 7, owner-only flagged)
   POST /api/accounts/transfer       — atomic 2-leg transfer (cash_movements transfer_out+transfer_in)
   GET  /api/accounts/transfers      — transfer history (admin: all, staff: own only)
 
@@ -45,7 +45,7 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 # ── Account catalogue ────────────────────────────────────────────────────────
 # Operational accounts every staff member may use.
-_OPERATIONAL = ["Cash", "WavePay", "KPay", "AYA Pay"]
+_OPERATIONAL = ["Cash", "WavePay", "KPay", "AYA Pay", "MMQR - CB"]
 # Owner-only accounts (never visible/usable to staff).
 _OWNER_ONLY = ["ACM's Acc", "KBZ Bank"]
 ALL_ACCOUNTS = _OPERATIONAL + _OWNER_ONLY
@@ -56,6 +56,7 @@ _KEY_BY_NAME = {
     "WavePay": "wave",
     "KPay": "kpay",
     "AYA Pay": "aya_pay",
+    "MMQR - CB": "mmqr_cb",
     "ACM's Acc": "acm_acc",
     "KBZ Bank": "kbz_bank",
 }
@@ -136,8 +137,8 @@ def _iso(v):
 
 
 # ── Daily account balance open/close (Staff App) ────────────────────────────
-# Owner 2026-09-24: staff opens/closes the daily balance for the 4 shop accounts
-# (Cash, WavePay, KPay, AYA Pay). Owner accounts (ACM's Acc + KBZ Bank) excluded.
+# Owner 2026-09-24: staff opens/closes the daily balance for the 5 shop accounts
+# (Cash, WavePay, KPay, AYA Pay, MMQR - CB). Owner accounts (ACM's Acc + KBZ Bank) excluded.
 
 _daily_bal_table_ready = False
 
@@ -195,7 +196,7 @@ def _ensure_daily_balances_table() -> None:
 
 @router.get("/daily-balances/today")
 async def daily_balances_today(user: dict = Depends(get_staff_or_dashboard_user)):
-    """Today's daily balance open/close state for the 4 operational accounts."""
+    """Today's daily balance open/close state for the 5 operational accounts."""
     _ensure_daily_balances_table()
     today = _mmt_today_str()
     for acc in _OPERATIONAL:
@@ -238,7 +239,7 @@ async def daily_balances_open(body: dict = Body(...), user: dict = Depends(get_s
     today = _mmt_today_str()
     account = str(body.get("account") or "").strip()
     if account not in _OPERATIONAL:
-        raise HTTPException(status_code=400, detail="Account must be one of Cash / WavePay / KPay / AYA Pay")
+        raise HTTPException(status_code=400, detail="Account must be one of Cash / WavePay / KPay / AYA Pay / MMQR - CB")
     try:
         opening = float(body.get("opening_balance", 0))
     except (TypeError, ValueError):
@@ -266,7 +267,7 @@ async def daily_balances_close(body: dict = Body(...), user: dict = Depends(get_
     today = _mmt_today_str()
     account = str(body.get("account") or "").strip()
     if account not in _OPERATIONAL:
-        raise HTTPException(status_code=400, detail="Account must be one of Cash / WavePay / KPay / AYA Pay")
+        raise HTTPException(status_code=400, detail="Account must be one of Cash / WavePay / KPay / AYA Pay / MMQR - CB")
     try:
         closing = float(body.get("closing_balance", 0))
     except (TypeError, ValueError):
@@ -328,8 +329,8 @@ async def daily_balances_history(days: int = Query(7, ge=1, le=90),
 async def list_transferable(user: dict = Depends(get_staff_or_dashboard_user)):
     """Accounts the caller may transfer from/to, each with its current balance.
 
-    Staff  → the 4 shop accounts (Cash, WavePay, KPay, AYA Pay).
-    Admin  → all 6 accounts, with the two owner-only ones flagged (`owner_only`).
+    Staff  → the 5 shop accounts (Cash, WavePay, KPay, AYA Pay, MMQR - CB).
+    Admin  → all 7 accounts, with the two owner-only ones flagged (`owner_only`).
     """
     _ensure_table()
     role = "admin" if _is_admin(user) else "staff"
@@ -363,7 +364,7 @@ async def list_transferable(user: dict = Depends(get_staff_or_dashboard_user)):
 async def list_balances(user: dict = Depends(get_staff_or_dashboard_user)):
     """Role-aware read-only balances.
 
-    Staff  → the 4 shop accounts. Admin → all 6, with owner-only ones flagged.
+    Staff  → the 5 shop accounts. Admin → all 7, with owner-only ones flagged.
     (The strictly owner-only ACM's Acc + KBZ Bank view is unchanged and remains
      available at GET /api/finance/account-balances.)
     """

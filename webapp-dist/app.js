@@ -5748,7 +5748,7 @@
       async function load() {
         loading.value = true; err.value = ""; blocked.value = false;
         // Role-aware endpoint — the server decides which accounts a token may see
-        // (staff → 4 shop accounts, admin → all 6 with owner_only flags).
+        // (staff → 5 shop accounts, admin → all 7 with owner_only flags).
         // We render exactly what comes back; no client-side role guessing.
         try {
           const d = PSV.unwrap(await PSV.apiCached("/api/accounts/balances")) || {};
@@ -6198,8 +6198,8 @@
   };
 
   // ── VIEW: Daily Balance — open/close daily balance per operational account ──
-  // Owner 2026-09-24: staff opens/closes the daily balance for the 4 shop accounts
-  // (Cash, WavePay, KPay, AYA Pay). Owner accounts (ACM's Acc + KBZ Bank) excluded.
+  // Owner 2026-09-24: staff opens/closes the daily balance for the 5 shop accounts
+  // (Cash, WavePay, KPay, AYA Pay, MMQR - CB). Owner accounts (ACM's Acc + KBZ Bank) excluded.
   const DailyBalance = {
     components: { PageHeader },
     template: `
