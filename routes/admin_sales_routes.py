@@ -972,19 +972,28 @@ async def api_stock_in(req: dict, auth=Depends(verify_api_key)):
         batch_id = "SI-" + uuid.uuid4().hex[:12].upper()
         total_amount = quantity * unit_cost
 
+        # ── Resolve target (owner 2026-09-28 Osmo): Stock-In only records
+        # purchases of EXISTING items.  It never creates a new inventory row and
+        # never touches inventory.unit_price (selling price is set in the Menu
+        # Register).  Raw ingredients live as ingredients/stock rows and stay
+        # purchasable; a truly unknown name is rejected with a clear error.
+        inv = _mysql_query_one("SELECT id, quantity FROM inventory WHERE item_name=%s", (item_name,))
+        if inv:
+            _mysql_exec(
+                "UPDATE inventory SET quantity = quantity + %s, last_updated = NOW() WHERE id = %s",
+                (quantity, inv["id"])
+            )
+        else:
+            ing = _mysql_query_one("SELECT id FROM ingredients WHERE name=%s", (item_name,))
+            hist = _mysql_query_one("SELECT id FROM stock_in WHERE item_name=%s LIMIT 1", (item_name,))
+            if not ing and not hist:
+                return error_response(message=f"'{item_name}' is not registered yet — add it in the Menu Register (မီနူး စာရင်း) first.")
+
         # Insert into stock_in
         _mysql_exec(
             """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (batch_id, item_name, quantity, unit_cost, source or "", receipt_no or "", payment_method, paid_by, staff_name)
-        )
-
-        # Update inventory quantity
-        _mysql_exec(
-            """INSERT INTO inventory (item_name, category, quantity, unit_price, reorder_level, last_updated)
-               VALUES (%s, %s, %s, %s, %s, NOW())
-               ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity), last_updated = NOW()""",
-            (item_name, "", quantity, unit_cost, 0)
         )
 
         # Create cash_movements entries to deduct from account balance
@@ -1075,21 +1084,42 @@ async def api_stock_in_batch(req: dict, auth=Depends(verify_api_key)):
         base_id = "SI-" + uuid.uuid4().hex[:12].upper()
         total_amount = sum(it["quantity"] * it["unit_cost"] for it in cleaned)
 
+        # ── Resolve every target BEFORE inserting anything (owner 2026-09-28 Osmo):
+        # Stock-In only records purchases of EXISTING items — it never creates a
+        # new inventory row and never touches inventory.unit_price (the selling
+        # price is set in the Menu Register).  Ingredients / stock-only items stay
+        # purchasable; unknown names are rejected up front (no partial writes).
+        unknown = []
+        targets = []
+        for it in cleaned:
+            inv = _mysql_query_one("SELECT id, quantity FROM inventory WHERE item_name=%s", (it["item_name"],))
+            if inv:
+                targets.append({"item": it, "inv_id": inv["id"]})
+                continue
+            ing = _mysql_query_one("SELECT id FROM ingredients WHERE name=%s", (it["item_name"],))
+            hist = _mysql_query_one("SELECT id FROM stock_in WHERE item_name=%s LIMIT 1", (it["item_name"],))
+            if ing or hist:
+                targets.append({"item": it, "inv_id": None})
+            else:
+                unknown.append(it["item_name"])
+        if unknown:
+            return error_response(message="Not registered — add these in the Menu Register (မီနူး စာရင်း) first: " + ", ".join(unknown))
+
         # ── Insert stock_in rows (one per item, same batch base_id + seq suffix ──
         # stock_in.batch_id is UNIQUE → per-item suffix keeps grouping without collision
         added_rows = []
-        for idx, it in enumerate(cleaned, start=1):
+        for idx, t in enumerate(targets, start=1):
+            it = t["item"]
             batch_id = f"{base_id}-{idx:02d}"
+            if t["inv_id"]:
+                _mysql_exec(
+                    "UPDATE inventory SET quantity = quantity + %s, last_updated = NOW() WHERE id = %s",
+                    (it["quantity"], t["inv_id"])
+                )
             _mysql_exec(
                 """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (batch_id, it["item_name"], it["quantity"], it["unit_cost"], source or "", receipt_no or "", payment_method, paid_by, staff_name)
-            )
-            _mysql_exec(
-                """INSERT INTO inventory (item_name, category, quantity, unit_price, reorder_level, last_updated)
-                   VALUES (%s, %s, %s, %s, %s, NOW())
-                   ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity), last_updated = NOW()""",
-                (it["item_name"], "", it["quantity"], it["unit_cost"], 0)
             )
             added_rows.append({
                 "item_name": it["item_name"],
@@ -1133,6 +1163,28 @@ async def api_stock_in_batch(req: dict, auth=Depends(verify_api_key)):
         })
     except Exception as e:
         logger.error(f"api_stock_in_batch: {e}")
+        return error_response(str(e))
+
+
+@router.get("/stock/pick-items", response_model=GenericResponse, tags=["Stock"], summary="Item names selectable in Stock-In [MySQL]")
+async def api_stock_pick_items(auth=Depends(verify_api_key)):
+    """Distinct item names the Stock-In picker may select (owner 2026-09-28).
+
+    = inventory (sellable menu items) + ingredients (raw) + prior stock_in names.
+    Stock-In no longer creates items, so this is the full set of EXISTING items.
+    """
+    try:
+        names = set()
+        for r in _mysql_query("SELECT item_name FROM inventory"):
+            names.add((r["item_name"] or "").strip())
+        for r in _mysql_query("SELECT name FROM ingredients"):
+            names.add((r["name"] or "").strip())
+        for r in _mysql_query("SELECT DISTINCT item_name FROM stock_in"):
+            names.add((r["item_name"] or "").strip())
+        items = sorted(n for n in names if n)
+        return ok({"items": items})
+    except Exception as e:
+        logger.error(f"api_stock_pick_items: {e}")
         return error_response(str(e))
 
 

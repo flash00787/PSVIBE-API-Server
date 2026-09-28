@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api", tags=['Food & Games'])
 async def api_fetch_food_prices(auth=Depends(verify_api_key)):
     """Fetch food prices from inventory table WHERE category=Food AND quantity > 0."""
     try:
-        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
+        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0 AND item_name NOT IN (SELECT name FROM ingredients WHERE kind='ingredient')", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
         result = {}
         for r in rows:
             name = r["item_name"]
@@ -34,9 +34,9 @@ async def api_fetch_food_menu(all: int = 0, auth=Depends(verify_api_key)):
     """
     try:
         if int(all or 0) == 1:
-            rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory ORDER BY category, item_name")
+            rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory WHERE item_name NOT IN (SELECT name FROM ingredients WHERE kind='ingredient') ORDER BY category, item_name")
         else:
-            rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0 ORDER BY category, item_name", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
+            rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0 AND item_name NOT IN (SELECT name FROM ingredients WHERE kind='ingredient') ORDER BY category, item_name", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
         result = {}
         for r in rows:
             cat = r["category"]
@@ -54,7 +54,7 @@ async def api_fetch_food_menu(all: int = 0, auth=Depends(verify_api_key)):
 async def api_fetch_food_costs(auth=Depends(verify_api_key)):
     """Fetch food costs from inventory table WHERE category='Food' AND quantity > 0."""
     try:
-        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
+        rows = _mysql_query("SELECT item_name, unit_price FROM inventory WHERE category IN (%s,%s,%s,%s,%s,%s,%s,%s) AND quantity > 0 AND item_name NOT IN (SELECT name FROM ingredients WHERE kind='ingredient')", ("Food","Drinks","Instant Noodles","Snacks","Candy","Other","Soft Drinks","Coffee"))
         result = {}
         for r in rows:
             name = r["item_name"]

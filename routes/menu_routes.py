@@ -53,6 +53,10 @@ from routes.menu_cost import (
     normalize_variant_key,
     duplicate_variant_groups,
     aggregate_canonical_purchases,
+    normalize_menu_type,
+    menu_type_requires_price,
+    validate_menu_type_price,
+    classify_menu_type,
     COST_BASIS_LAST,
     COST_BASIS_AVERAGE,
     COST_BASIS_FIFO,
@@ -692,6 +696,266 @@ async def update_menu_item(body: dict = Body(...), request: Request = None,
         "selling_price": _num(final_price),
         "item_type": final_type,
     }}
+
+
+@router.get("/register")
+async def menu_register_list(request: Request, user: dict = Depends(require_admin_user)):
+    """ADMIN-only: Menu Register — every item with a unified type + pricing.
+
+    Returns dish / resale / ingredient items with selling price, current cost,
+    food-cost % and warnings (missing_price / price_equals_cost).  This is the
+    screen where selling prices are SET (owner 2026-09-28: Stock-In no longer
+    creates items, so prices are set here instead).
+    """
+    _ensure_tables()
+    branch = _branch(request)
+    inv = _inventory_map(branch)
+    costs, _conv, canon = _ingredient_costs(branch)
+    recipes = _recipes_by_menu(branch)
+    stock_items, _ = _stock_items(branch)
+    ing_names = {it["name"] for it in stock_items if it["kind"] == "ingredient"}
+
+    items = []
+    seen = set()
+
+    def _resale_cost(name):
+        return costs.get(canon.get(name, name)) or {}
+
+    for name, iv in inv.items():
+        has_recipe = bool(recipes.get(name))
+        stored_type = (iv.get("item_type") or "resale").strip().lower() or "resale"
+        mtype = "ingredient" if name in ing_names else classify_item_type(stored_type, has_recipe)
+        selling = _d(iv.get("unit_price"))
+        unit_cost = None
+        portion_cost = None
+        metrics = None
+        status = "unknown"
+        no_purchase_yet = False
+        cost_basis = None
+        last_price = None
+        last_date = None
+        if mtype == "dish":
+            rec = recipes.get(name) or []
+            if has_recipe:
+                unit_costs = {c_name: (costs.get(canon.get(c_name, c_name)) or {}).get("cost_per_base_unit")
+                              for c_name in {r["ingredient"] for r in rec}}
+                portion_cost, missing = portion_cost_from(
+                    [(r["qty_per_portion"], r["waste_pct"], r["ingredient"]) for r in rec], unit_costs)
+                if portion_cost is not None:
+                    metrics = food_cost_metrics(portion_cost, selling)
+                    status = food_cost_status(metrics["food_cost_pct"]) if metrics else "unknown"
+                else:
+                    status = "unknown"
+            else:
+                status = "no_recipe"
+            unit_cost = portion_cost
+        elif mtype == "ingredient":
+            ci = _resale_cost(name)
+            unit_cost = ci.get("unit_cost")
+            last_price = ci.get("last_purchase")
+            last_date = ci.get("last_in")
+            no_purchase_yet = unit_cost is None
+            status = "ingredient"
+        else:  # resale
+            ci = _resale_cost(name)
+            unit_cost = ci.get("unit_cost")
+            cost_basis = ci.get("cost_basis")
+            last_price = ci.get("last_purchase")
+            last_date = ci.get("last_in")
+            no_purchase_yet = unit_cost is None
+            if unit_cost is not None:
+                metrics = food_cost_metrics(unit_cost, selling)
+                status = food_cost_status(metrics["food_cost_pct"]) if metrics else "unknown"
+            else:
+                status = "no_purchase"
+
+        warnings = []
+        if mtype in ("dish", "resale"):
+            if selling is None or selling <= 0:
+                warnings.append("missing_price")
+            elif unit_cost is not None and abs(selling - unit_cost) < Decimal("0.005"):
+                warnings.append("price_equals_cost")
+        items.append({
+            "item_name": name,
+            "type": mtype,
+            "stored_item_type": stored_type,
+            "category": iv.get("category"),
+            "selling_price": _num(selling),
+            "unit_cost": _num(unit_cost),
+            "portion_cost": _num(portion_cost),
+            "food_cost_pct": _num(metrics["food_cost_pct"]) if metrics else None,
+            "margin": _num(metrics["margin"]) if metrics else None,
+            "margin_pct": _num(metrics["margin_pct"]) if metrics else None,
+            "status": status,
+            "no_purchase_yet": no_purchase_yet,
+            "cost_basis": cost_basis,
+            "last_purchase_price": _num(last_price),
+            "last_purchase_date": str(last_date) if last_date else None,
+            "warnings": warnings,
+            "has_recipe": has_recipe,
+        })
+        seen.add(name)
+
+    # Ingredients that are NOT inventory rows (raw stock-only items).
+    for it in stock_items:
+        name = it["name"]
+        if name in seen or it["kind"] != "ingredient":
+            continue
+        unit_cost = it.get("unit_cost")
+        items.append({
+            "item_name": name,
+            "type": "ingredient",
+            "stored_item_type": None,
+            "category": None,
+            "selling_price": None,
+            "unit_cost": _num(unit_cost),
+            "portion_cost": None,
+            "food_cost_pct": None,
+            "margin": None,
+            "margin_pct": None,
+            "status": "ingredient",
+            "no_purchase_yet": unit_cost is None,
+            "cost_basis": it.get("effective_cost_basis"),
+            "last_purchase_price": _num(it.get("last_purchase_price")),
+            "last_purchase_date": str(it.get("last_purchase")) if it.get("last_purchase") else None,
+            "warnings": [],
+            "has_recipe": False,
+        })
+        seen.add(name)
+
+    order = {"dish": 0, "resale": 1, "ingredient": 2}
+    items.sort(key=lambda i: (order.get(i["type"], 9), i["item_name"]))
+    return {"success": True, "data": items}
+
+
+@router.post("/register")
+async def create_register_item(body: dict = Body(...), request: Request = None,
+                               user: dict = Depends(require_admin_user)):
+    """ADMIN-only: create a menu item with a unified type + selling-price rules.
+
+    type 'dish'/'resale' -> inventory row (sellable), selling price REQUIRED.
+    type 'ingredient'    -> ingredients row (kind=ingredient), NO selling price.
+    """
+    _ensure_tables()
+    branch = _branch(request)
+    name = normalize_item_name(body.get("item_name", body.get("name")))
+    if not name:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "item_name is required", "code": 422})
+    mtype = normalize_menu_type(body.get("type", body.get("item_type")))
+    price_raw = body.get("unit_price", body.get("selling_price"))
+    price = parse_selling_price(price_raw) if price_raw is not None else None
+    err = validate_menu_type_price(mtype, price)
+    if err:
+        raise HTTPException(status_code=422, detail={"success": False, "error": err, "code": 422})
+    category = str(body.get("category") or "").strip() or "Food"
+
+    if mtype == "ingredient":
+        # must not collide with an existing sellable inventory row (reclassify instead)
+        clash = _q1("SELECT id FROM inventory WHERE item_name=%s", (name,))
+        if clash:
+            raise HTTPException(status_code=409, detail={"success": False, "error": f"'{name}' already exists as a menu item — switch its type instead", "code": 409})
+        existing = _q1("SELECT id FROM ingredients WHERE branch_id=%s AND name=%s", (branch, name))
+        if existing:
+            _ex("UPDATE ingredients SET kind='ingredient' WHERE id=%s", (existing["id"],))
+            iid = existing["id"]
+        else:
+            iid = _ex("INSERT INTO ingredients (branch_id, name, kind) VALUES (%s,%s,'ingredient')", (branch, name))
+        return {"success": True, "data": {"id": iid, "item_name": name, "type": "ingredient", "category": None, "selling_price": None}}
+
+    # dish / resale -> inventory row
+    existing = _q1("SELECT id FROM inventory WHERE item_name=%s", (name,))
+    if existing:
+        raise HTTPException(status_code=409, detail={"success": False, "error": f"'{name}' already exists in the menu", "code": 409})
+    new_id = _ex(
+        "INSERT INTO inventory (branch_id, item_name, category, quantity, unit_price, reorder_level, item_type) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        (branch, name, category, 0, price, 0, mtype),
+    )
+    ing = _q1("SELECT id FROM ingredients WHERE branch_id=%s AND name=%s", (branch, name))
+    if ing:
+        _ex("UPDATE ingredients SET kind='product' WHERE id=%s", (ing["id"],))
+    return {"success": True, "data": {"id": new_id, "item_name": name, "type": mtype, "category": category, "selling_price": _num(price)}}
+
+
+@router.patch("/register")
+async def update_register_item(body: dict = Body(...), request: Request = None,
+                               user: dict = Depends(require_admin_user)):
+    """ADMIN-only: edit a menu item — rename / category / type / selling price.
+
+    ``item_name`` identifies the CURRENT item.  ``type`` may switch between
+    dish / resale / ingredient.  Selling-price rules are enforced per type:
+      * dish/resale -> selling_price > 0 required;
+      * ingredient  -> no selling price.
+    """
+    _ensure_tables()
+    branch = _branch(request)
+    current = normalize_item_name(body.get("item_name"))
+    if not current:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "item_name (current name) is required", "code": 422})
+
+    inv = _q1("SELECT id, item_name, category, unit_price, item_type FROM inventory WHERE item_name=%s", (current,))
+    ing = _q1("SELECT id, name, kind FROM ingredients WHERE branch_id=%s AND name=%s", (branch, current))
+    if not inv and not ing:
+        raise HTTPException(status_code=404, detail={"success": False, "error": f"'{current}' not found", "code": 404})
+
+    new_name = normalize_item_name(body.get("new_name")) if body.get("new_name") is not None else None
+    category = str(body.get("category")).strip() if body.get("category") is not None else None
+
+    has_type = ("type" in body) or ("item_type" in body)
+    new_type = normalize_menu_type(body.get("type", body.get("item_type"))) if has_type else None
+
+    has_price = ("unit_price" in body) or ("selling_price" in body)
+    new_price = parse_selling_price(body.get("unit_price", body.get("selling_price"))) if has_price else None
+
+    recipes = _recipes_by_menu(branch)
+    stored_type = (inv.get("item_type") or "resale") if inv else "resale"
+    has_recipe = bool(recipes.get(current))
+    explicit_kind = ing.get("kind") if ing else None
+    cur_type = classify_menu_type(stored_type, has_recipe, explicit_kind)
+
+    target_type = new_type or cur_type
+    if target_type is None:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "type must be 'dish', 'resale' or 'ingredient'", "code": 422})
+
+    # Validate price against the TARGET type (an existing price is ignored when
+    # switching TO ingredient; it is required when the target is dish/resale).
+    if target_type == "ingredient":
+        if new_price is not None and new_price > 0:
+            raise HTTPException(status_code=422, detail={"success": False, "error": "ingredient items must not have a selling price", "code": 422})
+        validate_price = None
+    else:
+        validate_price = new_price if new_price is not None else (parse_selling_price(inv.get("unit_price")) if inv else None)
+        err = validate_menu_type_price(target_type, validate_price)
+        if err:
+            raise HTTPException(status_code=422, detail={"success": False, "error": err, "code": 422})
+
+    final_name = new_name or current
+    if final_name.lower() != current.lower():
+        clash = _q1("SELECT id FROM inventory WHERE item_name=%s", (final_name,))
+        clash2 = _q1("SELECT id FROM ingredients WHERE branch_id=%s AND name=%s", (branch, final_name))
+        if clash or clash2:
+            raise HTTPException(status_code=409, detail={"success": False, "error": f"'{final_name}' already exists", "code": 409})
+
+    final_selling = None
+    if target_type == "ingredient":
+        if ing:
+            _ex("UPDATE ingredients SET name=%s, kind='ingredient' WHERE id=%s", (final_name, ing["id"]))
+        else:
+            _ex("INSERT INTO ingredients (branch_id, name, kind) VALUES (%s,%s,'ingredient')", (branch, final_name))
+        if inv:
+            _ex("UPDATE inventory SET item_name=%s WHERE id=%s", (final_name, inv["id"]))
+    else:
+        final_cat = category if category is not None else ((inv.get("category") if inv else None) or "Food")
+        if inv:
+            _ex("UPDATE inventory SET item_name=%s, category=%s, unit_price=%s, item_type=%s WHERE id=%s",
+                (final_name, final_cat, validate_price, target_type, inv["id"]))
+        else:
+            _ex("INSERT INTO inventory (branch_id, item_name, category, quantity, unit_price, reorder_level, item_type) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (branch, final_name, final_cat, 0, validate_price, 0, target_type))
+        if ing:
+            _ex("UPDATE ingredients SET kind='product' WHERE id=%s", (ing["id"],))
+        final_selling = validate_price
+
+    return {"success": True, "data": {"item_name": final_name, "type": target_type, "category": category if category is not None else (inv.get("category") if inv else None), "selling_price": _num(final_selling)}}
 
 
 @router.get("/recipe")

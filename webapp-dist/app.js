@@ -3507,6 +3507,7 @@
   // Telegram mode: unchanged legacy grid (MORE_ITEMS) — no visual regression.
   const MORE_ITEMS = [
     { path: "/recipes", icon: "🍳", label: "Recipe & Cost", adminOnly: true },
+    { path: "/menu-register", icon: "📝", label: "မီနူး စာရင်း", adminOnly: true },
     { path: "/consoles", icon: "🕹️", label: "Consoles" },
     { path: "/food-orders", icon: "🍔", label: "Food Orders" },
     { path: "/inventory", icon: "📦", label: "Inventory" },
@@ -3524,6 +3525,7 @@
   ];
   const MENU_GROUPS = [
     { id: "kitchen", emoji: "🍳", en: "Kitchen", tone: "gold", items: [
+      { en: "Menu register (မီနူး စာရင်း)", sub: "Add items & set selling prices", icon: "📝", path: "/menu-register", adminOnly: true },
       { en: "Recipe & cost", sub: "Add dishes, ingredients & costing", icon: "🍳", path: "/recipes", adminOnly: true },
     ] },
     { id: "sales", emoji: "🎮", en: "Sales", tone: "gold", items: [
@@ -4511,7 +4513,6 @@
                 <div style="display:flex;align-items:flex-start;gap:0">
                   <van-cell-group inset style="margin-top:8px;flex:1">
                     <van-field :model-value="row.item_name" label="Item" placeholder="Select item" is-link readonly @click="rowItemPicker = ri" />
-                    <van-field v-if="row.isNew" v-model="row.custom_name" label="New Item Name" placeholder="Type new item name" />
                     <van-field v-model.number="row.quantity" type="number" label="Quantity" placeholder="0" />
                     <van-field v-model.number="row.unit_cost" type="number" label="Unit Cost" placeholder="0" />
                   </van-cell-group>
@@ -4520,6 +4521,9 @@
               </template>
               <div style="padding:10px 16px">
                 <van-button block plain type="primary" icon="plus" @click="addRow">Add Item</van-button>
+              </div>
+              <div class="psv-dim" style="padding:0 16px 6px;font-size:12px" @click="goRegister">
+                ➕ <u>ပစ္စည်းအသစ် / New item</u> — မီနူး စာရင်း (Menu Register) မှာ ထည့်ပါ ➜
               </div>
               <van-field :model-value="form.payment_method" label="Payment" is-link readonly @click="payPicker=true" />
             </van-cell-group>
@@ -4557,11 +4561,12 @@
       const _stkMethods = PAY_METHODS.concat(["ACM's Acc"]);
       const payColumns = _stkMethods.map((p) => ({ text: p, value: p }));
       const form = reactive({ payment_method: "Cash" });
-      const rows = ref([{ item_name: "", custom_name: "", quantity: 0, unit_cost: 0, isNew: false }]);
+      const rows = ref([{ item_name: "", quantity: 0, unit_cost: 0 }]);
       // Owner 2026-09-20 16:26: "stock in မှာ food list က အကုန် မမြင်ရဘူး / category အလိုက် ခွဲပေးပါ".
       // The picker used to list only items already in stock. Now the whole food menu is listed
       // first, grouped by its category, then any remaining stock-only items, then New Item.
       const foodMenu = ref(null);
+      const pickItems = ref([]);
       function loadFoodMenu() {
         if (foodMenu.value) return;
         // all=1: EVERY inventory item (not only the in-stock menu) so out-of-stock items like
@@ -4570,6 +4575,15 @@
           const m = PSV.unwrap(d) || {};
           foodMenu.value = m;
         }).catch(() => { foodMenu.value = {}; });
+      }
+      // Existing stock/ingredient items selectable in Stock-In (owner 2026-09-28:
+      // Stock-In no longer creates items, so this is the full set of EXISTING items).
+      function loadPickItems() {
+        PSV.apiCached("/api/stock/pick-items", {}, 300000).then((d) => {
+          const m = PSV.unwrap(d) || {};
+          const arr = Array.isArray(m) ? m : (m.items || []);
+          pickItems.value = arr;
+        }).catch(() => { pickItems.value = []; });
       }
       const itemColumns = computed(() => {
         const out = []; const seen = Object.create(null);
@@ -4599,45 +4613,48 @@
           seen[n] = 1;
           out.push({ value: n, label: n, group: "📦 Stock (existing)" });
         }
-        out.push({ value: "__new__", label: "🆕 New Item…", group: "➕ Add" });
+        for (const nm of pickItems.value) {
+          const n = String(nm || "").trim();
+          if (!n || seen[n]) continue;
+          seen[n] = 1;
+          out.push({ value: n, label: n, group: "🍚 Ingredients / stock" });
+        }
         return out;
       });
       const rowItemPickerShow = computed(() => rowItemPicker.value !== null);
       watch(rowItemPickerShow, (v) => { if (v) loadFoodMenu(); });
       // WAVE 5 UI fixes: valid-line count (was rows.length, which counted empty rows),
       // and a live total-cost line so staff can see the batch value before submitting.
-      function rowValid(r) { return !!((r.isNew ? (r.custom_name || "").trim() : r.item_name) && Number(r.quantity) > 0); }
+      function rowValid(r) { return !!((r.item_name || "").trim() && Number(r.quantity) > 0); }
       const validCount = computed(() => rows.value.filter(rowValid).length);
       const totalCost = computed(() => rows.value.reduce((s, r) => s + (rowValid(r) ? (Number(r.quantity) || 0) * (Number(r.unit_cost) || 0) : 0), 0));
-      function addRow() { rows.value.push({ item_name: "", custom_name: "", quantity: 0, unit_cost: 0, isNew: false }); haptic("light"); }
+      function addRow() { rows.value.push({ item_name: "", quantity: 0, unit_cost: 0 }); haptic("light"); }
       async function loadStock() {
         loading.value = true;
         try { const d = PSV.unwrap(await PSV.apiCached("/api/dashboard/inventory")); stock.value = Array.isArray(d) ? d : (d && d.items) || []; }
         catch (e) { stock.value = []; }
         finally { loading.value = false; refreshing.value = false; }
       }
-      onMounted(() => { loadStock(); loadFoodMenu(); });
+      onMounted(() => { loadStock(); loadFoodMenu(); loadPickItems(); });
       function pickPay({ selectedOptions }) { form.payment_method = selectedOptions[0].value; payPicker.value = false; }
+      function goRegister() { haptic("light"); router.push("/menu-register"); }
       function pickRowItem({ selectedOptions }) {
         const ri = rowItemPicker.value; rowItemPicker.value = null;
         if (ri === null || !selectedOptions || !selectedOptions[0]) return;
         const val = selectedOptions[0].value;
         const row = rows.value[ri]; if (!row) return;
-        if (val === "__new__") { row.isNew = true; row.item_name = "🆕 New Item…"; }
-        else {
-          row.isNew = false; row.item_name = val;
-          // WAVE 5 UI fix: prefill unit cost from the item's last known price (only when blank).
-          if (!Number(row.unit_cost)) {
-            const hit = stock.value.find((s) => (s.item_name || "") === val);
-            const price = hit ? Number(hit.unit_price) : 0;
-            if (price > 0) row.unit_cost = price;
-          }
+        row.item_name = val;
+        // WAVE 5 UI fix: prefill unit cost from the item's last known price (only when blank).
+        if (!Number(row.unit_cost)) {
+          const hit = stock.value.find((s) => (s.item_name || "") === val);
+          const price = hit ? Number(hit.unit_price) : 0;
+          if (price > 0) row.unit_cost = price;
         }
       }
       async function submit() {
         const items = [];
         for (const row of rows.value) {
-          const name = row.isNew ? (row.custom_name || "").trim() : row.item_name;
+          const name = (row.item_name || "").trim();
           if (!name || !row.quantity || row.quantity <= 0) continue;
           items.push({ item_name: name, quantity: row.quantity, unit_cost: row.unit_cost || 0 });
         }
@@ -4646,12 +4663,12 @@
         try {
           const res = PSV.unwrap(await PSV.apiCached("/api/stock/in/batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items, payment_method: form.payment_method, staff_name: PSV.getStaff().name }) }));
           showToast("Stock-in done ✓ " + (res && res.batch_id ? res.batch_id : "") + " · " + items.length + " item(s)", "success");
-          rows.value = [{ item_name: "", custom_name: "", quantity: 0, unit_cost: 0, isNew: false }];
+          rows.value = [{ item_name: "", quantity: 0, unit_cost: 0 }];
           loadStock();
         } catch (e) { showToast("Error: " + e.message, "fail"); }
         finally { submitting.value = false; }
       }
-      return { tab, stock, loading, refreshing, payPicker, rowItemPicker, rowItemPickerShow, submitting, payColumns, itemColumns, rows, form, addRow, loadStock, pickPay, pickRowItem, submit, validCount, totalCost, fKs };
+      return { tab, stock, loading, refreshing, payPicker, rowItemPicker, rowItemPickerShow, submitting, payColumns, itemColumns, rows, form, addRow, loadStock, pickPay, pickRowItem, submit, validCount, totalCost, fKs, goRegister };
     },
   };
 
@@ -4664,6 +4681,230 @@
   // (owner 2026-09-28 Osmo "ခုက ရောနေသလို ဖြစ်နေတယ်"): ingredient-vs-product
   // split, real purchase-unit display, prominent cost block, and a 🧺 Ingredients
   // review tab where items can be reclassified.
+  // ── VIEW: Menu Register — မီနူး စာရင်း (owner 2026-09-28 Osmo) ──
+  // The single place to CREATE items and SET selling prices. Stock-In no longer
+  // creates items, so this screen registers a new dish / ready-made item / raw
+  // ingredient BEFORE it can be purchased or sold.
+  const MenuRegister = {
+    components: { PageHeader },
+    template: `
+      <div class="pv-page">
+        <PageHeader title="မီနူး စာရင်း" back="/more" />
+
+        <div v-if="!isAdmin" class="psv-owner-card" style="margin:16px">
+          <div class="psv-owner-card__ico">🔒</div>
+          <div class="psv-owner-card__t">Admin only</div>
+          <div class="psv-owner-card__s">မီနူး စာရင်း is restricted to admins. Ask an owner / admin.</div>
+        </div>
+
+        <template v-else>
+        <div style="padding:8px 12px 0">
+          <van-button type="primary" block icon="plus" @click="openCreate">➕ အသစ် / New item</van-button>
+        </div>
+        <div class="psv-note" style="margin:8px 16px 0">
+          🍳 <b>ဟင်းပွဲ (dish)</b> = recipe နဲ့ တွက် · 🛒 <b>အဆင်သင့် (ready-made)</b> = ဝယ်ဈေးနဲ့ တွက် · 🍚 <b>ဟင်းခံ (ingredient)</b> = ရောင်းစရာမဟုတ်<br/>
+          ရောင်းစရာပစ္စည်း ဆိုရင် <b>ရောင်းဈေး</b> ထည့်ရမယ် — ဟင်းခံဆို ရောင်းဈေးမလို။
+        </div>
+
+        <van-tabs v-model:active="tab" sticky>
+          <van-tab title="🍳 ဟင်းပွဲ">
+            <van-pull-refresh v-model="refreshing" @refresh="load">
+              <van-empty v-if="!dishes.length && !loading" description="No made dishes" />
+              <van-cell-group v-else inset style="margin-top:8px">
+                <van-cell v-for="it in dishes" :key="it.item_name" :title="it.item_name" is-link @click="openEdit(it)">
+                  <template #label><span>{{ label(it) }}</span></template>
+                  <template #value><span class="pv-amount">{{ priceText(it) }}</span></template>
+                </van-cell>
+              </van-cell-group>
+            </van-pull-refresh>
+          </van-tab>
+          <van-tab title="🛒 အဆင်သင့်">
+            <van-pull-refresh v-model="refreshing" @refresh="load">
+              <van-empty v-if="!resale.length && !loading" description="No ready-made items" />
+              <van-cell-group v-else inset style="margin-top:8px">
+                <van-cell v-for="it in resale" :key="it.item_name" :title="it.item_name" is-link @click="openEdit(it)">
+                  <template #label><span>{{ label(it) }}</span></template>
+                  <template #value><span class="pv-amount">{{ priceText(it) }}</span></template>
+                </van-cell>
+              </van-cell-group>
+            </van-pull-refresh>
+          </van-tab>
+          <van-tab title="🍚 ဟင်းခံ">
+            <van-pull-refresh v-model="refreshing" @refresh="load">
+              <van-empty v-if="!ingredients.length && !loading" description="No ingredients" />
+              <van-cell-group v-else inset style="margin-top:8px">
+                <van-cell v-for="it in ingredients" :key="it.item_name" :title="it.item_name" is-link @click="openEdit(it)">
+                  <template #label><span>{{ label(it) }}</span></template>
+                  <template #value><span class="psv-pill psv-pill--dim">🍚 ဟင်းခံ</span></template>
+                </van-cell>
+              </van-cell-group>
+            </van-pull-refresh>
+          </van-tab>
+          <van-tab title="All">
+            <van-pull-refresh v-model="refreshing" @refresh="load">
+              <van-cell-group inset style="margin-top:8px">
+                <van-cell v-for="it in all" :key="it.item_name" :title="it.item_name" is-link @click="openEdit(it)">
+                  <template #label>
+                    <span class="psv-pill" :class="typePill(it)" style="margin-right:6px">{{ typeBadge(it) }}</span>
+                    <span>{{ label(it) }}</span>
+                  </template>
+                  <template #value><span class="pv-amount">{{ priceText(it) }}</span></template>
+                </van-cell>
+              </van-cell-group>
+            </van-pull-refresh>
+          </van-tab>
+        </van-tabs>
+
+        <!-- Create / edit sheet -->
+        <van-popup v-model:show="form.show" position="bottom" :style="{ height: '100%' }" class="psv-editor">
+          <div class="pv-page">
+            <van-nav-bar :title="form.isNew ? '➕ အသစ် / New item' : form.name" left-arrow @click-left="form.show = false" />
+            <div class="psv-card" style="margin:8px">
+              <van-field v-model="form.name" label="Name" placeholder="e.g. ကြေးအိုးထမင်း" />
+              <van-field v-model="form.category" label="Category" placeholder="Food" />
+              <div style="padding:0 12px 6px">
+                <div class="psv-dim" style="font-size:11px;margin-bottom:4px">Type · အမျိုးအစား</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                  <span class="psv-dchip" :class="{ 'psv-dchip--on': form.type === 'dish' }" @click="setType('dish')">🍳 ဟင်းပွဲ</span>
+                  <span class="psv-dchip" :class="{ 'psv-dchip--on': form.type === 'resale' }" @click="setType('resale')">🛒 အဆင်သင့်</span>
+                  <span class="psv-dchip" :class="{ 'psv-dchip--on': form.type === 'ingredient' }" @click="setType('ingredient')">🍚 ဟင်းခံ</span>
+                </div>
+              </div>
+              <van-field v-if="form.type !== 'ingredient'" v-model.number="form.selling_price" type="number" label="Selling price (Ks) · ရောင်းဈေး" placeholder="e.g. 3000" />
+              <div v-if="form.type === 'ingredient'" class="psv-note" style="margin:4px 12px">🍚 ဟင်းခံ — ရောင်းဈေး မလို။ ရောင်းစရာထဲ မပါ။</div>
+              <div v-if="warnText" class="psv-recipe-sum__warn" style="margin:8px 12px 0">⚠️ {{ warnText }}</div>
+              <div style="display:flex;gap:8px;margin:12px">
+                <van-button block plain @click="form.show = false">Cancel</van-button>
+                <van-button block type="primary" :loading="form.saving" @click="save">Save</van-button>
+              </div>
+            </div>
+          </div>
+        </van-popup>
+        </template>
+      </div>
+    `,
+    setup() {
+      const tab = ref(0);
+      const loading = ref(true);
+      const refreshing = ref(false);
+      const list = ref([]);
+      const staff = PSV.getStaff() || {};
+      const isAdmin = computed(() => String((staff && staff.role) || "").toLowerCase() === "admin");
+      const form = reactive({ show: false, isNew: true, name: "", category: "Food", type: "dish", selling_price: null, saving: false, original_name: "", original_type: "dish" });
+
+      const all = computed(() => list.value);
+      const dishes = computed(() => list.value.filter((i) => i.type === "dish"));
+      const resale = computed(() => list.value.filter((i) => i.type === "resale"));
+      const ingredients = computed(() => list.value.filter((i) => i.type === "ingredient"));
+
+      function typeBadge(it) {
+        if (!it) return "";
+        return it.type === "dish" ? "🍳 ဟင်းပွဲ" : (it.type === "resale" ? "🛒 အဆင်သင့်" : "🍚 ဟင်းခံ");
+      }
+      function typePill(it) {
+        if (!it) return "psv-pill--dim";
+        return it.type === "dish" ? "psv-pill--ok" : (it.type === "ingredient" ? "psv-pill--dim" : "psv-pill--warn");
+      }
+      function priceText(it) {
+        if (!it || it.type === "ingredient") return "—";
+        if (it.selling_price == null || Number(it.selling_price) <= 0) return "⚠️ no price";
+        return fKs(it.selling_price) + " Ks";
+      }
+      function label(it) {
+        if (!it) return "";
+        if (it.type === "ingredient") {
+          return it.unit_cost != null ? ("cost " + fKs(it.unit_cost) + " Ks") : "raw ingredient";
+        }
+        const parts = [];
+        if (it.warnings && it.warnings.length) {
+          if (it.warnings.indexOf("missing_price") >= 0) parts.push("⚠️ no selling price");
+          if (it.warnings.indexOf("price_equals_cost") >= 0) parts.push("⚠️ price == cost");
+        }
+        if (it.food_cost_pct != null) parts.push("cost " + fKs(it.unit_cost) + " · " + it.food_cost_pct + "%");
+        else if (it.no_purchase_yet) parts.push("no purchase yet");
+        return parts.join(" · ");
+      }
+      function warnText() {
+        if (form.type === "ingredient") return "";
+        const p = Number(form.selling_price);
+        if (form.selling_price == null || isNaN(p) || p <= 0) return "ရောင်းဈေး (selling price) ထည့်ရမယ် — must be > 0";
+        return "";
+      }
+
+      async function load() {
+        loading.value = true;
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/menu/register", {}, 20000));
+          list.value = Array.isArray(d) ? d : [];
+        } catch (e) { list.value = []; }
+        loading.value = false;
+        refreshing.value = false;
+      }
+      function openCreate() {
+        form.isNew = true;
+        form.name = ""; form.category = "Food"; form.type = "dish"; form.selling_price = null; form.saving = false;
+        form.original_name = ""; form.original_type = "dish";
+        form.show = true;
+      }
+      function openEdit(it) {
+        if (!it) return;
+        form.isNew = false;
+        form.name = it.item_name;
+        form.category = it.category || "Food";
+        form.type = it.type || "resale";
+        form.selling_price = (it.selling_price == null || Number(it.selling_price) <= 0) ? null : Number(it.selling_price);
+        form.saving = false;
+        form.original_name = it.item_name;
+        form.original_type = it.type || "resale";
+        form.show = true;
+      }
+      function setType(t) {
+        if (form.type === t) return;
+        form.type = t;
+        if (t === "ingredient") form.selling_price = null;
+      }
+      async function save() {
+        const name = (form.name || "").trim();
+        if (!name) { showToast("Name is required", "fail"); return; }
+        if (form.type !== "ingredient") {
+          const p = Number(form.selling_price);
+          if (form.selling_price == null || isNaN(p) || p <= 0) { showToast("ရောင်းဈေး > 0 ထည့်ပါ", "fail"); return; }
+        }
+        // Confirm destructive type switch -> ingredient (item stops being sellable)
+        if (!form.isNew && form.type === "ingredient" && form.original_type !== "ingredient") {
+          const ok = await confirmBox(
+            "ဟင်းခံအဖြစ် ပြောင်းမလား? (Ingredient)",
+            "ဒီပစ္စည်း ရောင်းစရာထဲ မပါတော့ဘူး — recipe / POS မှာ မပေါ်တော့ပါဘူး။",
+            "ပြောင်းမယ်", "မလုပ်တော့ဘူး", true);
+          if (!ok) return;
+        }
+        form.saving = true; haptic("medium");
+        try {
+          if (form.isNew) {
+            const body = { item_name: name, category: form.category || "Food", type: form.type };
+            if (form.type !== "ingredient") body.unit_price = Number(form.selling_price);
+            await PSV.api("/api/menu/register", { method: "POST", headers: HJSON, body: JSON.stringify(body) });
+            showToast("မီနူးထဲ ထည့်ပြီး ✓", "success");
+          } else {
+            const body = { item_name: form.original_name, type: form.type, category: form.category || "Food" };
+            if (name !== form.original_name) body.new_name = name;
+            if (form.type !== "ingredient") body.unit_price = Number(form.selling_price);
+            await PSV.api("/api/menu/register", { method: "PATCH", headers: HJSON, body: JSON.stringify(body) });
+            showToast("သိမ်းပြီး ✓", "success");
+          }
+          PSV.invalidate("/api/menu");
+          PSV.invalidate("/api/stock/pick-items");
+          form.show = false;
+          await load();
+        } catch (e) { showToast("Error: " + e.message, "fail"); }
+        finally { form.saving = false; }
+      }
+
+      onMounted(() => { if (isAdmin.value) load(); });
+      return { tab, loading, refreshing, list, all, dishes, resale, ingredients, isAdmin, form, typeBadge, typePill, priceText, label, warnText, load, openCreate, openEdit, setType, save, fKs };
+    },
+  };
+
   const RecipeCost = {
     components: { PageHeader },
     template: `
@@ -7331,6 +7572,7 @@
     router.register("/food-orders", FoodOrders);
     router.register("/inventory", Inventory);
     router.register("/recipes", RecipeCost);
+    router.register("/menu-register", MenuRegister);
     router.register("/reports", Reports);
     router.register("/attendance", Attendance);
     router.register("/opex", Opex);
@@ -8283,6 +8525,7 @@
     app.component("FoodOrders", FoodOrders);
     app.component("Inventory", Inventory);
     app.component("RecipeCost", RecipeCost);
+    app.component("MenuRegister", MenuRegister);
     app.component("Reports", Reports);
     app.component("Attendance", Attendance);
     app.component("Opex", Opex);

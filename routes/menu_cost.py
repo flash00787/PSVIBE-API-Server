@@ -580,6 +580,76 @@ def aggregate_canonical_purchases(stock_rows, canonical_of=None):
     return out
 
 
+# ── Menu-register type (owner 2026-09-28 Osmo: "Menu register သီးသန့်ထား") ──
+# A single 3-way "type" for the Menu Register screen:
+#   dish        — made dish (sellable, recipe-costed, selling price REQUIRED)
+#   resale      — ready-made / packaged (sellable, purchase-costed, price REQUIRED)
+#   ingredient  — raw material (NOT sellable, NO selling price)
+# This maps onto the two existing storage axes: inventory.item_type (dish|resale)
+# and ingredients.kind (ingredient|product).
+MENU_TYPES = ("dish", "resale", "ingredient")
+
+
+def normalize_menu_type(value):
+    """Return the canonical menu-register type ("dish"|"resale"|"ingredient") or None.
+
+    Accepts friendly aliases so the UI / API can send human labels:
+      dish       <- dish | made | made-dish | made_dish
+      resale     <- resale | ready | ready-made | ready_made | packaged | product
+      ingredient <- ingredient | ingredients | raw | ဟင်းခံ | ဟင်းခံပစ္စည်း
+    Unknown / empty / None -> None.
+    """
+    t = str(value or "").strip().lower()
+    if t in ("dish", "made", "made-dish", "made dish", "made_dish", "madedish"):
+        return "dish"
+    if t in ("resale", "ready", "ready-made", "ready_made", "readymade", "packaged",
+             "product", "products", "sellable"):
+        return "resale"
+    if t in ("ingredient", "ingredients", "raw", "ဟင်းခံ", "ဟင်းခံပစ္စည်း", "ဟင်းခံပစ္စည်းများ"):
+        return "ingredient"
+    return None
+
+
+def menu_type_requires_price(menu_type):
+    """True when a menu-register type is sellable and must carry a selling price.
+
+    dish + resale are sellable -> price required; ingredient -> no price."""
+    return normalize_menu_type(menu_type) in ("dish", "resale")
+
+
+def validate_menu_type_price(menu_type, selling_price):
+    """Return an error string, or None when the (type, price) pair is valid.
+
+    * dish / resale -> selling_price must be a positive number (> 0).
+    * ingredient    -> selling_price must be absent / None / <= 0 (never sellable).
+    * invalid type  -> error.
+
+    ``selling_price`` may be a Decimal, int, float, str, or None.  This is the
+    single source of truth for the Menu Register create/edit validation.
+    """
+    mt = normalize_menu_type(menu_type)
+    if mt is None:
+        return "type must be 'dish', 'resale' or 'ingredient'"
+    p = parse_selling_price(selling_price) if selling_price is not None else None
+    if mt == "ingredient":
+        if p is not None and p > 0:
+            return "ingredient items must not have a selling price"
+        return None
+    if p is None or p <= 0:
+        return f"{mt} items require a selling price > 0"
+    return None
+
+
+def classify_menu_type(stored_item_type, has_recipe, explicit_kind):
+    """Effective menu-register type from the two storage axes.
+
+    An explicit ``ingredients.kind == 'ingredient'`` always wins (not sellable).
+    Otherwise dish/resale follows ``classify_item_type`` (recipe -> dish)."""
+    if normalize_kind(explicit_kind) == "ingredient":
+        return "ingredient"
+    return classify_item_type(stored_item_type, has_recipe)
+
+
 def ingredient_display(weighted_avg, purchase_unit, base_unit, base_per_purchase):
     """How to show an ingredient's unit cost (owner 2026-09-28: stop "/g" for all).
 
