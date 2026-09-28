@@ -9,6 +9,7 @@ from app import *
 
 # Additional imports for FIFO inventory
 from inventory_fifo import get_fifo_valuation
+import dish_consumption as _dish_consume
 
 def now_mmt():
     """Return current datetime in MMT (UTC+6:30)"""
@@ -523,9 +524,10 @@ async def api_stock_deduct(req: dict, auth=Depends(verify_api_key)):
         qty = req.get("quantity", 1)
         price = req.get("unit_price", 0)
         staff = req.get("staff_name", "")
-        _mysql_exec(
+        sid = _mysql_exec(
             "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, staff_name) VALUES (%s, %s, %s, %s, NOW(), %s)",
             (item_name, qty, price, qty * price, staff))
+        _dish_consume.consume_after_stock_out(item_name, qty, sid)
         return ok({"deducted": True, "item_name": item_name, "quantity": qty})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -852,6 +854,7 @@ async def food_cart_release(data: dict, auth=Depends(verify_api_key)):
             if item_name and qty > 0:
                 # Wrap release + stock_out + inventory in a transaction for atomicity
                 _rel_conn = _mc.connect(host=os.environ.get("MYSQL_HOST","localhost"),user=os.environ.get("MYSQL_USER","root"),password=os.environ.get("MYSQL_PASSWORD",""),database=os.environ.get("MYSQL_DATABASE","psvibe"),port=int(os.environ.get("MYSQL_PORT","3306")),charset="utf8mb4")
+                _so_id = None
                 try:
                     _rel_cur = _rel_conn.cursor()
                     _rel_conn.start_transaction()
@@ -865,6 +868,7 @@ async def food_cart_release(data: dict, auth=Depends(verify_api_key)):
                         "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, staff_name, notes) VALUES (%s, %s, %s, %s, NOW(), %s, %s)",
                         (item_name, qty, price, qty * price, staff, f"Food cart release: booking {booking_id}")
                     )
+                    _so_id = _rel_cur.lastrowid
                     # Decrement inventory quantity for legacy summary column
                     _rel_cur.execute(
                         "UPDATE inventory SET quantity = GREATEST(0, quantity - %s), last_updated = NOW() WHERE item_name = %s",
@@ -879,6 +883,12 @@ async def food_cart_release(data: dict, auth=Depends(verify_api_key)):
                         _rel_conn.close()
                     except Exception:
                         pass
+                # Dish → consume recipe ingredients FIFO (idempotent, best-effort)
+                if _so_id:
+                    try:
+                        _dish_consume.consume_after_stock_out(item_name, qty, _so_id, voucher_no=f"booking:{booking_id}")
+                    except Exception as _ce:
+                        logger.error("food_cart_release consume: %s", _ce)
         # Mark food_cart entries as fulfilled
         _mysql_exec("UPDATE food_cart SET fulfilled_at = DATE_ADD(NOW(), INTERVAL 390 MINUTE) WHERE booking_id = %s AND fulfilled_at IS NULL", (booking_id,))
         return ok({"message": f"Released {len(items)} items for booking {booking_id}"})

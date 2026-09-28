@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query, Body
 
 from auth import get_current_user, get_staff_or_dashboard_user
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
+import dish_consumption as _dish_consume
 
 # ── MMT time helpers ──
 def _get_mmt_now():
@@ -2025,11 +2026,12 @@ async def dashboard_stock_check_resolve(req: dict, user: dict = Depends(get_staf
                 # Current inventory < actual → surplus → stock_in
                 qty = delta
                 adj_batch = "SI-ADJ-" + uuid.uuid4().hex[:8].upper()
-                _mysql_execute(
+                adj_sid = _mysql_execute(
                     """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
                        VALUES (%s, %s, %s, 0, 'Stock Check Adjustment', %s, '', '', %s)""",
                     (adj_batch, item_name, qty, adj_batch, resolved_by)
                 )
+                _dish_consume.ensure_layer_for_stock_in(adj_sid)
                 details.append(f"{item_name}: +{qty} (stock_in, price 0)")
             else:
                 # delta == 0 → already matches, just mark as reviewed

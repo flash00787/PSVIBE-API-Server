@@ -16,6 +16,7 @@ from sale_money import (
 import staff_audit
 import logging, json as _json, os
 from datetime import datetime, timezone, timedelta
+import dish_consumption as _dish_consume
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=['Admin'])
@@ -62,10 +63,12 @@ async def api_inventory_stock_out(req: dict, auth=Depends(verify_api_key)):
             return error_response(message="item_name and qty > 0 required")
 
         # Insert into stock_out table
-        _mysql_exec(
+        sid = _mysql_exec(
             "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, notes) VALUES (%s, %s, %s, %s, %s, %s)",
             (item_name, qty, unit_price, subtotal, sale_date, f"Voucher: {voucher_no}")
         )
+        # Dish → consume recipe ingredients FIFO (idempotent, best-effort)
+        _dish_consume.consume_after_stock_out(item_name, qty, sid, voucher_no=voucher_no or None)
 
         # Decrement inventory.quantity (legacy summary column — NOTE: FIFO stock_in-stock_out is authoritative; use reconcile_inventory_quantities() to sync)
         _mysql_exec(
@@ -869,11 +872,12 @@ async def api_stock_out_log(req: dict, auth=Depends(verify_api_key)):
 
         sale_date = created_at if created_at else datetime.now(timezone(timedelta(hours=6, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
 
-        _mysql_exec(
+        sid = _mysql_exec(
             "INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, staff_name, notes) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (item_name, qty, unit_cost, total_cost, sale_date, staff, notes)
         )
+        _dish_consume.consume_after_stock_out(item_name, qty, sid)
 
         # Decrement inventory quantity
         _mysql_exec(
@@ -914,11 +918,13 @@ async def api_stock_in_log(req: dict, auth=Depends(verify_api_key)):
         total_amount = qty * unit_cost
 
         # Note: total_cost is STORED GENERATED column (= quantity * unit_cost), do not insert
-        _mysql_exec(
+        sid = _mysql_exec(
             "INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (batch_id, item_name, qty, unit_cost, supplier or "Manual", notes or "", payment_method, paid_by, staff)
         )
+        # Keep the FIFO ledger current (idempotent layer per purchase)
+        _dish_consume.ensure_layer_for_stock_in(sid)
 
         # Update inventory quantity
         _mysql_exec(
@@ -990,11 +996,12 @@ async def api_stock_in(req: dict, auth=Depends(verify_api_key)):
                 return error_response(message=f"'{item_name}' is not registered yet — add it in Recipe & Cost first.")
 
         # Insert into stock_in
-        _mysql_exec(
+        sid = _mysql_exec(
             """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (batch_id, item_name, quantity, unit_cost, source or "", receipt_no or "", payment_method, paid_by, staff_name)
         )
+        _dish_consume.ensure_layer_for_stock_in(sid)
 
         # Create cash_movements entries to deduct from account balance
         note = f"Stock In: {item_name} x{quantity}"
@@ -1116,11 +1123,12 @@ async def api_stock_in_batch(req: dict, auth=Depends(verify_api_key)):
                     "UPDATE inventory SET quantity = quantity + %s, last_updated = NOW() WHERE id = %s",
                     (it["quantity"], t["inv_id"])
                 )
-            _mysql_exec(
+            sid = _mysql_exec(
                 """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (batch_id, it["item_name"], it["quantity"], it["unit_cost"], source or "", receipt_no or "", payment_method, paid_by, staff_name)
             )
+            _dish_consume.ensure_layer_for_stock_in(sid)
             added_rows.append({
                 "item_name": it["item_name"],
                 "qty": it["quantity"],

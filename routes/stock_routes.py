@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from auth import get_current_user, get_staff_or_dashboard_user
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
+import dish_consumption as _dish_consume
 
 logger = logging.getLogger(__name__)
 
@@ -197,11 +198,12 @@ async def dashboard_stock_in(req: dict, user: dict = Depends(get_current_user)):
         batch_id = "SI-" + uuid.uuid4().hex[:12].upper()
 
         # Insert into stock_in
-        _mysql_execute(
+        sid = _mysql_execute(
             """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (batch_id, item["item_name"], quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
         )
+        _dish_consume.ensure_layer_for_stock_in(sid)
 
         # Update inventory quantity
         new_qty = int(item["quantity"] or 0) + quantity
@@ -322,11 +324,12 @@ async def dashboard_stock_out(req: dict, request: Request, user: dict = Depends(
 
         # Insert into stock_out
         total_amount = quantity * unit_price
-        _mysql_execute(
+        sid = _mysql_execute(
             """INSERT INTO stock_out (item_name, quantity, unit_price, total, sale_date, notes, staff_name)
                VALUES (%s, %s, %s, %s, NOW(), %s, %s)""",
             (item["item_name"], quantity, unit_price, total_amount, notes, _actor or None)
         )
+        _dish_consume.consume_after_stock_out(item["item_name"], quantity, sid)
 
         # Update inventory quantity
         new_qty = current_qty - quantity

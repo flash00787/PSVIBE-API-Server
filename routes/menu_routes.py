@@ -49,6 +49,7 @@ from routes.menu_cost import (
     select_unit_cost,
     last_purchase_cost,
     fifo_layers,
+    ledger_layers,
     fifo_consume,
     normalize_variant_key,
     duplicate_variant_groups,
@@ -260,6 +261,28 @@ def _canonical_fifo_layers(branch_id: int, canon: dict):
     return out
 
 
+def _ledger_fifo_layers(branch_id: int, canon: dict):
+    """FIFO layers from ``stock_layers.qty_remaining`` (ACTUAL remaining, already
+    net of consumption) per canonical name, oldest -> newest.  Returns {} when the
+    ledger table is absent or empty — callers then fall back to the estimate."""
+    try:
+        rows = _q(
+            "SELECT item_name, qty_remaining, unit_cost, purchased_at, stock_in_id FROM stock_layers "
+            "WHERE branch_id=%s AND qty_remaining > 0 ORDER BY purchased_at ASC, id ASC",
+            (branch_id,),
+        )
+    except Exception:
+        return {}
+    buckets = {}
+    for r in rows:
+        cname = canon.get(r["item_name"], r["item_name"])
+        buckets.setdefault(cname, []).append(
+            (r["qty_remaining"], r["unit_cost"],
+             str(r["purchased_at"]) if r.get("purchased_at") else "", r["stock_in_id"])
+        )
+    return {cname: ledger_layers(raw) for cname, raw in buckets.items()}
+
+
 def _fifo_consumption(branch_id: int, canon: dict):
     """Compute FIFO consumption (Decimal) per canonical ingredient.
 
@@ -327,13 +350,18 @@ def _ingredient_costs(branch_id: int):
             conv[cname] = r
     global_basis = _global_cost_basis()
     fifo_layers_map = _canonical_fifo_layers(branch_id, canon)
+    ledger_map = _ledger_fifo_layers(branch_id, canon)
     consumption, recipe_referenced = _fifo_consumption(branch_id, canon)
     out = {}
     for name, s in by_canon.items():
         cr = conv.get(name) or {}
         bpp = cr.get("base_per_purchase") if cr.get("base_per_purchase") is not None else Decimal("1")
         basis = normalize_cost_basis(cr.get("cost_basis")) or global_basis
-        f = fifo_consume(fifo_layers_map.get(name, []), consumption.get(name, Decimal("0")))
+        has_ledger = name in ledger_map
+        f = fifo_consume(
+            ledger_map[name] if has_ledger else fifo_layers_map.get(name, []),
+            Decimal("0") if has_ledger else consumption.get(name, Decimal("0")),
+        )
         fifo_unit = f["unit_cost"]
         unit_cost = select_unit_cost(s["weighted_avg"], s["last_purchase"], basis, fifo_unit)
         cp = cost_per_base_unit(unit_cost, bpp) if unit_cost is not None else None
@@ -357,6 +385,7 @@ def _ingredient_costs(branch_id: int):
             "fifo_out_of_stock": f["out_of_stock"],
             "fifo_est": name not in recipe_referenced,
             "fifo_no_purchase": not fifo_layers_map.get(name),
+            "fifo_ledger": has_ledger,
         }
     return out, conv, canon
 
@@ -441,6 +470,7 @@ def _stock_items(branch_id: int):
 
     global_basis = _global_cost_basis()
     fifo_layers_map = _canonical_fifo_layers(branch_id, canon)
+    ledger_map = _ledger_fifo_layers(branch_id, canon)
     consumption, recipe_referenced = _fifo_consumption(branch_id, canon)
     items = []
     for name in sorted(names):
@@ -451,7 +481,11 @@ def _stock_items(branch_id: int):
         is_sellable = name in inv_names or any(v in inv_names for v in variants_by_canon.get(name, []))
         kind = classify_item_kind(explicit_kind, is_sellable)
         basis = normalize_cost_basis(own.get("cost_basis")) or global_basis
-        f = fifo_consume(fifo_layers_map.get(name, []), consumption.get(name, Decimal("0")))
+        has_ledger = name in ledger_map
+        f = fifo_consume(
+            ledger_map[name] if has_ledger else fifo_layers_map.get(name, []),
+            Decimal("0") if has_ledger else consumption.get(name, Decimal("0")),
+        )
         fifo_unit = f["unit_cost"]
         unit_cost = select_unit_cost(s.get("weighted_avg"), s.get("last_purchase"), basis, fifo_unit)
         bpp = cr.get("base_per_purchase") if cr.get("base_per_purchase") is not None else None
@@ -488,6 +522,7 @@ def _stock_items(branch_id: int):
             "fifo_out_of_stock": f["out_of_stock"],
             "fifo_est": name not in recipe_referenced,
             "fifo_no_purchase": not fifo_layers_map.get(name),
+            "fifo_ledger": has_ledger,
             "variants": sorted(variants_by_canon.get(name, [])),
         })
     return items, conv_raw
@@ -1386,6 +1421,22 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
         (branch, start, end),
     )
 
+    # Actual FIFO COGS recorded on dish sales (ingredient_consumption).  Timestamp is
+    # server time (UTC) vs stock_out.sale_date (MMT) — approximate at month edges.
+    actual_cogs_map = {}
+    total_actual_cogs = Decimal("0")
+    try:
+        cogs_rows = _q(
+            "SELECT dish_item, SUM(cost) AS cogs FROM ingredient_consumption "
+            "WHERE branch_id=%s AND created_at >= %s AND created_at < %s GROUP BY dish_item",
+            (branch, start, end),
+        )
+        for cr in cogs_rows:
+            actual_cogs_map[cr["dish_item"]] = _d(cr["cogs"])
+            total_actual_cogs += _d(cr["cogs"])
+    except Exception:
+        pass  # ingredient_consumption may not exist yet
+
     breakdown = []
     total_revenue = Decimal("0")
     total_theoretical = Decimal("0")
@@ -1453,6 +1504,7 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
             "theoretical_cost": _num(theoretical),
             "missing_ingredients": missing,
             "no_purchase_yet": no_purchase,
+            "actual_cogs": _num(actual_cogs_map.get(name)),
         })
 
     food_cost_pct = None
@@ -1470,6 +1522,7 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
             "month": month,
             "revenue": _num(total_revenue),
             "theoretical_cost": _num(total_theoretical),
+            "actual_cogs": _num(total_actual_cogs),
             "food_cost_pct": _num(food_cost_pct),
             "status": food_cost_status(food_cost_pct),
             "gross_margin": _num(total_revenue - total_theoretical),

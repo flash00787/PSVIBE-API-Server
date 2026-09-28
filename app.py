@@ -179,6 +179,17 @@ async def lifespan(app: FastAPI):
     try:
         resume_active_timers()
         restore_reminders()
+        # Dish → ingredient FIFO consumption ledger (additive; idempotent).
+        try:
+            import dish_consumption as _dc
+            _dc.ensure_tables()
+            _b = _dc.backfill_stock_layers()
+            logging.info(
+                "dish_consumption ledger ready: backfill created=%s skipped=%s",
+                _b.get("created"), _b.get("skipped"),
+            )
+        except Exception as _dc_err:
+            logging.warning("dish_consumption init failed on startup: %s", _dc_err)
         active_consoles = _mysql_query(
             "SELECT DISTINCT console_id FROM console_sessions WHERE status='Active'"
         )

@@ -486,6 +486,72 @@ def fifo_cost(layers, consumption):
     return r["unit_cost"], r["fifo_layer_date"], r["fifo_remaining"], r["on_hand_est"]
 
 
+def ledger_layers(rows):
+    """Normalise ``stock_layers`` rows into FIFO layers ordered oldest -> newest.
+
+    ``rows`` is an iterable of ``(qty_remaining, unit_cost, purchased_at, stock_in_id)``
+    tuples.  Rows with qty_remaining <= 0 are ignored.  ``unit_cost`` is used AS-IS
+    (no division — it is already the per-purchase-unit cost stored on the layer).
+    Each returned layer carries ``qty``, ``unit_cost``, ``created_at`` and ``id``.
+
+    Pure + unit-testable.  This is the ledger-backed FIFO queue used when the
+    ``stock_layers`` table is present (actual remaining stock, already net of
+    consumption) as opposed to the ``fifo_layers`` estimate from stock_in.
+    """
+    layers = []
+    for qty, uc, created, rid in rows:
+        q = _d(qty)
+        if q <= 0:
+            continue
+        layers.append({"qty": q, "unit_cost": _d(uc), "created_at": str(created or ""), "id": rid})
+    layers.sort(key=lambda L: (L["created_at"], L["id"]))
+    return layers
+
+
+def fifo_consume_split(layers, consumption):
+    """Consume ``consumption`` (Decimal) from ``layers`` FIFO and return a full
+    per-layer split with cost.
+
+    Walks layers oldest -> newest, subtracting from each layer's quantity until
+    exhausted.  Returns a dict:
+      * layers_used — list of {layer_id, unit_cost, qty_taken} (only layers drawn),
+      * total_cost  — Decimal sum(qty_taken * unit_cost), 2 dp (the FIFO cost),
+      * consumed    — Decimal actually consumed (capped at total qty),
+      * short_by    — Decimal shortfall (consumption - consumed, >= 0).
+
+    Pure + unit-testable.  Read-only — never mutates any layer.
+    """
+    remaining = _d(consumption)
+    used = []
+    total_cost = Decimal("0")
+    for L in layers:
+        if remaining <= 0:
+            break
+        q = L["qty"]
+        take = q if remaining >= q else remaining
+        if take > 0:
+            used.append({"layer_id": L["id"], "unit_cost": L["unit_cost"], "qty_taken": take})
+            total_cost += take * L["unit_cost"]
+            remaining -= take
+    consumed = _d(consumption) - remaining
+    return {
+        "layers_used": used,
+        "total_cost": total_cost.quantize(_MONEY, rounding=ROUND_HALF_UP),
+        "consumed": consumed,
+        "short_by": remaining,
+    }
+
+
+def blended_unit_cost(split):
+    """Effective unit cost of a :func:`fifo_consume_split` result = total_cost / consumed
+    (2 dp per purchase unit), or None when nothing was consumed."""
+    consumed = split.get("consumed")
+    total = split.get("total_cost")
+    if not consumed or consumed <= 0:
+        return None
+    return (total / consumed).quantize(_Q4, rounding=ROUND_HALF_UP)
+
+
 def select_unit_cost(weighted_avg, last_purchase, basis, fifo_unit_cost=None):
     """Pick the per-purchase-unit cost for the chosen basis.
 
