@@ -3347,6 +3347,42 @@ async def api_deposit_schedule(
         return error_response(message=str(e))
 
 
+# ════════════════════════════════════════════════════════════════════════════
+#  Deposit auto-recovery (owner policy 2026-09-28)
+#  A booking cancelled by the 15-min deposit timeout may still accept its
+#  deposit within 30 minutes of cancellation and return to 'pending'.
+# ════════════════════════════════════════════════════════════════════════════
+_DEPOSIT_RECOVERY_WINDOW_MIN = 30
+
+
+def _is_deposit_recoverable(status, notes, deposit_status, minutes_since_cancel):
+    """Pure decision helper for deposit-timeout recovery.
+
+    Args:
+        status: booking status (e.g. 'cancelled')
+        notes: booking notes text (may be None)
+        deposit_status: deposit_status column value (may be None)
+        minutes_since_cancel: minutes elapsed since cancelled_at (MMT wall-clock),
+            or None if unknown.
+
+    Returns True only when the cancellation was the deposit timeout, no deposit
+    has been recorded, and the cancellation is within the recovery window.
+    """
+    if status != "cancelled":
+        return False
+    if "deposit timeout" not in str(notes or "").lower():
+        return False
+    if deposit_status not in (None, "", "none"):
+        return False
+    if minutes_since_cancel is None:
+        return False
+    try:
+        mins = int(minutes_since_cancel)
+    except (TypeError, ValueError):
+        return False
+    return 0 <= mins <= _DEPOSIT_RECOVERY_WINDOW_MIN
+
+
 @router.post("/bookings/{booking_id}/deposit/submit", response_model=GenericResponse, tags=["Deposits"], summary="Submit deposit payment info [MySQL]")
 async def api_deposit_submit(booking_id: int, req: dict, auth=Depends(verify_api_key)):
     """Customer submits deposit: method, ref (text or file_id), ref_type.
@@ -3370,25 +3406,68 @@ async def api_deposit_submit(booking_id: int, req: dict, auth=Depends(verify_api
         # Check booking exists
         row = _mysql_query_one(
             "SELECT id, deposit_status, status, console_id, member_id, booking_date, "
-            "       planned_start AS start_time, created_at, deposit_amount "
+            "       planned_start AS start_time, planned_end, created_at, deposit_amount, "
+            "       cancelled_at, notes, "
+            "       TIMESTAMPDIFF(MINUTE, cancelled_at, DATE_ADD(NOW(), INTERVAL 390 MINUTE)) AS minutes_since_cancel "
             "FROM console_bookings WHERE id=%s",
             (booking_id,)
         )
         if not row:
             return error_response(message=f"Booking #{booking_id} not found")
         
-        if row["status"] not in ("pending", "confirmed", "pending_check_in"):
+        # Owner policy (2026-09-28): a deposit-timeout cancellation may be
+        # recovered within 30 minutes of cancellation.
+        _recovering = row["status"] == "cancelled"
+        if _recovering:
+            if not _is_deposit_recoverable(
+                    row.get("status"), row.get("notes"), row.get("deposit_status"),
+                    row.get("minutes_since_cancel")):
+                return error_response(message=f"Booking status is '{row['status']}', cannot submit deposit")
+        elif row["status"] not in ("pending", "confirmed", "pending_check_in"):
             return error_response(message=f"Booking status is '{row['status']}', cannot submit deposit")
         
         if row["deposit_status"] not in ("none",):
             return error_response(message=f"Deposit already {row['deposit_status']} (must be 'none' to submit)")
         
+        # Re-verify slot availability when recovering a cancelled booking — the
+        # slot may have been taken by someone else during the recovery window.
+        if _recovering:
+            _rstart = row.get("start_time")
+            _rend = row.get("planned_end")
+            _rconsole = row.get("console_id")
+            if _rstart and _rend and _rconsole:
+                _taken = _mysql_query_one(
+                    "SELECT id FROM console_bookings "
+                    "WHERE console_id=%s AND id<>%s "
+                    "AND (status IN ('confirmed','pending_check_in','checked_in','Active') "
+                    "     OR (status='pending' AND (deposit_status='paid' "
+                    "         OR (member_id IS NOT NULL AND member_id != '') "
+                    "         OR created_at >= DATE_SUB(DATE_ADD(NOW(), INTERVAL 390 MINUTE), INTERVAL 15 MINUTE)))) "
+                    "AND planned_start < %s AND planned_end > %s LIMIT 1",
+                    (_rconsole, booking_id, _rend, _rstart)
+                )
+                if _taken:
+                    return error_response(message="အဲ့ slot ကို အခြားသူ ရယူသွားပါပြီ — slot အသစ် ရွေးပါ")
+        
         # Update booking with deposit info
-        _mysql_exec(
-            "UPDATE console_bookings SET deposit_status='paid', deposit_method=%s, "
-            "deposit_ref=%s, deposit_ref_type=%s, deposit_amount=%s WHERE id=%s",
-            (deposit_method, deposit_ref, deposit_ref_type, deposit_amount, booking_id)
-        )
+        if _recovering:
+            _mysql_exec(
+                "UPDATE console_bookings SET status='pending', cancelled_at=NULL, "
+                "deposit_status='paid', deposit_method=%s, "
+                "deposit_ref=%s, deposit_ref_type=%s, deposit_amount=%s, "
+                "notes=CONCAT(COALESCE(notes,''), ' | Deposit recovered after timeout (owner policy 30min)') "
+                "WHERE id=%s",
+                (deposit_method, deposit_ref, deposit_ref_type, deposit_amount, booking_id)
+            )
+            _rcid = row.get("console_id")
+            if _rcid:
+                _sync_console_status(_rcid)
+        else:
+            _mysql_exec(
+                "UPDATE console_bookings SET deposit_status='paid', deposit_method=%s, "
+                "deposit_ref=%s, deposit_ref_type=%s, deposit_amount=%s WHERE id=%s",
+                (deposit_method, deposit_ref, deposit_ref_type, deposit_amount, booking_id)
+            )
         
         # Staff group notification (Telegram)
         import json as _sjson
