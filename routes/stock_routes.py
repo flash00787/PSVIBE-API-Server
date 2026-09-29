@@ -674,3 +674,72 @@ async def dashboard_inventory_alerts(
     except Exception as e:
         logger.error(f"GET /inventory/alerts error: {e}")
         return {"success": False, "error": str(e)}
+
+
+@router.get("/stock/lots")
+async def stock_lots(item_name: str | None = Query(None), limit: int = Query(400, ge=1, le=2000),
+                     user: dict = Depends(get_staff_or_dashboard_user)):
+    """Stock-in history BY LOT — owner 2026-09-29 Osmo: "Stock in history ကို Lot အလိုက်ပြပေးပါ".
+
+    One entry per received lot (``stock_in`` row) carrying the FIFO layer's REMAINING qty
+    from ``stock_layers`` (matched on ``stock_in_id``; a lot with no layer row falls back to
+    the full received qty).  Also returns the same data grouped per item with totals, so the
+    app can show "Lactasoy — 2 lots · received 12 · left 6 · value 18,000 Ks".
+    """
+    try:
+        where = ["1=1"]
+        params = []
+        if item_name:
+            where.append("si.item_name = %s")
+            params.append(item_name)
+        sql = (
+            "SELECT si.id AS stock_in_id, si.batch_id, si.item_name, si.quantity, si.unit_cost, "
+            "si.source, si.receipt_no, si.payment_method, si.staff_name, si.created_at, "
+            "sl.qty_remaining, sl.purchased_at "
+            "FROM stock_in si LEFT JOIN stock_layers sl ON sl.stock_in_id = si.id "
+            "WHERE " + " AND ".join(where) + " ORDER BY si.id DESC LIMIT %s"
+        )
+        params.append(int(limit))
+        rows = _mysql_query(sql, tuple(params)) or []
+
+        lots = []
+        groups = {}
+        for r in rows:
+            qty_in = float(r.get("quantity") or 0)
+            rem_raw = r.get("qty_remaining")
+            rem = float(rem_raw) if rem_raw is not None else qty_in
+            unit = float(r.get("unit_cost") or 0)
+            lot = {
+                "stock_in_id": r.get("stock_in_id"),
+                "batch_id": r.get("batch_id"),
+                "item_name": r.get("item_name"),
+                "qty_in": qty_in,
+                "qty_remaining": rem,
+                "unit_cost": unit,
+                "value_remaining": round(rem * unit, 2),
+                "source": r.get("source"),
+                "receipt_no": r.get("receipt_no"),
+                "payment_method": r.get("payment_method"),
+                "staff_name": r.get("staff_name"),
+                "received_at": str(r.get("created_at") or r.get("purchased_at") or ""),
+            }
+            lots.append(lot)
+            g = groups.setdefault(lot["item_name"], {
+                "item_name": lot["item_name"], "lots": [],
+                "qty_in": 0.0, "qty_remaining": 0.0, "value_remaining": 0.0,
+            })
+            g["lots"].append(lot)
+            g["qty_in"] += qty_in
+            g["qty_remaining"] += rem
+            g["value_remaining"] += lot["value_remaining"]
+
+        by_item = sorted(groups.values(), key=lambda g: str(g["item_name"]))
+        for g in by_item:
+            g["qty_in"] = round(g["qty_in"], 2)
+            g["qty_remaining"] = round(g["qty_remaining"], 2)
+            g["value_remaining"] = round(g["value_remaining"], 2)
+            g["lot_count"] = len(g["lots"])
+        return {"success": True, "data": {"lots": lots, "by_item": by_item, "count": len(lots)}}
+    except Exception as e:
+        logger.error(f"GET /stock/lots error: {e}")
+        return {"success": False, "error": str(e)}

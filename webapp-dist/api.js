@@ -29,7 +29,7 @@
   // the freshly fetched index.html with the marker this bundle was built with; when the
   // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
   // with the ?v= query on every deploy.
-  var PSV_BUILD = "w54mmqrcrecipe28";
+  var PSV_BUILD = "w54mmqrcrecipe29";
   // Real app build number — shown in the More menu footer (was hardcoded "build 34" before,
   // which misled diagnosis). Bump together with android versionCode.
   var APP_BUILD = "51";

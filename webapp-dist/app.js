@@ -4655,6 +4655,23 @@
               <van-button type="primary" block :loading="submitting" :disabled="!validCount" @click="submit">Stock In ({{ validCount }} item{{ validCount === 1 ? '' : 's' }})</van-button>
             </div>
           </van-tab>
+          <van-tab title="📦 Lot လိုက်">
+            <van-pull-refresh v-model="lotsRefreshing" @refresh="loadLots">
+              <div v-if="lotsLoading" class="psv-dim" style="padding:16px">Loading…</div>
+              <van-empty v-else-if="!lotGroups.length" description="Stock-in မှတ်တမ်း မရှိသေးဘူး" />
+              <template v-else>
+                <van-search v-model="lotSearch" placeholder="ပစ္စည်း / batch / receipt ရှာမယ်" style="margin-top:6px" />
+                <van-cell-group v-for="g in lotGroups" :key="g.item_name" inset :title="g.item_name" style="margin-top:8px">
+                  <div class="psv-dim" style="padding:0 16px 6px;font-size:12px">
+                    Lot {{ g.lot_count }} ခု · ဝယ်စုစုပေါင်း {{ fmtQty(g.qty_in) }} · လက်ကျန် {{ fmtQty(g.qty_remaining) }} · လက်ကျန်တန်ဖိုး {{ fKs(g.value_remaining) }} Ks
+                  </div>
+                  <van-cell v-for="l in g.lots" :key="l.stock_in_id" :title="lotTitle(l)" :label="lotLabel(l)">
+                    <template #value><span class="pv-amount">{{ fKs(l.unit_cost) }} Ks</span></template>
+                  </van-cell>
+                </van-cell-group>
+              </template>
+            </van-pull-refresh>
+          </van-tab>
         </van-tabs>
         <PSVPicker v-model:show="payPicker" title="Payment method"
                    :items="payColumns.map((c) => ({ value: c.value, label: c.text }))"
@@ -4788,7 +4805,60 @@
         } catch (e) { showToast("Error: " + e.message, "fail"); }
         finally { submitting.value = false; }
       }
-      return { tab, stock, loading, refreshing, payPicker, rowItemPicker, rowItemPickerShow, submitting, payColumns, itemColumns, rows, form, addRow, loadStock, pickPay, pickRowItem, submit, validCount, totalCost, fKs, goRecipes };
+      // ── Stock-in history BY LOT (owner 2026-09-29 Osmo: "Stock in history ကို Lot အလိုက်ပြပေးပါ") ──
+      // Lazy: loaded the first time the "📦 Lot လိုက်" tab is opened, then on pull-to-refresh.
+      const lots = ref([]);
+      const lotGroupsRaw = ref([]);
+      const lotsLoading = ref(false);
+      const lotsRefreshing = ref(false);
+      const lotsLoaded = ref(false);
+      const lotSearch = ref("");
+      const fmtQty = (x) => {
+        const n = Number(x) || 0;
+        return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
+      };
+      const lotDate = (v) => {
+        try { return String(v || "").slice(0, 16).replace("T", " "); } catch (_e) { return ""; }
+      };
+      const lotTitle = (l) => (lotDate(l.received_at) || "-") + " · " + (l.batch_id || "no batch");
+      const lotLabel = (l) => {
+        const bits = ["ဝယ် " + fmtQty(l.qty_in), "လက်ကျန် " + fmtQty(l.qty_remaining)];
+        if (l.source) bits.push(l.source);
+        if (l.receipt_no) bits.push("rcpt " + l.receipt_no);
+        if (l.payment_method) bits.push(l.payment_method);
+        if (l.staff_name) bits.push(l.staff_name);
+        return bits.join(" · ");
+      };
+      const lotGroups = computed(() => {
+        const q = (lotSearch.value || "").trim().toLowerCase();
+        if (!q) return lotGroupsRaw.value;
+        return lotGroupsRaw.value
+          .map((g) => {
+            const gHit = String(g.item_name || "").toLowerCase().includes(q);
+            const hits = g.lots.filter((l) => gHit || [l.batch_id, l.receipt_no, l.source, l.staff_name]
+              .some((v) => String(v || "").toLowerCase().includes(q)));
+            return hits.length ? Object.assign({}, g, { lots: hits, lot_count: hits.length }) : null;
+          })
+          .filter(Boolean);
+      });
+      async function loadLots() {
+        lotsLoading.value = !lotsLoaded.value;
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/stock/lots", {}, 20000));
+          const arr = Array.isArray(d) ? d : ((d && d.by_item) || []);
+          lotGroupsRaw.value = arr;
+          lots.value = (d && d.lots) || [];
+          lotsLoaded.value = true;
+        } catch (_e) {
+          lotsLoading.value = false;
+        } finally {
+          lotsLoading.value = false;
+          lotsRefreshing.value = false;
+        }
+      }
+      watch(tab, (v) => { if (v === 2 && !lotsLoaded.value) loadLots(); });
+
+      return { tab, stock, loading, refreshing, payPicker, rowItemPicker, rowItemPickerShow, submitting, payColumns, itemColumns, rows, form, addRow, loadStock, pickPay, pickRowItem, submit, validCount, totalCost, fKs, goRecipes, lotGroups, lotsLoading, lotsRefreshing, lotSearch, loadLots, lotTitle, lotLabel, fmtQty };
     },
   };
 
