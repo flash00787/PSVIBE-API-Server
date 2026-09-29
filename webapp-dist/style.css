@@ -630,3 +630,7 @@ html.psv-native .psv-cost-cell--accent .psv-cost-cell__val { color: #fcd34d; }
 .psv-kind:active { transform: scale(.94); }
 
 .psv-unmerge{display:inline-block;margin-left:6px;padding:2px 8px;border-radius:8px;border:1px solid #3b1f2b;background:rgba(248,113,113,.08);color:#f87171;font-size:11px;cursor:pointer;user-select:none}
+
+/* Keyboard-aware bottom sheets (owner 2026-09-29, Osmo) — app.js publishes the on-screen
+   keyboard height as --psv-kb; lift the picker/sheet so Name + Cancel/Add stay tappable. */
+.psv-pick { margin-bottom: var(--psv-kb, 0px); }

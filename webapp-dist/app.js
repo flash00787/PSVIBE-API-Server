@@ -75,13 +75,11 @@
       const end = Date.now();
       const started = t.__psvImeStart || 0;
       t.__psvImeEnd = end;
-      const skipped = t.__psvImeSkipped;
+      // NOTE (2026-09-29): we deliberately do NOT replay a dropped write here. Replaying a
+      // dropped "" (which is what a stale Vant render writes) cleared the field right after
+      // the IME committed a syllable → Osmo: "ရိုက်ရတာ အဆင်မပြေဘူး". Dropped writes simply
+      // stay dropped; the next real render (after the model synced) writes the correct text.
       t.__psvImeSkipped = undefined;
-      // Replay a programmatic clear that we dropped mid-composition (e.g. "open form").
-      const set = origSet[t.tagName === "TEXTAREA" ? "textarea" : "input"];
-      if (skipped === "" && set) {
-        setTimeout(() => { try { if (!t.composing) set.call(t, ""); } catch (_e) {} }, 0);
-      }
       // Vant/Vue clear the flag in their own (bubble) handler — we run first, so we must
       // not clear it now or their compositionend → input dispatch would be skipped.
       // Safety net: if nothing cleared it (plain input, IME that never ends), release it
@@ -103,6 +101,42 @@
   const vant = window.vant;
   const PSV = window.PSV;
   const tg = PSV.getTg();
+
+  // ── Keyboard inset for bottom sheets (owner 2026-09-29, Osmo) ─────────────
+  // "ရိုက်ရတာ အဆင်မပြေဘူး" — with the on-screen keyboard up, the bottom sheet (Name +
+  // Cancel/Add) sat partly under it. Publish the keyboard height as `--psv-kb`; style.css
+  // lifts `.psv-pick` sheets by it. Works when the WebView resizes (inset ≈ 0) and when it
+  // pans instead (inset > 0). Purely presentational — no data path is touched.
+  (function keyboardInset() {
+    const root = document.documentElement;
+    const isTextEl = (t) => t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA");
+    function update() {
+      try {
+        const vv = window.visualViewport;
+        const kb = vv ? Math.max(0, (window.innerHeight || 0) - vv.height - vv.offsetTop) : 0;
+        root.style.setProperty("--psv-kb", Math.round(kb) + "px");
+      } catch (_e) {}
+    }
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", update);
+      window.visualViewport.addEventListener("scroll", update);
+    }
+    document.addEventListener("focusin", (e) => {
+      const t = e.target;
+      if (!isTextEl(t)) return;
+      update();
+      setTimeout(update, 250);
+      setTimeout(() => {
+        try {
+          if (t.closest && t.closest(".van-popup")) t.scrollIntoView({ block: "center" });
+        } catch (_e) {}
+      }, 320);
+    }, true);
+    document.addEventListener("focusout", () => setTimeout(update, 150), true);
+    update();
+  })();
 
   // ── App vs Telegram mode ────────────────────────────────
   // App (standalone Android/WebView) mode = no Telegram initData. Mirrors the
@@ -5459,8 +5493,23 @@
         nextTick(focusAddIngInput);
         setTimeout(focusAddIngInput, 350);
       }
+      // Owner 2026-09-29 (Osmo): read the text straight out of the box, not just the model —
+      // while an IME composition is open the model can lag one syllable behind. Blurring first
+      // makes the keyboard commit whatever it is still composing.
+      function commitAndReadAddIng() {
+        try {
+          const host = document.querySelector("#addIngName");
+          const el = (!host) ? null
+            : ((host.tagName === "INPUT" || host.tagName === "TEXTAREA") ? host : host.querySelector("input,textarea"));
+          if (el) {
+            try { el.blur(); } catch (_e) {}
+            return el.value;
+          }
+        } catch (_e) {}
+        return addIng.name || "";
+      }
       async function saveAddIngredient() {
-        const name = (addIng.name || "").trim();
+        const name = String(commitAndReadAddIng() || addIng.name || "").trim();
         if (!name) { showToast("Name is required", "fail"); return; }
         addIng.saving = true; haptic("medium");
         try {
