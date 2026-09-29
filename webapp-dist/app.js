@@ -4849,7 +4849,7 @@
                   <template #value>
                     <span v-if="it.has_recipe" class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span>
                     <span v-else class="pv-amount">{{ fKs(it.selling_price) }} Ks</span>
-                    <span class="psv-del" @click.stop="confirmDeleteItem(it)" title="Delete">🗑</span>
+                    <span class="psv-del" role="button" @click.stop="confirmDeleteItem(it)" title="Delete">🗑</span>
                   </template>
                 </van-cell>
               </van-cell-group>
@@ -4864,7 +4864,7 @@
                   <template #value>
                     <span v-if="it.no_purchase_yet" class="pv-amount">{{ fKs(it.selling_price) }} Ks</span>
                     <span v-else class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span>
-                    <span class="psv-del" @click.stop="confirmDeleteItem(it)" title="Delete">🗑</span>
+                    <span class="psv-del" role="button" @click.stop="confirmDeleteItem(it)" title="Delete">🗑</span>
                   </template>
                 </van-cell>
               </van-cell-group>
@@ -4881,7 +4881,7 @@
                   <template #value>
                     <span v-if="hasCostPill(it)" class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span>
                     <span v-else class="pv-amount">{{ fKs(it.selling_price) }} Ks</span>
-                    <span class="psv-del" @click.stop="confirmDeleteItem(it)" title="Delete">🗑</span>
+                    <span class="psv-del" role="button" @click.stop="confirmDeleteItem(it)" title="Delete">🗑</span>
                   </template>
                 </van-cell>
               </van-cell-group>
@@ -4909,7 +4909,7 @@
                   <template #value>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'ingredient' }" @click.stop="setKind(it, 'ingredient')">🍚</span>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'product' }" @click.stop="setKind(it, 'product')">🛒</span>
-                    <span class="psv-del" @click.stop="confirmDeleteIngredient(it)" title="Delete">🗑</span>
+                    <span class="psv-del" role="button" @click.stop="confirmDeleteIngredient(it)" title="Delete">🗑</span>
                   </template>
                 </van-cell>
                 <van-cell v-if="!reviewIngredients.length" title="No ingredients yet — stock in raw items to see them here" label="Use Stock-In (📥) to add rice, oil, eggs…" />
@@ -4920,7 +4920,7 @@
                   <template #value>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'ingredient' }" @click.stop="setKind(it, 'ingredient')">🍚</span>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'product' }" @click.stop="setKind(it, 'product')">🛒</span>
-                    <span class="psv-del" @click.stop="confirmDeleteIngredient(it)" title="Delete">🗑</span>
+                    <span class="psv-del" role="button" @click.stop="confirmDeleteIngredient(it)" title="Delete">🗑</span>
                   </template>
                 </van-cell>
               </van-cell-group>
@@ -5667,20 +5667,72 @@
       // When the server refuses, it sends a machine-readable `reason`, so the app offers the
       // right next step instead of a dead end: move a sold product to 🛒 Products, wipe the
       // purchase history, or drop the recipe lines — each behind its own explicit confirm.
+      // Confirm prompt built from plain DOM + inline styles: no framework, no stylesheet and no
+      // teleport target involved, so it cannot fail silently in a WebView (owner 2026-09-29:
+      // "နှိပ်ရင် ဘာမှ မပေါ်ဘူး" — the Vant dialog simply did not render on his phone).
       function askConfirm(title, message) {
         return new Promise((resolve) => {
-          if (window.vant && vant.showConfirmDialog) {
-            vant.showConfirmDialog({
-              title: title, message: message,
-              confirmButtonText: "ဟုတ်ကဲ့ / OK",
-              cancelButtonText: "မလုပ်တော့ဘူး",
-              confirmButtonColor: "#ef4444",
-            }).then(() => resolve(true)).catch(() => resolve(false));
-          } else {
-            resolve(window.confirm(message));
+          let settled = false;
+          let wrap = null;
+          const finish = (v) => {
+            if (settled) return;
+            settled = true;
+            try { if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap); } catch (_e) {}
+            resolve(v);
+          };
+          try {
+            const existing = document.querySelector('[data-psv-confirm]');
+            if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+            wrap = document.createElement("div");
+            wrap.setAttribute("data-psv-confirm", "1");
+            wrap.style.cssText = "position:fixed;left:0;right:0;top:0;bottom:0;z-index:2147483000;" +
+              "background:rgba(3,7,18,.74);display:flex;align-items:center;justify-content:center;padding:18px;";
+            const box = document.createElement("div");
+            box.style.cssText = "width:100%;max-width:360px;max-height:78vh;overflow:auto;background:#111a2e;" +
+              "border:1px solid #26304d;border-radius:16px;padding:18px 16px;color:#e5e9f2;font-family:inherit;" +
+              "box-shadow:0 24px 60px rgba(0,0,0,.55);";
+            const h = document.createElement("div");
+            h.textContent = title || "";
+            h.style.cssText = "font-weight:800;font-size:15px;margin:0 0 8px;color:#e5e9f2;";
+            const m = document.createElement("div");
+            m.textContent = message || "";
+            m.style.cssText = "font-size:13px;line-height:1.65;color:#c3cbdd;white-space:pre-wrap;word-break:break-word;";
+            const row = document.createElement("div");
+            row.style.cssText = "display:flex;gap:8px;margin-top:16px;";
+            const mk = (label, primary) => {
+              const b = document.createElement("button");
+              b.type = "button";
+              b.textContent = label;
+              b.style.cssText = "flex:1;min-height:46px;padding:10px 12px;border-radius:12px;font-size:14px;" +
+                "font-weight:700;font-family:inherit;border:1px solid " + (primary ? "#ef4444" : "#2c3752") + ";" +
+                "background:" + (primary ? "#ef4444" : "#1b2740") + ";color:" + (primary ? "#ffffff" : "#e5e9f2") + ";";
+              return b;
+            };
+            const cancel = mk("မလုပ်တော့ဘူး", false);
+            const ok = mk("ဟုတ်ကဲ့ / OK", true);
+            const onCancel = (e) => { try { e.stopPropagation(); } catch (_e) {} finish(false); };
+            const onOk = (e) => { try { e.stopPropagation(); } catch (_e) {} finish(true); };
+            cancel.addEventListener("click", onCancel);
+            cancel.addEventListener("touchend", onCancel);
+            ok.addEventListener("click", onOk);
+            ok.addEventListener("touchend", onOk);
+            wrap.addEventListener("click", (e) => { if (e.target === wrap) finish(false); });
+            row.appendChild(cancel);
+            row.appendChild(ok);
+            box.appendChild(h);
+            box.appendChild(m);
+            box.appendChild(row);
+            wrap.appendChild(box);
+            document.body.appendChild(wrap);
+            try { haptic("light"); } catch (_e) {}
+            return;
+          } catch (_e) {
+            try { if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap); } catch (_e2) {}
+            try { resolve(!!window.confirm(String(message || title || ""))); } catch (_e3) { resolve(false); }
           }
         });
       }
+
       function errDetail(e) {
         // The API wraps the structured refusal under `detail` or `error` depending on the
         // exception handler in play — accept both so the prompts always see `reason`.

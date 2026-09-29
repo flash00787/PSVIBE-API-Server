@@ -636,5 +636,7 @@ html.psv-native .psv-cost-cell--accent .psv-cost-cell__val { color: #fcd34d; }
 .psv-pick { margin-bottom: var(--psv-kb, 0px); }
 
 /* Row delete button (owner 2026-09-29, Osmo) — Recipe & Cost items / ingredients. */
-.psv-del { margin-left:8px; padding:2px 6px; border-radius:8px; font-size:14px; line-height:1.2; opacity:.65; }
-.psv-del:active { opacity:1; background: rgba(239,68,68,.18); }
+.psv-del { display:inline-flex; align-items:center; justify-content:center; margin-left:8px;
+  min-width:44px; min-height:44px; padding:6px 10px; border-radius:10px; font-size:17px; line-height:1;
+  border:1px solid #2c3752; background:rgba(255,255,255,.04); opacity:.85; }
+.psv-del:active, .psv-del:focus { opacity:1; background: rgba(239,68,68,.22); border-color:#ef4444; }
