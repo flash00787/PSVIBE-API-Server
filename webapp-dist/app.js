@@ -102,6 +102,67 @@
   const PSV = window.PSV;
   const tg = PSV.getTg();
 
+  // ── Shared confirm prompt (owner 2026-09-29) ─────────────────────────────
+  // Plain DOM + inline styles: no framework, no stylesheet, no teleport target — it shows up
+  // on every WebView (the Vant dialog did not render on the owner's phone). Used by Recipe &
+  // Cost (deletes) and by the Inventory voucher view (undoing a wrong stock-in).
+  function psvAskConfirm(title, message) {
+    return new Promise(function (resolve) {
+      var settled = false, wrap = null;
+      function finish(v) {
+        if (settled) return;
+        settled = true;
+        try { if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap); } catch (_e) {}
+        resolve(v);
+      }
+      try {
+        var existing = document.querySelector("[data-psv-confirm]");
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+        wrap = document.createElement("div");
+        wrap.setAttribute("data-psv-confirm", "1");
+        wrap.style.cssText = "position:fixed;left:0;right:0;top:0;bottom:0;z-index:2147483000;" +
+          "background:rgba(3,7,18,.74);display:flex;align-items:center;justify-content:center;padding:18px;";
+        var box = document.createElement("div");
+        box.style.cssText = "width:100%;max-width:360px;max-height:78vh;overflow:auto;background:#111a2e;" +
+          "border:1px solid #26304d;border-radius:16px;padding:18px 16px;color:#e5e9f2;font-family:inherit;" +
+          "box-shadow:0 24px 60px rgba(0,0,0,.55);";
+        var h = document.createElement("div");
+        h.textContent = title || "";
+        h.style.cssText = "font-weight:800;font-size:15px;margin:0 0 8px;color:#e5e9f2;";
+        var m = document.createElement("div");
+        m.textContent = message || "";
+        m.style.cssText = "font-size:13px;line-height:1.65;color:#c3cbdd;white-space:pre-wrap;word-break:break-word;";
+        var row = document.createElement("div");
+        row.style.cssText = "display:flex;gap:8px;margin-top:16px;";
+        function mk(label, primary) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.textContent = label;
+          b.style.cssText = "flex:1;min-height:46px;padding:10px 12px;border-radius:12px;font-size:14px;" +
+            "font-weight:700;font-family:inherit;border:1px solid " + (primary ? "#ef4444" : "#2c3752") + ";" +
+            "background:" + (primary ? "#ef4444" : "#1b2740") + ";color:" + (primary ? "#ffffff" : "#e5e9f2") + ";";
+          return b;
+        }
+        var cancel = mk("မလုပ်တော့ဘူး", false), ok = mk("ဟုတ်ကဲ့ / OK", true);
+        function onCancel(e) { try { e.stopPropagation(); } catch (_e) {} finish(false); }
+        function onOk(e) { try { e.stopPropagation(); } catch (_e) {} finish(true); }
+        cancel.addEventListener("click", onCancel);
+        cancel.addEventListener("touchend", onCancel);
+        ok.addEventListener("click", onOk);
+        ok.addEventListener("touchend", onOk);
+        wrap.addEventListener("click", function (e) { if (e.target === wrap) finish(false); });
+        row.appendChild(cancel); row.appendChild(ok);
+        box.appendChild(h); box.appendChild(m); box.appendChild(row);
+        wrap.appendChild(box);
+        document.body.appendChild(wrap);
+        return;
+      } catch (_e) {
+        try { if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap); } catch (_e2) {}
+        try { resolve(!!window.confirm(String(message || title || ""))); } catch (_e3) { resolve(false); }
+      }
+    });
+  }
+
   // ── Keyboard inset for bottom sheets (owner 2026-09-29, Osmo) ─────────────
   // "ရိုက်ရတာ အဆင်မပြေဘူး" — with the on-screen keyboard up, the bottom sheet (Name +
   // Cancel/Add) sat partly under it. Publish the keyboard height as `--psv-kb`; style.css
@@ -4669,8 +4730,12 @@
                     <template #value>
                       <div class="pv-amount">{{ fKs(it.unit_cost) }} Ks</div>
                       <div class="psv-dim" style="font-size:11px">{{ fKs(it.line_total) }} Ks</div>
+                      <span class="psv-del" role="button" @click.stop="undoLot(it)">🗑</span>
                     </template>
                   </van-cell>
+                  <div style="padding:4px 16px 10px">
+                    <van-button size="small" plain type="danger" icon="delete-o" block @click="undoVoucher(v)">🧾 ဒီ voucher လုံး ဖျက် (undo)</van-button>
+                  </div>
                 </van-cell-group>
               </template>
             </van-pull-refresh>
@@ -4872,7 +4937,56 @@
       }
       watch(tab, (v) => { if (v === 2 && !lotsLoaded.value) loadLots(); });
 
-      return { tab, stock, loading, refreshing, payPicker, rowItemPicker, rowItemPickerShow, submitting, payColumns, itemColumns, rows, form, addRow, loadStock, pickPay, pickRowItem, submit, validCount, totalCost, fKs, goRecipes, voucherGroups, vcTitle, vcItemLabel, lotsLoading, lotsRefreshing, lotSearch, loadLots, lotTitle, lotLabel, fmtQty };
+      // ── Undo a wrong stock-in (owner 2026-09-29 Osmo: "Stock in မှာ မှားထည့်မိရင်
+      //    ဘယ်လိုပြင်ရမလဲ") ── Reverses the FIFO layer + inventory qty + the payment record.
+      async function undoLot(it) {
+        const nm = it && it.item_name;
+        if (!it || !it.stock_in_id) return;
+        if (!(await psvAskConfirm("မှားထည့်တာ ပြင်မလား? / Undo stock-in",
+            '"' + nm + '" · ဝယ် ' + fmtQty(it.qty_in) + ' · လက်ကျန် ' + fmtQty(it.qty_remaining) +
+            "\n\nဒီဝယ်မှတ်တမ်း (lot) ကို ဖျက်ပြီး stock စာရင်း + ငွေစာရင်းကို ပြန်ပြင်မယ် (undo)။"))) return;
+        haptic("medium");
+        const call = (force) => PSV.api("/api/stock/lot/" + it.stock_in_id + (force ? "?force=1" : ""), { method: "DELETE" });
+        try {
+          const d = PSV.unwrap(await call(false));
+          showToast("ပြင်ပြီး ✓ " + nm + " (stock " + fmtQty(d.inventory_after) + " ဖြစ်သွားတယ်)", "success");
+        } catch (e) {
+          const det = errDetail ? null : null;
+          const body = (e && e.body) || {};
+          const dd = body.detail || body.error || {};
+          if (dd && dd.reason === "partly_used") {
+            if (!(await psvAskConfirm("ရောင်း/သုံးပြီးသား / Partly used", (dd.error || "") +
+                "\n\nဒါပေမယ့် ဖျက်ရင် အတိတ် food-cost / ရောင်းမှတ်တမ်း လွဲမှားနိုင်တယ် — သေချာလား?"))) return;
+            try {
+              const d2 = PSV.unwrap(await call(true));
+              showToast("ပြင်ပြီး ✓ " + nm, "success");
+            } catch (e2) { showToast(String((e2 && e2.message) || e2), "fail"); return; }
+          } else { showToast(String((e && e.message) || e), "fail"); return; }
+        }
+        try { PSV.invalidate("/api/dashboard/inventory"); await Promise.all([loadStock(), loadLots()]).catch(() => {}); } catch (_e) {}
+      }
+      async function undoVoucher(v) {
+        if (!v || !v.voucher) return;
+        if (!(await psvAskConfirm("Voucher တစ်ခုလုံး ဖျက်မလား? / Undo voucher",
+            "🧾 " + v.voucher + " · ပစ္စည်း " + v.item_count + " မျိုး · " + fKs(v.total_cost) + " Ks" +
+            "\n\nဒီဝယ်တာ တစ်ခါလုံးကို ဖျက်ပြီး stock + ငွေ စာရင်း ပြန်ပြင်မယ်။"))) return;
+        haptic("medium");
+        const call = (force) => PSV.api("/api/stock/voucher/" + encodeURIComponent(v.voucher) + (force ? "?force=1" : ""), { method: "DELETE" });
+        try {
+          const d = PSV.unwrap(await call(false));
+          showToast("ပြင်ပြီး ✓ voucher " + v.voucher + " (" + (d.lines || 0) + " လိုင်း) " + "ဖျက်ပြီး", "success");
+        } catch (e) {
+          const body = (e && e.body) || {}; const dd = body.detail || body.error || {};
+          if (dd && dd.reason === "partly_used") {
+            if (!(await psvAskConfirm("ရောင်း/သုံးပြီးသား / Partly used", (dd.error || "") +
+                "\n\nဆက်ဖျက်ရင် အတိတ် ရောင်း/food-cost မှတ်တမ်း လွဲမှားနိုင်တယ် — သေချာလား?"))) return;
+            try { PSV.unwrap(await call(true)); showToast("ပြင်ပြီး ✓ voucher " + v.voucher, "success"); }
+            catch (e2) { showToast(String((e2 && e2.message) || e2), "fail"); return; }
+          } else { showToast(String((e && e.message) || e), "fail"); return; }
+        }
+        try { PSV.invalidate("/api/dashboard/inventory"); await Promise.all([loadStock(), loadLots()]).catch(() => {}); } catch (_e) {}
+      }
+      return { tab, stock, loading, refreshing, payPicker, rowItemPicker, rowItemPickerShow, submitting, payColumns, itemColumns, rows, form, addRow, loadStock, pickPay, pickRowItem, submit, validCount, totalCost, undoLot, undoVoucher, fKs, goRecipes, voucherGroups, vcTitle, vcItemLabel, lotsLoading, lotsRefreshing, lotSearch, loadLots, lotTitle, lotLabel, fmtQty };
     },
   };
 

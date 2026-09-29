@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from auth import get_current_user, get_staff_or_dashboard_user
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
@@ -761,6 +761,7 @@ async def stock_lots(item_name: str | None = Query(None), limit: int = Query(400
             })
             line_total = round(float(lot.get("qty_in") or 0) * float(lot.get("unit_cost") or 0), 2)
             v["items"].append({
+                "stock_in_id": lot.get("stock_in_id"),
                 "item_name": lot.get("item_name"),
                 "batch_id": lot.get("batch_id"),
                 "qty_in": lot.get("qty_in"),
@@ -789,3 +790,121 @@ async def stock_lots(item_name: str | None = Query(None), limit: int = Query(400
     except Exception as e:
         logger.error(f"GET /stock/lots error: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  FIX A WRONG STOCK-IN (owner 2026-09-29 Osmo: "Stock in မှာ မှားထည့်မိရင်
+#  ဘယ်လိုပြင်ရမလဲ")
+#
+#  Undo is a FULL reversal — the FIFO layer, the inventory quantity, the payment
+#  record (cash_movements) and the stock_in row — so stock and money stay consistent.
+#  A lot that has already been (partly) consumed/sold is REFUSED: that stock has left
+#  the shelf and reversing it would rewrite COGS/sales history; the app can pass
+#  force=1 only after the owner explicitly confirms.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _undo_stock_in_row(row: dict) -> dict:
+    """Delete one ``stock_in`` row and reverse everything it caused."""
+    sid = row.get("id")
+    name = row.get("item_name")
+    qty = float(row.get("quantity") or 0)
+    unit = float(row.get("unit_cost") or 0)
+    total = round(qty * unit, 2)
+    batch = str(row.get("batch_id") or "")
+    voucher = batch.rpartition("-")[0] if batch.rpartition("-")[2].isdigit() else batch
+    out = {"stock_in_id": sid, "item_name": name, "qty": qty, "layers_removed": 0,
+           "cash_removed": 0, "inventory_before": None, "inventory_after": None}
+
+    try:
+        out["layers_removed"] = int(_mysql_delete("DELETE FROM stock_layers WHERE stock_in_id=%s", (sid,)) or 0)
+    except Exception:
+        pass
+
+    inv = _mysql_query_one("SELECT id, quantity FROM inventory WHERE item_name=%s", (name,))
+    if inv:
+        before = float(inv.get("quantity") or 0)
+        after = max(0.0, before - qty)
+        _mysql_execute("UPDATE inventory SET quantity=%s, last_updated=NOW() WHERE id=%s", (after, inv["id"]))
+        out["inventory_before"] = before
+        out["inventory_after"] = after
+
+    # Reverse the payment row this stock-in created (single-item note, or the batch note).
+    if total > 0:
+        qty_txt = str(int(qty)) if float(qty).is_integer() else str(qty)
+        for note in ("Stock In: %s x%s" % (name, qty_txt), "Stock In (batch): %s" % voucher):
+            try:
+                cm = _mysql_query_one(
+                    "SELECT id FROM cash_movements WHERE movement_type='eject' AND note=%s AND amount=%s "
+                    "ORDER BY id DESC LIMIT 1", (note, total))
+                if cm:
+                    out["cash_removed"] = int(_mysql_delete("DELETE FROM cash_movements WHERE id=%s", (cm["id"],)) or 0)
+                    break
+            except Exception:
+                pass
+
+    _mysql_delete("DELETE FROM stock_in WHERE id=%s", (sid,))
+    logger.info("stock-in UNDONE id=%s item=%r qty=%s layers=%s cash=%s",
+                sid, name, qty, out["layers_removed"], out["cash_removed"])
+    return out
+
+
+def _lot_usage(row: dict):
+    """(received, remaining, used) for a stock_in row, layer-aware."""
+    qty_in = float(row.get("quantity") or 0)
+    layers = _mysql_query("SELECT qty_remaining FROM stock_layers WHERE stock_in_id=%s", (row.get("id"),)) or []
+    rem = sum(float(l.get("qty_remaining") or 0) for l in layers) if layers else qty_in
+    return qty_in, rem, max(0.0, qty_in - rem)
+
+
+@router.delete("/stock/lot/{stock_in_id}")
+async def delete_stock_lot(stock_in_id: int, force: int = Query(0),
+                           user: dict = Depends(get_staff_or_dashboard_user)):
+    """Undo ONE stock-in line (mistake correction). Refuses a (partly) consumed lot."""
+    try:
+        row = _mysql_query_one("SELECT * FROM stock_in WHERE id=%s", (stock_in_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail={"success": False, "error": "Stock-in not found", "code": 404})
+        qty_in, rem, used = _lot_usage(row)
+        if used > 0.001 and not int(force or 0):
+            raise HTTPException(status_code=409, detail={
+                "success": False, "code": 409, "reason": "partly_used",
+                "qty_in": qty_in, "qty_remaining": rem, "qty_used": used, "suggest": "force_undo",
+                "error": "'%s' ရဲ့ ဒီ lot က %s လုံး ရောင်း/သုံးပြီးသား (လက်ကျန် %s) — ဖျက်လို့ မရဘူး။ "
+                         "ဖျက်ရင် အတိတ် food-cost / ရောင်းမှတ်တမ်း ပျက်မယ်။" % (row.get("item_name"), used, rem),
+            })
+        res = _undo_stock_in_row(row)
+        return {"success": True, "data": res}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"DELETE /stock/lot/{stock_in_id} error: {e}")
+        raise HTTPException(status_code=500, detail={"success": False, "error": str(e), "code": 500})
+
+
+@router.delete("/stock/voucher/{voucher}")
+async def delete_stock_voucher(voucher: str, force: int = Query(0),
+                               user: dict = Depends(get_staff_or_dashboard_user)):
+    """Undo a WHOLE stock-in voucher (every line of one purchase) — mistake correction."""
+    try:
+        rows = _mysql_query(
+            "SELECT * FROM stock_in WHERE batch_id=%s OR batch_id LIKE %s ORDER BY id",
+            (voucher, voucher + "-%")) or []
+        if not rows:
+            raise HTTPException(status_code=404, detail={"success": False, "error": "Voucher not found", "code": 404})
+        blocked = []
+        for r in rows:
+            _qi, _rem, _used = _lot_usage(r)
+            if _used > 0.001:
+                blocked.append({"item_name": r.get("item_name"), "qty_used": _used, "qty_remaining": _rem})
+        if blocked and not int(force or 0):
+            raise HTTPException(status_code=409, detail={
+                "success": False, "code": 409, "reason": "partly_used", "blocked": blocked, "suggest": "force_undo",
+                "error": "ဒီ voucher ထဲက ပစ္စည်း %d မျိုး ရောင်း/သုံးပြီးသား — ဖျက်လို့ မရဘူး။" % len(blocked),
+            })
+        results = [_undo_stock_in_row(r) for r in rows]
+        return {"success": True, "data": {"voucher": voucher, "lines": len(results), "results": results}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"DELETE /stock/voucher/{voucher} error: {e}")
+        raise HTTPException(status_code=500, detail={"success": False, "error": str(e), "code": 500})
