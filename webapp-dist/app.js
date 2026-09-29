@@ -11,6 +11,94 @@
 (function () {
   "use strict";
 
+  // ── Myanmar/Unicode IME guard (owner 2026-09-29, Osmo) ───────────────────
+  // Symptom: typing ONE Unicode (Myanmar) character into a text field produced
+  // MANY characters ("တစ်လုံးရိုက် → အများကြီး").
+  // Cause: Vant's Field is a CONTROLLED input — on every render it writes
+  // `input.value = modelValue`. While an IME composition is in flight, Android
+  // WebView treats that write as a reset and re-commits the composing text, so the
+  // text multiplies. Keyboard open/close (visualViewport resize) also triggers
+  // renders, which made it worse.
+  // Fix: while the element reports `composing`, drop JS writes to `.value` — the
+  // IME owns the text. Vant's compositionend handler then fires an `input` event and
+  // the model syncs normally (unchanged behaviour).
+  (function imeGuard() {
+    if (window.__psvImeGuard) return;
+    window.__psvImeGuard = 1;
+    const origSet = {};
+    const isTextEl = (t) => t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA");
+    function wrap(proto, key) {
+      try {
+        const d = proto && Object.getOwnPropertyDescriptor(proto, "value");
+        if (!d || !d.set) return;
+        origSet[key] = d.set;
+        Object.defineProperty(proto, "value", {
+          configurable: true,
+          enumerable: d.enumerable,
+          get() { return d.get.call(this); },
+          set(v) {
+            if (this.composing && (Date.now() - (this.__psvImeStart || 0)) < 20000) {
+              this.__psvImeSkipped = v;   // never touch the DOM mid-composition
+              return;
+            }
+            d.set.call(this, v);
+          },
+        });
+      } catch (_e) { /* keep native behaviour */ }
+    }
+    wrap(window.HTMLInputElement && HTMLInputElement.prototype, "input");
+    wrap(window.HTMLTextAreaElement && HTMLTextAreaElement.prototype, "textarea");
+
+    function harden(el) {
+      if (!isTextEl(el) || el.__psvImeHard) return;
+      el.__psvImeHard = 1;
+      try {
+        el.setAttribute("autocomplete", "off");
+        el.setAttribute("autocorrect", "off");
+        el.setAttribute("autocapitalize", "none");
+        el.setAttribute("spellcheck", "false");
+      } catch (_e) {}
+    }
+
+    // Capture phase → runs before Vant's own composition handlers. We only observe;
+    // Vant/Vue stay in charge of clearing `composing` and syncing the model.
+    document.addEventListener("compositionstart", (e) => {
+      const t = e.target;
+      if (!isTextEl(t)) return;
+      if (!t.composing) t.composing = true;
+      t.__psvImeStart = Date.now();
+      harden(t);
+    }, true);
+    document.addEventListener("compositionend", (e) => {
+      const t = e.target;
+      if (!isTextEl(t)) return;
+      const end = Date.now();
+      const started = t.__psvImeStart || 0;
+      t.__psvImeEnd = end;
+      const skipped = t.__psvImeSkipped;
+      t.__psvImeSkipped = undefined;
+      // Replay a programmatic clear that we dropped mid-composition (e.g. "open form").
+      const set = origSet[t.tagName === "TEXTAREA" ? "textarea" : "input"];
+      if (skipped === "" && set) {
+        setTimeout(() => { try { if (!t.composing) set.call(t, ""); } catch (_e) {} }, 0);
+      }
+      // Vant/Vue clear the flag in their own (bubble) handler — we run first, so we must
+      // not clear it now or their compositionend → input dispatch would be skipped.
+      // Safety net: if nothing cleared it (plain input, IME that never ends), release it
+      // after the event finishes so the field can never stay "stuck composing".
+      setTimeout(() => {
+        try { if (t.composing && (t.__psvImeEnd || 0) === end && (t.__psvImeStart || 0) <= started) t.composing = false; } catch (_e) {}
+      }, 0);
+    }, true);
+    // Blur always ends an IME session — drop a possibly stuck flag (no DOM write).
+    document.addEventListener("blur", (e) => {
+      const t = e.target;
+      if (isTextEl(t)) { t.composing = false; t.__psvImeStart = 0; }
+    }, true);
+    document.addEventListener("focusin", (e) => harden(e.target), true);
+  })();
+
+
   const { createApp, ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
   const vant = window.vant;
   const PSV = window.PSV;
@@ -4984,9 +5072,9 @@
         <van-popup v-model:show="addIng.show" position="bottom" round class="psv-pick">
           <div style="padding:16px">
             <div class="psv-pick__title" style="margin-bottom:12px">➕ ဟင်းခံ အသစ် / Add ingredient</div>
-            <van-field v-model="addIng.name" label="Name" placeholder="e.g. ဆန်, ဆီ, ကြက်ဥ" />
+            <van-field id="addIngName" v-model="addIng.name" label="Name" placeholder="e.g. ဆန်, ဆီ, ကြက်ဥ" @keyup.enter="saveAddIngredient" />
             <div class="psv-dim" style="font-size:12px;margin:4px 12px 8px">🍚 ဟင်းခံ (ingredient) — ရောင်းစရာ မဟုတ်ဘူး။ Stock-In မှာ ဝယ်ပြီး ယူနစ်/အချိုးအစား သတ်မှတ်နိုင်ပါတယ်။</div>
-            <div style="display:flex;gap:8px;margin-top:12px">
+            <div style="display:flex;gap:8px;margin-top:12px;position:sticky;bottom:0;background:var(--pv-card,#111a2e);padding:10px 0 4px;z-index:5">
               <van-button block plain @click="addIng.show = false">Cancel</van-button>
               <van-button block type="primary" :loading="addIng.saving" @click="saveAddIngredient">Add</van-button>
             </div>
@@ -5117,18 +5205,18 @@
         return out;
       });
 
-      // One-tap purchase-unit presets (owner 2026-09-28): ပိဿာ=1632g, ကျပ်သား=10g,
+      // One-tap purchase-unit presets (owner 2026-09-28): ပိဿာ=1632g, ကျပ်သား=16.3293g (1 ပိဿာ = 100 ကျပ်သား),
       // kg=1000g, litre=1000ml, ထုပ်/ဗူး (no fixed size), pcs=1.
       const purchasePresets = [
         { u: "ပိဿာ", label: "ပိဿာ (1632 g)" },
-        { u: "ကျပ်သား", label: "ကျပ်သား (10 g)" },
+        { u: "ကျပ်သား", label: "ကျပ်သား (16.3293 g)" },
         { u: "kg", label: "kg (1000 g)" },
         { u: "litre", label: "လီတာ litre (1000 ml)" },
         { u: "ထုပ်", label: "ထုပ် pack" },
         { u: "ဗူး", label: "ဗူး bottle/tin" },
         { u: "pcs", label: "pcs" },
       ];
-      const PRESET_BPP = { "ပိဿာ": 1632, "ကျပ်သား": 10, "kg": 1000, "litre": 1000, "pcs": 1 };
+      const PRESET_BPP = { "ပိဿာ": 1632, "ကျပ်သား": 16.3293, "kg": 1000, "litre": 1000, "pcs": 1 };
       function setPurchase(p) {
         newIng.purchase_unit = p.u;
         newIng.base_per_purchase = (PRESET_BPP[p.u] == null) ? null : PRESET_BPP[p.u];
@@ -5352,7 +5440,25 @@
         newDish.item_type = "dish";
         newDish.show = true;
       }
-      function openAddIngredient() { addIng.name = ""; addIng.saving = false; addIng.show = true; }
+      // Owner 2026-09-29 (Osmo): Vant puts the `id` on the <input> itself, not on a
+      // wrapper — the old "#addIngName input" selector matched nothing, so the field was
+      // never focused and typing went nowhere. Handle both shapes + re-focus once the
+      // bottom-sheet slide-in finished (Android keyboards attach more reliably then).
+      function focusAddIngInput() {
+        try {
+          const host = document.querySelector("#addIngName");
+          const el = (!host) ? null
+            : ((host.tagName === "INPUT" || host.tagName === "TEXTAREA") ? host : host.querySelector("input,textarea"));
+          if (!el) return;
+          el.focus();
+          try { const n = el.value.length; el.setSelectionRange(n, n); } catch (_e) {}
+        } catch (_e) {}
+      }
+      function openAddIngredient() {
+        addIng.name = ""; addIng.saving = false; addIng.show = true;
+        nextTick(focusAddIngInput);
+        setTimeout(focusAddIngInput, 350);
+      }
       async function saveAddIngredient() {
         const name = (addIng.name || "").trim();
         if (!name) { showToast("Name is required", "fail"); return; }

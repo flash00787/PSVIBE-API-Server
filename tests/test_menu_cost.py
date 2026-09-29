@@ -50,7 +50,7 @@ def test_helper():
 
     # ── base-unit conversion ──────────────────────────────────────────
     check("ပိဿာ = 1632 g", lookup_conversion("ပိဿာ"), D("1632"))
-    check("ကျပ်သား = 10 g", lookup_conversion("ကျပ်သား"), D("10"))
+    check("ကျပ်သား = 16.3293 g", lookup_conversion("ကျပ်သား"), D("16.3293"))
     check("kg = 1000 g", lookup_conversion("kg"), D("1000"))
     check("litre = 1000 ml", lookup_conversion("litre"), D("1000"))
     check("gram = 1", lookup_conversion("gram"), D("1"))
@@ -58,7 +58,7 @@ def test_helper():
 
     check("cost/base: ပိဿာ 1632 Kyat -> 1/g", cost_per_base_unit(D("1632"), D("1632")), D("1.000000"))
     check("cost/base: 5000/1632 -> 3.063725/g", cost_per_base_unit(D("5000"), D("1632")), D("3.063725"))
-    check("cost/base: ကျပ်သား 200 -> 20/g", cost_per_base_unit(D("200"), D("10")), D("20.000000"))
+    check("cost/base: ကျပ်သား 200 -> 12.247922/g", cost_per_base_unit(D("200"), D("16.3293")), D("12.247922"))
     check("cost/base: kg 3000 -> 3/g", cost_per_base_unit(D("3000"), D("1000")), D("3.000000"))
     check("cost/base: default 1 (no conversion)", cost_per_base_unit(D("1500"), D("1")), D("1500.000000"))
     check("cost/base: bpp 0 -> None", cost_per_base_unit(D("1500"), D("0")), None)

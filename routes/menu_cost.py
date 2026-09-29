@@ -43,7 +43,8 @@ BASE_UNIT_CONVERSIONS = {
     "g": Decimal("1"), "gram": Decimal("1"), "grams": Decimal("1"),
     "kg": Decimal("1000"), "kilogram": Decimal("1000"), "kilograms": Decimal("1000"),
     "ပိဿာ": Decimal("1632"), "viss": Decimal("1632"), "peittha": Decimal("1632"),
-    "ကျပ်သား": Decimal("10"), "kyattha": Decimal("10"), "kyat tha": Decimal("10"),
+    # 1 ပိဿာ = 100 ကျပ်သား = 1.632 kg  ->  1 ကျပ်သား = 16.3293 g (owner 2026-09-29)
+    "ကျပ်သား": Decimal("16.3293"), "kyattha": Decimal("16.3293"), "kyat tha": Decimal("16.3293"),
     "လီတာ": Decimal("1000"),  # Burmese litre = 1000 ml
     "ထုပ်": Decimal("1"),  # pack / bundle — no fixed size, cost per pack
     "ဗူး": Decimal("1"),  # bottle / tin — no fixed size, cost per bottle/tin
