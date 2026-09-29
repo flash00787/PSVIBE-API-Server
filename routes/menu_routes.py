@@ -1547,16 +1547,17 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  DELETE — owner 2026-09-29 (Osmo: "Delete btn ကော ထည့်ပေးပါ မှားသွားလို့")
-#  Removing a row that was created by mistake.  Both routes are admin-only and
-#  REFUSE to touch anything that already carries history (stock movements, FIFO
-#  layers, food-cart/hold lines, dish consumption), so a mis-tap can never silently
-#  rewrite past stock/sales reports.  Recipe lines that belong to a deleted item are
-#  removed with it (a recipe without its dish is dead weight).
+#  DELETE — owner 2026-09-29 (Osmo: "Delete btn ကော ထည့်ပေးပါ မှားသွားလို့",
+#  round 2: "Ingredients က နေ ပြန်ဖျက်မရဘူး ဖြစ်နေတယ် ကြက်ဥကို")
+#
+#  Rows created by mistake must be removable — but a row that already carries money
+#  history (purchases, FIFO layers, SALES) is never silently destroyed: the API answers
+#  409 with a machine-readable `reason` (+ counts) and a suggested next step, and the
+#  Staff App turns that into a plain-language prompt ("move it to Products", "delete the
+#  purchase history too", ...).  Sold products stay protected.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_HISTORY_TABLES = ("stock_in", "stock_out", "stock_layers", "daily_stock_check",
-                   "food_cart", "stock_hold")
+_HISTORY_TABLES = ("stock_in", "stock_layers", "daily_stock_check", "food_cart", "stock_hold")
 
 
 def _ref_count(table: str, branch: int, name: str) -> int:
@@ -1570,13 +1571,15 @@ def _ref_count(table: str, branch: int, name: str) -> int:
 
 
 @router.delete("/item")
-async def delete_menu_item(item_name: str = Query(None), id: int = Query(None),
+async def delete_menu_item(item_name: str = Query(None), id: int = Query(None), purge: int = Query(0),
                            request: Request = None,
                            user: dict = Depends(require_admin_user)):
     """ADMIN-only: delete a sellable menu item (an ``inventory`` row) created by mistake.
 
-    Refuses with 409 when the item already has stock/sales history (the response lists
-    exactly what blocks it).  Recipe rows for that dish are deleted together with it.
+    * sold items (any ``stock_out`` / sales row) → 409 ``reason=has_sales`` (never deleted:
+      past sales reports would change).
+    * stock history (stock-in / layers / cart / hold / consumption) → 409
+      ``reason=has_history``; re-send with ``purge=1`` to remove it together with the item.
     """
     _ensure_tables()
     branch = _branch(request)
@@ -1591,22 +1594,47 @@ async def delete_menu_item(item_name: str = Query(None), id: int = Query(None),
         raise HTTPException(status_code=404, detail={"success": False, "error": "Menu item not found", "code": 404})
 
     nm = row["item_name"]
-    blockers = []
-    for table in _HISTORY_TABLES:
-        n = _ref_count(table, branch, nm)
+    sales = _ref_count("stock_out", branch, nm)
+    blockers = {}
+    for t in _HISTORY_TABLES:
+        n = _ref_count(t, branch, nm)
         if n:
-            blockers.append("%s:%d" % (table, n))
+            blockers[t] = n
     try:
         cons = _q1("SELECT COUNT(*) AS c FROM ingredient_consumption WHERE branch_id=%s AND dish_item=%s", (branch, nm))
         if cons and int(cons.get("c") or 0):
-            blockers.append("ingredient_consumption:%d" % int(cons["c"] or 0))
+            blockers["ingredient_consumption"] = int(cons["c"] or 0)
     except Exception:
         pass
-    if blockers:
+
+    if sales:
         raise HTTPException(status_code=409, detail={
-            "success": False, "code": 409, "blockers": blockers,
-            "error": "'%s' has history (%s) — remove those stock / sale entries first" % (nm, ", ".join(blockers)),
+            "success": False, "code": 409, "reason": "has_sales", "sales_rows": sales,
+            "blockers": blockers, "suggest": "none",
+            "error": "'%s' က ရောင်းရပြီးသား %d ခု ရှိတယ် — ဖျက်လို့ မရဘူး (အတိတ် ရောင်းမှတ်တမ်း/report ပျက်သွားမယ်)။" % (nm, sales),
         })
+    if blockers and not int(purge or 0):
+        raise HTTPException(status_code=409, detail={
+            "success": False, "code": 409, "reason": "has_history", "blockers": blockers,
+            "suggest": "purge_history",
+            "error": "'%s' မှာ ဝယ်/stock မှတ်တမ်း (%s) ရှိတယ် — အဲ့ဒါတွေပါ ဖျက်မှ ရမယ်။" % (nm, ", ".join("%s:%d" % kv for kv in sorted(blockers.items()))),
+        })
+
+    purged = {}
+    if int(purge or 0):
+        for t in _HISTORY_TABLES:
+            try:
+                n = _del("DELETE FROM " + t + " WHERE branch_id=%s AND item_name=%s", (branch, nm))
+                if n:
+                    purged[t] = int(n)
+            except Exception:
+                pass
+        try:
+            n = _del("DELETE FROM ingredient_consumption WHERE branch_id=%s AND dish_item=%s", (branch, nm))
+            if n:
+                purged["ingredient_consumption"] = int(n)
+        except Exception:
+            pass
 
     recipes_removed = 0
     try:
@@ -1618,20 +1646,27 @@ async def delete_menu_item(item_name: str = Query(None), id: int = Query(None),
     except Exception:
         pass
     deleted = _del("DELETE FROM inventory WHERE id=%s AND branch_id=%s", (row["id"], branch))
-    logger.info("menu item DELETED id=%s name=%r recipes=%s by=%s", row["id"], nm, recipes_removed, (user or {}).get("username"))
-    return {"success": True, "data": {"deleted": int(deleted), "item_name": nm, "recipe_rows_removed": int(recipes_removed)}}
+    logger.info("menu item DELETED id=%s name=%r purged=%s recipes=%s by=%s",
+                row["id"], nm, purged, recipes_removed, (user or {}).get("username"))
+    return {"success": True, "data": {"deleted": int(deleted), "item_name": nm,
+                                      "recipe_rows_removed": int(recipes_removed), "purged": purged}}
 
 
 @router.delete("/ingredients")
 async def delete_ingredient(name: str = Query(None), id: int = Query(None), force: int = Query(0),
-                            request: Request = None,
+                            purge: int = Query(0), request: Request = None,
                             user: dict = Depends(require_admin_user)):
     """ADMIN-only: delete an ingredient master row created by mistake.
 
-    Refuses with 409 when the name is a sellable menu item (delete the item instead) or
-    when it has purchases (``stock_in`` / FIFO ``stock_layers`` — money history).  When it
-    is only *used in recipes*, ``force=1`` also removes those recipe lines; without force
-    the response lists the dishes so the owner can decide.
+    Refusals are structured so the app can offer the right next step:
+
+    * ``reason=sellable_item`` — the same name is a sellable menu row.  Deleting the
+      *ingredient mapping* is still possible once the mapping is not needed, but the app
+      offers the safe alternative first: move it to 🛒 Products (``POST /ingredients/kind``).
+      We refuse outright when it has sales, because the menu item owns that history.
+    * ``reason=has_sales`` — already sold ⇒ never deleted.
+    * ``reason=used_in_recipes`` — ``force=1`` also removes those recipe lines.
+    * ``reason=has_purchases`` — ``purge=1`` also removes the stock-in / FIFO-layer rows.
     """
     _ensure_tables()
     branch = _branch(request)
@@ -1646,34 +1681,62 @@ async def delete_ingredient(name: str = Query(None), id: int = Query(None), forc
         raise HTTPException(status_code=404, detail={"success": False, "error": "Ingredient not found", "code": 404})
     inm = row["name"]
 
-    if _q1("SELECT id FROM inventory WHERE branch_id=%s AND item_name=%s", (branch, inm)):
-        raise HTTPException(status_code=409, detail={
-            "success": False, "code": 409,
-            "error": "'%s' is a sellable menu item — delete it from the item list instead" % inm,
-        })
-
-    blocked = []
-    for table in ("stock_in", "stock_layers"):
-        n = _ref_count(table, branch, inm)
-        if n:
-            blocked.append("%s:%d" % (table, n))
-    if blocked:
-        raise HTTPException(status_code=409, detail={
-            "success": False, "code": 409, "blockers": blocked,
-            "error": "'%s' has purchase history (%s) — delete those stock-in entries first" % (inm, ", ".join(blocked)),
-        })
-
+    inv = _q1("SELECT id, item_name FROM inventory WHERE branch_id=%s AND item_name=%s", (branch, inm))
+    sales = _ref_count("stock_out", branch, inm)
+    stock_in_rows = _ref_count("stock_in", branch, inm)
+    layer_rows = _ref_count("stock_layers", branch, inm)
     used = []
     try:
         rows = _q("SELECT DISTINCT menu_item FROM menu_recipes WHERE branch_id=%s AND ingredient=%s", (branch, inm)) or []
         used = [r.get("menu_item") for r in rows if r.get("menu_item")]
     except Exception:
         used = []
+
+    # A name that is ALSO a sellable menu row: deleting the *ingredient mapping* is fine when
+    # nothing has been sold yet (the item simply lives on as a 🛒 product, history untouched),
+    # but a product that has already been SOLD is never deleted — offer "move to Products".
+    if inv and sales:
+        raise HTTPException(status_code=409, detail={
+            "success": False, "code": 409, "reason": "sellable_item", "is_sellable": True,
+            "sales_rows": sales, "purchase_rows": stock_in_rows, "layer_rows": layer_rows,
+            "suggest": "move_to_product",
+            "error": ("'%s' က ရောင်းရပြီးသား %d ခု ရှိတဲ့ ပစ္စည်း ဖြစ်နေတယ် (ဝယ်မှတ်တမ်း %d ခု) — ဖျက်လို့ မရဘူး "
+                      "(အတိတ် ရောင်းမှတ်တမ်း/report ပျက်မယ်)။ 🛒 Products ထဲ ရွှေ့လို့ရတယ် — မှတ်တမ်းတွေ အကုန် ကျန်မယ်။")
+                     % (inm, sales, stock_in_rows),
+        })
+
+    if sales:
+        raise HTTPException(status_code=409, detail={
+            "success": False, "code": 409, "reason": "has_sales", "sales_rows": sales, "suggest": "none",
+            "error": "'%s' က ရောင်းရပြီးသား %d ခု ရှိတယ် — ဖျက်လို့ မရဘူး (report ပျက်မယ်)။" % (inm, sales),
+        })
     if used and not int(force or 0):
         raise HTTPException(status_code=409, detail={
-            "success": False, "code": 409, "used_in": used,
-            "error": "'%s' is used in %d recipe(s): %s — confirm to remove those lines too" % (inm, len(used), ", ".join(used)),
+            "success": False, "code": 409, "reason": "used_in_recipes", "used_in": used, "suggest": "force_recipes",
+            "error": "'%s' ကို recipe %d ခုမှာ သုံးထားတယ်: %s — အဲ့ဒီ recipe လိုင်းတွေပါ ဖျက်မှ ရမယ်။" % (inm, len(used), ", ".join(used)),
         })
+    if (stock_in_rows or layer_rows) and not int(purge or 0):
+        raise HTTPException(status_code=409, detail={
+            "success": False, "code": 409, "reason": "has_purchases", "purchase_rows": stock_in_rows,
+            "layer_rows": layer_rows, "suggest": "purge_purchases",
+            "error": "'%s' မှာ ဝယ်မှတ်တမ်း %d ခု (FIFO layer %d) ရှိတယ် — အဲ့ဒါတွေပါ ဖျက်မှ ရမယ်။" % (inm, stock_in_rows, layer_rows),
+        })
+
+    purged = {}
+    if int(purge or 0):
+        for t in ("stock_layers", "stock_in"):
+            try:
+                n = _del("DELETE FROM " + t + " WHERE branch_id=%s AND item_name=%s", (branch, inm))
+                if n:
+                    purged[t] = int(n)
+            except Exception:
+                pass
+        try:
+            n = _del("DELETE FROM ingredient_consumption WHERE branch_id=%s AND ingredient=%s", (branch, inm))
+            if n:
+                purged["ingredient_consumption"] = int(n)
+        except Exception:
+            pass
 
     recipes_removed = 0
     if used and int(force or 0):
@@ -1683,5 +1746,9 @@ async def delete_ingredient(name: str = Query(None), id: int = Query(None), forc
     except Exception:
         pass
     deleted = _del("DELETE FROM ingredients WHERE id=%s AND branch_id=%s", (row["id"], branch))
-    logger.info("ingredient DELETED id=%s name=%r recipes=%s by=%s", row["id"], inm, recipes_removed, (user or {}).get("username"))
-    return {"success": True, "data": {"deleted": int(deleted), "name": inm, "recipe_rows_removed": int(recipes_removed)}}
+    logger.info("ingredient DELETED id=%s name=%r recipes=%s purged=%s by=%s",
+                row["id"], inm, recipes_removed, purged, (user or {}).get("username"))
+    still_listed = bool(inv and not sales) or bool(stock_in_rows or layer_rows) and not int(purge or 0)
+    return {"success": True, "data": {"deleted": int(deleted), "name": inm,
+                                      "recipe_rows_removed": int(recipes_removed), "purged": purged,
+                                      "moved_to_product": bool(inv), "still_listed": bool(still_listed)}}

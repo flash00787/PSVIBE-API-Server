@@ -5662,15 +5662,17 @@
         const p = (e && e.detail && e.detail.path) || "";
         if (p.indexOf("/api/menu/ingredients") >= 0) loadIngredients();
       }
-      // ── Delete (owner 2026-09-29 Osmo: "Delete btn ကော ထည့်ပေးပါ မှားသွားလို့") ──
-      // Removing a row that was created by mistake. The server refuses (409) when the row
-      // already carries stock / sales history, so a mis-tap can never rewrite past reports.
+      // ── Delete (owner 2026-09-29 Osmo: "Delete btn ကော ထည့်ပေးပါ မှားသွားလို့",
+      //    then: "Ingredients က နေ ပြန်ဖျက်မရဘူး ဖြစ်နေတယ် ကြက်ဥကို") ──
+      // When the server refuses, it sends a machine-readable `reason`, so the app offers the
+      // right next step instead of a dead end: move a sold product to 🛒 Products, wipe the
+      // purchase history, or drop the recipe lines — each behind its own explicit confirm.
       function askConfirm(title, message) {
         return new Promise((resolve) => {
           if (window.vant && vant.showConfirmDialog) {
             vant.showConfirmDialog({
               title: title, message: message,
-              confirmButtonText: "🗑 ဖျက်မယ် / Delete",
+              confirmButtonText: "ဟုတ်ကဲ့ / OK",
               cancelButtonText: "မလုပ်တော့ဘူး",
               confirmButtonColor: "#ef4444",
             }).then(() => resolve(true)).catch(() => resolve(false));
@@ -5679,50 +5681,102 @@
           }
         });
       }
-      async function deleteMenuItem(nm) {
-        return PSV.unwrap(await PSV.api("/api/menu/item?item_name=" + encodeURIComponent(nm), { method: "DELETE" }));
+      function errDetail(e) {
+        // The API wraps the structured refusal under `detail` or `error` depending on the
+        // exception handler in play — accept both so the prompts always see `reason`.
+        const b = (e && e.body) || null; if (!b) return null;
+        const d = b.detail || b.error || null;
+        return (d && typeof d === 'object') ? d : null;
       }
-      async function deleteIngredientRow(nm, force) {
-        return PSV.unwrap(await PSV.api("/api/menu/ingredients?name=" + encodeURIComponent(nm) + (force ? "&force=1" : ""), { method: "DELETE" }));
+      async function deleteMenuItem(nm, opts) {
+        const o = opts || {};
+        return PSV.unwrap(await PSV.api("/api/menu/item?item_name=" + encodeURIComponent(nm) + (o.purge ? "&purge=1" : ""), { method: "DELETE" }));
       }
+      async function deleteIngredientRow(nm, opts) {
+        const o = opts || {};
+        return PSV.unwrap(await PSV.api("/api/menu/ingredients?name=" + encodeURIComponent(nm)
+          + (o.force ? "&force=1" : "") + (o.purge ? "&purge=1" : ""), { method: "DELETE" }));
+      }
+      async function afterDelete(nm, res) {
+        const d = res || {};
+        let extra = "";
+        if (d.moved_to_product) extra = " (🛒 Products ထဲ ရွှေ့သွားတယ်)";
+        if (d.purged && d.purged.stock_in) extra += " · ဝယ်မှတ်တမ်း " + d.purged.stock_in + " ဖျက်ပြီး";
+        if (d.recipe_rows_removed) extra += " · recipe လိုင်း " + d.recipe_rows_removed + " ဖျက်ပြီး";
+        showToast("ဖျက်ပြီး ✓ " + nm + extra, "success");
+        PSV.invalidate("/api/menu");
+        await Promise.all([loadIngredients(true), loadAll()]).catch(() => {});
+      }
+      async function moveToProducts(it) {
+        await setKind(it, "product");
+        showToast("🛒 ရောင်းစရာ ပစ္စည်း (Products) ထဲ ရွှေ့ပြီး ✓ — မှတ်တမ်းတွေ မပျက်ဘူး", "success");
+        PSV.invalidate("/api/menu");
+        await Promise.all([loadIngredients(true), loadAll()]).catch(() => {});
+      }
+
       async function confirmDeleteItem(it) {
         const nm = it && it.item_name; if (!nm) return;
         if (!(await askConfirm("ဖျက် မှာ သေချာလား? / Delete item",
-            '"' + nm + '" ကို menu ထဲကနေ ဖျက်မယ်။\n\nဝယ်/ရောင်း မှတ်တမ်း (stock-in, stock-out, ရောင်းရပြီး) ရှိပြီးသားဆိုရင် ဖျက်လို့ မရဘူး — system က ကာကွယ်ထားတယ်။'))) return;
+            '"' + nm + '" ကို menu ထဲကနေ ဖျက်မယ်။\n\nဝယ်/ရောင်း မှတ်တမ်း ရှိပြီးသားဆိုရင် system က ကာကွယ်ထားတယ် — ဘာလုပ်လို့ရလဲ ရှင်းပြမယ်။'))) return;
         haptic("medium");
-        try {
-          const res = await deleteMenuItem(nm);
-          showToast("ဖျက်ပြီး ✓ " + nm, "success");
-          PSV.invalidate("/api/menu");
-          await Promise.all([loadAll(), loadIngredients(true)]).catch(() => {});
-        } catch (e) {
-          showToast(String((e && e.message) || e), "fail");
+        const opts = {};
+        for (let guard = 0; guard < 4; guard++) {
+          try {
+            const res = await deleteMenuItem(nm, opts);
+            await afterDelete(nm, res);
+            return;
+          } catch (e) {
+            const d = errDetail(e);
+            if (d && d.reason === "has_history" && !opts.purge) {
+              const list = Object.keys(d.blockers || {}).map((k) => k + ":" + d.blockers[k]).join(", ");
+              if (await askConfirm("ဝယ် / stock မှတ်တမ်း ရှိတယ်",
+                  (d.error || "") + "\n\nမှတ်တမ်း (" + list + ") တွေပါ ဖျက်ပြီး ဆက်မလား?")) { opts.purge = 1; continue; }
+              return;
+            }
+            showToast(String((e && e.message) || e), "fail");
+            return;
+          }
         }
       }
+
       async function confirmDeleteIngredient(it) {
         const nm = it && it.name; if (!nm) return;
         if (!(await askConfirm("ဖျက် မှာ သေချာလား? / Delete ingredient",
-            '"' + nm + '" ကို ingredient စာရင်းထဲကနေ ဖျက်မယ်။\n\nဝယ်ထားတာ (stock-in) ရှိပြီးသားဆိုရင် ဖျက်လို့ မရဘူး။'))) return;
+            '"' + nm + '" ကို ingredient စာရင်းထဲကနေ ဖျက်မယ်။\n\nဝယ်/ရောင်း မှတ်တမ်း ရှိရင် ဖျက်လို့ မရဘူး — အဲ့ဒါက report ကာကွယ်ချက်ပါ။'))) return;
         haptic("medium");
-        try {
-          await deleteIngredientRow(nm, false);
-          showToast("ဖျက်ပြီး ✓ " + nm, "success");
-          PSV.invalidate("/api/menu");
-          await Promise.all([loadIngredients(true), loadAll()]).catch(() => {});
-        } catch (e) {
-          const msg = String((e && e.message) || e);
-          if (/used in \d+ recipe/.test(msg)) {
-            if (await askConfirm("Recipe ထဲ အသုံးပြုနေတယ် / Used in recipes",
-                msg + "\n\nအဲ့ဒီ recipe လိုင်းတွေကိုပါ ဖျက်ပြီး ဒီ ingredient ကို ဖျက်မလား?")) {
-              try {
-                await deleteIngredientRow(nm, true);
-                showToast("ဖျက်ပြီး ✓ " + nm, "success");
-                PSV.invalidate("/api/menu");
-                await Promise.all([loadIngredients(true), loadAll()]).catch(() => {});
-              } catch (e2) { showToast(String((e2 && e2.message) || e2), "fail"); }
+        const opts = {};
+        for (let guard = 0; guard < 4; guard++) {
+          try {
+            const res = await deleteIngredientRow(nm, opts);
+            await afterDelete(nm, res);
+            return;
+          } catch (e) {
+            const d = errDetail(e);
+            const reason = d && d.reason;
+            if (reason === "used_in_recipes" && !opts.force) {
+              if (await askConfirm("Recipe ထဲ အသုံးပြုနေတယ် / Used in recipes",
+                  (d.error || "") + "\n\nrecipe လိုင်းတွေပါ ဖျက်ပြီး ဆက်မလား?")) { opts.force = 1; continue; }
+              return;
             }
-          } else {
-            showToast(msg, "fail");
+            if (reason === "has_purchases" && !opts.purge) {
+              if (await askConfirm("ဝယ်မှတ်တမ်း ရှိတယ် / Purchase history",
+                  (d.error || "") + "\n\nဝယ်မှတ်တမ်း (" + (d.purchase_rows || 0) + ") + FIFO layer (" + (d.layer_rows || 0)
+                  + ") တွေပါ ဖျက်မယ် — food-cost report က ဒီဝယ်စရိတ် ပါတော့မယ် မဟုတ်ဘူး။ ဆက်မလား?")) { opts.purge = 1; continue; }
+              return;
+            }
+            if (reason === "sellable_item" || reason === "has_sales") {
+              if (d.suggest === "move_to_product") {
+                if (await askConfirm("ရောင်းရတဲ့ ပစ္စည်း / Sold product",
+                    (d.error || "") + "\n\n🛒 Products စာရင်းထဲ ရွှေ့ပေးမလား? (ဝယ်/ရောင်း မှတ်တမ်း အကုန် ကျန်မယ်)")) {
+                  try { await moveToProducts(it); } catch (e2) { showToast(String((e2 && e2.message) || e2), "fail"); }
+                }
+              } else {
+                showToast(String((e && e.message) || e), "fail");
+              }
+              return;
+            }
+            showToast(String((e && e.message) || e), "fail");
+            return;
           }
         }
       }

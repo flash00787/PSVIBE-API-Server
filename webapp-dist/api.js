@@ -29,7 +29,7 @@
   // the freshly fetched index.html with the marker this bundle was built with; when the
   // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
   // with the ?v= query on every deploy.
-  var PSV_BUILD = "w54mmqrcrecipe23";
+  var PSV_BUILD = "w54mmqrcrecipe25";
   // Real app build number — shown in the More menu footer (was hardcoded "build 34" before,
   // which misled diagnosis). Bump together with android versionCode.
   var APP_BUILD = "51";
@@ -360,7 +360,12 @@
       } else if (typeof body === "string" && body) {
         msg = _cleanText(body, resp.status);
       }
-      throw new Error(msg);
+      // The app needs the machine-readable refusal (409 reason=...) to offer the right
+      // next step, so keep the parsed body + status on the error (message unchanged).
+      const _err = new Error(msg);
+      _err.status = resp.status;
+      _err.body = body;
+      throw _err;
     }
     _rlClear();
     return body;
