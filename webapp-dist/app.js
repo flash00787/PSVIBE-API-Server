@@ -130,7 +130,7 @@
       setTimeout(update, 250);
       setTimeout(() => {
         try {
-          if (t.closest && t.closest(".van-popup")) t.scrollIntoView({ block: "center" });
+          if (t.closest) t.scrollIntoView({ block: "center" });
         } catch (_e) {}
       }, 320);
     }, true);
@@ -4839,6 +4839,14 @@
           <div v-else-if="!dishes.length && !resale.length" class="psv-recipe-sum__hint">Add items above to see costing.</div>
         </div>
 
+        <div class="psv-catrow">
+          <span class="psv-dim" style="font-size:12px">Category အလိုက်</span>
+          <span class="psv-dchip" :class="{ 'psv-dchip--on': !catActive }" @click="catActive = ''">🟣 အားလုံး ({{ list.length }})</span>
+          <span v-for="c in cats" :key="c.name" class="psv-dchip"
+                :class="{ 'psv-dchip--on': catActive === c.name }"
+                @click="catActive = (catActive === c.name ? '' : c.name)">{{ c.name }} ({{ c.n }})</span>
+        </div>
+
         <van-tabs v-model:active="tab" sticky>
           <van-tab title="🍳 ဟင်းပွဲ">
             <van-pull-refresh v-model="refreshing" @refresh="loadAll">
@@ -4872,8 +4880,9 @@
           </van-tab>
           <van-tab title="All items">
             <van-pull-refresh v-model="refreshing" @refresh="loadAll">
-              <van-cell-group inset style="margin-top:8px">
-                <van-cell v-for="it in all" :key="it.item_name" :title="it.item_name" is-link @click="openEditor(it)">
+              <van-empty v-if="!all.length && !loading" description="ဒီ category မှာ item မရှိဘူး" />
+              <van-cell-group v-for="grp in allGroups" :key="grp.cat" inset :title="grp.cat" style="margin-top:8px">
+                <van-cell v-for="it in grp.items" :key="it.item_name" :title="it.item_name" is-link @click="openEditor(it)">
                   <template #label>
                     <span class="psv-pill" :class="it.item_type === 'dish' ? 'psv-pill--ok' : 'psv-pill--dim'" style="margin-right:6px">{{ typeBadge(it) }}</span>
                     <span>{{ costLabel(it) }}</span>
@@ -4964,11 +4973,15 @@
                 <div class="psv-cost-cell">
                   <div class="psv-cost-cell__lbl">Selling price · ရောင်းဈေး</div>
                   <div class="psv-cost-cell__val" @click="startEditPrice">
-                    <template v-if="!editingPrice">{{ fKs(editor.item.selling_price) }} Ks <span class="psv-cost-cell__edit">✎</span></template>
-                    <span v-else style="display:flex;gap:6px;align-items:center">
-                      <input v-model.number="priceDraft" type="number" inputmode="decimal" class="psv-mini-in" style="width:110px" />
-                      <van-button size="mini" type="primary" :loading="priceSaving" @click.stop="savePrice">Save</van-button>
-                      <van-button size="mini" plain @click.stop="editingPrice = false">✕</van-button>
+                    <template v-if="!editingPrice">
+                      {{ fKs(editor.item.selling_price) }} Ks
+                      <span class="psv-cost-cell__edit" role="button">✎ ပြင်မယ်</span>
+                    </template>
+                    <span v-else id="psv-price-edit" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+                      <input v-model.number="priceDraft" type="number" inputmode="decimal" enterkeyhint="done"
+                             autocomplete="off" class="psv-mini-in" style="width:120px" @keyup.enter="savePrice" />
+                      <van-button size="small" type="primary" :loading="priceSaving" @click.stop="savePrice">Save</van-button>
+                      <van-button size="small" plain @click.stop="editingPrice = false">✕</van-button>
                     </span>
                   </div>
                 </div>
@@ -5147,10 +5160,40 @@
       const staff = PSV.getStaff() || {};
       const isAdmin = computed(() => String((staff && staff.role) || "").toLowerCase() === "admin");
 
-      const all = computed(() => list.value);
-      const costed = computed(() => list.value.filter((i) => i.has_recipe));
-      const dishes = computed(() => list.value.filter((i) => i.item_type === "dish"));
-      const resale = computed(() => list.value.filter((i) => i.item_type !== "dish"));
+      // ── Category grouping + filter (owner 2026-09-29 Osmo: "Category အလိုက်ပြပေးပါ") ──
+      // Items carry `category` from /api/menu/costs; unknown/empty falls back to "အခြား (Other)".
+      // The chip row filters every item tab and the "All items" tab is rendered grouped by category.
+      const catActive = ref("");
+      const catLabel = (c) => {
+        const v = (c == null ? "" : String(c)).trim();
+        return v || "အခြား (Other)";
+      };
+      const cats = computed(() => {
+        const m = new Map();
+        for (const it of list.value) {
+          const k = catLabel(it && it.category);
+          m.set(k, (m.get(k) || 0) + 1);
+        }
+        return Array.from(m.entries())
+          .map(([name, n]) => ({ name: name, n: n }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+      });
+      const inCat = (it) => !catActive.value || catLabel(it && it.category) === catActive.value;
+      const all = computed(() => list.value.filter(inCat));
+      const costed = computed(() => list.value.filter((i) => i.has_recipe && inCat(i)));
+      const dishes = computed(() => list.value.filter((i) => i.item_type === "dish" && inCat(i)));
+      const resale = computed(() => list.value.filter((i) => i.item_type !== "dish" && inCat(i)));
+      const allGroups = computed(() => {
+        const m = new Map();
+        for (const it of all.value) {
+          const k = catLabel(it && it.category);
+          if (!m.has(k)) m.set(k, []);
+          m.get(k).push(it);
+        }
+        return Array.from(m.entries())
+          .map(([cat, items]) => ({ cat: cat, items: items }))
+          .sort((a, b) => a.cat.localeCompare(b.cat));
+      });
       const splitDish = computed(() => (summary.value.split && summary.value.split.dish) || {});
       const splitResale = computed(() => (summary.value.split && summary.value.split.resale) || {});
       const sumPct = computed(() => (summary.value.food_cost_pct == null ? "—" : (Number(summary.value.food_cost_pct) || 0) + "%"));
@@ -5549,6 +5592,19 @@
       function startEditPrice() {
         editingPrice.value = true;
         priceDraft.value = Number((editor.item && editor.item.selling_price) || 0);
+        // Owner 2026-09-29: bring the inline editor into view + focus it, so the keyboard can never
+        // hide the Save button ("Price update ကော လုပ်လို့မရဘူး").
+        nextTick(() => {
+          setTimeout(() => {
+            try {
+              const box = document.querySelector("#psv-price-edit");
+              if (!box) return;
+              box.scrollIntoView({ block: "center" });
+              const i = box.querySelector("input");
+              if (i) i.focus();
+            } catch (_e) {}
+          }, 300);
+        });
       }
       async function savePrice() {
         if (!editor.item) return;
@@ -5843,6 +5899,7 @@
         summary, month, sumPct, sumWarn, sumColor,
         pct, pillClass, fKs, openEditor, closeEditor, lineCost, editorTotals,
         typeBadge, dishLabel, resaleLabel, costLabel, hasCostPill,
+        catActive, cats, allGroups, catLabel,
         unitCostText, shortDate, reviewIngredients, reviewProducts, setKind, openUnitEditor,
         ingPickerShow, ingPickerItems, pickIngredient, removeRow,
         newIng, saveIngredient, saveRecipe, editor, isAdmin, goStockIn,

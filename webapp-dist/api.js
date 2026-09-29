@@ -29,7 +29,7 @@
   // the freshly fetched index.html with the marker this bundle was built with; when the
   // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
   // with the ?v= query on every deploy.
-  var PSV_BUILD = "w54mmqrcrecipe26";
+  var PSV_BUILD = "w54mmqrcrecipe28";
   // Real app build number — shown in the More menu footer (was hardcoded "build 34" before,
   // which misled diagnosis). Bump together with android versionCode.
   var APP_BUILD = "51";
@@ -534,12 +534,32 @@
   }
 
   function toast(msg, type) {
-    // Vant Toast is registered globally; guard in case not ready yet.
-    if (window.vant && vant.showToast) {
-      vant.showToast({ message: msg || "", type: type || "text", duration: 1800 });
-    } else {
-      // fallback
-      console.warn("[toast]", msg);
+    // Owner 2026-09-29 (Osmo: "Price update ကော လုပ်လို့မရဘူး" / "နှိပ်ရင် ဘာမှ မပေါ်ဘူး"): Vant's
+    // imperative showToast does not render on some Android WebViews, so the action succeeded but
+    // the owner saw NOTHING. Feedback is now plain DOM — it cannot be invisible.
+    try {
+      const hostId = "psv-toast-host";
+      let host = document.getElementById(hostId);
+      if (!host) {
+        host = document.createElement("div");
+        host.id = hostId;
+        host.setAttribute("data-psv-toast", "1");
+        host.style.cssText = "position:fixed;left:0;right:0;bottom:96px;z-index:2147483000;" +
+          "display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;padding:0 16px;";
+        document.body.appendChild(host);
+      }
+      const el = document.createElement("div");
+      const bg = type === "success" ? "rgba(22,101,52,.97)"
+        : (type === "fail" ? "rgba(153,27,27,.97)" : "rgba(15,23,42,.97)");
+      el.textContent = String(msg == null ? "" : msg);
+      el.style.cssText = "max-width:92vw;padding:10px 14px;border-radius:12px;background:" + bg +
+        ";color:#fff;font-size:13px;line-height:1.5;box-shadow:0 10px 30px rgba(0,0,0,.45);" +
+        "border:1px solid rgba(255,255,255,.14);white-space:pre-wrap;word-break:break-word;text-align:center;";
+      host.appendChild(el);
+      setTimeout(function () { try { el.parentNode && el.parentNode.removeChild(el); } catch (_e) {} }, 2600);
+      try { console.log("[toast]", type || "text", msg); } catch (_e) {}
+    } catch (_e) {
+      try { console.warn("[toast]", msg); } catch (_e2) {}
     }
   }
 

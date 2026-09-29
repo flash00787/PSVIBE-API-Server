@@ -640,3 +640,6 @@ html.psv-native .psv-cost-cell--accent .psv-cost-cell__val { color: #fcd34d; }
   min-width:44px; min-height:44px; padding:6px 10px; border-radius:10px; font-size:17px; line-height:1;
   border:1px solid #2c3752; background:rgba(255,255,255,.04); opacity:.85; }
 .psv-del:active, .psv-del:focus { opacity:1; background: rgba(239,68,68,.22); border-color:#ef4444; }
+
+/* Category chip row (owner 2026-09-29, Osmo: "Category အလိုက်ပြပေးပါ"). */
+.psv-catrow { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:10px 16px 2px; }
