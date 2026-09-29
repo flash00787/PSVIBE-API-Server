@@ -634,3 +634,7 @@ html.psv-native .psv-cost-cell--accent .psv-cost-cell__val { color: #fcd34d; }
 /* Keyboard-aware bottom sheets (owner 2026-09-29, Osmo) — app.js publishes the on-screen
    keyboard height as --psv-kb; lift the picker/sheet so Name + Cancel/Add stay tappable. */
 .psv-pick { margin-bottom: var(--psv-kb, 0px); }
+
+/* Row delete button (owner 2026-09-29, Osmo) — Recipe & Cost items / ingredients. */
+.psv-del { margin-left:8px; padding:2px 6px; border-radius:8px; font-size:14px; line-height:1.2; opacity:.65; }
+.psv-del:active { opacity:1; background: rgba(239,68,68,.18); }

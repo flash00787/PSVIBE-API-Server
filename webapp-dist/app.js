@@ -4849,6 +4849,7 @@
                   <template #value>
                     <span v-if="it.has_recipe" class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span>
                     <span v-else class="pv-amount">{{ fKs(it.selling_price) }} Ks</span>
+                    <span class="psv-del" @click.stop="confirmDeleteItem(it)" title="Delete">🗑</span>
                   </template>
                 </van-cell>
               </van-cell-group>
@@ -4863,6 +4864,7 @@
                   <template #value>
                     <span v-if="it.no_purchase_yet" class="pv-amount">{{ fKs(it.selling_price) }} Ks</span>
                     <span v-else class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span>
+                    <span class="psv-del" @click.stop="confirmDeleteItem(it)" title="Delete">🗑</span>
                   </template>
                 </van-cell>
               </van-cell-group>
@@ -4879,6 +4881,7 @@
                   <template #value>
                     <span v-if="hasCostPill(it)" class="psv-pill" :class="pillClass(it)">{{ pct(it) }}</span>
                     <span v-else class="pv-amount">{{ fKs(it.selling_price) }} Ks</span>
+                    <span class="psv-del" @click.stop="confirmDeleteItem(it)" title="Delete">🗑</span>
                   </template>
                 </van-cell>
               </van-cell-group>
@@ -4906,6 +4909,7 @@
                   <template #value>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'ingredient' }" @click.stop="setKind(it, 'ingredient')">🍚</span>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'product' }" @click.stop="setKind(it, 'product')">🛒</span>
+                    <span class="psv-del" @click.stop="confirmDeleteIngredient(it)" title="Delete">🗑</span>
                   </template>
                 </van-cell>
                 <van-cell v-if="!reviewIngredients.length" title="No ingredients yet — stock in raw items to see them here" label="Use Stock-In (📥) to add rice, oil, eggs…" />
@@ -4916,6 +4920,7 @@
                   <template #value>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'ingredient' }" @click.stop="setKind(it, 'ingredient')">🍚</span>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'product' }" @click.stop="setKind(it, 'product')">🛒</span>
+                    <span class="psv-del" @click.stop="confirmDeleteIngredient(it)" title="Delete">🗑</span>
                   </template>
                 </van-cell>
               </van-cell-group>
@@ -5657,6 +5662,71 @@
         const p = (e && e.detail && e.detail.path) || "";
         if (p.indexOf("/api/menu/ingredients") >= 0) loadIngredients();
       }
+      // ── Delete (owner 2026-09-29 Osmo: "Delete btn ကော ထည့်ပေးပါ မှားသွားလို့") ──
+      // Removing a row that was created by mistake. The server refuses (409) when the row
+      // already carries stock / sales history, so a mis-tap can never rewrite past reports.
+      function askConfirm(title, message) {
+        return new Promise((resolve) => {
+          if (window.vant && vant.showConfirmDialog) {
+            vant.showConfirmDialog({
+              title: title, message: message,
+              confirmButtonText: "🗑 ဖျက်မယ် / Delete",
+              cancelButtonText: "မလုပ်တော့ဘူး",
+              confirmButtonColor: "#ef4444",
+            }).then(() => resolve(true)).catch(() => resolve(false));
+          } else {
+            resolve(window.confirm(message));
+          }
+        });
+      }
+      async function deleteMenuItem(nm) {
+        return PSV.unwrap(await PSV.api("/api/menu/item?item_name=" + encodeURIComponent(nm), { method: "DELETE" }));
+      }
+      async function deleteIngredientRow(nm, force) {
+        return PSV.unwrap(await PSV.api("/api/menu/ingredients?name=" + encodeURIComponent(nm) + (force ? "&force=1" : ""), { method: "DELETE" }));
+      }
+      async function confirmDeleteItem(it) {
+        const nm = it && it.item_name; if (!nm) return;
+        if (!(await askConfirm("ဖျက် မှာ သေချာလား? / Delete item",
+            '"' + nm + '" ကို menu ထဲကနေ ဖျက်မယ်။\n\nဝယ်/ရောင်း မှတ်တမ်း (stock-in, stock-out, ရောင်းရပြီး) ရှိပြီးသားဆိုရင် ဖျက်လို့ မရဘူး — system က ကာကွယ်ထားတယ်။'))) return;
+        haptic("medium");
+        try {
+          const res = await deleteMenuItem(nm);
+          showToast("ဖျက်ပြီး ✓ " + nm, "success");
+          PSV.invalidate("/api/menu");
+          await Promise.all([loadAll(), loadIngredients(true)]).catch(() => {});
+        } catch (e) {
+          showToast(String((e && e.message) || e), "fail");
+        }
+      }
+      async function confirmDeleteIngredient(it) {
+        const nm = it && it.name; if (!nm) return;
+        if (!(await askConfirm("ဖျက် မှာ သေချာလား? / Delete ingredient",
+            '"' + nm + '" ကို ingredient စာရင်းထဲကနေ ဖျက်မယ်။\n\nဝယ်ထားတာ (stock-in) ရှိပြီးသားဆိုရင် ဖျက်လို့ မရဘူး။'))) return;
+        haptic("medium");
+        try {
+          await deleteIngredientRow(nm, false);
+          showToast("ဖျက်ပြီး ✓ " + nm, "success");
+          PSV.invalidate("/api/menu");
+          await Promise.all([loadIngredients(true), loadAll()]).catch(() => {});
+        } catch (e) {
+          const msg = String((e && e.message) || e);
+          if (/used in \d+ recipe/.test(msg)) {
+            if (await askConfirm("Recipe ထဲ အသုံးပြုနေတယ် / Used in recipes",
+                msg + "\n\nအဲ့ဒီ recipe လိုင်းတွေကိုပါ ဖျက်ပြီး ဒီ ingredient ကို ဖျက်မလား?")) {
+              try {
+                await deleteIngredientRow(nm, true);
+                showToast("ဖျက်ပြီး ✓ " + nm, "success");
+                PSV.invalidate("/api/menu");
+                await Promise.all([loadIngredients(true), loadAll()]).catch(() => {});
+              } catch (e2) { showToast(String((e2 && e2.message) || e2), "fail"); }
+            }
+          } else {
+            showToast(msg, "fail");
+          }
+        }
+      }
+
       onMounted(() => {
         if (isAdmin.value) { loadAll(); loadIngredients(); loadCostBasis(); loadVariants(); }
         window.addEventListener("psv:data", onIngredientsData);
@@ -5672,6 +5742,7 @@
         newIng, saveIngredient, saveRecipe, editor, isAdmin, goStockIn,
         newDish, openNewDish, saveNewDish,
         addIng, openAddIngredient, saveAddIngredient,
+        confirmDeleteItem, confirmDeleteIngredient,
         editingPrice, priceDraft, priceSaving, startEditPrice, savePrice, switchType,
         ingNamePickShow, ingNamePickItems, purchasePresets, setPurchase, liveUnitCost,
         switchLabel, switchHint, editorStats, editorCostText, editorPctText, editorMarginText, editorPctColor,

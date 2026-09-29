@@ -1544,3 +1544,144 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
             "uncosted_items": uncosted_items,
         },
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  DELETE — owner 2026-09-29 (Osmo: "Delete btn ကော ထည့်ပေးပါ မှားသွားလို့")
+#  Removing a row that was created by mistake.  Both routes are admin-only and
+#  REFUSE to touch anything that already carries history (stock movements, FIFO
+#  layers, food-cart/hold lines, dish consumption), so a mis-tap can never silently
+#  rewrite past stock/sales reports.  Recipe lines that belong to a deleted item are
+#  removed with it (a recipe without its dish is dead weight).
+# ─────────────────────────────────────────────────────────────────────────────
+
+_HISTORY_TABLES = ("stock_in", "stock_out", "stock_layers", "daily_stock_check",
+                   "food_cart", "stock_hold")
+
+
+def _ref_count(table: str, branch: int, name: str) -> int:
+    """Rows in ``table`` for this branch/item_name; 0 when the table does not exist."""
+    try:
+        row = _q1("SELECT COUNT(*) AS c FROM " + table + " WHERE branch_id=%s AND item_name=%s",
+                  (branch, name))
+        return int((row or {}).get("c") or 0)
+    except Exception:
+        return 0
+
+
+@router.delete("/item")
+async def delete_menu_item(item_name: str = Query(None), id: int = Query(None),
+                           request: Request = None,
+                           user: dict = Depends(require_admin_user)):
+    """ADMIN-only: delete a sellable menu item (an ``inventory`` row) created by mistake.
+
+    Refuses with 409 when the item already has stock/sales history (the response lists
+    exactly what blocks it).  Recipe rows for that dish are deleted together with it.
+    """
+    _ensure_tables()
+    branch = _branch(request)
+    name = normalize_item_name(item_name) if item_name else None
+    if id is not None:
+        row = _q1("SELECT id, item_name FROM inventory WHERE id=%s AND branch_id=%s", (id, branch))
+    elif name:
+        row = _q1("SELECT id, item_name FROM inventory WHERE branch_id=%s AND item_name=%s", (branch, name))
+    else:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "id or item_name is required", "code": 422})
+    if not row:
+        raise HTTPException(status_code=404, detail={"success": False, "error": "Menu item not found", "code": 404})
+
+    nm = row["item_name"]
+    blockers = []
+    for table in _HISTORY_TABLES:
+        n = _ref_count(table, branch, nm)
+        if n:
+            blockers.append("%s:%d" % (table, n))
+    try:
+        cons = _q1("SELECT COUNT(*) AS c FROM ingredient_consumption WHERE branch_id=%s AND dish_item=%s", (branch, nm))
+        if cons and int(cons.get("c") or 0):
+            blockers.append("ingredient_consumption:%d" % int(cons["c"] or 0))
+    except Exception:
+        pass
+    if blockers:
+        raise HTTPException(status_code=409, detail={
+            "success": False, "code": 409, "blockers": blockers,
+            "error": "'%s' has history (%s) — remove those stock / sale entries first" % (nm, ", ".join(blockers)),
+        })
+
+    recipes_removed = 0
+    try:
+        recipes_removed = _del("DELETE FROM menu_recipes WHERE branch_id=%s AND menu_item=%s", (branch, nm))
+    except Exception:
+        recipes_removed = 0
+    try:
+        _del("DELETE FROM ingredient_variants WHERE branch_id=%s AND (canonical_name=%s OR variant_name=%s)", (branch, nm, nm))
+    except Exception:
+        pass
+    deleted = _del("DELETE FROM inventory WHERE id=%s AND branch_id=%s", (row["id"], branch))
+    logger.info("menu item DELETED id=%s name=%r recipes=%s by=%s", row["id"], nm, recipes_removed, (user or {}).get("username"))
+    return {"success": True, "data": {"deleted": int(deleted), "item_name": nm, "recipe_rows_removed": int(recipes_removed)}}
+
+
+@router.delete("/ingredients")
+async def delete_ingredient(name: str = Query(None), id: int = Query(None), force: int = Query(0),
+                            request: Request = None,
+                            user: dict = Depends(require_admin_user)):
+    """ADMIN-only: delete an ingredient master row created by mistake.
+
+    Refuses with 409 when the name is a sellable menu item (delete the item instead) or
+    when it has purchases (``stock_in`` / FIFO ``stock_layers`` — money history).  When it
+    is only *used in recipes*, ``force=1`` also removes those recipe lines; without force
+    the response lists the dishes so the owner can decide.
+    """
+    _ensure_tables()
+    branch = _branch(request)
+    nm = normalize_item_name(name) if name else None
+    if id is not None:
+        row = _q1("SELECT id, name FROM ingredients WHERE id=%s AND branch_id=%s", (id, branch))
+    elif nm:
+        row = _q1("SELECT id, name FROM ingredients WHERE branch_id=%s AND name=%s", (branch, nm))
+    else:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "id or name is required", "code": 422})
+    if not row:
+        raise HTTPException(status_code=404, detail={"success": False, "error": "Ingredient not found", "code": 404})
+    inm = row["name"]
+
+    if _q1("SELECT id FROM inventory WHERE branch_id=%s AND item_name=%s", (branch, inm)):
+        raise HTTPException(status_code=409, detail={
+            "success": False, "code": 409,
+            "error": "'%s' is a sellable menu item — delete it from the item list instead" % inm,
+        })
+
+    blocked = []
+    for table in ("stock_in", "stock_layers"):
+        n = _ref_count(table, branch, inm)
+        if n:
+            blocked.append("%s:%d" % (table, n))
+    if blocked:
+        raise HTTPException(status_code=409, detail={
+            "success": False, "code": 409, "blockers": blocked,
+            "error": "'%s' has purchase history (%s) — delete those stock-in entries first" % (inm, ", ".join(blocked)),
+        })
+
+    used = []
+    try:
+        rows = _q("SELECT DISTINCT menu_item FROM menu_recipes WHERE branch_id=%s AND ingredient=%s", (branch, inm)) or []
+        used = [r.get("menu_item") for r in rows if r.get("menu_item")]
+    except Exception:
+        used = []
+    if used and not int(force or 0):
+        raise HTTPException(status_code=409, detail={
+            "success": False, "code": 409, "used_in": used,
+            "error": "'%s' is used in %d recipe(s): %s — confirm to remove those lines too" % (inm, len(used), ", ".join(used)),
+        })
+
+    recipes_removed = 0
+    if used and int(force or 0):
+        recipes_removed = _del("DELETE FROM menu_recipes WHERE branch_id=%s AND ingredient=%s", (branch, inm))
+    try:
+        _del("DELETE FROM ingredient_variants WHERE branch_id=%s AND (canonical_name=%s OR variant_name=%s)", (branch, inm, inm))
+    except Exception:
+        pass
+    deleted = _del("DELETE FROM ingredients WHERE id=%s AND branch_id=%s", (row["id"], branch))
+    logger.info("ingredient DELETED id=%s name=%r recipes=%s by=%s", row["id"], inm, recipes_removed, (user or {}).get("username"))
+    return {"success": True, "data": {"deleted": int(deleted), "name": inm, "recipe_rows_removed": int(recipes_removed)}}
