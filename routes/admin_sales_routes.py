@@ -1182,15 +1182,45 @@ async def api_stock_pick_items(auth=Depends(verify_api_key)):
     Stock-In no longer creates items, so this is the full set of EXISTING items.
     """
     try:
-        names = set()
+        inv_names = set()
         for r in _mysql_query("SELECT item_name FROM inventory"):
-            names.add((r["item_name"] or "").strip())
-        for r in _mysql_query("SELECT name FROM ingredients"):
-            names.add((r["name"] or "").strip())
+            inv_names.add((r["item_name"] or "").strip())
+
+        kind_map = {}
+        try:
+            for r in _mysql_query("SELECT name, kind FROM ingredients"):
+                kind_map[(r["name"] or "").strip()] = (r.get("kind") or "").strip().lower()
+        except Exception:
+            kind_map = {}
+
+        # Variant merge (owner 2026-09-29): a name that is a *variant* of another takes the
+        # canonical's kind, so e.g. "Egg"/"ကြက်ဉ" follow ကြက်ဥ and are no longer offered as
+        # ingredients once the canonical is a product.
+        var_map = {}
+        try:
+            for r in _mysql_query("SELECT canonical_name, variant_name FROM ingredient_variants"):
+                var_map[(r["variant_name"] or "").strip()] = (r["canonical_name"] or "").strip()
+        except Exception:
+            var_map = {}
+
+        names = set(inv_names) | set(kind_map)
         for r in _mysql_query("SELECT DISTINCT item_name FROM stock_in"):
             names.add((r["item_name"] or "").strip())
-        items = sorted(n for n in names if n)
-        return ok({"items": items})
+
+        items, details = [], []
+        for n in sorted(x for x in names if x):
+            canon = var_map.get(n) or n
+            k = kind_map.get(n) or kind_map.get(canon) or ""
+            if k not in ("ingredient", "product"):
+                k = "product" if (n in inv_names or canon in inv_names) else "ingredient"
+            items.append(n)
+            details.append({
+                "name": n,
+                "kind": k,
+                "canonical": canon,
+                "variant_of": (canon if canon != n else None),
+            })
+        return ok({"items": items, "details": details})
     except Exception as e:
         logger.error(f"api_stock_pick_items: {e}")
         return error_response(str(e))

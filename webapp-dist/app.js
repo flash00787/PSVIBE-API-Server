@@ -4655,18 +4655,21 @@
               <van-button type="primary" block :loading="submitting" :disabled="!validCount" @click="submit">Stock In ({{ validCount }} item{{ validCount === 1 ? '' : 's' }})</van-button>
             </div>
           </van-tab>
-          <van-tab title="📦 Lot လိုက်">
+          <van-tab title="🧾 Voucher လိုက်">
             <van-pull-refresh v-model="lotsRefreshing" @refresh="loadLots">
               <div v-if="lotsLoading" class="psv-dim" style="padding:16px">Loading…</div>
-              <van-empty v-else-if="!lotGroups.length" description="Stock-in မှတ်တမ်း မရှိသေးဘူး" />
+              <van-empty v-else-if="!voucherGroups.length" description="Stock-in မှတ်တမ်း မရှိသေးဘူး" />
               <template v-else>
-                <van-search v-model="lotSearch" placeholder="ပစ္စည်း / batch / receipt ရှာမယ်" style="margin-top:6px" />
-                <van-cell-group v-for="g in lotGroups" :key="g.item_name" inset :title="g.item_name" style="margin-top:8px">
+                <van-search v-model="lotSearch" placeholder="ပစ္စည်း / voucher / receipt / staff ရှာမယ်" style="margin-top:6px" />
+                <van-cell-group v-for="v in voucherGroups" :key="v.voucher" inset :title="vcTitle(v)" style="margin-top:8px">
                   <div class="psv-dim" style="padding:0 16px 6px;font-size:12px">
-                    Lot {{ g.lot_count }} ခု · ဝယ်စုစုပေါင်း {{ fmtQty(g.qty_in) }} · လက်ကျန် {{ fmtQty(g.qty_remaining) }} · လက်ကျန်တန်ဖိုး {{ fKs(g.value_remaining) }} Ks
+                    ပစ္စည်း {{ v.item_count }} မျိုး · ဝယ်စုစုပေါင်း {{ fKs(v.total_cost) }} Ks · လက်ကျန်တန်ဖိုး {{ fKs(v.value_remaining) }} Ks
                   </div>
-                  <van-cell v-for="l in g.lots" :key="l.stock_in_id" :title="lotTitle(l)" :label="lotLabel(l)">
-                    <template #value><span class="pv-amount">{{ fKs(l.unit_cost) }} Ks</span></template>
+                  <van-cell v-for="it in v.items" :key="it.batch_id" :title="it.item_name" :label="vcItemLabel(it)">
+                    <template #value>
+                      <div class="pv-amount">{{ fKs(it.unit_cost) }} Ks</div>
+                      <div class="psv-dim" style="font-size:11px">{{ fKs(it.line_total) }} Ks</div>
+                    </template>
                   </van-cell>
                 </van-cell-group>
               </template>
@@ -4809,6 +4812,7 @@
       // Lazy: loaded the first time the "📦 Lot လိုက်" tab is opened, then on pull-to-refresh.
       const lots = ref([]);
       const lotGroupsRaw = ref([]);
+      const voucherGroupsRaw = ref([]);
       const lotsLoading = ref(false);
       const lotsRefreshing = ref(false);
       const lotsLoaded = ref(false);
@@ -4829,15 +4833,24 @@
         if (l.staff_name) bits.push(l.staff_name);
         return bits.join(" · ");
       };
-      const lotGroups = computed(() => {
+      const vcTitle = (v) => (lotDate(v.received_at) || "-") + " · 🧾 " + (v.voucher || "-");
+      const vcItemLabel = (it) => {
+        const bits = ["ဝယ် " + fmtQty(it.qty_in), "လက်ကျန် " + fmtQty(it.qty_remaining)];
+        if (it.batch_id) bits.push(String(it.batch_id).slice(-3));
+        return bits.join(" · ");
+      };
+      // Grouped BY VOUCHER (one stock-in = one voucher; its items are listed inside).
+      const voucherGroups = computed(() => {
         const q = (lotSearch.value || "").trim().toLowerCase();
-        if (!q) return lotGroupsRaw.value;
-        return lotGroupsRaw.value
-          .map((g) => {
-            const gHit = String(g.item_name || "").toLowerCase().includes(q);
-            const hits = g.lots.filter((l) => gHit || [l.batch_id, l.receipt_no, l.source, l.staff_name]
-              .some((v) => String(v || "").toLowerCase().includes(q)));
-            return hits.length ? Object.assign({}, g, { lots: hits, lot_count: hits.length }) : null;
+        const list = voucherGroupsRaw.value || [];
+        if (!q) return list;
+        return list
+          .map((v) => {
+            const vHit = [v.voucher, v.receipt_no, v.source, v.staff_name, v.payment_method]
+              .some((x) => String(x || "").toLowerCase().includes(q));
+            const hits = v.items.filter((it) => vHit || [it.item_name, it.batch_id]
+              .some((x) => String(x || "").toLowerCase().includes(q)));
+            return hits.length ? Object.assign({}, v, { items: hits, item_count: hits.length }) : null;
           })
           .filter(Boolean);
       });
@@ -4847,6 +4860,7 @@
           const d = PSV.unwrap(await PSV.apiCached("/api/stock/lots", {}, 20000));
           const arr = Array.isArray(d) ? d : ((d && d.by_item) || []);
           lotGroupsRaw.value = arr;
+          voucherGroupsRaw.value = (d && d.by_voucher) || [];
           lots.value = (d && d.lots) || [];
           lotsLoaded.value = true;
         } catch (_e) {
@@ -4858,7 +4872,7 @@
       }
       watch(tab, (v) => { if (v === 2 && !lotsLoaded.value) loadLots(); });
 
-      return { tab, stock, loading, refreshing, payPicker, rowItemPicker, rowItemPickerShow, submitting, payColumns, itemColumns, rows, form, addRow, loadStock, pickPay, pickRowItem, submit, validCount, totalCost, fKs, goRecipes, lotGroups, lotsLoading, lotsRefreshing, lotSearch, loadLots, lotTitle, lotLabel, fmtQty };
+      return { tab, stock, loading, refreshing, payPicker, rowItemPicker, rowItemPickerShow, submitting, payColumns, itemColumns, rows, form, addRow, loadStock, pickPay, pickRowItem, submit, validCount, totalCost, fKs, goRecipes, voucherGroups, vcTitle, vcItemLabel, lotsLoading, lotsRefreshing, lotSearch, loadLots, lotTitle, lotLabel, fmtQty };
     },
   };
 

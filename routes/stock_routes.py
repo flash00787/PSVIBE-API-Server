@@ -739,7 +739,53 @@ async def stock_lots(item_name: str | None = Query(None), limit: int = Query(400
             g["qty_remaining"] = round(g["qty_remaining"], 2)
             g["value_remaining"] = round(g["value_remaining"], 2)
             g["lot_count"] = len(g["lots"])
-        return {"success": True, "data": {"lots": lots, "by_item": by_item, "count": len(lots)}}
+
+        # ── BY VOUCHER (owner 2026-09-29 Osmo: "Voucher အလိုက်") ──
+        # A multi-item stock-in writes one row per item sharing a batch prefix
+        # ("SI-4FE895B38464-01" … "-08"); single-item stock-ins have no "-NN" suffix.
+        # The voucher is therefore the batch id minus a trailing numeric index.
+        def _voucher_key(bid):
+            b = str(bid or "")
+            head, sep, tail = b.rpartition("-")
+            return head if (sep and tail.isdigit() and head) else b
+
+        vgroups = {}
+        for lot in lots:
+            key = _voucher_key(lot.get("batch_id"))
+            v = vgroups.setdefault(key, {
+                "voucher": key, "received_at": lot.get("received_at"),
+                "staff_name": lot.get("staff_name"), "payment_method": lot.get("payment_method"),
+                "source": lot.get("source"), "receipt_no": lot.get("receipt_no"),
+                "item_count": 0, "total_cost": 0.0, "qty_in": 0.0,
+                "qty_remaining": 0.0, "value_remaining": 0.0, "items": [],
+            })
+            line_total = round(float(lot.get("qty_in") or 0) * float(lot.get("unit_cost") or 0), 2)
+            v["items"].append({
+                "item_name": lot.get("item_name"),
+                "batch_id": lot.get("batch_id"),
+                "qty_in": lot.get("qty_in"),
+                "qty_remaining": lot.get("qty_remaining"),
+                "unit_cost": lot.get("unit_cost"),
+                "line_total": line_total,
+                "value_remaining": lot.get("value_remaining"),
+            })
+            v["item_count"] += 1
+            v["total_cost"] += line_total
+            v["qty_in"] += float(lot.get("qty_in") or 0)
+            v["qty_remaining"] += float(lot.get("qty_remaining") or 0)
+            v["value_remaining"] += float(lot.get("value_remaining") or 0)
+            if not v.get("received_at"):
+                v["received_at"] = lot.get("received_at")
+
+        by_voucher = sorted(vgroups.values(), key=lambda v: str(v.get("received_at") or ""), reverse=True)
+        for v in by_voucher:
+            v["total_cost"] = round(v["total_cost"], 2)
+            v["qty_in"] = round(v["qty_in"], 2)
+            v["qty_remaining"] = round(v["qty_remaining"], 2)
+            v["value_remaining"] = round(v["value_remaining"], 2)
+
+        return {"success": True, "data": {"lots": lots, "by_item": by_item,
+                                          "by_voucher": by_voucher, "count": len(lots)}}
     except Exception as e:
         logger.error(f"GET /stock/lots error: {e}")
         return {"success": False, "error": str(e)}
