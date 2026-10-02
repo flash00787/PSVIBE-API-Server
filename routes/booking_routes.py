@@ -3155,11 +3155,19 @@ def _compute_cancel_mode(dep_amt: int, dep_status: str, planned_start):
 
 
 def _notify_refund_request_pending(bk_id: int, row: dict, deposit_amount: int):
-    """Notify staff group that a refund request is pending approval."""
+    """Notify STAFF group (+ deposit group) that a refund request is pending approval."""
     token = os.environ.get("BOT_TOKEN", "")
-    chat_id = os.environ.get("DEPOSIT_NOTIFY_CHAT", os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747"))
     if not token:
         return
+    # Owner rule 2026-10-02: staff must SEE refund requests -> post to STAFF group
+    # (and the deposit group too). Previously only DEPOSIT_NOTIFY_CHAT was used.
+    chat_ids = []
+    for _k in ("STAFF_NOTIFY_CHAT", "DEPOSIT_NOTIFY_CHAT"):
+        _v = (os.environ.get(_k, "") or "").strip()
+        if _v and _v not in chat_ids:
+            chat_ids.append(_v)
+    if not chat_ids:
+        chat_ids = ["-1003686032747"]
     date = str(row.get('booking_date', ''))[:10] if row.get('booking_date') else '\u2014'
     start = str(row.get('planned_start', ''))[:16] if row.get('planned_start') else '\u2014'
     console = str(row.get('console_id', 'PS5'))
@@ -3174,18 +3182,19 @@ def _notify_refund_request_pending(bk_id: int, row: dict, deposit_amount: int):
         f"\U0001F4B0 {deposit_amount:,} Ks — <b>Refund Requested</b>\n\n"
         f"<i>Customer cancelled and requested a refund. Awaiting approval.</i>"
     )
-    try:
-        payload = json.dumps({"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}).encode()
-        urllib.request.urlopen(
-            urllib.request.Request(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                data=payload,
-                headers={"Content-Type": "application/json"}
-            ),
-            timeout=5
-        )
-    except Exception as _e:
-        logger.warning(f"[_notify_refund_request_pending] bk#{bk_id} notify failed: {_e}")
+    for chat_id in chat_ids:
+        try:
+            payload = json.dumps({"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}).encode()
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    data=payload,
+                    headers={"Content-Type": "application/json"}
+                ),
+                timeout=5
+            )
+        except Exception as _e:
+            logger.warning(f"[_notify_refund_request_pending] bk#{bk_id} chat {chat_id} notify failed: {_e}")
 
 
 @router.get("/bookings/{booking_id}/cancel-preview", response_model=GenericResponse, tags=["Bookings"],

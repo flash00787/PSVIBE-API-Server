@@ -2918,7 +2918,7 @@
         </div>
         <template v-if="view === 'list'">
         <div class="psv-bk-chips">
-          <button v-for="c in chips" :key="c.id" class="psv-chip" :class="{ 'psv-chip--on': chip === c.id }" @click="setChip(c.id)">{{ c.icon }} {{ c.label }}</button>
+          <button v-for="c in chips" :key="c.id" class="psv-chip" :class="{ 'psv-chip--on': chip === c.id }" @click="setChip(c.id)">{{ c.icon }} {{ chipLabel(c) }}</button>
         </div>
         <div class="psv-bk-hint">{{ chipHint }}</div>
 
@@ -3098,12 +3098,14 @@
         { id: "today", icon: "📅", label: "Today", hint: "Bookings for today (walk-in sessions excluded — see Consoles)" },
         { id: "pending", icon: "⏳", label: "Pending", hint: "Waiting for approve / reject" },
         { id: "confirmed", icon: "✅", label: "Confirmed", hint: "Confirmed — check in when the customer arrives" },
+        { id: "refund", icon: "💸", label: "Refund Request", hint: "Deposits awaiting refund approval" },
         { id: "checked_in", icon: "🎟", label: "Checked-in", hint: "Arrived — start the console session" },
         { id: "active", icon: "▶️", label: "Active", hint: "Session in progress" },
         { id: "deposit", icon: "💰", label: "Deposit", hint: "Verify / redeem a deposit · refund requests" },
         { id: "cancelled", icon: "⛔", label: "Cancelled", hint: "Cancelled, rejected & no-show bookings" },
       ];
       const chip = ref("today");
+      const refundCount = ref(0);
       const view = ref("list");
       const rows = ref([]);
       const loading = ref(true);
@@ -3149,7 +3151,11 @@
 
       const chipMeta = computed(() => CHIPS.find((c) => c.id === chip.value) || CHIPS[1]);
       const chipHint = computed(() => chipMeta.value.hint);
-      const emptyText = computed(() => (chip.value === "deposit" ? "No deposits to verify" : "No bookings"));
+      const emptyText = computed(() => (chip.value === "deposit" ? "No deposits to verify" : chip.value === "refund" ? "No refund requests" : "No bookings"));
+      function chipLabel(c) {
+        if (c.id === "refund" && refundCount.value > 0) return c.label + " (" + refundCount.value + ")";
+        return c.label;
+      }
       const reasonList = computed(() => (reasonMode.value === "reject" ? BK_REJECT_REASONS : BK_CANCEL_REASONS));
 
       function hasDepositPending(b) { return ["paid", "pending"].includes(bkKey(b.deposit_status)); }
@@ -3226,6 +3232,12 @@
       const _get = (p, ttl) => (PSV.apiCached ? PSV.apiCached(p, {}, ttl == null ? 15000 : ttl) : PSV.api(p));
       async function fetchStatus(s) { const d = PSV.unwrap(await _get("/api/bookings?status=" + encodeURIComponent(s))); return (d && d.bookings) || []; }
       async function fetchAll() { const d = PSV.unwrap(await _get("/api/bookings?status=")); return (d && d.bookings) || []; }
+      async function refreshRefundCount() {
+        try {
+          const all = await fetchAll();
+          refundCount.value = all.filter((b) => bkKey(b.deposit_status) === "refund_requested").length;
+        } catch (_e) {}
+      }
       async function loadOpen() {
         try {
           const arr = await fetchStatus("open");
@@ -3240,6 +3252,7 @@
       async function load() {
         loading.value = true;
         try {
+          refreshRefundCount();
           let list = [];
           const c = chip.value;
           if (c === "today") {
@@ -3254,6 +3267,9 @@
               if (bkKey(b.deposit_status) === "refund_requested") return true;
               return hasDepositPending(b) && !isDead(b);
             });
+          } else if (c === "refund") {
+            const all = await fetchAll();
+            list = all.filter((b) => bkKey(b.deposit_status) === "refund_requested");
           } else if (c === "cancelled") {
             const all = await fetchAll();
             list = all.filter(isDead);
@@ -3544,7 +3560,7 @@
       watch(pendingBooking, async (pid) => { if (pid) { pendingBooking.value = null; await openById(pid); } });
       watch(proofOpen, (open) => { if (!open) resetProofImg(); });
 
-      return { chips: CHIPS, chip, chipHint, emptyText, rows, loading, refreshing, busy, detail, detailOpen, newOpen,
+      return { chips: CHIPS, chip, chipHint, emptyText, chipLabel, refundCount, rows, loading, refreshing, busy, detail, detailOpen, newOpen,
         view, setView, onPickTimeline,
         reasonOpen, reasonMode, reasonPick, reasonNote, reasonList, proofOpen, proof, proofFull, loadProof, maybeProofFull,
         refundOpen, refundPick, refundMethods, confirmRefund, openRefund,
