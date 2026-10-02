@@ -3049,6 +3049,18 @@ async def api_booking_refund(booking_id: int, auth=Depends(verify_api_key), requ
         import datetime as _refund_dt2
         now_str = _refund_dt2.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         note_suffix = f" | Refunded {dep_amount}Ks by {refunded_by or 'admin'} at {now_str}"
+
+        # Owner rule (2026-10-02): staff approval of a refund means the deposit
+        # actually arrived -> AUTO-VERIFY it (stamp verified_by/at) before refunding.
+        if dep_status in ("paid", "refund_requested"):
+            try:
+                _mysql_exec(
+                    "UPDATE console_bookings SET deposit_verified_by=%s, deposit_verified_at=%s WHERE id=%s",
+                    (refunded_by or "staff-approval", now_str, booking_id)
+                )
+                note_suffix += " [deposit auto-verified on approval]"
+            except Exception as _av_e:
+                logger.warning(f"refund bk#{booking_id} auto-verify: {_av_e}")
         
         _mysql_exec(
             "UPDATE console_bookings SET deposit_status='refunded', "
