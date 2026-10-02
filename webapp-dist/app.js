@@ -3248,7 +3248,12 @@
             list = all.filter((b) => String(b.date || b.booking_date || "").slice(0, 10) === today && !isDead(b) && bkKey(b.source) !== "walkin");
           } else if (c === "deposit") {
             const all = await fetchAll();
-            list = all.filter((b) => (hasDepositPending(b) || bkKey(b.deposit_status) === "refund_requested") && !isDead(b));
+            // Refund requests live on CANCELLED bookings, so they must survive the
+            // isDead(cancelled) filter. Pending-deposit rows still hide when dead.
+            list = all.filter((b) => {
+              if (bkKey(b.deposit_status) === "refund_requested") return true;
+              return hasDepositPending(b) && !isDead(b);
+            });
           } else if (c === "cancelled") {
             const all = await fetchAll();
             list = all.filter(isDead);

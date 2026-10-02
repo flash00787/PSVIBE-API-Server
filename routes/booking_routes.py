@@ -2988,6 +2988,7 @@ async def api_booking_refund(booking_id: int, auth=Depends(verify_api_key), requ
             "planned_duration_mins AS duration_mins, "
             "status, staff_name, notes, telegram_chat_id, phone, "
             "game_name, deposit_status, deposit_amount, deposit_method, "
+            "deposit_verified_by, deposit_verified_at, "
             "created_at, cancelled_at "
             "FROM console_bookings WHERE id=%s",
             (booking_id,)
@@ -3052,7 +3053,7 @@ async def api_booking_refund(booking_id: int, auth=Depends(verify_api_key), requ
 
         # Owner rule (2026-10-02): staff approval of a refund means the deposit
         # actually arrived -> AUTO-VERIFY it (stamp verified_by/at) before refunding.
-        if dep_status in ("paid", "refund_requested"):
+        if dep_status in ("paid", "refund_requested") and not booking.get("deposit_verified_at"):
             try:
                 _mysql_exec(
                     "UPDATE console_bookings SET deposit_verified_by=%s, deposit_verified_at=%s WHERE id=%s",
