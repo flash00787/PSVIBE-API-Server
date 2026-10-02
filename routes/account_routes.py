@@ -216,6 +216,27 @@ def _ensure_daily_balances_table() -> None:
         conn.close()
 
 
+def _prev_closing(account: str, date_str: str):
+    """Most recent earlier CLOSING balance for an account (usual case: yesterday).
+
+    Owner Osmo 2026-09-29: opening balance must be carried from the previous
+    close instead of being re-typed by staff (that drift broke the daily numbers).
+    Returns None when no earlier closed row exists (then the value must be typed).
+    """
+    try:
+        r = _q(
+            "SELECT closing_balance FROM daily_account_balances "
+            "WHERE account=%s AND balance_date < %s AND status='closed' "
+            "ORDER BY balance_date DESC LIMIT 1",
+            (account, date_str),
+        )
+        if r:
+            return float(r[0].get("closing_balance") or 0)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"prev_closing lookup failed for {account}: {e}")
+    return None
+
+
 @router.get("/daily-balances/today")
 async def daily_balances_today(user: dict = Depends(get_staff_or_dashboard_user)):
     """Today's daily balance open/close state for the ACTIVE operational accounts.
@@ -241,6 +262,9 @@ async def daily_balances_today(user: dict = Depends(get_staff_or_dashboard_user)
         opening = float(r["opening_balance"] or 0)
         closing = float(r["closing_balance"] or 0)
         live = round(float(bals.get(acc, 0)))
+        # Owner 2026-09-29: surface the carried opening + any mismatch so the
+        # app can warn instead of silently accepting a wrong typed number.
+        prev_c = _prev_closing(acc, today)
         # Variance = actually counted (closing) − recorded/system (live) balance.
         # Prefer the value frozen at close time; fall back to live for legacy rows.
         if r["status"] == "closed":
@@ -256,6 +280,11 @@ async def daily_balances_today(user: dict = Depends(get_staff_or_dashboard_user)
             "closing_balance": round(closing),
             "variance": variance,
             "live_balance": live,
+            "prev_closing": None if prev_c is None else round(prev_c),
+            "suggested_opening": None if prev_c is None else round(prev_c),
+            "carried": bool(prev_c is not None and not opening),
+            "opening_mismatch": (round(opening - prev_c) if (prev_c is not None and opening) else None),
+            "can_reset": _is_admin(user),
             "opened_by": r.get("opened_by") or "",
             "closed_by": r.get("closed_by") or "",
             "opened_at": _iso(r.get("opened_at")) if r.get("opened_at") else None,
@@ -278,10 +307,19 @@ async def daily_balances_open(body: dict = Body(...), user: dict = Depends(get_s
         raise HTTPException(status_code=400, detail="opening_balance must be a number")
     opened_by = str(body.get("opened_by") or _caller_name(user) or user.get("username") or "").strip()
     now_str = _mmt_now_str()
-    # Once per day: reject a second open for the same account today.
+    # Owner 2026-09-29 (1): carry yesterday's closing forward when no value is typed.
+    prev = _prev_closing(account, today)
+    if not body.get("opening_balance") and prev is not None:
+        opening = float(prev)
+    # Once per day: a second open is rejected for staff, but ADMINS may correct it.
     existing = _q("SELECT opened_at FROM daily_account_balances WHERE balance_date=%s AND account=%s", (today, account))
+    warning = None
     if existing and existing[0].get("opened_at"):
-        raise HTTPException(status_code=400, detail=f"{account} already opened today")
+        if not _is_admin(user):
+            raise HTTPException(status_code=400, detail=f"{account} already opened today — ပြင်ရန် owner ကို ပြောပါ")
+        # admin correction (2): overwrite the recorded opening.
+    if prev is not None and abs(float(opening) - float(prev)) > 0.5:
+        warning = f"မနေ့ closing {prev:,.0f} Ks နှင့် မကိုက် (ကွာ {float(opening) - float(prev):+,.0f} Ks)"
     _ex(
         """INSERT INTO daily_account_balances (balance_date, account, opening_balance, status, opened_by, opened_at)
            VALUES (%s,%s,%s,'open',%s,%s)
@@ -289,7 +327,10 @@ async def daily_balances_open(body: dict = Body(...), user: dict = Depends(get_s
              opened_by=VALUES(opened_by), opened_at=VALUES(opened_at)""",
         (today, account, opening, opened_by, now_str),
     )
-    return {"success": True, "message": f"{account} opened with {opening:,.0f} Ks"}
+    msg = f"{account} opened with {opening:,.0f} Ks"
+    if warning:
+        msg += " ⚠️ " + warning
+    return {"success": True, "message": msg, "warning": warning, "prev_closing": None if prev is None else round(prev)}
 
 
 @router.post("/daily-balances/close")
@@ -307,9 +348,9 @@ async def daily_balances_close(body: dict = Body(...), user: dict = Depends(get_
     closed_by = str(body.get("closed_by") or _caller_name(user) or user.get("username") or "").strip()
     now_str = _mmt_now_str()
     row = _q("SELECT status FROM daily_account_balances WHERE balance_date=%s AND account=%s", (today, account))
-    # Once per day: reject a second close for the same account today.
-    if row and (row[0].get("status") or "").lower() == "closed":
-        raise HTTPException(status_code=400, detail=f"{account} already closed today")
+    # Once per day for staff; admins may re-close to correct a wrong number (2).
+    if row and (row[0].get("status") or "").lower() == "closed" and not _is_admin(user):
+        raise HTTPException(status_code=400, detail=f"{account} already closed today — ပြင်ရန် owner ကို ပြောပါ")
     # Expected = the recorded/system (live) balance computed AT close time, so a closed
     # day's variance stays stable even as new cash movements land afterwards.
     bals = await _balances_by_name()
@@ -324,6 +365,39 @@ async def daily_balances_close(body: dict = Body(...), user: dict = Depends(get_
         (today, account, closing, closed_by, now_str, expected, variance),
     )
     return {"success": True, "message": f"{account} closed. Variance (Actual − Recorded) {variance:+,.0f} Ks", "variance": round(variance)}
+
+
+@router.post("/daily-balances/reset")
+async def daily_balances_reset(body: dict = Body(...), user: dict = Depends(get_staff_or_dashboard_user)):
+    """ADMIN only (2): wipe today's (or a given day's) open/close row so it can be redone.
+
+    Owner Osmo 2026-09-29: 'မှားလိုက်ရင် ပြန်ပြင်လမ်း မရှိ' — this is that path.
+    """
+    _ensure_daily_balances_table()
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Owner (admin) only")
+    account = str(body.get("account") or "").strip()
+    day = str(body.get("date") or "").strip() or _mmt_today_str()
+    if account not in _OPERATIONAL and not account:
+        raise HTTPException(status_code=400, detail="account required")
+    who = str(body.get("by") or _caller_name(user) or user.get("username") or "").strip()
+    if account:
+        _ex(
+            """UPDATE daily_account_balances
+               SET opening_balance=0, closing_balance=0, expected_balance=NULL, variance=NULL,
+                   status='open', opened_by=NULL, opened_at=NULL, closed_by=NULL, closed_at=NULL
+               WHERE balance_date=%s AND account=%s""",
+            (day, account),
+        )
+        return {"success": True, "message": f"{account} ({day}) reset — open/close ပြန်လုပ်နိုင်ပါပြီ", "by": who}
+    _ex(
+        """UPDATE daily_account_balances
+           SET opening_balance=0, closing_balance=0, expected_balance=NULL, variance=NULL,
+               status='open', opened_by=NULL, opened_at=NULL, closed_by=NULL, closed_at=NULL
+           WHERE balance_date=%s""",
+        (day,),
+    )
+    return {"success": True, "message": f"{day} balances reset", "by": who}
 
 
 @router.get("/daily-balances/history")

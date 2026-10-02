@@ -747,3 +747,35 @@ html.psv-native .psv-th-list { background: var(--psv-surface); border-color: var
 html.psv-native .psv-th-row { border-bottom-color: var(--psv-border); }
 html.psv-native .psv-th-row__amt { color: var(--psv-gold); }
 html.psv-native .psv-th-row__arrow, html.psv-native .psv-th-row__meta { color: var(--psv-text-dim); }
+
+
+/* ══════════════════════════════════════════════════════════════════
+ *  EDGE-TO-EDGE PASS (owner 2026-09-29 Osmo) — Android 15+ draws behind the
+ *  system bars; the shell used to assume a non-inset window. These rules make
+ *  every surface respect the notch (left/right), the gesture/nav bar (bottom)
+ *  and the update banner, and keep the status-bar strip in the app's own colour.
+ * ══════════════════════════════════════════════════════════════════ */
+
+/* 1) LEFT/RIGHT insets — REVERTED 2026-09-29 (owner: "Home page မှာ logo က အဆင်မပြေတော့ဘူး").
+ *    The blanket `padding-left/right: env(safe-area-inset-*)` ZEROED the existing 16px padding of
+ *    .pv-header (and friends) on phones where the insets are 0 → the logo sat flush against the
+ *    screen edge. Insets must always be ADDED to a surface's own padding, never replace it, e.g.
+ *      padding-left: calc(16px + env(safe-area-inset-left, 0px));
+ *    so this pass is removed rather than re-introduced. */
+
+/* 2) The native update banner — REVERTED for the same reason (its own padding must win). */
+
+/* 3) Toasts: keep the pill above the gesture bar */
+html.psv-native .van-toast {
+  margin-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* 4) Edge-to-edge: the strip behind the status bar must paint the app colour,
+      never white/wallpaper (the html/body background shows through). */
+html.psv-native,
+html.psv-native body {
+  /* Same value as --pv-navy-900 (the canvas colour) — kept only as an explicit
+     edge-to-edge fallback so the status-bar strip can never paint white. */
+  background-color: var(--pv-navy-900, #0b1220);
+}
+html.psv-native .van-overlay--transparent { background: transparent; }

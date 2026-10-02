@@ -3498,7 +3498,7 @@ async def get_deposit_overview(
             SELECT COUNT(*) as cnt, COALESCE(SUM(deposit_amount),0) as total
             FROM console_bookings
             WHERE deposit_status IN ('paid','verified')
-              AND status NOT IN ('done','cancelled','rejected')
+              AND status NOT IN ('done','cancelled','rejected','no_show')
               AND (deposit_amount IS NOT NULL AND deposit_amount > 0)
         """)
         active_deposits = int(active_row["cnt"]) if active_row else 0
@@ -3511,7 +3511,9 @@ async def get_deposit_overview(
             FROM console_bookings
             WHERE DATE(CONVERT_TZ(created_at,'+00:00','+06:30')) = %s
               AND deposit_status IN ('paid','verified','forfeited','redeemed')
-              AND NOT (status='cancelled' AND deposit_status IN ('paid','verified'))
+              -- 2026-09-30 depfix: an uncollected (unverified) deposit on a cancelled,
+              -- rejected or no-show booking is not money collected today.
+              AND NOT (status IN ('cancelled','rejected','no_show') AND deposit_status IN ('paid','verified'))
               AND (deposit_amount IS NOT NULL AND deposit_amount > 0)
         """, (mmt_today,))
         today_collected = float(today_row["total"]) if today_row else 0.0

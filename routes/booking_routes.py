@@ -1811,7 +1811,7 @@ async def api_search_bookings(telegram_chat_id: str = Query("", description="Tel
               "COALESCE(cs.actual_end, cb.planned_end) AS end_time, " \
               "cb.status, cb.staff_name, cb.customer_name, cb.notes, cb.telegram_chat_id, " \
               "COALESCE(cs.actual_duration_mins, cb.planned_duration_mins) AS duration_mins, " \
-              "cb.phone, cb.game_name " \
+              "cb.phone, cb.game_name, cb.deposit_status, cb.deposit_amount, cb.deposit_method " \
               "FROM console_bookings cb LEFT JOIN console_sessions cs ON cs.booking_id = cb.id WHERE 1=1"
         params = []
         if telegram_chat_id:
@@ -1872,6 +1872,11 @@ async def api_search_bookings(telegram_chat_id: str = Query("", description="Tel
                 "gameName": game_name,
                 "game_name": game_name,
                 "phone": r.get("phone"),
+                "deposit_status": r.get("deposit_status") or "none",
+                "depositStatus": r.get("deposit_status") or "none",
+                "deposit_amount": int(r.get("deposit_amount") or 0),
+                "depositAmount": int(r.get("deposit_amount") or 0),
+                "deposit_method": r.get("deposit_method") or "",
             })
         return JSONResponse(content={"success": True, "data": {"bookings": normalize_list(normalized), "total": len(normalized)}})
     except Exception as e:
@@ -2997,15 +3002,18 @@ async def api_booking_refund(booking_id: int, auth=Depends(verify_api_key), requ
         if dep_amount <= 0:
             return error_response(message="No deposit to refund")
         
-        if dep_status not in ("forfeited", "paid", "verified"):
+        if dep_status not in ("forfeited", "paid", "verified", "refund_requested"):
             return error_response(message=f"Deposit status is '{dep_status}', cannot refund")
         
-        # Check 1-hour rule: must be >= 1hr before original start time
+        # Check 1-hour rule: must be >= 1hr before original start time.
+        # Skip when deposit_status == 'refund_requested': eligibility was already
+        # locked in when the customer cancelled within the >=1h window, so staff
+        # approval timing (near/after the cutoff) must not re-impose the rule.
         from datetime import datetime as _refund_dt, timedelta as _refund_td
         start_time = booking.get("start_time")
         now_mmt_dt = now_mmt()
         
-        if start_time:
+        if dep_status != "refund_requested" and start_time:
             try:
                 if isinstance(start_time, str):
                     start_dt = _refund_dt.fromisoformat(start_time)
@@ -3101,6 +3109,237 @@ async def api_booking_refund(booking_id: int, auth=Depends(verify_api_key), requ
         })
     except Exception as e:
         logger.error(f"refund bk#{booking_id} error: {e}")
+        return error_response(message=str(e))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Customer Cancel — preview + cancel (free / refund_request / forfeit)
+# ════════════════════════════════════════════════════════════════════════════
+def _compute_cancel_mode(dep_amt: int, dep_status: str, planned_start):
+    """Determine cancellation mode: free / refund_request / forfeit.
+
+    planned_start is MMT wall-clock; compared against now_mmt() with NO tz shift.
+    """
+    dep_status = (dep_status or "none").strip().lower()
+    dep_amt = int(dep_amt or 0)
+    if dep_amt <= 0 or dep_status in ("none", "pending"):
+        return "free"
+    if dep_status in ("paid", "verified"):
+        if planned_start:
+            try:
+                start_dt = planned_start
+                if isinstance(start_dt, str):
+                    start_dt = datetime.fromisoformat(start_dt)
+                now_dt = now_mmt().replace(tzinfo=None)  # naive MMT wall-clock
+                cutoff = start_dt - timedelta(hours=1)
+                if now_dt < cutoff:
+                    return "refund_request"
+            except Exception as _e:
+                logger.warning(f"_compute_cancel_mode planned_start parse: {_e}")
+        return "forfeit"
+    # forfeited / refunded / redeemed / refund_requested → already settled → free
+    return "free"
+
+
+def _notify_refund_request_pending(bk_id: int, row: dict, deposit_amount: int):
+    """Notify staff group that a refund request is pending approval."""
+    token = os.environ.get("BOT_TOKEN", "")
+    chat_id = os.environ.get("DEPOSIT_NOTIFY_CHAT", os.environ.get("STAFF_NOTIFY_CHAT", "-1003686032747"))
+    if not token:
+        return
+    date = str(row.get('booking_date', ''))[:10] if row.get('booking_date') else '\u2014'
+    start = str(row.get('planned_start', ''))[:16] if row.get('planned_start') else '\u2014'
+    console = str(row.get('console_id', 'PS5'))
+    member = str(row.get('member_id', '\u2014'))
+    phone = str(row.get('phone', '\u2014'))
+    msg = (
+        f"\U0001F4E9 <b>Refund Request Pending — BK#{bk_id}</b>\n\n"
+        f"\U0001F464 {member}\n"
+        f"\U0001F4DE {phone}\n"
+        f"\U0001F4C5 {date}  \u23F0 {start}\n"
+        f"\U0001F3AE {console}\n"
+        f"\U0001F4B0 {deposit_amount:,} Ks — <b>Refund Requested</b>\n\n"
+        f"<i>Customer cancelled and requested a refund. Awaiting approval.</i>"
+    )
+    try:
+        payload = json.dumps({"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            ),
+            timeout=5
+        )
+    except Exception as _e:
+        logger.warning(f"[_notify_refund_request_pending] bk#{bk_id} notify failed: {_e}")
+
+
+@router.get("/bookings/{booking_id}/cancel-preview", response_model=GenericResponse, tags=["Bookings"],
+            summary="Preview cancellation mode for a booking")
+async def api_booking_cancel_preview(booking_id: int, auth=Depends(verify_api_key)):
+    """Return the cancel mode (free / refund_request / forfeit) for a booking."""
+    try:
+        row = _mysql_query_one(
+            "SELECT id, status, deposit_status, deposit_amount, planned_start "
+            "FROM console_bookings WHERE id=%s",
+            (booking_id,)
+        )
+        if not row:
+            return error_response(message=f"Booking #{booking_id} not found")
+
+        status = (row.get("status") or "").strip().lower()
+        if status not in ("pending", "confirmed", "scheduled", "active"):
+            return error_response(message=f"Booking status '{row.get('status')}' cannot be cancelled")
+
+        dep_status = row.get("deposit_status") or "none"
+        dep_amt = int(row.get("deposit_amount") or 0)
+        planned_start = row.get("planned_start")
+
+        mode = _compute_cancel_mode(dep_amt, dep_status, planned_start)
+
+        cutoff = ""
+        minutes_to_start = None
+        if planned_start:
+            try:
+                start_dt = planned_start
+                if isinstance(start_dt, str):
+                    start_dt = datetime.fromisoformat(start_dt)
+                now_dt = now_mmt().replace(tzinfo=None)
+                cutoff = (start_dt - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+                minutes_to_start = int((start_dt - now_dt).total_seconds() // 60)
+            except Exception as _e:
+                logger.warning(f"cancel-preview bk#{booking_id} planned_start parse: {_e}")
+
+        return ok({
+            "booking_id": booking_id,
+            "mode": mode,
+            "deposit_status": dep_status,
+            "deposit_amount": dep_amt,
+            "planned_start": str(planned_start) if planned_start else "",
+            "cutoff": cutoff,
+            "minutes_to_start": minutes_to_start,
+        })
+    except Exception as e:
+        logger.error(f"cancel-preview bk#{booking_id} error: {e}")
+        return error_response(message=str(e))
+
+
+@router.post("/bookings/{booking_id}/cancel", response_model=GenericResponse, tags=["Bookings"],
+             summary="Cancel a booking (customer-side)")
+async def api_booking_cancel_customer(booking_id: int, auth=Depends(verify_api_key), request: Request = None, body: dict = Body(default=None)):
+    """Cancel a booking. Mode is recomputed server-side (free / refund_request / forfeit)."""
+    try:
+        row = _mysql_query_one(
+            "SELECT id, status, deposit_status, deposit_amount, deposit_method, "
+            "planned_start, planned_start AS start_time, booking_date, console_id, "
+            "member_id, phone, telegram_chat_id, game_name "
+            "FROM console_bookings WHERE id=%s",
+            (booking_id,)
+        )
+        if not row:
+            return error_response(message=f"Booking #{booking_id} not found")
+
+        status = (row.get("status") or "").strip().lower()
+        if status not in ("pending", "confirmed", "scheduled", "active"):
+            return error_response(message=f"Booking status '{row.get('status')}' cannot be cancelled")
+
+        dep_status = row.get("deposit_status") or "none"
+        dep_amt = int(row.get("deposit_amount") or 0)
+        planned_start = row.get("planned_start")
+
+        # Recompute mode server-side (trust recomputed mode, NOT body.mode)
+        mode = _compute_cancel_mode(dep_amt, dep_status, planned_start)
+
+        body = body or {}
+        confirmed = bool(body.get("confirmed", False))
+        reason = str(body.get("reason") or "").strip()
+        tg_chat_id = str(body.get("telegram_chat_id") or row.get("telegram_chat_id") or "")
+
+        if mode == "forfeit" and not confirmed:
+            return error_response(message="confirmation required")
+
+        now_str = now_mmt().strftime("%Y-%m-%d %H:%M:%S")
+
+        if mode == "free":
+            note = f" | Customer cancelled (free) at {now_str}"
+            if reason:
+                note += f" — {reason}"
+            _mysql_exec(
+                "UPDATE console_bookings SET status='cancelled', cancelled_at=%s, "
+                "notes=CONCAT(COALESCE(notes,''), %s) WHERE id=%s",
+                (now_str, note, booking_id)
+            )
+            result_dep_status = dep_status
+
+        elif mode == "refund_request":
+            note = f" | Customer cancelled — refund requested at {now_str}"
+            if reason:
+                note += f" — {reason}"
+            _mysql_exec(
+                "UPDATE console_bookings SET status='cancelled', cancelled_at=%s, "
+                "deposit_status='refund_requested', "
+                "notes=CONCAT(COALESCE(notes,''), %s) WHERE id=%s",
+                (now_str, note, booking_id)
+            )
+            result_dep_status = "refund_requested"
+            # Notify staff group
+            try:
+                _notify_refund_request_pending(booking_id, row, dep_amt)
+            except Exception as _n_e:
+                logger.warning(f"cancel bk#{booking_id} refund-request staff notify: {_n_e}")
+            # DM customer
+            if tg_chat_id:
+                _cust_msg = (
+                    f"\u2705 <b>Booking #{booking_id} — Cancelled</b>\n\n"
+                    f"သင့် Booking ကို cancel ပြုလုပ်ပြီးပါပြီ။\n"
+                    f"Refund request တင်သွင်းပြီးပါပြီ။\n"
+                    f"Approve ဖြစ်သည့်အခါ အကြောင်းကြားပေးပါမည်။\n\n"
+                    f"\U0001F4F2 @psvibeofficial"
+                )
+                _threading_notify.Thread(target=_send_telegram_customer, args=(tg_chat_id, _cust_msg), daemon=True).start()
+
+        elif mode == "forfeit":
+            note = f" | Customer cancelled — deposit forfeited at {now_str}"
+            if reason:
+                note += f" — {reason}"
+            _mysql_exec(
+                "UPDATE console_bookings SET status='cancelled', cancelled_at=%s, "
+                "deposit_status='forfeited', "
+                "notes=CONCAT(COALESCE(notes,''), %s) WHERE id=%s",
+                (now_str, note, booking_id)
+            )
+            result_dep_status = "forfeited"
+            # Record forfeited deposit as shop income (mirror deposit_forfeit category)
+            if dep_amt > 0:
+                _dep_meth = (row.get("deposit_method") or "kpay").lower()
+                _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "cash": "Cash", "mmqr_cb": "MMQR - CB"}.get(_dep_meth, "KPay")
+                insert_cash_movement_if_absent(
+                    "inject", _meth_label, dep_amt,
+                    f"Forfeit BK#{booking_id}%",
+                    f"Forfeit BK#{booking_id} via {_meth_label}", "system", "deposit_forfeit")
+            # Notify staff group
+            try:
+                _notify_deposit_forfeited(booking_id, row, dep_amt)
+            except Exception as _n_e:
+                logger.warning(f"cancel bk#{booking_id} forfeit staff notify: {_n_e}")
+            # DM customer
+            if tg_chat_id:
+                _cust_msg = (
+                    f"\u26A0\uFE0F <b>Booking #{booking_id} — Cancelled</b>\n\n"
+                    f"Deposit {dep_amt:,} Ks ကို forfeited အဖြစ် သတ်မှတ်လိုက်ပါသည်။\n\n"
+                    f"\U0001F4F2 @psvibeofficial"
+                )
+                _threading_notify.Thread(target=_send_telegram_customer, args=(tg_chat_id, _cust_msg), daemon=True).start()
+
+        logger.info(f"Booking #{booking_id} cancelled via customer-cancel mode={mode}")
+        return ok({
+            "booking_id": booking_id,
+            "mode": mode,
+            "deposit_status": result_dep_status,
+        })
+    except Exception as e:
+        logger.error(f"cancel bk#{booking_id} error: {e}")
         return error_response(message=str(e))
 
 
@@ -3891,6 +4130,7 @@ async def api_pending_deposits(auth=Depends(verify_api_key)):
             "       deposit_ref_type, created_at "
             "FROM console_bookings "
             "WHERE deposit_status='paid' "
+            "AND status NOT IN ('cancelled','rejected','no_show') "  # 2026-09-30 depfix: no uncollected leftovers
             "ORDER BY created_at DESC"
         )
         

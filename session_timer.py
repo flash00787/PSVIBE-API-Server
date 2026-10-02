@@ -285,6 +285,23 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
             chk = _mysql_query("SELECT status FROM console_bookings WHERE id=%s", (booking_id,))
             if not chk or chk[0].get("status") != "Active":
                 logger.info(f"Session {booking_id} ended — stopping reminder loop")
+                # ── Silent-fail guard (owner 2026-09-29 Osmo: "C09 session end လိုက်တာ
+                #    voucher မရောက်ဘဲ silently fail") ─────────────────────────────
+                # A session that ends WITHOUT any sale/voucher means the checkout was never
+                # completed. Log it LOUDLY so it shows up in the log instead of vanishing.
+                try:
+                    _row = _mysql_query(
+                        "SELECT s.id AS sess, "
+                        "       (SELECT COUNT(*) FROM sales_daily d WHERE d.session_id = s.id) AS sales "
+                        "FROM console_sessions s WHERE s.booking_id=%s ORDER BY s.id DESC LIMIT 1",
+                        (booking_id,))
+                    if _row and int((_row[0] or {}).get("sales") or 0) == 0:
+                        logger.warning(
+                            "SILENT-FAIL GUARD: session %s (booking %s, console %s) ended with NO sale/voucher "
+                            "— checkout missing, staff must complete the sale",
+                            (_row[0] or {}).get("sess"), booking_id, console_id)
+                except Exception as _ce:
+                    logger.warning(f"session_timer: end-without-sale check failed: {_ce}")
                 break
             
             if fire_count >= max_fires:

@@ -824,6 +824,30 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
             (voucher_no, sale_date, console_id, _stored_member_id, game_amt, gross, discount, net_total, staff, customer_name, payment_method, combined_notes, client_ref, _session_id, _game_name, _game_id)
         )
 
+        # ── Session duration safety net (owner 2026-09-29 Osmo) ───────────────────
+        # Sessions closed by a sale occasionally ended up with actual_duration_mins = 0
+        # (timer/automation miss) while money WAS collected — that skews the duration /
+        # hourly reports. Whenever a sale is bound to a session, backfill the duration
+        # from the sale's mins (fallback: wall-clock between actual_start/actual_end).
+        if _session_id:
+            try:
+                _mins_fix = int(float(mins or 0))
+                if _mins_fix <= 0:
+                    _row = _mysql_query_one(
+                        "SELECT TIMESTAMPDIFF(MINUTE, actual_start, actual_end) AS m "
+                        "FROM console_sessions WHERE id=%s", (_session_id,))
+                    _mins_fix = int((_row or {}).get("m") or 0)
+                if _mins_fix > 0:
+                    _n = _mysql_exec(
+                        "UPDATE console_sessions SET actual_duration_mins=%s "
+                        "WHERE id=%s AND (actual_duration_mins IS NULL OR actual_duration_mins=0)",
+                        (_mins_fix, _session_id))
+                    if _n:
+                        logger.info("session duration backfilled: session=%s -> %s min (voucher=%s)",
+                                    _session_id, _mins_fix, voucher_no)
+            except Exception as _se:
+                logger.warning("session duration backfill failed session=%s: %s", _session_id, _se)
+
         # Wallet balance was already deducted BEFORE the insert (wallet detail block above) so
         # the sale note could carry the before -> after balances. Never deduct twice here.
         if _wallet_deduct > 0 and _is_member_sale:
@@ -960,7 +984,7 @@ async def api_stock_in(req: dict, auth=Depends(verify_api_key)):
     """
     try:
         item_name = req.get("item_name", "")
-        quantity = int(req.get("quantity", 0))
+        quantity = float(req.get("quantity", 0) or 0)  # decimal-safe (owner Osmo 2026-09-29)
         unit_cost = float(req.get("unit_cost", 0))
         payment_method = req.get("payment_method", "")  # display string, may be composite
         paid_by = req.get("paid_by", "")
@@ -1065,7 +1089,7 @@ async def api_stock_in_batch(req: dict, auth=Depends(verify_api_key)):
                 continue
             name = str(it.get("item_name", "")).strip()
             try:
-                qty = int(it.get("quantity", 0))
+                qty = round(float(it.get("quantity", 0) or 0), 2)  # 0.9 L etc. (owner Osmo 2026-09-29)
             except (TypeError, ValueError):
                 qty = 0
             try:

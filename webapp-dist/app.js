@@ -225,6 +225,8 @@
   const showToast = (msg, type) => PSV.toast(msg, type);
   const haptic = (t) => PSV.haptic(t);
   const fKs = (n) => PSV.fmtKs(n);
+  // Rounded money (owner Osmo 2026-09-29 "ရှုပ်နေတယ်"): no more .97 / .6 decimals in lists
+  const fKsR = (n) => PSV.fmtKs(Math.round(Number(n) || 0));
   // WAVE 3: several staff endpoints answer HTTP 200 with {success:false, error}
   // (the session move/swap guards do this). PSV.api only throws on non-2xx, so
   // unwrap those refusals into a real Error and surface the message verbatim.
@@ -470,15 +472,24 @@
   const PageHeader = {
     props: { title: String, back: String, fixedBack: String },
     template: `
-      <van-nav-bar :title="title" left-arrow @click-left="onBack" :border="false">
-        <template #left><van-icon name="arrow-left" size="20" /></template>
+      <van-nav-bar :title="title" fixed placeholder :z-index="30" :border="false" @click-left="onBack">
+        <template #left>
+          <span style="display:inline-flex;align-items:center;gap:4px;font-weight:600;font-size:14px">
+            <van-icon name="arrow-left" size="18" />Back
+          </span>
+        </template>
       </van-nav-bar>
     `,
     setup(props) {
       function onBack() {
+        haptic("light");
+        // Owner Osmo 2026-09-29: back must step ONE level. It used to always push
+        // the fixed `back` destination (e.g. /more) so it jumped to the menu top.
+        let stepped = false;
+        try { stepped = router.back(); } catch (_e) { stepped = false; }
+        if (stepped) return;
         const dest = props.fixedBack || props.back || "/more";
         router.push(dest);
-        haptic("light");
       }
       return { onBack };
     },
@@ -1238,7 +1249,6 @@
           <van-field :model-value="(Number(form.multiplier)||1) + 'x'" label="Multiplier" readonly />
           <van-field v-model.number="form.game_amt" type="number" label="Game (Ks)" placeholder="0" />
           <div style="margin:0 16px 4px;color:var(--pv-muted);font-size:11px">Auto: {{ fKs(autoGameAmt) }} Ks (mins × rate × mult ÷ 60)</div>
-          <van-field v-model.number="form.discount" type="number" label="Discount" placeholder="0" />
         </van-cell-group>
 
         <!-- 🏷️ Promotion + 🎟️ Coupon (WAVE 2 — discounting parity with the sale bot).
@@ -1324,6 +1334,12 @@
           <div style="padding:8px 16px 12px;color:var(--pv-muted);font-size:11px">
             {{ walletLoading ? 'Fetching balance…' : (walletSufficient ? 'Wallet −' + effectiveCostMins + ' mins on save · no cash for game time' : 'Wallet −' + wallet.balance + ' mins · pay ' + fKs(wallet.shortfall_ks || 0) + ' Ks cash') }}
           </div>
+        </van-cell-group>
+
+        <!-- 💰 Manual Discount — owner (Osmo, 2026-10-01): moved out of the Game
+             group so it sits just above Payment (reads with the totals/payment). -->
+        <van-cell-group inset style="margin-top:10px">
+          <van-field v-model.number="form.discount" type="number" label="Discount" placeholder="0" />
         </van-cell-group>
 
         <!-- Split Payment -->
@@ -3084,7 +3100,7 @@
         { id: "confirmed", icon: "✅", label: "Confirmed", hint: "Confirmed — check in when the customer arrives" },
         { id: "checked_in", icon: "🎟", label: "Checked-in", hint: "Arrived — start the console session" },
         { id: "active", icon: "▶️", label: "Active", hint: "Session in progress" },
-        { id: "deposit", icon: "💰", label: "Deposit", hint: "Verify / redeem a deposit" },
+        { id: "deposit", icon: "💰", label: "Deposit", hint: "Verify / redeem a deposit · refund requests" },
         { id: "cancelled", icon: "⛔", label: "Cancelled", hint: "Cancelled, rejected & no-show bookings" },
       ];
       const chip = ref("today");
@@ -3138,7 +3154,7 @@
 
       function hasDepositPending(b) { return ["paid", "pending"].includes(bkKey(b.deposit_status)); }
       function isVerified(b) { return bkKey(b.deposit_status) === "verified"; }
-      function canRefund(b) { return ["forfeited", "paid", "verified"].includes(bkKey(b.deposit_status)); }
+      function canRefund(b) { return ["forfeited", "paid", "verified", "refund_requested"].includes(bkKey(b.deposit_status)); }
       function depRef(b) { return b.deposit_ref || b.depositRef || b.deposit_slip || ""; }
       function endLabel(b) {
         const end = b.endTime || b.end_time || b.planned_end;
@@ -3163,7 +3179,7 @@
         const amount = b.deposit_amount ? Number(b.deposit_amount).toLocaleString() : "";
         const method = (b.deposit_method || "").toUpperCase();
         const lbl = amount ? amount + (method ? " " + method : "") : "-";
-        const map = { paid: "Received (verify) " + lbl, pending: "Pending " + lbl, verified: "Verified " + lbl, redeemed: "Redeemed " + lbl, forfeited: "Forfeited " + lbl, refunded: "Refunded " + lbl };
+        const map = { paid: "Received (verify) " + lbl, pending: "Pending " + lbl, verified: "Verified " + lbl, redeemed: "Redeemed " + lbl, forfeited: "Forfeited " + lbl, refunded: "Refunded " + lbl, refund_requested: "Refund requested " + lbl };
         return map[s] || ("Deposit " + lbl);
       }
       function cardActions(b) {
@@ -3192,7 +3208,8 @@
       function detailActions(b) {
         const out = cardActions(b);
         if (isVerified(b)) out.push({ id: "redeem", en: "Redeem at sale", icon: "↩️", tone: "gold", kind: "redeem" });
-        if (canRefund(b)) out.push({ id: "refund", en: "Refund deposit", icon: "💸", tone: "danger", kind: "refund" });
+        if (bkKey(b.deposit_status) === "refund_requested") out.push({ id: "refund", en: "Approve refund", icon: "💸", tone: "danger", kind: "refund" });
+        else if (canRefund(b)) out.push({ id: "refund", en: "Refund deposit", icon: "💸", tone: "danger", kind: "refund" });
         if (depRef(b)) out.push({ id: "proof", en: "View proof", icon: "👁", tone: "ghost", kind: "proof" });
         if (bkKey(b.status) === "active") out.push({ id: "consoles", en: "View session", icon: "🖥", tone: "ghost", kind: "consoles" });
         return out;
@@ -3231,7 +3248,7 @@
             list = all.filter((b) => String(b.date || b.booking_date || "").slice(0, 10) === today && !isDead(b) && bkKey(b.source) !== "walkin");
           } else if (c === "deposit") {
             const all = await fetchAll();
-            list = all.filter((b) => hasDepositPending(b) && !isDead(b));
+            list = all.filter((b) => (hasDepositPending(b) || bkKey(b.deposit_status) === "refund_requested") && !isDead(b));
           } else if (c === "cancelled") {
             const all = await fetchAll();
             list = all.filter(isDead);
@@ -3347,7 +3364,8 @@
         const amt = Number(b.deposit_amount) || 0;
         const label = (refundMethods.find((m) => m.value === refundPick.value) || {}).label || refundPick.value;
         refundOpen.value = false;
-        const okc = await confirmBox("Refund deposit?", "Refund " + amt.toLocaleString() + " Ks from " + label + " for BK#" + b.id + ". This records the money going out and notifies the customer.", "Refund", "Cancel", true);
+        const isApprove = bkKey(b.deposit_status) === "refund_requested";
+        const okc = await confirmBox(isApprove ? "Approve refund?" : "Refund deposit?", (isApprove ? "Approve refund of " : "Refund ") + amt.toLocaleString() + " Ks from " + label + " for BK#" + b.id + (isApprove ? ". Customer already requested this refund — records the money going out and notifies the customer." : ". This records the money going out and notifies the customer."), isApprove ? "Approve" : "Refund", "Cancel", true);
         if (!okc) return;
         busy.value = b.id;
         try {
@@ -4694,7 +4712,8 @@
                 <div style="display:flex;align-items:flex-start;gap:0">
                   <van-cell-group inset style="margin-top:8px;flex:1">
                     <van-field :model-value="row.item_name" label="Item" placeholder="Select item" is-link readonly @click="rowItemPicker = ri" />
-                    <van-field v-model.number="row.quantity" type="number" label="Quantity" placeholder="0" />
+                    <van-field v-model.number="row.quantity" type="number" step="0.01" inputmode="decimal" label="Quantity" placeholder="0.9" />
+                    <div class="psv-dim" style="padding:0 16px 4px;font-size:11px">ဒသမ ရေးလို့ရတယ် — ဥပမာ ဆီ 0.9 L, 1.5 kg</div>
                     <van-field v-model.number="row.unit_cost" type="number" label="Unit Cost" placeholder="0" />
                   </van-cell-group>
                   <van-button v-if="rows.length > 1" icon="cross" size="small" plain type="danger" style="margin:14px 0 0 8px" @click="rows.splice(ri, 1)" />
@@ -5025,21 +5044,19 @@
               <div class="psv-recipe-sum__pct" :style="{ color: sumColor }">{{ sumPct }}</div>
             </div>
             <div class="psv-recipe-sum__meta">
-              <div>Revenue <b>{{ fKs(summary.revenue) }}</b> Ks</div>
-              <div>Est. cost <b>{{ fKs(summary.theoretical_cost) }}</b> Ks</div>
+              <div>Revenue <b>{{ fKsR(summary.revenue) }}</b> Ks</div>
+              <div>Est. cost <b>{{ fKsR(summary.theoretical_cost) }}</b> Ks</div>
             </div>
           </div>
-          <div class="psv-recipe-sum__split" style="margin-top:8px;font-size:12px;color:var(--psv-text-dim,#64748b)">
-            <div>🍳 ဟင်းပွဲ (dish) · rev <b>{{ fKs(splitDish.revenue) }}</b> · cost <b>{{ fKs(splitDish.theoretical_cost) }}</b></div>
-            <div>🛒 အဆင်သင့် (ready) · rev <b>{{ fKs(splitResale.revenue) }}</b> · cost <b>{{ fKs(splitResale.theoretical_cost) }}</b></div>
+          <div class="psv-recipe-sum__split" style="margin-top:6px;font-size:11px;color:var(--psv-text-dim,#64748b)">
+            🍳 {{ fKsR(splitDish.revenue) }} · 🛒 {{ fKsR(splitResale.revenue) }} <span style="opacity:.7">(rev)</span>
           </div>
           <div v-if="sumWarn" class="psv-recipe-sum__warn">⚠️ Food cost above 35% — review recipes & pricing</div>
           <div v-else-if="!dishes.length && !resale.length" class="psv-recipe-sum__hint">Add items above to see costing.</div>
         </div>
 
-        <div class="psv-catrow">
-          <span class="psv-dim" style="font-size:12px">Category အလိုက်</span>
-          <span class="psv-dchip" :class="{ 'psv-dchip--on': !catActive }" @click="catActive = ''">🟣 အားလုံး ({{ list.length }})</span>
+        <div class="psv-catrow" style="flex-wrap:nowrap;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px">
+          <span class="psv-dchip" :class="{ 'psv-dchip--on': !catActive }" @click="catActive = ''">အားလုံး ({{ list.length }})</span>
           <span v-for="c in cats" :key="c.name" class="psv-dchip"
                 :class="{ 'psv-dchip--on': catActive === c.name }"
                 @click="catActive = (catActive === c.name ? '' : c.name)">{{ c.name }} ({{ c.n }})</span>
@@ -5076,7 +5093,7 @@
               </van-cell-group>
             </van-pull-refresh>
           </van-tab>
-          <van-tab title="All items">
+          <van-tab title="အားလုံး">
             <van-pull-refresh v-model="refreshing" @refresh="loadAll">
               <van-empty v-if="!all.length && !loading" description="ဒီ category မှာ item မရှိဘူး" />
               <van-cell-group v-for="grp in allGroups" :key="grp.cat" inset :title="grp.cat" style="margin-top:8px">
@@ -5096,10 +5113,8 @@
           </van-tab>
           <van-tab title="🧺 Ingredients">
             <van-pull-refresh v-model="refreshing" @refresh="loadIngredients">
-              <div class="psv-note" style="margin:10px 16px 4px">
-                🍚 <b>ဟင်းခံပစ္စည်း</b> = recipe ထဲ ထည့်ရတဲ့ ကုန်ကြမ်း (ဆန်၊ ဆီ၊ ကြက်ဥ၊ အသား…)<br/>
-                🛒 <b>ပစ္စည်း</b> = ရောင်းစရာ အထုပ်/အဘူး (ကိတ်၊ အာလူးကြော်၊ အချိုရည်…)<br/>
-                မှားနေရင် အောက်က ခလုတ်နဲ့ ပြောင်းလို့ရတယ်။ ယူနစ်သတ်မှတ်ဖို့ ကုန်ကြမ်းကို နှိပ်ပါ။
+              <div class="psv-note" style="margin:10px 16px 4px;font-size:12px">
+                🍚 ကုန်ကြမ်း (ဆန်၊ ဆီ၊ ကြက်ဥ) · 🛒 ရောင်းစရာ အထုပ် — မှားရင် 🍚/🛒 နှိပ်ပြီး ပြောင်းပါ
               </div>
               <div style="padding:8px 16px 0">
                 <van-button type="primary" block icon="plus" @click="openAddIngredient">➕ ဟင်းခံ အသစ် / Add ingredient</van-button>
@@ -5112,7 +5127,7 @@
               </div>
               <van-cell-group inset title="🍚 ဟင်းခံပစ္စည်းများ (Ingredients)" style="margin-top:8px">
                 <van-cell v-for="it in reviewIngredients" :key="it.name" :title="it.name" is-link @click="openUnitEditor(it)">
-                  <template #label><span>{{ unitCostText(it) }}</span></template>
+                  <template #label><span>{{ unitCostShort(it) }}</span></template>
                   <template #value>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'ingredient' }" @click.stop="setKind(it, 'ingredient')">🍚</span>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'product' }" @click.stop="setKind(it, 'product')">🛒</span>
@@ -5123,7 +5138,7 @@
               </van-cell-group>
               <van-cell-group inset title="🛒 ရောင်းစရာ ပစ္စည်းများ (Products)" style="margin-top:14px">
                 <van-cell v-for="it in reviewProducts" :key="it.name" :title="it.name" is-link @click="openUnitEditor(it)">
-                  <template #label><span>{{ unitCostText(it) }}</span></template>
+                  <template #label><span>{{ unitCostShort(it) }}</span></template>
                   <template #value>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'ingredient' }" @click.stop="setKind(it, 'ingredient')">🍚</span>
                     <span class="psv-kind" :class="{ 'psv-kind--on': it.kind === 'product' }" @click.stop="setKind(it, 'product')">🛒</span>
@@ -5131,7 +5146,7 @@
                   </template>
                 </van-cell>
               </van-cell-group>
-              <div class="psv-dim" style="padding:14px 16px 0;font-size:12px;border-top:1px solid var(--pv-border,#26304d);margin-top:14px">🔗 Merged / duplicate names</div>
+              <div v-if="variantGroups.length || mergedCount" class="psv-dim" style="padding:14px 16px 0;font-size:12px;border-top:1px solid var(--pv-border,#26304d);margin-top:14px">🔗 Merged / duplicate names</div>
               <van-cell-group v-if="variantGroups.length" inset title="⚠️ နာမည်ကွဲနေတဲ့ ပစ္စည်းများ (duplicate names)" style="margin-top:14px">
                 <van-cell v-for="(g, gi) in variantGroups" :key="'g' + gi">
                   <template #title><span style="font-size:13px">{{ g.suggested_canonical }}</span></template>
@@ -5158,7 +5173,13 @@
         <!-- Recipe editor (full-screen sheet) -->
         <van-popup v-model:show="editor.show" position="bottom" :style="{ height: '100%' }" class="psv-editor">
           <div class="pv-page" v-if="editor.item">
-            <van-nav-bar :title="editor.item.item_name" left-arrow @click-left="closeEditor" />
+            <van-nav-bar :title="editor.item.item_name" :border="false" @click-left="closeEditor">
+              <template #left>
+                <span style="display:inline-flex;align-items:center;gap:4px;font-weight:600;font-size:14px">
+                  <van-icon name="arrow-left" size="18" />Back
+                </span>
+              </template>
+            </van-nav-bar>
             <div class="psv-card" style="margin:8px">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
                 <span class="psv-pill" :class="editor.item.item_type === 'dish' ? 'psv-pill--ok' : 'psv-pill--dim'">{{ typeBadge(editor.item) }}</span>
@@ -5270,6 +5291,7 @@
                 <span class="psv-dchip" :class="{ 'psv-dchip--on': newIng.cost_basis === 'average' }" @click="newIng.cost_basis = 'average'">ပျမ်းမျှ (avg)</span>
               </div>
             </div>
+            <div v-if="newIng.details" class="psv-note" style="margin:4px 12px;font-size:12px">📊 {{ newIng.details }}</div>
             <div v-if="liveUnitCost" class="psv-note" style="margin:4px 12px">💡 ≈ <b>{{ liveUnitCost }}</b> Ks per {{ newIng.base_unit || 'g' }}</div>
             <div style="display:flex;gap:8px;margin-top:12px">
               <van-button block plain @click="newIng.show = false">Cancel</van-button>
@@ -5343,7 +5365,7 @@
       const ingData = reactive({ items: [], suggested: [] });
       const ingPickerShow = ref(false);
       const editor = reactive({ show: false, item: null, rows: [], saving: false });
-      const newIng = reactive({ show: false, name: "", base_unit: "g", purchase_unit: "", base_per_purchase: null, kind: null, cost_basis: null, saving: false });
+      const newIng = reactive({ show: false, name: "", base_unit: "g", purchase_unit: "", base_per_purchase: null, kind: null, cost_basis: null, saving: false, details: "" });
       const newDish = reactive({ show: false, name: "", category: "Food", selling_price: null, saving: false, item_type: "dish" });
       const addIng = reactive({ show: false, name: "", saving: false });
       const editingPrice = ref(false);
@@ -5423,11 +5445,11 @@
       }
       function dishLabel(it) {
         if (!it) return "";
-        return it.has_recipe ? ("Cost " + fKs(it.portion_cost) + " · Margin " + fKs(it.margin) + " Ks") : "No recipe — tap to add";
+        return it.has_recipe ? ("Cost " + fKsR(it.portion_cost) + " · +" + fKsR(it.margin)) : "No recipe — tap to add";
       }
       function resaleLabel(it) {
         if (!it) return "";
-        return it.no_purchase_yet ? "No purchase yet" : ("Cost " + fKs(it.unit_cost) + " · Margin " + fKs(it.margin) + " Ks");
+        return it.no_purchase_yet ? "No purchase yet" : ("Cost " + fKsR(it.unit_cost) + " · +" + fKsR(it.margin));
       }
       function costLabel(it) {
         if (!it) return "";
@@ -5452,18 +5474,27 @@
         const u = it.unit_label || "pcs";
         if (it.display_cost == null) return "No purchase yet · " + u;
         const basis = it.effective_cost_basis || "fifo";
-        let s = fKs(it.display_cost) + " Ks / " + u;
+        let s = fKsR(it.display_cost) + " Ks / " + u;
         if (basis === "fifo" && it.fifo_layer_cost != null) {
-          s += " · FIFO" + (it.fifo_est ? " (est.)" : "") + " " + fKs(it.fifo_layer_cost);
+          s += " · FIFO" + (it.fifo_est ? " (est.)" : "") + " " + fKsR(it.fifo_layer_cost);
           if (it.fifo_layer_date) s += " (" + shortDate(it.fifo_layer_date) + ")";
-          if (it.fifo_remaining != null) s += " · left " + fKs(it.fifo_remaining);
-          if (it.on_hand_est != null) s += " · on-hand " + fKs(it.on_hand_est);
+          if (it.fifo_remaining != null) s += " · left " + fKsR(it.fifo_remaining);
+          if (it.on_hand_est != null) s += " · on-hand " + fKsR(it.on_hand_est);
         }
         if (basis === "last" && it.last_purchase_price != null) {
-          s += " · last " + fKs(it.last_purchase_price) + (it.last_purchase_date ? " (" + shortDate(it.last_purchase_date) + ")" : "");
+          s += " · last " + fKsR(it.last_purchase_price) + (it.last_purchase_date ? " (" + shortDate(it.last_purchase_date) + ")" : "");
         }
-        if (it.weighted_avg_cost != null) s += " · avg " + fKs(it.weighted_avg_cost);
+        if (it.weighted_avg_cost != null) s += " · avg " + fKsR(it.weighted_avg_cost);
         return s;
+      }
+      // Compact one-line cost for the list rows (owner Osmo 2026-09-29 "ရှုပ်နေတယ်"):
+      // FIFO / last / avg / left / on-hand detail moved into the unit editor sheet.
+      function unitCostShort(it) {
+        if (!it) return "";
+        const u = it.unit_label || "pcs";
+        if (it.display_cost == null) return "No purchase yet · " + u;
+        const basis = it.effective_cost_basis || "fifo";
+        return fKsR(it.display_cost) + " Ks / " + u + (basis === "fifo" ? "" : (" · " + (basis === "last" ? "last" : "avg")));
       }
       const ingPickerItems = computed(() => {
         const out = [];
@@ -5866,6 +5897,7 @@
       }
       function openUnitEditor(it) {
         if (!it) return;
+        newIng.details = unitCostText(it);  // full FIFO/last/avg/stock detail (list stays short)
         newIng.name = it.name;
         newIng.base_unit = it.base_unit || "g";
         newIng.purchase_unit = it.purchase_unit || "";
@@ -6095,10 +6127,10 @@
       return {
         tab, loading, refreshing, list, all, costed, dishes, resale, splitDish, splitResale,
         summary, month, sumPct, sumWarn, sumColor,
-        pct, pillClass, fKs, openEditor, closeEditor, lineCost, editorTotals,
+        pct, pillClass, fKs, fKsR, openEditor, closeEditor, lineCost, editorTotals,
         typeBadge, dishLabel, resaleLabel, costLabel, hasCostPill,
         catActive, cats, allGroups, catLabel,
-        unitCostText, shortDate, reviewIngredients, reviewProducts, setKind, openUnitEditor,
+        unitCostText, unitCostShort, shortDate, reviewIngredients, reviewProducts, setKind, openUnitEditor,
         ingPickerShow, ingPickerItems, pickIngredient, removeRow,
         newIng, saveIngredient, saveRecipe, editor, isAdmin, goStockIn,
         newDish, openNewDish, saveNewDish,
@@ -7726,13 +7758,16 @@
                 <div class="psv-acc-card__bal psv-tabnum">{{ fKs(a.live_balance) }} <span class="psv-acc-card__unit">Ks</span></div>
                 <div class="psv-acc-card__meta">Live balance now</div>
                 <div class="psv-rows" style="margin-top:8px">
-                  <div class="psv-row"><span>Opening</span><b class="psv-tabnum">{{ a.opening_set ? fKs(a.opening_balance) + ' Ks' : '—' }}</b></div>
+                  <div class="psv-row"><span>Opening</span><b class="psv-tabnum">{{ a.opening_set ? fKs(a.opening_balance) + ' Ks' : (a.suggested_opening != null ? fKs(a.suggested_opening) + ' Ks (သယ်မည်)' : '—') }}</b></div>
+                  <div class="psv-row" v-if="a.prev_closing != null"><span>မနေ့ Closing</span><b class="psv-tabnum">{{ fKs(a.prev_closing) }} Ks</b></div>
+                  <div class="psv-row" v-if="a.opening_mismatch != null && a.opening_mismatch !== 0"><span style="color:#f87171">⚠️ မနေ့ closing နှင့် ကွာ</span><b class="psv-tabnum" style="color:#f87171">{{ (a.opening_mismatch > 0 ? '+' : '') + fKs(a.opening_mismatch) }} Ks</b></div>
                   <div class="psv-row" v-if="a.status === 'closed'"><span>Closing</span><b class="psv-tabnum">{{ fKs(a.closing_balance) }} Ks</b></div>
                   <div class="psv-row" v-if="a.status === 'closed'"><span>Variance (Actual − Recorded)</span><b class="psv-tabnum" :style="a.variance !== 0 ? 'color:#f87171' : ''">{{ (a.variance > 0 ? '+' : '') + fKs(a.variance) }} Ks</b></div>
                 </div>
-                <div style="display:flex;gap:8px;margin-top:10px">
+                <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
                   <button v-if="!a.opening_set" class="psv-btn psv-btn--ghost psv-btn--block" @click="openSheet(a, 'open')">🔓 Open balance</button>
                   <button v-if="a.opening_set && a.status !== 'closed'" class="psv-btn psv-btn--primary psv-btn--block" @click="openSheet(a, 'close')">🔒 Close balance</button>
+                  <button v-if="a.can_reset" class="psv-btn psv-btn--ghost psv-btn--block" @click="resetRow(a)">↺ ပြန်ပြင် (owner)</button>
                 </div>
               </div>
               <div class="psv-card" style="margin:10px 14px">
@@ -7772,6 +7807,7 @@
                   <button v-for="q in quick" :key="q" class="psv-chip" @click="amountStr = String(q)">{{ fKs(q) }}</button>
                 </div>
               </div>
+              <div class="psv-note" v-if="sheetMode === 'open' && sheetPrev != null">မနေ့ closing {{ fKs(sheetPrev) }} Ks မှ အလိုအလျောက် သယ်ထားသည် — မှန်ရင် Save နှိပ်ပါ။</div>
               <div class="psv-note" v-if="sheetMode === 'open'">Opening balance = money in this account at the start of today.</div>
               <div class="psv-note" v-else>Closing balance = money counted in this account at the end of today. Variance = counted − system (live) balance.</div>
               <div class="psv-btn-row" style="margin-top:12px">
@@ -7788,7 +7824,7 @@
       const err = ref(""); const date = ref("");
       const sheetShow = ref(false); const sheetMode = ref("open"); const sheetAccount = ref("");
       const hist = ref([]); const histLoading = ref(false);
-      const sheetLive = ref(0); const amountStr = ref(""); const busy = ref(false);
+      const sheetLive = ref(0); const amountStr = ref(""); const busy = ref(false); const sheetPrev = ref(null);
       const amount = computed(() => { const n = Math.floor(Number(amountStr.value) || 0); return n > 0 ? n : 0; });
       const canSubmit = computed(() => !!sheetAccount.value && amount.value > 0);
       const quick = computed(() => [sheetLive.value, 10000, 20000, 50000, 100000].filter((x, i, arr) => x > 0 && arr.indexOf(x) === i).slice(0, 5));
@@ -7804,6 +7840,11 @@
           opening_balance: Number(r.opening_balance) || 0,
           opening_set: !!(r.opened_by || r.opened_at || (Number(r.opening_balance) > 0)),
           closing_balance: Number(r.closing_balance) || 0,
+          prev_closing: (r.prev_closing == null) ? null : Number(r.prev_closing),
+          suggested_opening: (r.suggested_opening == null) ? null : Number(r.suggested_opening),
+          carried: !!r.carried,
+          opening_mismatch: (r.opening_mismatch == null) ? null : Number(r.opening_mismatch),
+          can_reset: !!r.can_reset,
           variance: (r.variance == null) ? null : Number(r.variance),
           live_balance: Number(r.live_balance) || 0,
           opened_by: r.opened_by || "",
@@ -7840,7 +7881,10 @@
       onMounted(() => { load(); loadHistory(); });
       function openSheet(a, mode) {
         sheetAccount.value = a.account; sheetMode.value = mode; sheetLive.value = a.live_balance;
-        amountStr.value = String(a.live_balance || ""); sheetShow.value = true; haptic("light");
+        // Owner 2026-09-29 (1): opening is carried from yesterday's closing — prefill it.
+        sheetPrev.value = (mode === "open") ? (a.suggested_opening != null ? a.suggested_opening : a.prev_closing) : null;
+        const pre = (mode === "open" && sheetPrev.value != null) ? sheetPrev.value : a.live_balance;
+        amountStr.value = String(pre || ""); sheetShow.value = true; haptic("light");
       }
       async function submit() {
         if (busy.value || !canSubmit.value) return;
@@ -7858,7 +7902,20 @@
           showToast(m || "Could not save", "fail");
         } finally { busy.value = false; }
       }
-      return { accounts, loading, refreshing, err, date, histGroups, histLoading, sheetShow, sheetMode, sheetAccount, amountStr, busy, amount, canSubmit, quick, load, loadHistory, openSheet, submit, accIcon, fKs };
+      // Owner 2026-09-29 (2): admin correction path — wipe today's open/close for one account.
+      async function resetRow(a) {
+        const ok = await confirmBox("↺ ပြန်ပြင် — " + a.account, "ဒီနေ့စာ open/close ကို ဖျက်ပြီး ပြန်လုပ်မလား? (owner only)", "ဖျက်ပြီး ပြန်လုပ်", "မလုပ်တော့", true);
+        if (!ok) return;
+        try {
+          const d = PSV.unwrap(await PSV.apiCached("/api/accounts/daily-balances/reset", { method: "POST", headers: HJSON, body: JSON.stringify({ account: a.account }) })) || {};
+          showToast(d.message || "Reset ပြီးပါပြီ", "success");
+          try { PSV.invalidate("/api/accounts"); } catch (_e) {}
+          await load(); await loadHistory();
+        } catch (e) {
+          showToast(String((e && e.message) || e) || "Reset မရပါ", "fail");
+        }
+      }
+      return { accounts, loading, refreshing, err, date, histGroups, histLoading, sheetShow, sheetMode, sheetAccount, sheetPrev, amountStr, busy, amount, canSubmit, quick, load, loadHistory, openSheet, submit, resetRow, accIcon, fKs };
     },
   };
 

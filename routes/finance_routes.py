@@ -559,7 +559,9 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             FROM console_bookings
             WHERE deposit_status IN ('paid', 'verified')
               AND deposit_amount > 0
-              AND status NOT IN ('cancelled', 'done')
+              -- 2026-09-30 depfix: a deposit on a cancelled/rejected/no-show booking
+              -- is NOT collected money and must never be added back to an account.
+              AND status NOT IN ('cancelled', 'done', 'rejected', 'no_show')
               AND created_at >= %s AND created_at < %s
             GROUP BY deposit_method
         """, (_start, _end))
@@ -893,7 +895,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         _act_dep = _mq(
             """SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings 
                WHERE deposit_status IN ('paid','verified') 
-               AND status NOT IN ('cancelled','done')
+               -- 2026-09-30 depfix: exclude cancelled/rejected/no-show leftovers
+               AND status NOT IN ('cancelled','done','rejected','no_show')
                AND created_at < %s""", (_end,)
         )
         _adb = _act_dep[0]["t"] if _act_dep else 0
@@ -974,7 +977,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Deposit liability: deposits that are paid or verified (customer still owes session)
         _deposit_liab = _mqo(
             "SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings "
-            "WHERE deposit_status IN ('paid','verified')"
+            "WHERE deposit_status IN ('paid','verified') "
+            "AND status NOT IN ('cancelled','done','rejected','no_show')"  # 2026-09-30 depfix
         )
         deposit_liability = round(float(_deposit_liab.get("t", 0) or 0), 0)
 
@@ -1150,7 +1154,8 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                 per[key] = {"balance": bal, "income": income[key], "opex": opex[key], "t_in": t_in, "t_out": t_out, "inj": inj, "ej": ej}
                 total += bal
             # Active deposits add-back (same as balance-sheet current assets)
-            _ad = _mq("SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings WHERE deposit_status IN ('paid','verified') AND status NOT IN ('cancelled','done') AND created_at < %s", (cutoff,))
+            # 2026-09-30 depfix: cancelled/rejected/no-show deposits are not active deposits
+            _ad = _mq("SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings WHERE deposit_status IN ('paid','verified') AND status NOT IN ('cancelled','done','rejected','no_show') AND created_at < %s", (cutoff,))
             adb = float(_ad[0]["t"] or 0) if _ad else 0
             return per, total, adb
 
@@ -1482,8 +1487,23 @@ async def calculate_profit_distribution(
                 mgmt_fee_to = s["name"]
     if mgmt_fee_to is None:
         mgmt_fee_to = shares[0]["name"] if shares else "Unknown"
-    
+
+    # ── 6. Already-recorded state (2026-09-30 profitdist fix) ──
+    # Dashboard must show a "Recorded" marker for periods that already have a
+    # profit_distributions row. Return it explicitly from the API so the view
+    # never has to infer it (and never silently loses the marker).
+    _rec = _mq("SELECT id, distribution_date, status FROM profit_distributions "
+               "WHERE period_label = %s AND status <> 'cancelled' "
+               "ORDER BY id DESC LIMIT 1", (ym,))
+    already_recorded = bool(_rec)
+    recorded_id = _rec[0]["id"] if _rec else None
+    recorded_date = _rec[0]["distribution_date"] if _rec else None
+
     return {"success": True, "data": {
+        "already_recorded": already_recorded,
+        "recorded": already_recorded,
+        "recorded_id": recorded_id,
+        "recorded_date": str(recorded_date) if recorded_date is not None else None,
         "net_profit": round(net_profit, 0),
         "management_fee_pct": 10,
         "management_fee": mgmt_fee,

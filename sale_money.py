@@ -356,15 +356,27 @@ def deposit_already_in_payment_method(pm: str) -> bool:
 
 
 def get_verified_deposit(booking_id: Any) -> Dict[str, Any]:
-    """Return ``{amount, method, status, ref, ref_type}`` for a booking (0 when none)."""
+    """Return ``{amount, method, status, ref, ref_type}`` for a booking (0 when none).
+
+    2026-09-30 depfix: a deposit on a cancelled / rejected / no-show booking is NOT
+    redeemable — it is reported as ``status='none'`` with amount 0 so no caller can
+    fold uncollected money into a sale, balance or liability.
+    """
     empty = {"amount": 0, "method": "", "status": "none", "ref": "", "ref_type": "", "booking_id": booking_id}
     try:
         row = _mysql_query_one(
-            "SELECT deposit_status, deposit_amount, deposit_method, deposit_ref, deposit_ref_type "
+            "SELECT status, deposit_status, deposit_amount, deposit_method, deposit_ref, deposit_ref_type "
             "FROM console_bookings WHERE id=%s",
             (booking_id,),
         )
         if not row:
+            return empty
+        _bk_status = str(row.get("status") or "").lower()
+        if _bk_status in ("cancelled", "rejected", "no_show"):
+            logger.info(
+                "get_verified_deposit BK#%s: booking status=%s -> deposit not redeemable",
+                booking_id, _bk_status,
+            )
             return empty
         return {
             "booking_id": booking_id,
@@ -416,7 +428,8 @@ def commit_deposit_redemption(
             from mysql_db import delete_rows as _rowcount
             affected = _rowcount(
                 "UPDATE console_bookings SET deposit_status='redeemed', deposit_redeemed_at=NOW() "
-                "WHERE id=%s AND deposit_status IN ('verified','paid') AND deposit_amount>0",
+                "WHERE id=%s AND deposit_status IN ('verified','paid') AND deposit_amount>0 "
+                "AND status NOT IN ('cancelled','rejected','no_show')",
                 (booking_id,),
             )
         except Exception as e:

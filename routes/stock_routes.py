@@ -179,7 +179,10 @@ async def dashboard_stock_in(req: dict, user: dict = Depends(get_current_user)):
     """Record stock-in for an inventory item."""
     try:
         item_id = req.get("item_id")
-        quantity = req.get("quantity", 0)
+        try:
+            quantity = round(float(req.get("quantity", 0) or 0), 2)  # 0.9 L etc. (owner Osmo 2026-09-29)
+        except (TypeError, ValueError):
+            quantity = 0
         unit_cost = req.get("unit_cost", 0)
         source = req.get("source", "")
         receipt_no = req.get("receipt_no", "")
@@ -205,8 +208,8 @@ async def dashboard_stock_in(req: dict, user: dict = Depends(get_current_user)):
         )
         _dish_consume.ensure_layer_for_stock_in(sid)
 
-        # Update inventory quantity
-        new_qty = int(item["quantity"] or 0) + quantity
+        # Update inventory quantity (decimal-safe — owner Osmo 2026-09-29: 0.9 L oil)
+        new_qty = round(float(item["quantity"] or 0) + float(quantity), 2)
         _mysql_execute(
             "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE id = %s",
             (new_qty, item_id)
@@ -256,13 +259,13 @@ async def dashboard_update_stock_in(entry_id: int, req: dict, user: dict = Depen
         paid_by = req.get("paid_by", existing.get("paid_by"))
         staff_name = req.get("staff_name", existing.get("staff_name"))
 
-        old_qty = int(existing.get("quantity") or 0)
-        new_qty = int(quantity or 0)
+        old_qty = round(float(existing.get("quantity") or 0), 2)
+        new_qty = round(float(quantity or 0), 2)
 
         # Reverse old inventory
         old_item = _mysql_query_one("SELECT * FROM inventory WHERE item_name = %s", (existing["item_name"],))
         if old_item:
-            old_inv_qty = max(0, int(old_item["quantity"] or 0) - old_qty)
+            old_inv_qty = max(0, round(float(old_item["quantity"] or 0) - old_qty, 2))
             _mysql_execute(
                 "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE id = %s",
                 (old_inv_qty, old_item["id"])
@@ -271,7 +274,7 @@ async def dashboard_update_stock_in(entry_id: int, req: dict, user: dict = Depen
         # Apply new inventory
         new_item = _mysql_query_one("SELECT * FROM inventory WHERE item_name = %s", (item_name,))
         if new_item:
-            new_inv_qty = int(new_item["quantity"] or 0) + new_qty
+            new_inv_qty = round(float(new_item["quantity"] or 0) + new_qty, 2)
             _mysql_execute(
                 "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE id = %s",
                 (new_inv_qty, new_item["id"])
@@ -301,7 +304,10 @@ async def dashboard_stock_out(req: dict, request: Request, user: dict = Depends(
     on the stock_out row for the audit trail."""
     try:
         item_id = req.get("item_id")
-        quantity = req.get("quantity", 0)
+        try:
+            quantity = round(float(req.get("quantity", 0) or 0), 2)  # decimal-safe (owner Osmo 2026-09-29)
+        except (TypeError, ValueError):
+            quantity = 0
         unit_price = req.get("unit_price", 0)
         notes = req.get("notes", "")
         try:
@@ -318,8 +324,8 @@ async def dashboard_stock_out(req: dict, request: Request, user: dict = Depends(
         if not item:
             return {"success": False, "error": "Inventory item not found"}
 
-        current_qty = int(item["quantity"] or 0)
-        if quantity > current_qty:
+        current_qty = round(float(item["quantity"] or 0), 2)
+        if quantity > current_qty + 1e-9:
             return {"success": False, "error": f"Not enough stock. Available: {current_qty}"}
 
         # Insert into stock_out
@@ -332,7 +338,7 @@ async def dashboard_stock_out(req: dict, request: Request, user: dict = Depends(
         _dish_consume.consume_after_stock_out(item["item_name"], quantity, sid)
 
         # Update inventory quantity
-        new_qty = current_qty - quantity
+        new_qty = round(current_qty - float(quantity), 2)
         _mysql_execute(
             "UPDATE inventory SET quantity = %s, last_updated = NOW() WHERE id = %s",
             (new_qty, item_id)

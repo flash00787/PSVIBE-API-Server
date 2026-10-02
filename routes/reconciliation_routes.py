@@ -57,6 +57,8 @@ SELECT cb.id AS booking_id, cb.console_id, cb.customer_name, cb.member_id,
 FROM console_bookings cb
 WHERE cb.deposit_amount > 0
   AND cb.deposit_status IN ('verified','paid')
+  -- 2026-09-30 depfix: never list deposits of cancelled/rejected/no-show bookings
+  AND cb.status NOT IN ('cancelled','rejected','no_show')
   AND NOT EXISTS (SELECT 1 FROM deposit_redemptions dr WHERE dr.booking_id = cb.id)
   AND (cb.status = 'done'
        OR EXISTS (SELECT 1 FROM console_sessions c3 WHERE c3.booking_id = cb.id AND c3.status = 'done'))
