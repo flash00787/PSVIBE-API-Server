@@ -697,6 +697,7 @@
             <div class="pv-action" @click="go('/reports')"><div class="pv-action__icon">📊</div><div class="pv-action__label">Today</div></div>
             <div class="pv-action" @click="go('/members')"><div class="pv-action__icon">🆕</div><div class="pv-action__label">New Member</div></div>
             <div class="pv-action" @click="go('/food')"><div class="pv-action__icon">🍜</div><div class="pv-action__label">Food</div></div>
+            <div class="pv-action" @click="go('/food-orders')"><div class="pv-action__icon">🍔</div><div class="pv-action__label">Session Food Order</div></div>
             <div class="pv-action" @click="go('/reconciliation')"><div class="pv-action__icon">🔁</div><div class="pv-action__label">{{ summary.reconcile > 0 ? 'Reconcile (' + summary.reconcile + ')' : 'Reconcile' }}</div></div>
           </div>
         </template>
@@ -3730,7 +3731,7 @@
   const MORE_ITEMS = [
     { path: "/recipes", icon: "🍳", label: "Recipe & Cost", adminOnly: true },
     { path: "/consoles", icon: "🕹️", label: "Consoles" },
-    { path: "/food-orders", icon: "🍔", label: "Food Orders" },
+    { path: "/food-orders", icon: "🍔", label: "Session Food Order" },
     { path: "/inventory", icon: "📦", label: "Inventory" },
     { path: "/reports", icon: "📊", label: "Reports" },
     { path: "/attendance", icon: "🕐", label: "Attendance" },
@@ -3751,7 +3752,7 @@
     { id: "sales", emoji: "🎮", en: "Sales", tone: "gold", items: [
       { en: "New walk-in sale", sub: "Open the sale form", icon: "🛒", path: "/sales" },
       { en: "End-of-session sale", sub: "Check out a console session", icon: "🎫", path: "/sales" },
-      { en: "Food & drink sale", sub: "Sell food without game time", icon: "🍔", path: "/food-orders" },
+      { en: "Session food order", sub: "Food & drinks for an active session", icon: "🍔", path: "/food-orders" },
       { en: "Food menu list", sub: "Browse the food menu", icon: "🍜", path: "/food" },
       { en: "Discount / Promo", sub: "View active promotions", icon: "🏷️", path: "/promotions" },
       { en: "Coupon", sub: "Validate & redeem a coupon", icon: "🎟️", path: "/sales" },
@@ -5510,12 +5511,30 @@
       }
       // Compact one-line cost for the list rows (owner Osmo 2026-09-29 "ရှုပ်နေတယ်"):
       // FIFO / last / avg / left / on-hand detail moved into the unit editor sheet.
+      // Stock qty (remaining/on-hand) appended so ingredient stock is visible (owner Osmo 2026-10-04).
+      function fmtQty(n) {
+        if (n == null || n === "" || isNaN(Number(n))) return null;
+        const v = Math.round(Number(n) * 100) / 100;
+        let s = String(v);
+        if (s.indexOf(".") >= 0) s = s.replace(/\.?0+$/, "");
+        return s;
+      }
+      function stockShort(it) {
+        if (!it) return "";
+        const u = it.unit_label || it.base_unit || "pcs";
+        let q = it.on_hand_est;
+        if (q == null) q = it.fifo_remaining;
+        if (q == null) q = it.total_qty;
+        const f = fmtQty(q);
+        if (f == null) return "";
+        return " · left " + f + " " + u;
+      }
       function unitCostShort(it) {
         if (!it) return "";
         const u = it.unit_label || "pcs";
-        if (it.display_cost == null) return "No purchase yet · " + u;
+        if (it.display_cost == null) return "No purchase yet · " + u + stockShort(it);
         const basis = it.effective_cost_basis || "fifo";
-        return fKsR(it.display_cost) + " Ks / " + u + (basis === "fifo" ? "" : (" · " + (basis === "last" ? "last" : "avg")));
+        return fKsR(it.display_cost) + " Ks / " + u + (basis === "fifo" ? "" : (" · " + (basis === "last" ? "last" : "avg"))) + stockShort(it);
       }
       const ingPickerItems = computed(() => {
         const out = [];

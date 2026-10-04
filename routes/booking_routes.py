@@ -57,6 +57,60 @@ def _save_suggestions(suggestions_list):
 
 router = APIRouter(prefix="/api", tags=['Bookings'])
 
+# ── Animated (custom) emoji ───────────────────────────────────────────────
+# Reused from the customer bot's fancy.py CUSTOM_EMOJI_ID (verified animated
+# TGS custom emoji). Applied to every customer notification so the Booking
+# Confirmed / Refund / Cancel messages animate (owner 2026-10-02).
+_ANIM_EMOJI_ID = {
+    "✅": "5413721644277441416",
+    "❌": "5032973497861669622",
+    "🔄": "5244758760429213978",
+    "📋": "5033080906403808074",
+    "📝": "5033080906403808074",
+    "🎮": "5431755876945904647",
+    "💰": "5287231198098117669",
+    "📅": "5429242943120623604",
+    "⏰": "4967525849902350972",
+    "⚠️": "5328254530981214461",
+    "🚫": "5418159410646099061",
+    "📞": "4969971262546772590",
+    "🔔": "4969746438188696430",
+    "🙏": "5431411862950388510",
+    "⏱️": "5382194935057372936",
+    "📌": "4969923081603645985",
+    "⭐": "4970181191958266458",
+    "👤": "4967667085606912536",
+    "⚡️": "5429633836684157942",
+    "🔥": "4970107898341360413",
+    "🎉": "5429197605445847745",
+    "🔒": "5030643469513655027",
+    "🆕": "5429511915447536335",
+    "📊": "5190806721286657692",
+    "💳": "4967518033061872209",
+    "🔑": "5346023639613466677",
+    "🏆": "5429387503129875330",
+}
+
+
+def _anim(text: str) -> str:
+    """Wrap known emoji in Telegram <tg-emoji> animated-custom-emoji entities."""
+    if not text:
+        return text
+    out, i, n = [], 0, len(text)
+    while i < n:
+        two = text[i:i + 2]
+        if two in _ANIM_EMOJI_ID:
+            out.append('<tg-emoji emoji-id="%s">%s</tg-emoji>' % (_ANIM_EMOJI_ID[two], two))
+            i += 2
+        elif text[i] in _ANIM_EMOJI_ID:
+            out.append('<tg-emoji emoji-id="%s">%s</tg-emoji>' % (_ANIM_EMOJI_ID[text[i]], text[i]))
+            i += 1
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
 def _send_telegram_customer(chat_id: str, message: str):
     """Send Telegram message to a customer via the Customer Bot token."""
     _log = logging.getLogger("psvibe_api")
@@ -68,6 +122,7 @@ def _send_telegram_customer(chat_id: str, message: str):
     if not token:
         _log.warning("[NOTIFY] CUSTOMER_BOT_TOKEN not configured in env")
         return
+    message = _anim(message)   # animated custom emoji (owner 2026-10-02)
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = _json_notify.dumps({
@@ -81,6 +136,83 @@ def _send_telegram_customer(chat_id: str, message: str):
         _log.info("[NOTIFY] Sent to %s: %s", chat_id, body.decode()[:200])
     except Exception as e:
         _log.warning("[NOTIFY] Failed to %s: %s", chat_id, e)
+
+
+# Owner 2026-10-02: the Booking Cancel & Refund terms image is sent to the
+# customer when their booking becomes CONFIRMED (deposit verified).
+PSVIBE_TERMS_IMAGE_URL = os.environ.get(
+    "PSVIBE_TERMS_IMAGE_URL",
+    "https://ps-vibe.com/psvibe-assets/psvibe-booking-terms-v3.png",
+)
+
+
+def _terms_image_enabled() -> bool:
+    """Feature flag — auto-send the terms image on booking confirmation.
+
+    Default OFF (owner 2026-10-02: "လောလောဆယ် မပို့သေးနဲ့"). Enable later with
+    env PSVIBE_TERMS_IMAGE_ENABLED=1 (no code change).
+    """
+    return str(os.environ.get("PSVIBE_TERMS_IMAGE_ENABLED", "0")).strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
+def _terms_image_local_path() -> str:
+    """Local path of the served terms image, derived from PSVIBE_TERMS_IMAGE_URL."""
+    try:
+        from urllib.parse import urlparse
+        name = os.path.basename(urlparse(PSVIBE_TERMS_IMAGE_URL).path)
+        if not name:
+            return ""
+        return os.path.join(os.path.dirname(__file__), "..", "dashboard-dist", "assets", name)
+    except Exception:
+        return ""
+
+
+def _send_telegram_customer_photo(chat_id: str, photo: str, caption: str = ""):
+    """Send the terms image to a customer via the Customer Bot.
+
+    Uploads the LOCAL file (multipart) when available — Telegram caches an image
+    by URL (serving a stale copy when the file at that URL is replaced) and its
+    URL fetcher can fail outright. Falls back to URL sendPhoto.
+    """
+    _log = logging.getLogger("psvibe_api")
+    if not chat_id:
+        return
+    token = os.environ.get("CUSTOMER_BOT_TOKEN", "")
+    if not token:
+        _log.warning("[NOTIFY-PHOTO] CUSTOMER_BOT_TOKEN not configured in env")
+        return
+    api = f"https://api.telegram.org/bot{token}"
+    caption = _anim(caption)  # animated custom emoji (owner 2026-10-02)
+    local = _terms_image_local_path()
+    try:
+        if local and os.path.isfile(local):
+            import requests as _rq
+            with open(local, "rb") as fh:
+                data = {"chat_id": str(chat_id)}
+                if caption:
+                    data["caption"] = caption
+                r = _rq.post(f"{api}/sendPhoto", data=data,
+                             files={"photo": (os.path.basename(local), fh, "image/png")},
+                             timeout=90)
+            _log.info("[NOTIFY-PHOTO] upload -> %s: %s", chat_id, r.text[:160])
+            if r.ok:
+                return
+    except Exception as e:
+        _log.warning("[NOTIFY-PHOTO] upload failed (%s) - falling back to URL", e)
+    try:
+        if not photo:
+            return
+        payload = {"chat_id": chat_id, "photo": photo}
+        if caption:
+            payload["caption"] = caption
+        data = _json_notify.dumps(payload).encode()
+        req = urllib.request.Request(f"{api}/sendPhoto", data=data,
+                                     headers={"Content-Type": "application/json"})
+        _log.info("[NOTIFY-PHOTO] url -> %s: %s", chat_id,
+                  urllib.request.urlopen(req).read().decode()[:160])
+    except Exception as e:
+        _log.warning("[NOTIFY-PHOTO] Failed to %s: %s", chat_id, e)
 
 
 def _notify_deposit_forfeited(bk_id: int, row: dict, deposit_amount: int):
@@ -3902,7 +4034,20 @@ async def api_deposit_verify(booking_id: int, req: dict, request: Request, auth=
                 args=(tg_chat_id, msg),
                 daemon=True
             ).start()
-        
+            # Owner 2026-10-02: send the Booking Cancel & Refund terms image on
+            # confirmation — OFF by default (owner: "လောလောဆယ် မပို့သေးနဲ့"). Flip
+            # on later with env PSVIBE_TERMS_IMAGE_ENABLED=1 (no code change).
+            if _terms_image_enabled():
+                try:
+                    _threading_notify.Thread(
+                        target=_send_telegram_customer_photo,
+                        args=(tg_chat_id, PSVIBE_TERMS_IMAGE_URL,
+                              "📋 Booking Cancel & Refund — စည်းကမ်းချက်များ"),
+                        daemon=True
+                    ).start()
+                except Exception as _ti_e:
+                    logger.warning(f"verify bk#{booking_id} terms image: {_ti_e}")
+
         return ok({
             "booking_id": booking_id,
             "deposit_status": "verified",
