@@ -597,6 +597,99 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
         # Stable per-sale ref for idempotent money side-effects (coupon/deposit).
         sale_ref = client_ref or (voucher_no or None)
 
+        # ── Duration 2+1 (Weekday Happy Hour) — auto-bind at checkout ────────
+        # Server-side re-pricing. Applies only when an ACTIVE duration_2plus1 promo
+        # is in its date window AND the session STARTED Mon–Fri 09:00 ≤ t < 15:00
+        # (MMT). Extension/top-up minutes count (start time is the criterion).
+        # Any error here logs and falls through to the normal (unpromoted) path —
+        # checkout must never break.
+        _d2p_applied = None
+        try:
+            from sale_money import (
+                load_active_duration_promo as _load_d2p,
+                compute_duration_2plus1 as _compute_d2p,
+            )
+            _promo_row = _load_d2p()
+            if _promo_row:
+                _sess_row = None
+                _sid_in = req.get("session_id")
+                if _sid_in not in (None, "", "0", 0):
+                    try:
+                        _sess_row = _mysql_query_one(
+                            "SELECT id, actual_start, actual_duration_mins FROM console_sessions WHERE id=%s",
+                            (int(_sid_in),))
+                    except (TypeError, ValueError):
+                        _sess_row = None
+                if not _sess_row and booking_id not in (None, "", 0, "0"):
+                    _sess_row = _mysql_query_one(
+                        "SELECT id, actual_start, actual_duration_mins FROM console_sessions "
+                        "WHERE booking_id=%s ORDER BY id DESC LIMIT 1", (booking_id,))
+                if not _sess_row and console_id:
+                    _sess_row = _mysql_query_one(
+                        "SELECT id, actual_start, actual_duration_mins FROM console_sessions "
+                        "WHERE console_id=%s AND status='active' ORDER BY id DESC LIMIT 1", (console_id,))
+                if _sess_row and _sess_row.get("actual_start"):
+                    _T = int(_sess_row.get("actual_duration_mins") or 0)
+                    if _T <= 0:
+                        _T = int(float(mins or 0))
+                    _d2p = _compute_d2p(_sess_row.get("actual_start"), _T, _promo_row)
+                    if _d2p:
+                        _B = _d2p["billable_mins"]
+                        _F = _d2p["free_mins"]
+                        _rate = float(req.get("base_rate") or 0) or 500.0
+                        # Member wallet balance (None for walk-in/guest).
+                        _mid = str(member_id or "").strip()
+                        _bal = None
+                        if _mid and _mid not in ("", "0", "0 (Guest)", "-", "Guest"):
+                            _w = _mysql_query_one(
+                                "SELECT balance_mins FROM member_wallets WHERE member_id=%s", (_mid,))
+                            _bal = int(_w.get("balance_mins") or 0) if _w else None
+                        _wallet_mins = min(_B, _bal) if (_bal is not None and _bal > 0) else 0
+                        _cash_mins = max(0, _B - _wallet_mins)
+                        _cash_ks = round(_cash_mins * _rate / 60)
+                        req["duration_2plus1"] = {
+                            "promo_id": _d2p["promo_id"],
+                            "title": _d2p["title"],
+                            "total_mins": _T,
+                            "billable_mins": _B,
+                            "free_mins": _F,
+                            "cash_mins": _cash_mins,
+                            "wallet_mins": _wallet_mins,
+                        }
+                        req["promo_id"] = str(_d2p["promo_id"])
+                        req["mins"] = _T
+                        mins = _T
+                        game_amt = float(_cash_ks)
+                        if _wallet_mins > 0:
+                            req["is_member"] = True
+                            req["wallet_mins"] = _wallet_mins
+                            req["effective_cost_mins"] = _wallet_mins
+                            req["wallet_deduct"] = _wallet_mins
+                            if _cash_mins > 0:
+                                # Wallet insufficient for the full billable tier → the
+                                # uncovered billable minutes fall back to cash game_amt.
+                                req["is_member"] = False
+                                req["wallet_mins"] = 0
+                                req["game_amt"] = _cash_ks
+                                req["gross_total"] = _cash_ks + float(food_total)
+                        else:
+                            req["wallet_deduct"] = 0
+                            req["game_amt"] = _cash_ks
+                            req["gross_total"] = _cash_ks + float(food_total)
+                        _d2p_applied = {
+                            "promo_id": _d2p["promo_id"],
+                            "session_id": _sess_row.get("id"),
+                            "total_mins": _T,
+                            "billable_mins": _B,
+                            "free_mins": _F,
+                        }
+                        logger.info(
+                            "2+1 promo applies voucher=%s session=%s T=%sm billable=%sm free=%sm",
+                            voucher_no, _sess_row.get("id"), _T, _B, _F)
+        except Exception as _d2p_e:
+            logger.warning("2+1 promo checkout hook error (falling through): %s", _d2p_e)
+            _d2p_applied = None
+
         # ── Single money path: server recompute when a promo/coupon is attached ──
         promo_id_in = str(req.get("promo_id") or "").strip()
         coupon_in = str(req.get("coupon_code") or "").strip()
@@ -708,6 +801,9 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
         extra_notes = []
         if promotion_name:
             extra_notes.append(f"Promotion: {promotion_name}")
+        if _d2p_applied:
+            extra_notes.append(
+                f"2+1 Promo: billable {_d2p_applied['billable_mins']}m / free {_d2p_applied['free_mins']}m")
         if coupon_code:
             extra_notes.append(f"Coupon: {coupon_code}")
         if deposit_deducted:
@@ -819,10 +915,24 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
         if not _is_member_sale and not _is_guest_label:
             _stored_member_id = ""
         _mysql_exec(
-            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, customer_name, payment_method, notes, client_ref, session_id, game_name, game_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (voucher_no, sale_date, console_id, _stored_member_id, game_amt, gross, discount, net_total, staff, customer_name, payment_method, combined_notes, client_ref, _session_id, _game_name, _game_id)
+            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, customer_name, payment_method, notes, client_ref, session_id, game_name, game_id, billable_mins, free_mins) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (voucher_no, sale_date, console_id, _stored_member_id, game_amt, gross, discount, net_total, staff, customer_name, payment_method, combined_notes, client_ref, _session_id, _game_name, _game_id,
+             (_d2p_applied or {}).get("billable_mins"), (_d2p_applied or {}).get("free_mins"))
         )
+
+        # ── 2+1 promo snapshot on the session (owner Osmo 2026-10-08) ──────────
+        if _d2p_applied:
+            try:
+                _snap_sid = _d2p_applied.get("session_id") or _session_id
+                if _snap_sid:
+                    _mysql_exec(
+                        "UPDATE console_sessions SET promo_id=%s, promo_applied=1, billable_mins=%s, free_mins=%s "
+                        "WHERE id=%s",
+                        (_d2p_applied["promo_id"], _d2p_applied["billable_mins"],
+                         _d2p_applied["free_mins"], _snap_sid))
+            except Exception as _d2ps_e:
+                logger.warning("2+1 console_sessions snapshot failed: %s", _d2ps_e)
 
         # ── Session duration safety net (owner 2026-09-29 Osmo) ───────────────────
         # Sessions closed by a sale occasionally ended up with actual_duration_mins = 0
@@ -865,6 +975,9 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
             "promotion_name": promotion_name or None,
             "coupon_code": coupon_code or None,
             "breakdown": promo_breakdown,
+            "duration_2plus1": _d2p_applied,
+            "billable_mins": (_d2p_applied or {}).get("billable_mins"),
+            "free_mins": (_d2p_applied or {}).get("free_mins"),
             "coupon_redeem": coupon_redeem,
             "sale_ref": sale_ref,
             "wallet_deduct": _wallet_deduct,

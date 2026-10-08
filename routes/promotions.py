@@ -14,6 +14,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["Promotions"])
 
 
+def _fmt_time(v):
+    """Format a TIME value (pymysql timedelta/datetime.time) to 'HH:MM:SS'."""
+    if v is None:
+        return None
+    if hasattr(v, "total_seconds"):  # timedelta
+        total = int(v.total_seconds()) % 86400
+        return "%02d:%02d:%02d" % (total // 3600, (total % 3600) // 60, total % 60)
+    s = str(v)
+    return s if s else None
+
+
 @router.get("/promotions/active-list", response_model=GenericResponse, tags=["Promotions"])
 async def api_promotions_active_list(auth=Depends(verify_api_key)):
     """Active, in-window promotions for the Staff App sale-screen picker.
@@ -25,7 +36,10 @@ async def api_promotions_active_list(auth=Depends(verify_api_key)):
     try:
         rows = _mysql_query(
             "SELECT id, name, promo_name, promo_type, discount_type, discount_value, "
-            "       start_date, end_date, status, notes FROM promotions "
+            "       start_date, end_date, status, notes, "
+            "       applies_auto, weekday_mask, time_window_start, time_window_end, "
+            "       tier_charge_mins, tier_cycle_mins "
+            "FROM promotions "
             "WHERE status='active' "
             "  AND (start_date IS NULL OR start_date <= CURDATE()) "
             "  AND (end_date IS NULL OR end_date >= CURDATE()) "
@@ -43,6 +57,13 @@ async def api_promotions_active_list(auth=Depends(verify_api_key)):
                 "notes": r.get("notes") or "",
                 "start_date": str(r.get("start_date")) if r.get("start_date") else None,
                 "end_date": str(r.get("end_date")) if r.get("end_date") else None,
+                # ── Duration 2+1 (Weekday Happy Hour) fields ──
+                "applies_auto": int(r.get("applies_auto") or 0),
+                "weekday_mask": int(r.get("weekday_mask") or 0),
+                "time_window_start": _fmt_time(r.get("time_window_start")),
+                "time_window_end": _fmt_time(r.get("time_window_end")),
+                "tier_charge_mins": int(r.get("tier_charge_mins") or 0),
+                "tier_cycle_mins": int(r.get("tier_cycle_mins") or 0),
             })
         return ok({"promotions": promos, "count": len(promos)})
     except Exception as e:
@@ -82,7 +103,41 @@ async def api_promotions_calc(req: dict, auth=Depends(verify_api_key)):
     try:
         if not isinstance(req, dict):
             return error_response(message="Invalid request body")
-        return ok(_compute_totals(req))
+        # 🎁 Auto-evaluate the duration_2plus1 promo for inline display (read-only).
+        # The server resolves the session start and reports the server-computed
+        # billable/free minutes; the client never computes the tier itself.
+        _req = dict(req)
+        try:
+            from sale_money import load_active_duration_promo as _load_d2p, compute_duration_2plus1 as _compute_d2p
+            _pro = _load_d2p()
+            if _pro:
+                _sess = None
+                _sid = _req.get("session_id")
+                _bid = _req.get("booking_id")
+                _cid = _req.get("console_id")
+                if _sid not in (None, "", "0", 0):
+                    try:
+                        _sess = _mysql_query_one(
+                            "SELECT actual_start, actual_duration_mins FROM console_sessions WHERE id=%s", (int(_sid),))
+                    except (TypeError, ValueError):
+                        _sess = None
+                if not _sess and _bid not in (None, "", 0, "0"):
+                    _sess = _mysql_query_one(
+                        "SELECT actual_start, actual_duration_mins FROM console_sessions WHERE booking_id=%s ORDER BY id DESC LIMIT 1", (_bid,))
+                if not _sess and _cid:
+                    _sess = _mysql_query_one(
+                        "SELECT actual_start, actual_duration_mins FROM console_sessions WHERE console_id=%s AND status='active' ORDER BY id DESC LIMIT 1", (_cid,))
+                if _sess and _sess.get("actual_start"):
+                    _T = int(_sess.get("actual_duration_mins") or 0)
+                    if _T <= 0:
+                        _T = int(float(_req.get("mins") or 0) or 0)
+                    _d2p = _compute_d2p(_sess.get("actual_start"), _T, _pro)
+                    if _d2p:
+                        _req["duration_2plus1"] = _d2p
+                        _req["promo_id"] = str(_d2p["promo_id"])
+        except Exception as _e:
+            logger.warning("duration_2plus1 calc eval failed: %s", _e)
+        return ok(_compute_totals(_req))
     except Exception as e:
         logger.error("POST /promotions/calc error: %s", e)
         return error_response(message="Could not calculate discount. Please check the cart and retry.")

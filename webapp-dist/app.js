@@ -1252,6 +1252,15 @@
           <div style="margin:0 16px 4px;color:var(--pv-muted);font-size:11px">Auto: {{ fKs(autoGameAmt) }} Ks (mins × rate × mult ÷ 60)</div>
         </van-cell-group>
 
+        <!-- 🎁 Weekday Happy Hour 2+1 (auto-bound) — server-computed billable/free minutes -->
+        <div v-if="d2p && d2p.billable_mins > 0" style="margin:10px 16px 0;padding:10px 12px;border-radius:10px;background:linear-gradient(135deg,#312e81,#0e7490);color:#fff;display:flex;align-items:center;gap:8px">
+          <span style="font-size:18px">🎁</span>
+          <div>
+            <div style="font-weight:700;font-size:14px">2+1 PROMO — free {{ d2p.free_mins }} min</div>
+            <div style="font-size:11px;opacity:.85">{{ d2p.total_mins }} min played · pay {{ d2p.billable_mins }} min only</div>
+          </div>
+        </div>
+
         <!-- 🏷️ Promotion + 🎟️ Coupon (WAVE 2 — discounting parity with the sale bot).
              MONEY RULE: the discounted total is ALWAYS computed by the server
              (POST /api/promotions/calc); the client only displays what it returns. -->
@@ -1698,6 +1707,11 @@
           foc_item: focItem.value || "",
           food_items: foodLines.value.map((l) => ({ name: l.name, qty: Number(l.qty) || 0, subtotal: (Number(l.qty) || 0) * (Number(l.price) || 0) })),
           is_member: false, game_amt: gameAmt, gross_total: gameAmt + foodTotal,
+          // 🎁 2+1 auto-promo eval: send session context so the server can
+          // report the server-computed billable/free minutes inline.
+          booking_id: bookingIdOut.value || "",
+          console_id: String(form.console_id || "").trim(),
+          mins: effectiveMins.value,
         };
         const walletCovers = isMember.value && wallet.balance > 0 && ecost > 0 && wallet.balance >= ecost;
         const shortfall = isMember.value && wallet.balance > 0 && ecost > 0 && wallet.balance < ecost;
@@ -1786,6 +1800,8 @@
       const subtotalKs = computed(() => serverCalc.value ? (Number(serverCalc.value.cash_payable) || 0) : rawCash.value);
       const totalDiscountKs = computed(() => serverCalc.value ? (Number(serverCalc.value.total_discount) || 0) : (Number(form.discount) || 0));
       const discountLines = computed(() => (serverCalc.value && Array.isArray(serverCalc.value.breakdown)) ? serverCalc.value.breakdown : []);
+      // 🎁 2+1 auto-promo (server-computed) — for the inline free-minutes banner.
+      const d2p = computed(() => (serverCalc.value && serverCalc.value.duration_2plus1) || null);
       const payableBeforeDeposit = computed(() => serverCalc.value ? (Number(serverCalc.value.net_total) || 0) : Math.max(0, rawCash.value - (Number(form.discount) || 0)));
       // Cash due = server total − applied deposit (Boss: Net Total = the money to pay)
       const cashNetTotal = computed(() => Math.max(0, payableBeforeDeposit.value - depositAppliedAmt.value));
@@ -2225,7 +2241,7 @@
               cashDue: cashDueFinal,
               payment: vPay,
               balance: wallet_deduct > 0 ? ("Wallet −" + wallet_deduct + " mins" + (res && res.wallet_balance_after != null ? (" (bal " + res.wallet_balance_after + ")") : "")) : "",
-              notes: "Subtotal: " + fKs(vSubtotal) + " Ks" + (serverDiscount > 0 ? (" | Discount: -" + fKs(serverDiscount) + " Ks") : "") + (depFinal > 0 ? (" | Deposit: -" + fKs(depFinal) + " Ks") : "") + (promo.title ? (" | Promo: " + promo.title) : "") + (coupon.applied ? (" | Coupon: " + coupon.code) : ""),
+              notes: "Subtotal: " + fKs(vSubtotal) + " Ks" + (serverDiscount > 0 ? (" | Discount: -" + fKs(serverDiscount) + " Ks") : "") + (depFinal > 0 ? (" | Deposit: -" + fKs(depFinal) + " Ks") : "") + (promo.title ? (" | Promo: " + promo.title) : "") + (res && res.free_mins ? (" | 🎁 2+1 free " + res.free_mins + "m") : "") + (coupon.applied ? (" | Coupon: " + coupon.code) : ""),
             };
             voucherOpen.value = true;
             try { window.PSVLastVoucher = { raw: lastVoucher.value }; } catch (_e) {}
@@ -2254,7 +2270,7 @@
       return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs, depositRedeem, clearRedeem,
         saleDrafts, draftOpen, saveDraft, restoreDraft, deleteDraft, openDrafts, gotoDrafts, resetSale,
                // ── WAVE 2: promo / coupon / discount / deposit / in-session guard ──
-               sessionWarn, depositLinkWarn, depositApplied, depositAppliedAmt, applyDeposit, promos, promoOpen, promo, promoText, openPromo, pickPromo, clearPromo, focOpen, focItem, pickFoc, coupon, applyCoupon, clearCoupon, calcStatus, discountLines, subtotalKs, totalDiscountKs, payableBeforeDeposit, rawCash, scheduleCalc };
+               sessionWarn, depositLinkWarn, depositApplied, depositAppliedAmt, applyDeposit, promos, promoOpen, promo, promoText, openPromo, pickPromo, clearPromo, focOpen, focItem, pickFoc, coupon, applyCoupon, clearCoupon, calcStatus, discountLines, d2p, subtotalKs, totalDiscountKs, payableBeforeDeposit, rawCash, scheduleCalc };
     },
   };
 

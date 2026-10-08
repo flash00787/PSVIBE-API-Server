@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 
-from auth import get_current_user
+from auth import get_current_user, require_admin
 from helpers import insert_cash_movement_if_absent, _parse_pm_and_inject
 from console_status import sync_console_status as _sync_console_status
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_execute, delete_rows as _mysql_delete
@@ -921,6 +921,30 @@ async def dashboard_get_topups(
 # ═══════════════════════════════════════
 #  PROMOTIONS — CRUD
 # ═══════════════════════════════════════
+def _dash_time(v):
+    """Format a TIME value (pymysql timedelta / datetime.time) to 'HH:MM:SS'."""
+    if v is None:
+        return None
+    if hasattr(v, "total_seconds"):  # timedelta
+        total = int(v.total_seconds()) % 86400
+        return "%02d:%02d:%02d" % (total // 3600, (total % 3600) // 60, total % 60)
+    s = str(v)
+    return s if s else None
+
+
+def _dash_weekday_mask(weekdays):
+    """Build a weekday bitmask (Mon=bit1 … Sun=bit7) from a list of ISO numbers 1..7."""
+    mask = 0
+    try:
+        for w in weekdays or []:
+            w = int(w)
+            if 1 <= w <= 7:
+                mask |= (1 << w)
+    except (TypeError, ValueError):
+        pass
+    return mask
+
+
 @router.get("/promotions")
 async def dashboard_get_promotions(
     status: str | None = Query(None),
@@ -943,7 +967,9 @@ async def dashboard_get_promotions(
 
         sql = f"""
             SELECT p.id, p.name, p.promo_type, p.promo_name, p.discount_type, p.discount_value,
-                   p.start_date, p.end_date, p.status, p.notes, p.created_at
+                   p.start_date, p.end_date, p.status, p.notes, p.created_at,
+                   p.applies_auto, p.weekday_mask, p.time_window_start, p.time_window_end,
+                   p.tier_charge_mins, p.tier_cycle_mins
             FROM promotions p
             INNER JOIN (
                 SELECT name, MAX(id) as max_id
@@ -977,6 +1003,13 @@ async def dashboard_get_promotions(
                 "status": r.get("status"),
                 "notes": r.get("notes"),
                 "created_at": str(r["created_at"]) if r.get("created_at") else None,
+                # ── Duration 2+1 (Weekday Happy Hour) fields ──
+                "applies_auto": int(r.get("applies_auto") or 0),
+                "weekday_mask": int(r.get("weekday_mask") or 0),
+                "time_window_start": _dash_time(r.get("time_window_start")),
+                "time_window_end": _dash_time(r.get("time_window_end")),
+                "tier_charge_mins": int(r.get("tier_charge_mins") or 0),
+                "tier_cycle_mins": int(r.get("tier_cycle_mins") or 0),
             })
         return {"success": True, "data": promos, "total": total}
     except Exception as e:
@@ -985,18 +1018,28 @@ async def dashboard_get_promotions(
 
 
 @router.post("/promotions")
-async def dashboard_create_promotion(req: dict, user: dict = Depends(get_current_user)):
-    """Create a new promotion."""
+async def dashboard_create_promotion(req: dict, user: dict = Depends(require_admin)):
+    """Create a new promotion (owner/admin only)."""
     try:
         name = req.get("name") or req.get("promo_name", "")
         if not name:
             return {"success": False, "error": "name or promo_name is required"}
 
+        _wm = _dash_weekday_mask(req.get("weekdays"))
+        if req.get("weekday_mask") is not None:
+            try:
+                _wm = int(req.get("weekday_mask"))
+            except (TypeError, ValueError):
+                pass
+
         new_id = _mysql_execute(
             """INSERT INTO promotions
                (name, promo_type, promo_name, discount_type, discount_value,
-                start_date, end_date, status, notes, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+                start_date, end_date, status, notes, created_at,
+                applies_auto, weekday_mask, time_window_start, time_window_end,
+                tier_charge_mins, tier_cycle_mins)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
+                       %s, %s, %s, %s, %s, %s)""",
             (
                 name,
                 req.get("promo_type", ""),
@@ -1007,6 +1050,12 @@ async def dashboard_create_promotion(req: dict, user: dict = Depends(get_current
                 req.get("end_date", None),
                 req.get("status", "active"),
                 req.get("notes", ""),
+                int(req.get("applies_auto") or 0),
+                _wm,
+                req.get("time_window_start") or None,
+                req.get("time_window_end") or None,
+                int(req.get("tier_charge_mins") or 120),
+                int(req.get("tier_cycle_mins") or 180),
             ),
         )
         return {
@@ -1022,6 +1071,12 @@ async def dashboard_create_promotion(req: dict, user: dict = Depends(get_current
                 "end_date": str(req.get("end_date", "")),
                 "status": req.get("status", "active"),
                 "notes": req.get("notes", ""),
+                "applies_auto": int(req.get("applies_auto") or 0),
+                "weekday_mask": _wm,
+                "time_window_start": req.get("time_window_start") or None,
+                "time_window_end": req.get("time_window_end") or None,
+                "tier_charge_mins": int(req.get("tier_charge_mins") or 120),
+                "tier_cycle_mins": int(req.get("tier_cycle_mins") or 180),
             },
         }
     except Exception as e:
@@ -1030,8 +1085,8 @@ async def dashboard_create_promotion(req: dict, user: dict = Depends(get_current
 
 
 @router.put("/promotions/{promo_id}")
-async def dashboard_update_promotion(promo_id: int, req: dict, user: dict = Depends(get_current_user)):
-    """Update a promotion."""
+async def dashboard_update_promotion(promo_id: int, req: dict, user: dict = Depends(require_admin)):
+    """Update a promotion (owner/admin only)."""
     try:
         existing = _mysql_query_one("SELECT * FROM promotions WHERE id = %s", (promo_id,))
         if not existing:
@@ -1044,6 +1099,29 @@ async def dashboard_update_promotion(promo_id: int, req: dict, user: dict = Depe
             if field in req:
                 updates.append(f"{field} = %s")
                 params.append(req[field])
+        # ── Duration 2+1 fields ──
+        for field in ["applies_auto", "tier_charge_mins", "tier_cycle_mins"]:
+            if field in req and req[field] is not None:
+                updates.append(f"{field} = %s")
+                try:
+                    params.append(int(req[field]))
+                except (TypeError, ValueError):
+                    params.append(0)
+        if "weekday_mask" in req and req["weekday_mask"] is not None:
+            updates.append("weekday_mask = %s")
+            try:
+                params.append(int(req["weekday_mask"]))
+            except (TypeError, ValueError):
+                params.append(_dash_weekday_mask(req.get("weekdays")))
+        elif "weekdays" in req:
+            updates.append("weekday_mask = %s")
+            params.append(_dash_weekday_mask(req["weekdays"]))
+        if "time_window_start" in req:
+            updates.append("time_window_start = %s")
+            params.append(req["time_window_start"] or None)
+        if "time_window_end" in req:
+            updates.append("time_window_end = %s")
+            params.append(req["time_window_end"] or None)
         if "start_date" in req and req["start_date"]:
             updates.append("start_date = %s")
             params.append(req["start_date"])
@@ -1071,6 +1149,12 @@ async def dashboard_update_promotion(promo_id: int, req: dict, user: dict = Depe
                 "end_date": str(updated["end_date"]) if updated.get("end_date") else None,
                 "status": updated.get("status"),
                 "notes": updated.get("notes"),
+                "applies_auto": int(updated.get("applies_auto") or 0),
+                "weekday_mask": int(updated.get("weekday_mask") or 0),
+                "time_window_start": _dash_time(updated.get("time_window_start")),
+                "time_window_end": _dash_time(updated.get("time_window_end")),
+                "tier_charge_mins": int(updated.get("tier_charge_mins") or 0),
+                "tier_cycle_mins": int(updated.get("tier_cycle_mins") or 0),
                 "created_at": str(updated["created_at"]) if updated.get("created_at") else None,
             },
         }
@@ -1080,8 +1164,8 @@ async def dashboard_update_promotion(promo_id: int, req: dict, user: dict = Depe
 
 
 @router.delete("/promotions/{promo_id}")
-async def dashboard_delete_promotion(promo_id: int, user: dict = Depends(get_current_user)):
-    """Delete a promotion."""
+async def dashboard_delete_promotion(promo_id: int, user: dict = Depends(require_admin)):
+    """Delete a promotion (owner/admin only)."""
     try:
         existing = _mysql_query_one("SELECT * FROM promotions WHERE id = %s", (promo_id,))
         if not existing:

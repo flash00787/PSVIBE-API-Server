@@ -16,9 +16,13 @@ Design notes
   ``(booking_id, sale_ref)`` (idempotent replay).
 """
 import logging
+from datetime import datetime, date, time as _dtime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from mysql_db import query as _mysql_query, query_one as _mysql_query_one, execute as _mysql_exec
+
+# MMT = UTC+06:30 (Asia/Yangon)
+_MMT = timezone(timedelta(hours=6, minutes=30))
 
 logger = logging.getLogger("psvibe_api.sale_money")
 
@@ -44,6 +48,187 @@ def _to_float(v, default=0.0):
         return default
 
 
+def _to_naive_mmt(start_mmt):
+    """Normalise a session start to a naive datetime in MMT wall-clock.
+
+    Accepts an aware/naive datetime, a date, or an ISO-ish string.  DB
+    ``console_sessions.actual_start`` is stored as MMT wall-clock (naive), so a
+    naive input is returned unchanged.
+    """
+    if start_mmt is None:
+        return None
+    if isinstance(start_mmt, datetime):
+        dt = start_mmt
+    elif isinstance(start_mmt, date):
+        dt = datetime(start_mmt.year, start_mmt.month, start_mmt.day)
+    elif isinstance(start_mmt, str):
+        s = start_mmt.strip()
+        dt = None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(s, fmt)
+                break
+            except ValueError:
+                continue
+        if dt is None:
+            return None
+    else:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(_MMT).replace(tzinfo=None)
+    return dt
+
+
+def _to_time(v):
+    """Normalise a TIME value (pymysql returns timedelta) to datetime.time."""
+    if v is None:
+        return None
+    if isinstance(v, _dtime):
+        return v
+    if isinstance(v, timedelta):
+        total = int(v.total_seconds()) % 86400
+        return _dtime(total // 3600, (total % 3600) // 60, total % 60)
+    if isinstance(v, datetime):
+        return v.time()
+    if isinstance(v, str):
+        s = v.strip()
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                return datetime.strptime(s, fmt).time()
+            except ValueError:
+                continue
+        return None
+    return None
+
+
+def _to_date(v):
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        s = v.strip()[:10]
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").date()
+        except ValueError:
+            return None
+    return None
+
+
+# ────────────────────────────────────────────────────────────────────────────
+#  Weekday Happy Hour "2+1" duration promotion (owner Osmo, 2026-10-08)
+# ────────────────────────────────────────────────────────────────────────────
+def billable_minutes(T, charge=120, cycle=180):
+    """Billable minutes for the 2+1 tier on total playtime ``T``.
+
+    ``billable(T) = charge * floor(T/cycle) + min(T mod cycle, charge)``.
+    The customer pays for ``billable`` minutes; ``free = T - billable``.
+    Pure function — no I/O.
+
+    120→120 · 180→120 · 181→121 · 240→180 · 300→240 · 360→240 · 420→300 · 480→360
+    """
+    T = _to_int(T)
+    charge = _to_int(charge) or 120
+    cycle = _to_int(cycle) or 180
+    if T <= 0 or charge <= 0 or cycle <= 0:
+        return 0
+    return charge * (T // cycle) + min(T % cycle, charge)
+
+
+def duration_promo_applies(start_mmt, promo_row, ref_now=None):
+    """Predicate: does the duration_2plus1 promo apply to a session start?
+
+    Conditions (all must hold):
+      * ``promo_row`` present and ``status == 'active'``
+      * ``applies_auto`` truthy (auto-bind only — never a manual picker pick)
+      * weekday bit set (``weekday_mask``, Mon=bit1 … Sun=bit7; Mon–Fri = 62)
+      * ``time_window_start <= start.time() < time_window_end`` (upper EXCLUSIVE)
+      * ``start_date <= start.date() <= end_date`` (promo period, either NULL = open)
+
+    ``start_mmt`` is the session start (MMT). Pure — no I/O.
+    """
+    if not promo_row:
+        return False
+    if str(promo_row.get("status") or "").strip().lower() != "active":
+        return False
+    if not int(promo_row.get("applies_auto") or 0):
+        return False
+    dt = _to_naive_mmt(start_mmt)
+    if dt is None:
+        return False
+
+    mask = int(promo_row.get("weekday_mask") or 0)
+    if mask:
+        bit = 1 << dt.isoweekday()  # Mon=1 → 2 … Sun=7 → 128
+        if not (mask & bit):
+            return False
+
+    t = dt.time()
+    tw_start = _to_time(promo_row.get("time_window_start"))
+    tw_end = _to_time(promo_row.get("time_window_end"))
+    if tw_start is not None and t < tw_start:
+        return False
+    if tw_end is not None and t >= tw_end:
+        return False
+
+    d = dt.date()
+    sd = _to_date(promo_row.get("start_date"))
+    ed = _to_date(promo_row.get("end_date"))
+    if sd is not None and d < sd:
+        return False
+    if ed is not None and d > ed:
+        return False
+    return True
+
+
+def compute_duration_2plus1(session_start, session_duration, promo_row):
+    """Return the 2+1 re-pricing dict, or None when the promo does not apply.
+
+    ``{promo_id, title, total_mins, billable_mins, free_mins, cash_mins, wallet_mins}``
+    where ``cash_mins``/``wallet_mins`` default to a fully-cash re-pricing (the
+    checkout hook overrides them once it knows the member wallet balance).
+    """
+    if not promo_row or not duration_promo_applies(session_start, promo_row):
+        return None
+    T = _to_int(session_duration)
+    if T <= 0:
+        return None
+    charge = _to_int(promo_row.get("tier_charge_mins")) or 120
+    cycle = _to_int(promo_row.get("tier_cycle_mins")) or 180
+    billable = billable_minutes(T, charge, cycle)
+    free = max(0, T - billable)
+    title = str(promo_row.get("promo_name") or promo_row.get("name") or "2+1 Happy Hour").strip()
+    return {
+        "promo_id": promo_row.get("id"),
+        "title": title,
+        "total_mins": T,
+        "billable_mins": billable,
+        "free_mins": free,
+        "cash_mins": billable,
+        "wallet_mins": 0,
+    }
+
+
+def load_active_duration_promo():
+    """Load the singleton active ``duration_2plus1`` promo (in date window).
+
+    Auto-apply only — the caller re-checks ``applies_auto`` via
+    :func:`duration_promo_applies`. Returns None when none is active.
+    """
+    try:
+        return _mysql_query_one(
+            "SELECT * FROM promotions WHERE promo_type='duration_2plus1' AND status='active' "
+            "AND (start_date IS NULL OR start_date <= CURDATE()) "
+            "AND (end_date IS NULL OR end_date >= CURDATE()) "
+            "ORDER BY id DESC LIMIT 1"
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("load_active_duration_promo failed: %s", e)
+        return None
+
+
 # ────────────────────────────────────────────────────────────────────────────
 #  Money engine (promo + coupon + FOC + manual discount)
 # ────────────────────────────────────────────────────────────────────────────
@@ -65,6 +250,28 @@ def compute_totals(req: Dict[str, Any]) -> Dict[str, Any]:
     multiplier = _to_float(req.get("multiplier"), 1.0) or 1.0
     manual_discount = _to_int(req.get("manual_discount"))
     food_items = req.get("food_items") or []
+
+    # ── Duration 2+1 (Weekday Happy Hour) — re-pricing, NOT a Ks discount ──
+    # The checkout hook computes billable/free minutes and passes them here via
+    # req["duration_2plus1"]; the amount then derives from BILLABLE minutes only
+    # (free minutes are on the house). total_discount stays 0 for this promo.
+    d2p = req.get("duration_2plus1") or {}
+    d2p_billable = 0
+    d2p_free = 0
+    d2p_total = 0
+    d2p_title = ""
+    if isinstance(d2p, dict) and _to_int(d2p.get("billable_mins")) > 0:
+        d2p_total = _to_int(d2p.get("total_mins"))
+        d2p_billable = _to_int(d2p.get("billable_mins"))
+        d2p_free = _to_int(d2p.get("free_mins"))
+        d2p_title = str(d2p.get("title") or "").strip()
+        # cash portion = minutes billed in cash (B for walk-in, 0 if wallet covers,
+        # shortfall when wallet is insufficient); wallet portion = billable minutes
+        # covered by the member wallet.
+        d2p_cash_mins = _to_int(d2p.get("cash_mins")) if d2p.get("cash_mins") is not None else d2p_billable
+        d2p_wallet_mins = _to_int(d2p.get("wallet_mins"))
+        game_amt = _to_int(d2p_cash_mins * base_rate / 60)
+        eff_mins = d2p_wallet_mins if d2p_wallet_mins > 0 else 0
 
     # ── wallet vs cash session (mirror discount.py) ──────────────────────
     is_wallet_session = bool(is_member and wallet_mins > 0)
@@ -100,7 +307,11 @@ def compute_totals(req: Dict[str, Any]) -> Dict[str, Any]:
             pct = _to_float(row.get("discount_value"))
             target = row.get("discount_target") or "overall"
             promo_title = row.get("promo_name") or row.get("name") or f"Promo #{promo_id}"
-            if ptype == "bonus_mins":
+            if ptype == "duration_2plus1":
+                # Weekday Happy Hour 2+1 — re-priced by the duration_2plus1 block above
+                # (billable vs free minutes). No separate discount line here.
+                pass
+            elif ptype == "bonus_mins":
                 bonus_mins = _to_int(req.get("bonus_mins") or pct)
                 breakdown.append({"label": f"Promo {promo_title}: +{bonus_mins} bonus mins", "amount": 0})
             elif ptype in ("discount", "cashback") and pct:
@@ -158,6 +369,14 @@ def compute_totals(req: Dict[str, Any]) -> Dict[str, Any]:
     if manual_discount:
         breakdown.append({"label": "Manual discount", "amount": -manual_discount})
 
+    # ── Duration 2+1 visible breakdown line (re-pricing, amount stays 0) ──
+    if d2p_billable > 0:
+        _d2p_label = d2p_title or (promo_title or "2+1 Happy Hour")
+        breakdown.append({
+            "label": f"Promo {_d2p_label}: 2+1 — billable {d2p_billable}m / free {d2p_free}m",
+            "amount": 0,
+        })
+
     total_discount = promo_discount + coupon_discount + foc_discount + manual_discount
     if total_discount > cash_payable:
         total_discount = cash_payable
@@ -185,6 +404,15 @@ def compute_totals(req: Dict[str, Any]) -> Dict[str, Any]:
         "bonus_mins": bonus_mins,
         "net_total": net_total,
         "breakdown": breakdown,
+        "duration_2plus1": ({
+            "promo_id": d2p.get("promo_id") if isinstance(d2p, dict) else None,
+            "title": d2p_title or None,
+            "total_mins": d2p_total,
+            "billable_mins": d2p_billable,
+            "free_mins": d2p_free,
+        } if d2p_billable > 0 else None),
+        "billable_mins": d2p_billable or None,
+        "free_mins": d2p_free or None,
     }
 
 
