@@ -308,10 +308,12 @@ def compute_totals(req: Dict[str, Any]) -> Dict[str, Any]:
         d2p_title = str(d2p.get("title") or "").strip()
         # cash portion = minutes billed in cash (B for walk-in, 0 if wallet covers,
         # shortfall when wallet is insufficient); wallet portion = billable minutes
-        # covered by the member wallet.
-        d2p_cash_mins = _to_int(d2p.get("cash_mins")) if d2p.get("cash_mins") is not None else d2p_billable
+        # covered by the member wallet (SCALED minutes, matching effective_cost_mins).
+        # The promo only changes the MINUTES, never the rate — so the console
+        # multiplier MUST be applied to the UNSCALED cash minutes here.
+        d2p_cash_mins = float(d2p.get("cash_mins")) if d2p.get("cash_mins") is not None else float(d2p_billable)
         d2p_wallet_mins = _to_int(d2p.get("wallet_mins"))
-        game_amt = _to_int(d2p_cash_mins * base_rate / 60)
+        game_amt = _to_int(d2p_cash_mins * base_rate * multiplier / 60)
         eff_mins = d2p_wallet_mins if d2p_wallet_mins > 0 else 0
 
     # ── wallet vs cash session (mirror discount.py) ──────────────────────

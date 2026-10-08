@@ -227,6 +227,10 @@
   const fKs = (n) => PSV.fmtKs(n);
   // Rounded money (owner Osmo 2026-09-29 "ရှုပ်နေတယ်"): no more .97 / .6 decimals in lists
   const fKsR = (n) => PSV.fmtKs(Math.round(Number(n) || 0));
+  // 🎁 Happy Hour 2+1 voucher display helpers (design B, 2026-10-08) — minutes → "X hrs"
+  // and the free-Ks "value saved" (free_mins × base_rate × multiplier / 60). Display only.
+  const d2pHours = (n) => { const h = Number(n) / 60; return (Number.isInteger(h) ? h : h.toFixed(1).replace(/\.0$/, "")) + " hr" + (h === 1 ? "" : "s"); };
+  const d2pFreeKs = (d) => Math.round((Number(d && d.free_mins) || 0) * (Number(d && d.base_rate) || 0) * (Number(d && d.multiplier) || 1) / 60);
   // WAVE 3: several staff endpoints answer HTTP 200 with {success:false, error}
   // (the session move/swap guards do this). PSV.api only throws on non-2xx, so
   // unwrap those refusals into a real Error and surface the message verbatim.
@@ -1109,6 +1113,24 @@
             items.push({ name: "🍜 " + (parts[0] || "Food"), qty: 1, price: ft });
           }
         }
+        // 🎁 Happy Hour 2+1 — reprint the same block as the checkout voucher. The tier
+        // lives on the sale row/notes ("2+1 Promo: billable Xm / free Ym") — never recompute.
+        const _d2pNote = /2\+1 Promo:\s*billable\s*([\d.]+)m\s*\/\s*free\s*([\d.]+)m/.exec(_notes);
+        let _d2p = null;
+        if (_d2pNote) {
+          const _bm = Number(_d2pNote[1]) || 0;
+          const _fm = Number(_d2pNote[2]) || 0;
+          const _br = (() => { const m = /BaseRate:\s*([\d.]+)/.exec(_notes); return m ? Number(m[1]) : 0; })();
+          const _mx = (() => { const m = /Multiplier:\s*([\d.]+)/.exec(_notes); return m ? Number(m[1]) : 1; })();
+          _d2p = {
+            total_mins: _gameMins || (_bm + _fm),
+            billable_mins: _bm,
+            free_mins: _fm,
+            base_rate: _br,
+            multiplier: _mx,
+            wallet_mins: (_wallet && _wallet.ded > 0) ? Math.round(_bm * _mx) : 0,
+          };
+        }
         printingDetail.value = true;
         try {
           await PSV.printVoucher({
@@ -1126,6 +1148,7 @@
             memberPlay: isMemberPlay,
             payment: isMemberPlay ? "Member card (mins)" : (s.payment_method || ""),
             notes: Number(s.discount) > 0 ? ("Discount " + fKs(s.discount) + " Ks") : "",
+            d2p: _d2p,
           });
         } finally { printingDetail.value = false; }
       }
@@ -1455,6 +1478,14 @@
                 <template #value><span class="pv-amount">{{ it.qty }} × {{ fKs(it.price) }} = {{ fKs(it.qty * it.price) }}</span></template>
               </van-cell>
               <van-empty v-if="!lastVoucher.items.length" image-size="40" description="No items" style="padding:6px 0" />
+            </van-cell-group>
+            <van-cell-group v-if="lastVoucher.d2p" inset style="margin-top:10px" title="🎁 HAPPY HOUR 2+1">
+              <van-cell title="Played" :value="lastVoucher.d2p.total_mins + ' min (' + d2pHours(lastVoucher.d2p.total_mins) + ')'" />
+              <van-cell title="Payable" :value="lastVoucher.d2p.billable_mins + ' min (' + d2pHours(lastVoucher.d2p.billable_mins) + ')'" />
+              <van-cell title="FREE">
+                <template #value><span style="color:var(--pv-success)">{{ lastVoucher.d2p.free_mins }} min → {{ fKs(d2pFreeKs(lastVoucher.d2p)) }} Ks</span></template>
+              </van-cell>
+              <van-cell v-if="lastVoucher.d2p.wallet_mins > 0" title="Wallet" :value="lastVoucher.d2p.billable_mins + ' min x ' + lastVoucher.d2p.multiplier + ' = ' + lastVoucher.d2p.wallet_mins + ' min'" />
             </van-cell-group>
             <van-cell-group inset style="margin-top:10px">
               <van-cell v-if="lastVoucher.subtotal != null" title="Subtotal" :value="fKs(lastVoucher.subtotal) + ' Ks'" />
@@ -2226,6 +2257,16 @@
             const cashDueFinal = (res && res.payable_total != null) ? Number(res.payable_total) : payableNow;
             const depFinal = (res && res.deposit_deducted != null) ? Number(res.deposit_deducted) : depAmt;
             const vPay = final_pm + (depFinal > 0 ? (" + Deposit " + fKs(depFinal) + " Ks") : "");
+            // 🎁 Happy Hour 2+1 display block data (server-computed tier; display-only derivation).
+            const _d2pRaw = (res && res.duration_2plus1) || null;
+            const _d2p = _d2pRaw && ((Number(_d2pRaw.billable_mins) || 0) > 0 || (Number(_d2pRaw.free_mins) || 0) > 0) ? {
+              total_mins: Number(_d2pRaw.total_mins) || 0,
+              billable_mins: Number(_d2pRaw.billable_mins) || 0,
+              free_mins: Number(_d2pRaw.free_mins) || 0,
+              base_rate: Number(form.base_rate) || 0,
+              multiplier: Number(form.multiplier) || 1,
+              wallet_mins: (res && Number(res.wallet_deduct) > 0) ? Math.round((Number(_d2pRaw.billable_mins) || 0) * (Number(form.multiplier) || 1)) : 0,
+            } : null;
             lastVoucher.value = {
               voucher_no: vno,
               date: PSV.todayMMT(),
@@ -2241,7 +2282,8 @@
               cashDue: cashDueFinal,
               payment: vPay,
               balance: wallet_deduct > 0 ? ("Wallet −" + wallet_deduct + " mins" + (res && res.wallet_balance_after != null ? (" (bal " + res.wallet_balance_after + ")") : "")) : "",
-              notes: "Subtotal: " + fKs(vSubtotal) + " Ks" + (serverDiscount > 0 ? (" | Discount: -" + fKs(serverDiscount) + " Ks") : "") + (depFinal > 0 ? (" | Deposit: -" + fKs(depFinal) + " Ks") : "") + (promo.title ? (" | Promo: " + promo.title) : "") + (res && res.free_mins ? (" | 🎁 2+1 free " + res.free_mins + "m") : "") + (coupon.applied ? (" | Coupon: " + coupon.code) : ""),
+              notes: "Subtotal: " + fKs(vSubtotal) + " Ks" + (serverDiscount > 0 ? (" | Discount: -" + fKs(serverDiscount) + " Ks") : "") + (depFinal > 0 ? (" | Deposit: -" + fKs(depFinal) + " Ks") : "") + (promo.title ? (" | Promo: " + promo.title) : "") + (coupon.applied ? (" | Coupon: " + coupon.code) : ""),
+              d2p: _d2p,
             };
             voucherOpen.value = true;
             try { window.PSVLastVoucher = { raw: lastVoucher.value }; } catch (_e) {}
@@ -2267,7 +2309,7 @@
         finally { submitting.value = false; }
       }
 
-      return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs, depositRedeem, clearRedeem,
+      return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs, d2pHours, d2pFreeKs, depositRedeem, clearRedeem,
         saleDrafts, draftOpen, saveDraft, restoreDraft, deleteDraft, openDrafts, gotoDrafts, resetSale,
                // ── WAVE 2: promo / coupon / discount / deposit / in-session guard ──
                sessionWarn, depositLinkWarn, depositApplied, depositAppliedAmt, applyDeposit, promos, promoOpen, promo, promoText, openPromo, pickPromo, clearPromo, focOpen, focItem, pickFoc, coupon, applyCoupon, clearCoupon, calcStatus, discountLines, d2p, subtotalKs, totalDiscountKs, payableBeforeDeposit, rawCash, scheduleCalc };

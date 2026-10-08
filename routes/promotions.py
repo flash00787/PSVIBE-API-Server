@@ -43,6 +43,7 @@ async def api_promotions_active_list(auth=Depends(verify_api_key)):
             "WHERE status='active' "
             "  AND (start_date IS NULL OR start_date <= CURDATE()) "
             "  AND (end_date IS NULL OR end_date >= CURDATE()) "
+            "  AND (applies_auto = 0 OR applies_auto IS NULL) "  # auto-bound promos are NEVER staff-picked
             "ORDER BY id DESC"
         )
         promos = []

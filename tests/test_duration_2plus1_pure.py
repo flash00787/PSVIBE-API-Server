@@ -175,13 +175,14 @@ def test_price_duration_2plus1_zero_balance_is_cash():
 
 
 def test_compute_totals_d2p_cash_c09_pure():
-    # Mirrors the checkout hook's req for a C-09 3h walk-in.
+    # Mirrors the checkout hook's req for a C-09 3h walk-in. cash_mins is UNSCALED
+    # (120 billable); compute_totals applies the multiplier (1.2) → 24,000.
     # No promo_id/coupon → compute_totals is PURE (no DB access).
     req = {
         "duration_2plus1": {
             "promo_id": 1, "title": "Weekday Happy Hour 2+1",
             "total_mins": 180, "billable_mins": 120, "free_mins": 60,
-            "cash_mins": 144,   # SCALED (120 × 1.2)
+            "cash_mins": 120,   # UNSCALED
             "wallet_mins": 0,
         },
         "base_rate": 10000, "multiplier": 1.2,
@@ -194,12 +195,27 @@ def test_compute_totals_d2p_cash_c09_pure():
     assert res["total_discount"] == 0
 
 
+def test_compute_totals_d2p_preview_path_c09_pure():
+    # The PREVIEW path (routes/promotions.py) feeds compute_duration_2plus1's default
+    # (unscaled cash_mins = billable, wallet 0) straight into compute_totals. It must
+    # also apply the multiplier so the staff-app displayed total matches checkout.
+    d = sm.compute_duration_2plus1(datetime(2026, 10, 5, 10, 0), 180, _row(id=99))
+    req = {
+        "duration_2plus1": d,
+        "base_rate": 10000, "multiplier": 1.2,
+        "game_amt": 24000, "gross_total": 24000,
+    }
+    res = sm.compute_totals(req)
+    assert res["game_amt"] == 24000
+    assert res["net_total"] == 24000
+
+
 def test_compute_totals_d2p_member_wallet_c09_pure():
     req = {
         "duration_2plus1": {
             "promo_id": 1, "title": "Weekday Happy Hour 2+1",
             "total_mins": 180, "billable_mins": 120, "free_mins": 60,
-            "cash_mins": 0, "wallet_mins": 144,   # SCALED
+            "cash_mins": 0, "wallet_mins": 144,   # SCALED wallet minutes
         },
         "base_rate": 10000, "multiplier": 1.2,
         "is_member": True, "wallet_mins": 144, "effective_cost_mins": 144,

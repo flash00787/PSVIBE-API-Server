@@ -29,7 +29,7 @@
   // the freshly fetched index.html with the marker this bundle was built with; when the
   // server is newer, hard-reload with a cache-busting query. Bump BOTH markers together
   // with the ?v= query on every deploy.
-  var PSV_BUILD = "w55discpay";
+  var PSV_BUILD = "w58hhvoucher";
   // Real app build number — shown in the More menu footer (was hardcoded "build 34" before,
   // which misled diagnosis). Bump together with android versionCode.
   var APP_BUILD = "51";
@@ -645,6 +645,30 @@
       L.push({ text: "Balance before : " + nf(data.wallet.before) + " min", size: 15 });
       L.push({ text: "Deducted       : -" + nf(data.wallet.ded) + " min", bold: true, size: 15 });
       L.push({ text: "Balance after  : " + nf(data.wallet.after) + " min", bold: true, size: 15 });
+    }
+    // 🎁 Weekday Happy Hour 2+1 (owner design B, 2026-10-08) — DISPLAY ONLY.
+    // The tier (billable/free minutes) is SERVER-computed; this block only derives the
+    // "value saved" (free_mins × base_rate × multiplier / 60) and the member wallet line
+    // (billable_mins × multiplier = scaled wallet minutes). It never re-prices anything.
+    // Absent on normal sales → the voucher stays byte-identical to today.
+    if (data.d2p && ((Number(data.d2p.billable_mins) || 0) > 0 || (Number(data.d2p.free_mins) || 0) > 0)) {
+      const d = data.d2p;
+      const bm = Number(d.billable_mins) || 0;
+      const fm = Number(d.free_mins) || 0;
+      const tm = Number(d.total_mins) || (bm + fm);
+      const br = Number(d.base_rate) || 0;
+      const mx = Number(d.multiplier) || 1;
+      const wm = Number(d.wallet_mins) || 0;
+      const freeKs = Math.round(fm * br * mx / 60);
+      const hrs = (n) => { const h = n / 60; return (Number.isInteger(h) ? h : h.toFixed(1).replace(/\.0$/, "")) + " hr" + (h === 1 ? "" : "s"); };
+      // Separator: the items section already closes with a dashed hr, so only add another
+      // when the MEMBER BALANCE block was rendered above (it has no trailing hr).
+      if (data.wallet && (data.wallet.before || data.wallet.ded || data.wallet.after)) hr();
+      L.push({ text: "🎁 HAPPY HOUR 2+1", bold: true, size: 16, align: "center" });
+      L.push({ text: "Played  : " + nf(tm) + " min (" + hrs(tm) + ")", size: 15 });
+      L.push({ text: "Payable : " + nf(bm) + " min (" + hrs(bm) + ")", size: 15 });
+      L.push({ text: "FREE    : " + nf(fm) + " min  -> " + nf(freeKs) + " Ks", size: 15 });
+      if (wm > 0) L.push({ text: "Wallet  : " + nf(bm) + " min x " + mx + " = " + nf(wm) + " min", size: 15 });
     }
     L.push({ text: "TOTAL: " + nf(data.total) + " Ks", bold: true, size: 20, align: "right" });
     if (data.payment) L.push({ text: "Paid: " + data.payment, size: 15 });

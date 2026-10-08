@@ -655,10 +655,9 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                         _wallet_mins = _price["wallet_mins"]        # SCALED minutes deducted
                         _cash_mins = _price["cash_mins"]            # UNSCALED billable minutes in cash
                         _cash_ks = _price["cash_ks"]
-                        _scaled_cash_mins = _price["scaled_cash_mins"]
-                        # compute_totals prices cash as `cash_mins × base_rate / 60` and
-                        # the wallet as `wallet_mins × base_rate / 60`, so both are SCALED
-                        # minutes (multiplier already baked in). The promo only changes
+                        # compute_totals prices cash as `cash_mins × base_rate × multiplier / 60`
+                        # (UNSCALED cash minutes, multiplier applied there) and the wallet as
+                        # `wallet_mins × base_rate / 60` (SCALED minutes). The promo only changes
                         # the MINUTES, never the rate.
                         req["duration_2plus1"] = {
                             "promo_id": _d2p["promo_id"],
@@ -666,7 +665,7 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                             "total_mins": _T,
                             "billable_mins": _B,
                             "free_mins": _F,
-                            "cash_mins": _scaled_cash_mins,
+                            "cash_mins": _cash_mins,
                             "wallet_mins": _wallet_mins,
                         }
                         req["promo_id"] = str(_d2p["promo_id"])
