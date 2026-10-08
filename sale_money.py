@@ -211,6 +211,47 @@ def compute_duration_2plus1(session_start, session_duration, promo_row):
     }
 
 
+def price_duration_2plus1(billable_mins, base_rate, multiplier, wallet_balance=None):
+    """Price a "2+1" checkout **exactly** like a normal session of ``billable_mins``.
+
+    The promo only changes the MINUTES (billable vs free) — it NEVER changes the
+    rate.  So a C-09 (multiplier 1.2) 3h session (billable 2h) costs
+    2 × 12,000 = 24,000 Ks, not 20,000.
+
+    ``wallet_balance`` is the member's wallet balance in SCALED minutes
+    (``None`` for walk-in/guest).  The wallet is deducted in SCALED minutes;
+    any uncovered billable minutes fall back to cash at the same scaled rate.
+
+    Pure function — no I/O.
+
+    Returns::
+        {
+            "cash_ks": int,          # cash amount for the cash portion (Ks)
+            "wallet_mins": int,      # SCALED minutes deducted from the wallet
+            "cash_mins": float,      # UNSCALED billable minutes paid in cash
+            "scaled_cash_mins": int, # SCALED cash minutes (cash_mins × multiplier)
+        }
+    """
+    B = int(round(billable_mins))
+    rate = float(base_rate) or 0.0
+    mult = float(multiplier) or 1.0
+    scaled_billable = round(B * mult)
+    if wallet_balance is None:
+        wallet_mins = 0
+        cash_mins = float(B)
+    else:
+        bal = int(round(float(wallet_balance)))
+        wallet_mins = min(scaled_billable, bal) if bal > 0 else 0
+        cash_mins = max(0.0, B - (wallet_mins / mult))
+    cash_ks = round(cash_mins * rate * mult / 60)
+    return {
+        "cash_ks": int(cash_ks),
+        "wallet_mins": int(wallet_mins),
+        "cash_mins": cash_mins,
+        "scaled_cash_mins": int(round(cash_mins * mult)),
+    }
+
+
 def load_active_duration_promo():
     """Load the singleton active ``duration_2plus1`` promo (in date window).
 
@@ -303,7 +344,8 @@ def compute_totals(req: Dict[str, Any]) -> Dict[str, Any]:
         if promo_id.isdigit():
             row = _mysql_query_one("SELECT * FROM promotions WHERE id=%s", (int(promo_id),))
         if row:
-            ptype = row.get("discount_type") or row.get("promo_type") or "general"
+            _is_d2p = (row.get("promo_type") == "duration_2plus1") or (row.get("discount_type") == "duration_2plus1")
+            ptype = "duration_2plus1" if _is_d2p else (row.get("discount_type") or row.get("promo_type") or "general")
             pct = _to_float(row.get("discount_value"))
             target = row.get("discount_target") or "overall"
             promo_title = row.get("promo_name") or row.get("name") or f"Promo #{promo_id}"

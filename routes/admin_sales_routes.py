@@ -12,6 +12,7 @@ from sale_money import (
     commit_deposit_redemption as _commit_deposit,
     deposit_already_in_payment_method as _dep_in_pm,
     get_verified_deposit as _get_verified_deposit,
+    price_duration_2plus1 as _price_d2p,
 )
 import staff_audit
 import logging, json as _json, os
@@ -636,29 +637,45 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                     if _d2p:
                         _B = _d2p["billable_mins"]
                         _F = _d2p["free_mins"]
-                        _rate = float(req.get("base_rate") or 0) or 500.0
-                        # Member wallet balance (None for walk-in/guest).
+                        # Console multiplier + base rate: a discounted session prices
+                        # EXACTLY like a normal session of billable_mins. base_rate
+                        # comes from the request, falling back to the base_rate SETTING
+                        # (10,000) — never a hardcoded 500.0.
+                        _mult = float(req.get("multiplier") or 1.0) or 1.0
+                        _base_rate = float(req.get("base_rate") or 0) or float(
+                            _mysql_get_setting("base_rate", 10000) or 0) or 10000.0
+                        # Member wallet balance in SCALED minutes (None = walk-in/guest).
                         _mid = str(member_id or "").strip()
                         _bal = None
                         if _mid and _mid not in ("", "0", "0 (Guest)", "-", "Guest"):
                             _w = _mysql_query_one(
                                 "SELECT balance_mins FROM member_wallets WHERE member_id=%s", (_mid,))
                             _bal = int(_w.get("balance_mins") or 0) if _w else None
-                        _wallet_mins = min(_B, _bal) if (_bal is not None and _bal > 0) else 0
-                        _cash_mins = max(0, _B - _wallet_mins)
-                        _cash_ks = round(_cash_mins * _rate / 60)
+                        _price = _price_d2p(_B, _base_rate, _mult, _bal)
+                        _wallet_mins = _price["wallet_mins"]        # SCALED minutes deducted
+                        _cash_mins = _price["cash_mins"]            # UNSCALED billable minutes in cash
+                        _cash_ks = _price["cash_ks"]
+                        _scaled_cash_mins = _price["scaled_cash_mins"]
+                        # compute_totals prices cash as `cash_mins × base_rate / 60` and
+                        # the wallet as `wallet_mins × base_rate / 60`, so both are SCALED
+                        # minutes (multiplier already baked in). The promo only changes
+                        # the MINUTES, never the rate.
                         req["duration_2plus1"] = {
                             "promo_id": _d2p["promo_id"],
                             "title": _d2p["title"],
                             "total_mins": _T,
                             "billable_mins": _B,
                             "free_mins": _F,
-                            "cash_mins": _cash_mins,
+                            "cash_mins": _scaled_cash_mins,
                             "wallet_mins": _wallet_mins,
                         }
                         req["promo_id"] = str(_d2p["promo_id"])
+                        req["base_rate"] = _base_rate
+                        req["multiplier"] = _mult
                         req["mins"] = _T
                         mins = _T
+                        base_rate = _base_rate
+                        multiplier = _mult
                         game_amt = float(_cash_ks)
                         if _wallet_mins > 0:
                             req["is_member"] = True
