@@ -1094,6 +1094,12 @@ async def dashboard_update_promotion(promo_id: int, req: dict, user: dict = Depe
 
         updates = []
         params = []
+        # Dashboard edits a single "name" field; keep promo_name (the DISPLAY name used by the
+        # customer bot + /api/fetch_promotions_cached + dashboard list) in sync so a rename
+        # actually shows everywhere (bug 2026-10-09: rename updated `name` only, display kept old).
+        if "name" in req and "promo_name" not in req:
+            req = dict(req)
+            req["promo_name"] = req["name"]
         for field in ["name", "promo_type", "promo_name", "discount_type",
                        "discount_value", "status", "notes"]:
             if field in req:

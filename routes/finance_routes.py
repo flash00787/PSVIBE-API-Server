@@ -708,7 +708,14 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         else:
             depreciation_exp = 0.0
         total_expense_all = total_expense + depreciation_exp
-        net_profit = total_gross_profit - total_expense_all
+        # ── Asset disposal gain/loss for this period (Other income / (expense)) ──
+        _disp_rows = _mq("SELECT COALESCE(SUM(profit_loss),0) as t FROM asset_disposals WHERE DATE_FORMAT(disposal_date, '%%Y-%%m') = %s", (ym,))
+        disposal_gain_loss_net = float(_disp_rows[0]["t"] or 0) if _disp_rows else 0.0
+        _disp_gain = _mq("SELECT COALESCE(SUM(profit_loss),0) as t FROM asset_disposals WHERE DATE_FORMAT(disposal_date, '%%Y-%%m') = %s AND profit_loss > 0", (ym,))
+        disposal_gain = float(_disp_gain[0]["t"] or 0) if _disp_gain else 0.0
+        _disp_loss = _mq("SELECT COALESCE(SUM(profit_loss),0) as t FROM asset_disposals WHERE DATE_FORMAT(disposal_date, '%%Y-%%m') = %s AND profit_loss < 0", (ym,))
+        disposal_loss = float(_disp_loss[0]["t"] or 0) if _disp_loss else 0.0
+        net_profit = total_gross_profit - total_expense_all + disposal_gain_loss_net
         return {"success": True, "data": {
             "period": ym,
             "revenue": {"game_revenue": round(game_rev,0), "food_revenue": round(food_rev,0), "topup_revenue": round(topup_rev,0), "wallet_consumed": round(wallet_consumed,0), "topup_deferred": round(topup_sales,0), "discounts": round(discounts,0), "deposit_forfeited": round(deposit_forfeited,0), "total_revenue": round(total_revenue,0)},
@@ -716,6 +723,9 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
             "gross_profit": round(total_gross_profit,0), "game_profit": round(game_profit,0), "food_profit": round(food_profit,0),
             "expenses": {"by_category": expenses_by_cat, "total": round(total_expense,0), "depreciation": round(depreciation_exp,0), "total_with_depreciation": round(total_expense_all,0)},
             "operating_profit": round(total_gross_profit - total_expense,0),
+            "disposal_gain": round(disposal_gain,0),
+            "disposal_loss": round(disposal_loss,0),
+            "disposal_gain_loss_net": round(disposal_gain_loss_net,0),
             "net_profit": round(net_profit,0)
         }}
     except Exception as e:

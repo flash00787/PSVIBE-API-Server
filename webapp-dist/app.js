@@ -1117,9 +1117,10 @@
         // lives on the sale row/notes ("2+1 Promo: billable Xm / free Ym") — never recompute.
         const _d2pNote = /2\+1 Promo:\s*billable\s*([\d.]+)m\s*\/\s*free\s*([\d.]+)m/.exec(_notes);
         let _d2p = null;
-        if (_d2pNote) {
-          const _bm = Number(_d2pNote[1]) || 0;
-          const _fm = Number(_d2pNote[2]) || 0;
+        const _rowFree = Number(s.free_mins) || 0;   // 2026-10-09 owner: box missing on "today's sales" reprint -> row fallback (free_mins>0 = 2+1 signature)
+        if (_d2pNote || _rowFree > 0) {
+          const _bm = _d2pNote ? (Number(_d2pNote[1]) || 0) : (Number(s.billable_mins) || 0);
+          const _fm = _d2pNote ? (Number(_d2pNote[2]) || 0) : _rowFree;
           const _br = (() => { const m = /BaseRate:\s*([\d.]+)/.exec(_notes); return m ? Number(m[1]) : 0; })();
           const _mx = (() => { const m = /Multiplier:\s*([\d.]+)/.exec(_notes); return m ? Number(m[1]) : 1; })();
           _d2p = {
@@ -2193,7 +2194,10 @@
           // ── 🎟️ Coupon redemption is performed by the SERVER inside the /api/sales/record
           //    money path (idempotent on sale_ref), so the client never double-redeems.
           //    The UI shows the real deducted minutes from the response below.
-          const saleRef = PSV.genClientRef();
+          // Stable per-sale ref — the voucher is generated once per sale and
+          // reused on every retry, so keying idempotency on it stops the
+          // duplicate-row bug (2026-10-09: 11 rows for one voucher).
+          const saleRef = "sale:" + (form.voucher_no || PSV.genClientRef());
           const cart = cartForCalc();
           const payload = {
             voucher_no: form.voucher_no, member_id: member_id,

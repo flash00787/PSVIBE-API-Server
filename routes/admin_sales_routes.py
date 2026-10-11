@@ -307,7 +307,7 @@ async def api_sales_list_today(auth=Depends(verify_api_key)):
             "SELECT sd.id, sd.voucher_no, sd.sale_date, DATE_FORMAT(COALESCE(sd.created_at, sd.sale_date), '%%H:%%i') AS sale_time, "
             "sd.console_id, sd.member_id, "
             "COALESCE(NULLIF(w.member_name, ''), sd.customer_name) AS customer_name, "
-            "sd.gross, sd.amount, sd.discount, sd.net, sd.staff_name, sd.payment_method, sd.notes "
+            "sd.gross, sd.amount, sd.discount, sd.net, sd.staff_name, sd.payment_method, sd.notes, sd.billable_mins, sd.free_mins "
             "FROM sales_daily sd "
             "LEFT JOIN member_wallets w ON w.member_id = sd.member_id AND sd.member_id NOT IN ('', '0', '0 (Guest)', '-', 'Guest') "
             "WHERE sd.sale_date >= %s ORDER BY sd.sale_date DESC, sd.id DESC LIMIT 200", (_mmt_today_start,))
@@ -346,7 +346,7 @@ async def api_fetch_promotions_cached(auth=Depends(verify_api_key)):
     """Fetch active promotions from MySQL."""
     try:
         rows = _mysql_query(
-            "SELECT id, promo_name, discount_type, discount_value, start_date, end_date, status FROM promotions WHERE status='active'")
+            "SELECT id, name, promo_name, discount_type, discount_value, start_date, end_date, status FROM promotions WHERE status='active'")
         return ok({"promotions": rows})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -591,6 +591,20 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
 
         if not voucher_no:
             return error_response(message="voucher_no required")
+
+        # ── Idempotency guard (voucher_no) — added 2026-10-09 ─────────────
+        # The staff webapp generates ONE voucher per sale (V-WEB-…) and reuses it
+        # on every retry, while client_ref is regenerated per submit attempt; so a
+        # retried submit inserted duplicate rows (2026-10-09: 11 rows for
+        # V-WEB-20261009185359-355). Dedupe on the stable voucher_no.
+        if voucher_no:
+            _dup_v = _mysql_query_one(
+                "SELECT voucher_no FROM sales_daily WHERE voucher_no=%s LIMIT 1",
+                (voucher_no,)
+            )
+            if _dup_v:
+                return ok({"success": True, "duplicate": True, "existing": True,
+                           "voucher_no": _dup_v.get("voucher_no", "")})
 
         # ── Audit identity: explicit staff field wins, else JWT identity ─────────
         if not staff:
