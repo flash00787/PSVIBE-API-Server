@@ -7350,6 +7350,7 @@
                   <div class="psv-acc-card__bal psv-tabnum">{{ fKs(a.balance) }} <span class="psv-acc-card__unit">Ks</span></div>
                   <div v-if="isAdmin && a.fee_pct > 0" class="psv-acc-card__fee" style="margin-top:4px;font-size:12px;line-height:1.4;color:var(--pv-muted,#94a3b8);font-variant-numeric:tabular-nums">− {{ a.fee_pct }}% fee {{ fKs(Math.round(a.fee_amount)) }} · net {{ fKs(Math.round(a.net_balance)) }} Ks</div>
                   <div class="psv-acc-card__meta">{{ a.last ? ('Updated ' + fmtWhen(a.last)) : (a.owner_only ? 'Owner account' : 'Shop account') }}</div>
+                  <div v-if="isAdmin" style="margin-top:8px;text-align:right"><button class="psv-xfer-mini" @click="openEdit(a)">✏️ Edit</button></div>
                 </div>
               </div>
               <van-empty v-if="!accounts.length" image="search" description="No accounts to show" />
@@ -7359,6 +7360,34 @@
             </template>
           </template>
         </van-pull-refresh>
+
+        <van-popup v-model:show="editShow" position="bottom" round :close-on-click-overlay="!editBusy">
+          <div class="psv-sheet">
+            <div class="psv-sheet__handle"></div>
+            <div class="psv-sheet__body">
+              <div class="psv-sheet-title">✏️ Edit live balance</div>
+              <div class="psv-acc-card" style="margin-bottom:12px">
+                <div class="psv-acc-card__top">
+                  <span class="psv-acc-card__ico">{{ editAccount.icon }}</span>
+                  <span class="psv-acc-card__label">{{ editAccount.label }}</span>
+                </div>
+                <div class="psv-acc-card__bal psv-tabnum">Current: {{ fKs(editAccount.balance) }} <span class="psv-acc-card__unit">Ks</span></div>
+              </div>
+              <div class="psv-field-card">
+                <div class="psv-field-label">New live balance (Ks)</div>
+                <input class="psv-input psv-tabnum" type="tel" inputmode="numeric" v-model="editTargetStr" placeholder="0" />
+              </div>
+              <div class="psv-field-card">
+                <div class="psv-field-label">Reason (optional)</div>
+                <input class="psv-input psv-input--text" type="text" v-model="editReason" placeholder="e.g. correction" />
+              </div>
+              <div class="psv-note" style="margin:4px 2px 12px">Sets the balance to an absolute value and records an audited adjustment entry.</div>
+              <div v-if="editErr" class="psv-err-banner" style="margin-bottom:10px">{{ editErr }}</div>
+              <button class="psv-btn psv-btn--primary psv-btn--block" :disabled="editBusy" @click="saveEdit">{{ editBusy ? 'Saving…' : 'Save balance' }}</button>
+              <button class="psv-btn psv-btn--ghost psv-btn--block" style="margin-top:10px" :disabled="editBusy" @click="editShow = false">Cancel</button>
+            </div>
+          </div>
+        </van-popup>
       </div>
     `,
     setup() {
@@ -7415,7 +7444,37 @@
         } finally { loading.value = false; refreshing.value = false; }
       }
       onMounted(load);
-      return { accounts, loading, refreshing, blocked, err, role, isAdmin, load, fKs, fmtWhen };
+
+      // ── owner live balance edit ──
+      const editShow = ref(false); const editBusy = ref(false); const editErr = ref("");
+      const editAccount = ref({ label: "", icon: "🏦", balance: 0 });
+      const editTargetStr = ref(""); const editReason = ref("");
+      function openEdit(a) {
+        editAccount.value = { label: a.label, icon: a.icon || accIcon(a.label), balance: Number(a.balance) || 0 };
+        editTargetStr.value = String(Math.round(Number(a.balance) || 0));
+        editReason.value = ""; editErr.value = ""; editShow.value = true; haptic("light");
+      }
+      async function saveEdit() {
+        if (editBusy.value) return;
+        const t = String(editTargetStr.value).trim();
+        const target = Math.round(Number(t));
+        if (t === "" || isNaN(target)) { editErr.value = "Enter a numeric balance."; return; }
+        if (target < 0) { editErr.value = "Balance cannot be negative."; return; }
+        const label = editAccount.value.label;
+        const old = Math.round(Number(editAccount.value.balance) || 0);
+        editBusy.value = true; editErr.value = "";
+        try {
+          const d = await adjustBalanceCall(label, target, editReason.value);
+          const nb = (d && d.new_balance != null) ? d.new_balance : target;
+          editShow.value = false;
+          try { PSV.invalidate("/api/accounts"); } catch (_e) {}
+          showToast(label + ": " + fKs(old) + " → " + fKs(nb) + " Ks", "success");
+          load();
+        } catch (e) { editErr.value = friendlyBalanceEditError(e); }
+        finally { editBusy.value = false; }
+      }
+      return { accounts, loading, refreshing, blocked, err, role, isAdmin, load, fKs, fmtWhen,
+               editShow, editBusy, editErr, editAccount, editTargetStr, editReason, openEdit, saveEdit };
     },
   };
 
@@ -7429,6 +7488,24 @@
       if (isNaN(d.getTime())) return String(iso);
       return d.toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
     } catch (_e) { return String(iso); }
+  }
+
+  // ── Owner live balance edit (absolute target → audited adjustment row) ──
+  // Shared by the Balances + AccountBalances edit panels. Absolute target means a
+  // double-submit is naturally idempotent (server recomputes delta from live balance).
+  async function adjustBalanceCall(account, target, reason) {
+    const payload = { account: account, target_balance: Math.round(Number(target) || 0) };
+    if (reason) payload.note = String(reason).trim();
+    const raw = await PSV.apiCached("/api/accounts/adjust-balance", { method: "POST", headers: HJSON, body: JSON.stringify(payload) });
+    return PSV.unwrap(raw) || {};
+  }
+
+  function friendlyBalanceEditError(e) {
+    const m = String((e && e.message) || e || "Balance edit failed");
+    if (/owner|admin|not permitted|403|not allowed/i.test(m)) return "Not allowed — owner (admin) only.";
+    if (/out of range|too large/i.test(m)) return "Amount out of range.";
+    if (/unknown account|not found|404/i.test(m)) return "Unknown account.";
+    return m;
   }
 
   // ── VIEW: Account Balances — owner-only, ACM's Acc + KBZ Bank (WAVE 5) ──
@@ -7458,17 +7535,47 @@
                   </div>
                   <div class="psv-acc-card__bal psv-tabnum">{{ fKs(a.balance) }} <span class="psv-acc-card__unit">Ks</span></div>
                   <div class="psv-acc-card__meta">{{ a.last ? ('Updated ' + fmtWhen(a.last)) : 'Owner account' }}</div>
+                  <div v-if="isAdmin" style="margin-top:8px;text-align:right"><button class="psv-xfer-mini" @click="openEdit(a)">✏️ Edit</button></div>
                 </div>
               </div>
               <div class="psv-readonly">🔒 Owner-only — restricted account balances</div>
             </template>
           </template>
         </van-pull-refresh>
+
+        <van-popup v-model:show="editShow" position="bottom" round :close-on-click-overlay="!editBusy">
+          <div class="psv-sheet">
+            <div class="psv-sheet__handle"></div>
+            <div class="psv-sheet__body">
+              <div class="psv-sheet-title">✏️ Edit live balance</div>
+              <div class="psv-acc-card" style="margin-bottom:12px">
+                <div class="psv-acc-card__top">
+                  <span class="psv-acc-card__ico">{{ editAccount.icon }}</span>
+                  <span class="psv-acc-card__label">{{ editAccount.label }}</span>
+                </div>
+                <div class="psv-acc-card__bal psv-tabnum">Current: {{ fKs(editAccount.balance) }} <span class="psv-acc-card__unit">Ks</span></div>
+              </div>
+              <div class="psv-field-card">
+                <div class="psv-field-label">New live balance (Ks)</div>
+                <input class="psv-input psv-tabnum" type="tel" inputmode="numeric" v-model="editTargetStr" placeholder="0" />
+              </div>
+              <div class="psv-field-card">
+                <div class="psv-field-label">Reason (optional)</div>
+                <input class="psv-input psv-input--text" type="text" v-model="editReason" placeholder="e.g. correction" />
+              </div>
+              <div class="psv-note" style="margin:4px 2px 12px">Sets the balance to an absolute value and records an audited adjustment entry.</div>
+              <div v-if="editErr" class="psv-err-banner" style="margin-bottom:10px">{{ editErr }}</div>
+              <button class="psv-btn psv-btn--primary psv-btn--block" :disabled="editBusy" @click="saveEdit">{{ editBusy ? 'Saving…' : 'Save balance' }}</button>
+              <button class="psv-btn psv-btn--ghost psv-btn--block" style="margin-top:10px" :disabled="editBusy" @click="editShow = false">Cancel</button>
+            </div>
+          </div>
+        </van-popup>
       </div>
     `,
     setup() {
       const accounts = ref([]); const loading = ref(true); const refreshing = ref(false);
       const blocked = ref(false); const err = ref("");
+      const isAdmin = computed(() => String((PSV.getStaff() || {}).role || "").toLowerCase() === "admin");
       async function load() {
         loading.value = true; err.value = "";
         try {
@@ -7496,7 +7603,37 @@
         } finally { loading.value = false; refreshing.value = false; }
       }
       onMounted(load);
-      return { accounts, loading, refreshing, blocked, err, load, fKs, fmtWhen };
+
+      // ── owner live balance edit ──
+      const editShow = ref(false); const editBusy = ref(false); const editErr = ref("");
+      const editAccount = ref({ label: "", icon: "🏦", balance: 0 });
+      const editTargetStr = ref(""); const editReason = ref("");
+      function openEdit(a) {
+        editAccount.value = { label: a.label, icon: a.icon || accIcon(a.label), balance: Number(a.balance) || 0 };
+        editTargetStr.value = String(Math.round(Number(a.balance) || 0));
+        editReason.value = ""; editErr.value = ""; editShow.value = true; haptic("light");
+      }
+      async function saveEdit() {
+        if (editBusy.value) return;
+        const t = String(editTargetStr.value).trim();
+        const target = Math.round(Number(t));
+        if (t === "" || isNaN(target)) { editErr.value = "Enter a numeric balance."; return; }
+        if (target < 0) { editErr.value = "Balance cannot be negative."; return; }
+        const label = editAccount.value.label;
+        const old = Math.round(Number(editAccount.value.balance) || 0);
+        editBusy.value = true; editErr.value = "";
+        try {
+          const d = await adjustBalanceCall(label, target, editReason.value);
+          const nb = (d && d.new_balance != null) ? d.new_balance : target;
+          editShow.value = false;
+          try { PSV.invalidate("/api/accounts"); } catch (_e) {}
+          showToast(label + ": " + fKs(old) + " → " + fKs(nb) + " Ks", "success");
+          load();
+        } catch (e) { editErr.value = friendlyBalanceEditError(e); }
+        finally { editBusy.value = false; }
+      }
+      return { accounts, loading, refreshing, blocked, err, load, fKs, fmtWhen, isAdmin,
+               editShow, editBusy, editErr, editAccount, editTargetStr, editReason, openEdit, saveEdit };
     },
   };
 

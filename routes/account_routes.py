@@ -520,6 +520,86 @@ async def list_balances(user: dict = Depends(get_staff_or_dashboard_user)):
     }
 
 
+# ── POST /api/accounts/adjust-balance (admin/owner only) ────────────────────
+@router.post("/adjust-balance")
+async def adjust_balance(body: dict = Body(...), user: dict = Depends(get_staff_or_dashboard_user)):
+    """Owner/admin ABSOLUTE live-balance edit.
+
+    Balances are DERIVED (finance_routes.get_finance_balances), never stored, so an
+    "edit" MUST be an audited adjustment ledger row in cash_movements — never a raw
+    UPDATE. Targeting an absolute value makes double-submit naturally idempotent.
+
+    Money correctness (Osmo 2026-10-12):
+      * delta = target − current; |delta| < 1 → nothing written (delta 0).
+      * delta > 0 → inject; delta < 0 → eject (both stored positive).
+      * category='owner_adjust' + note prefix 'Owner balance edit → …' NEVER match the
+        calculator's subtraction patterns (inject category='topup', note LIKE 'Deposit #%'
+        /'BK#%'; eject note LIKE '%deposit reverse%'/'Test deposit'/'[Refund]'/'Refund Deposit'),
+        so the adjustment always lands exactly once.
+    """
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Owner (admin) only")
+
+    account = str(body.get("account") or "").strip()
+    if account not in ALL_ACCOUNTS:
+        raise HTTPException(status_code=400, detail=f"Unknown account: {account}")
+
+    raw_target = body.get("target_balance")
+    if raw_target is None:
+        raise HTTPException(status_code=400, detail="target_balance is required")
+    try:
+        target = float(raw_target)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="target_balance must be a number")
+    if target != target:  # NaN
+        raise HTTPException(status_code=400, detail="target_balance must be a number")
+    if target < 0 or target > _MAX_AMOUNT:
+        raise HTTPException(status_code=400, detail=f"target_balance out of range (0 .. {_MAX_AMOUNT:,})")
+    target = round(target)
+
+    reason = str(body.get("note") or "").strip()
+
+    current = round(float((await _balances_by_name()).get(account, 0)))
+    delta = round(target - current)
+    if abs(delta) < 1:
+        return {
+            "success": True,
+            "account": account,
+            "old_balance": current,
+            "new_balance": round(target),
+            "delta": 0,
+            "movement_id": None,
+            "note": "no change — nothing written",
+        }
+
+    movement_type = "inject" if delta > 0 else "eject"
+    amount = abs(delta)
+    db_account = "Wave" if account == "WavePay" else account
+    note = f"Owner balance edit → {round(target):,} Ks" + (f" · {reason}" if reason else "")
+    staff_name = _caller_name(user) or user.get("username") or ""
+
+    movement_id = _ex(
+        """INSERT INTO cash_movements
+           (movement_type, account, amount, note, staff_name, category, created_at)
+           VALUES (%s, %s, %s, %s, %s, 'owner_adjust', NOW())""",
+        (movement_type, db_account, amount, note, staff_name),
+    )
+
+    logger.info("Owner balance edit %s: %s → %s (%+d) by %s",
+                account, current, round(target), delta, staff_name)
+    return {
+        "success": True,
+        "account": account,
+        "old_balance": current,
+        "new_balance": round(target),
+        "delta": delta,
+        "movement_id": movement_id,
+        "movement_type": movement_type,
+        "amount": amount,
+        "note": note,
+    }
+
+
 # ── POST /api/accounts/transfer ──────────────────────────────────────────────
 @router.post("/transfer")
 async def create_transfer(body: dict = Body(...), user: dict = Depends(get_staff_or_dashboard_user)):
