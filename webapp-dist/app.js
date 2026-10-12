@@ -1333,7 +1333,7 @@
 
         <!-- Sub-total breakdown (server-authoritative discount lines) -->
         <van-cell-group inset style="margin-top:10px" title="Amounts">
-          <van-cell title="Game" :value="fKs(form.game_amt) + ' Ks'" />
+          <van-cell title="Game" :value="fKs(gameDisplayKs) + ' Ks'" />
           <van-cell title="Food" :value="fKs(form.food_total) + ' Ks'" />
           <van-cell title="Subtotal" :value="fKs(subtotalKs) + ' Ks'" />
           <van-cell v-for="(b, i) in discountLines" :key="'d' + i" :title="b.label">
@@ -1382,6 +1382,7 @@
             <span style="font-weight:600">Payment</span>
             <span style="color:var(--pv-muted);font-size:13px">Paid: <span class="pv-amount">{{ fKs(paidTotal) }}</span> / Net: {{ fKs(cashNetTotal) }} Ks</span>
           </div>
+          <div v-if="overpaid > 0.001" style="color:var(--pv-danger);font-size:12px;font-weight:600;margin:4px 0 8px">⚠ Over-payment: paid {{ fKs(paidTotal) }} Ks exceeds cash due {{ fKs(cashNetTotal) }} Ks by {{ fKs(overpaid) }} Ks</div>
           <div v-if="!form.payment_splits.length" style="padding:6px 10px;color:var(--pv-muted)">No split — full amount on Cash</div>
           <div v-for="(s, i) in form.payment_splits" :key="i" style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--pv-card);border-radius:8px;margin-bottom:6px">
             <span style="flex:1">{{ s.method }}</span>
@@ -1830,6 +1831,9 @@
       });
       // ── Server-authoritative money lines (fall back to the local mirror until calc lands) ──
       const subtotalKs = computed(() => serverCalc.value ? (Number(serverCalc.value.cash_payable) || 0) : rawCash.value);
+      // Server-priced game (re-priced by the 2+1 promo) for the Amounts "Game" cell;
+      // fall back to the gross form.game_amt while the calc is still landing.
+      const gameDisplayKs = computed(() => (serverCalc.value && serverCalc.value.game_amt != null) ? (Number(serverCalc.value.game_amt) || 0) : (Number(form.game_amt) || 0));
       const totalDiscountKs = computed(() => serverCalc.value ? (Number(serverCalc.value.total_discount) || 0) : (Number(form.discount) || 0));
       const discountLines = computed(() => (serverCalc.value && Array.isArray(serverCalc.value.breakdown)) ? serverCalc.value.breakdown : []);
       // 🎁 2+1 auto-promo (server-computed) — for the inline free-minutes banner.
@@ -1874,6 +1878,13 @@
 
       const paidTotal = computed(() => form.payment_splits.reduce((s, x) => s + (Number(x.amount)||0), 0));
       const splitRemaining = computed(() => Math.max(0, Number(cashNetTotal.value) - paidTotal.value));
+      // Over-payment guard: positive when the split total exceeds the cash due.
+      const overpaid = computed(() => {
+        if (!form.payment_splits || !form.payment_splits.length) return 0;
+        const net = Number(cashNetTotal.value) || 0;
+        const paid = Number(paidTotal.value) || 0;
+        return paid > net + 0.001 ? (paid - net) : 0;
+      });
       const paymentMethodComputed = computed(() => {
         const active = form.payment_splits.filter((s) => Number(s.amount) > 0);
         return active.length ? active.map((s) => `${s.method}:${s.amount}`).join("|") : "Cash:" + Number(cashNetTotal.value);
@@ -2183,6 +2194,11 @@
             }
           }
           if (form.payment_splits.length) {
+            // 🚨 Over-payment guard: the split total must never exceed the cash due.
+            if (Number(paidTotal.value) > payableNow + 0.001) {
+              showToast("Payments total " + fKs(paidTotal.value) + " > Cash due " + fKs(payableNow) + " — over-payment not allowed", "warning");
+              submitting.value = false; return;
+            }
             // Validate split only against the CASH portion actually payable
             if (Number(paidTotal.value) < payableNow - 0.001) {
               showToast("Payments total " + fKs(paidTotal.value) + " < Cash due " + fKs(payableNow), "warning");
@@ -2313,10 +2329,10 @@
         finally { submitting.value = false; }
       }
 
-      return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs, d2pHours, d2pFreeKs, depositRedeem, clearRedeem,
+      return { form, wallet, walletLoading, sessionLocked, effectiveMins, effectiveCostMins, gameValueKs, isMember, walletSufficient, shortfallKs, cashNetTotal, netTotal, autoGameAmt, paidTotal, splitRemaining, overpaid, members, consoles: consolesList, memberPicker, consolePicker, gamePicker, foodPicker, payPicker, payAmountPicker, pendingMethod, payAmountInput, memberQuery, submitting, filteredMembers, payColumns, gameColumns, foodGroups, foodLines, qtyOf, setFoodQty, removeFood, openConsole, pickMember, pickGuest, pickConsole, pickGame, pickPay, pickPayMethod, openPayMethod, confirmSplit, removeSplit, openFoodPicker, submit, voucherOpen, lastVoucher, printing, doPrintVoucher, fKs, d2pHours, d2pFreeKs, depositRedeem, clearRedeem,
         saleDrafts, draftOpen, saveDraft, restoreDraft, deleteDraft, openDrafts, gotoDrafts, resetSale,
                // ── WAVE 2: promo / coupon / discount / deposit / in-session guard ──
-               sessionWarn, depositLinkWarn, depositApplied, depositAppliedAmt, applyDeposit, promos, promoOpen, promo, promoText, openPromo, pickPromo, clearPromo, focOpen, focItem, pickFoc, coupon, applyCoupon, clearCoupon, calcStatus, discountLines, d2p, subtotalKs, totalDiscountKs, payableBeforeDeposit, rawCash, scheduleCalc };
+               sessionWarn, depositLinkWarn, depositApplied, depositAppliedAmt, applyDeposit, promos, promoOpen, promo, promoText, openPromo, pickPromo, clearPromo, focOpen, focItem, pickFoc, coupon, applyCoupon, clearCoupon, calcStatus, discountLines, d2p, subtotalKs, gameDisplayKs, totalDiscountKs, payableBeforeDeposit, rawCash, scheduleCalc };
     },
   };
 

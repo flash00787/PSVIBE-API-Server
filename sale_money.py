@@ -328,7 +328,17 @@ def compute_totals(req: Dict[str, Any]) -> Dict[str, Any]:
         gross = wallet_game_value + food_total
         cash_payable = food_total
     else:
-        gross = gross_total_in if gross_total_in > 0 else (game_amt + food_total)
+        # ── 2+1 duration promo: gross MUST derive from the re-priced game_amt ──
+        # When duration_2plus1 applies, game_amt was re-priced above from BILLABLE
+        # minutes only. The client (cartForCalc) sends the STALE pre-promo
+        # `gross_total` (e.g. 42,833) on the /promotions/calc preview path, so
+        # trusting `gross_total_in > 0` would ignore the promo and make the preview
+        # disagree with the commit (which overwrites gross_total server-side).
+        # Force gross = re-priced game + food so preview == commit by construction.
+        if d2p_billable > 0:
+            gross = game_amt + food_total
+        else:
+            gross = gross_total_in if gross_total_in > 0 else (game_amt + food_total)
         cash_payable = gross
 
     breakdown = []
