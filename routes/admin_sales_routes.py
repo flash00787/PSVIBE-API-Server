@@ -940,6 +940,22 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
             console_id, session_id=req.get("session_id") or resolved_session_id,
             booking_id=booking_id, game_name_hint=req.get("game_name"))
 
+        # 2026-10-13 (forfeit->rebook link hardening, Osmo): a booking-bound sale MUST
+        # carry the booking's session id so reconciliation can resolve its voucher
+        # (Tier1: sales_daily.session_id -> console_sessions.booking_id). resolve_sale_game
+        # only resolves the session when no game_name hint is supplied; enforce it here.
+        if not _session_id and booking_id not in (None, "", 0, "0"):
+            try:
+                _bs = _mysql_query_one(
+                    "SELECT id FROM console_sessions WHERE booking_id=%s ORDER BY id DESC LIMIT 1",
+                    (booking_id,))
+                if _bs:
+                    _session_id = _bs.get("id")
+                    logger.info("sale session link backfilled: booking=%s session=%s voucher=%s",
+                                booking_id, _session_id, voucher_no)
+            except Exception as _bse:
+                logger.warning("session link backfill failed booking=%s: %s", booking_id, _bse)
+
         # Never persist a walk-in/unknown name as a member id (report pollution).
         _stored_member_id = member_id
         if not _is_member_sale and not _is_guest_label:

@@ -357,20 +357,28 @@ async def dashboard_update_booking(booking_id: int, req: dict, user: dict = Depe
                 "UPDATE console_bookings SET deposit_status='verified', cancelled_at=NULL WHERE id=%s AND deposit_status='forfeited'",
                 (booking_id,)
             )
-            # Reverse forfeit cash_movement — insert eject entry (🐛 2026-07-28)
-            _forfeit_row = _mysql_query_one(
-                "SELECT amount, deposit_method FROM console_bookings WHERE id=%s",
-                (booking_id,)
-            )
-            if _forfeit_row and _forfeit_row.get("amount", 0) or 0:
-                _dep_amt = int(_forfeit_row.get("amount", 0) or 0)
-                _dep_meth = (_forfeit_row.get("deposit_method", "") or "kpay").lower()
-                _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay"}.get(_dep_meth, "KPay")
-                insert_cash_movement_if_absent(
-                    "eject", _meth_label, _dep_amt,
-                    f"Refund forfeit BK#{booking_id}%",
-                    f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system", "deposit_refund")
-                logger.info(f"Rebook BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
+            # Reverse forfeit cash_movement — insert eject entry (🐛 2026-07-28).
+            # 2026-10-13 fix (Osmo): the column is deposit_amount, NOT amount — the
+            # old SELECT raised (1054, "Unknown column 'amount'") and 500'd the whole
+            # revive, so the reversal was silently skipped on every forfeit→rebook
+            # (observed for BK#4073). Also guard with try/except so the cash-movement
+            # reversal can never abort the revive itself.
+            try:
+                _forfeit_row = _mysql_query_one(
+                    "SELECT deposit_amount, deposit_method FROM console_bookings WHERE id=%s",
+                    (booking_id,)
+                )
+                _dep_amt = int((_forfeit_row or {}).get("deposit_amount", 0) or 0)
+                if _dep_amt > 0:
+                    _dep_meth = ((_forfeit_row or {}).get("deposit_method", "") or "kpay").lower()
+                    _meth_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB"}.get(_dep_meth, "KPay")
+                    insert_cash_movement_if_absent(
+                        "eject", _meth_label, _dep_amt,
+                        f"Refund forfeit BK#{booking_id}%",
+                        f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system", "deposit_refund")
+                    logger.info(f"Rebook BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject)")
+            except Exception as _rev_e:
+                logger.warning(f"Rebook BK#{booking_id}: forfeit reversal failed (non-fatal): {_rev_e}")
             logger.info(f"Rebook BK#{booking_id}: deposit_status restored from forfeited → verified, cancelled_at cleared")
 
         # 🐛 Fix Jul 1: Sync console_status when console_id or status changes
