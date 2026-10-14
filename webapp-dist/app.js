@@ -6354,7 +6354,7 @@
       });
       onUnmounted(() => { window.removeEventListener("psv:data", onIngredientsData); });
       return {
-        tab, loading, refreshing, list, all, costed, dishes, resale, splitDish, splitResale,
+        tab, loading, refreshing, list, all, costed, dishes, resale, splitDish, splitResale, splitMarginTxt,
         summary, month, sumPct, sumWarn, sumColor,
         pct, pillClass, fKs, fKsR, openEditor, closeEditor, lineCost, editorTotals,
         typeBadge, dishLabel, resaleLabel, costLabel, hasCostPill,
