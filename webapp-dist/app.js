@@ -2453,10 +2453,28 @@
           <van-field v-model="form.phone" label="Phone" type="tel" placeholder="09..." />
           <van-field v-model.number="form.initial_mins" type="number" label="Initial Mins" placeholder="0" />
           <van-field v-if="!form.is_gift" v-model.number="form.amount" type="number" label="Amount (Ks)" placeholder="0" />
-          <van-field v-if="!form.is_gift" v-model.number="form.kpay" type="number" label="KPay (Ks)" placeholder="0" />
-          <van-field v-if="!form.is_gift" v-model.number="form.cash" type="number" label="Cash (Ks)" placeholder="0" />
           <van-field v-model="form.referral_code" label="Referral Code" placeholder="(optional)" />
         </van-cell-group>
+
+        <!-- 💰 Split Payment — same "+ Add payment" flow as the Sale voucher
+             (owner Osmo, 2026-10-14): pick any method (Cash / MMQR - CB …),
+             not the old fixed KPay/Cash pair. -->
+        <div v-if="!form.is_gift" style="margin:10px 16px 0">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px">
+            <span style="font-weight:600">Payment</span>
+            <span style="color:var(--pv-muted);font-size:13px">Paid: <span class="pv-amount">{{ fKs(paidTotal) }}</span> / {{ fKs(amountKs) }} Ks</span>
+          </div>
+          <div v-if="overpaid > 0.001" style="color:var(--pv-danger);font-size:12px;font-weight:600;margin:4px 0 8px">⚠ Over-payment: paid {{ fKs(paidTotal) }} Ks exceeds Amount {{ fKs(amountKs) }} Ks by {{ fKs(overpaid) }} Ks</div>
+          <div v-if="!form.payment_splits.length" style="padding:6px 10px;color:var(--pv-muted)">No split — full amount on Cash</div>
+          <div v-for="(s, i) in form.payment_splits" :key="i" style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--pv-card);border-radius:8px;margin-bottom:6px">
+            <span style="flex:1">{{ s.method }}</span>
+            <span class="pv-amount" style="margin:0 10px">{{ fKs(s.amount) }} Ks</span>
+            <van-icon name="cross" style="color:var(--pv-danger);padding:4px" @click="removeSplit(i)" />
+          </div>
+          <van-button size="small" plain type="primary" style="width:100%;margin-top:4px" @click="openPayMethod">+ Add payment</van-button>
+          <div style="margin-top:6px;color:var(--pv-muted);font-size:11px;line-height:1.5">Split ထည့်ရင် total က Amount နဲ့ ညီရမယ်။ မထည့်ရင် Cash အပြည့် သတ်မှတ်မယ်။</div>
+        </div>
+
         <van-cell-group inset style="margin-top:10px">
           <van-cell title="Gift / Free card" label="Issue free minutes — requires the owner PIN">
             <template #right-icon><van-switch v-model="form.is_gift" size="22" @change="onGiftToggle" /></template>
@@ -2467,24 +2485,79 @@
         <div style="padding:14px 16px">
           <van-button type="primary" block :loading="submitting" @click="submit">Register</van-button>
         </div>
+
+        <!-- Payment Method Picker (Cash / MMQR - CB …) -->
+        <PSVPicker v-model:show="payPicker" title="Payment method"
+                   :items="payColumns.map((c) => ({ value: c.value, label: c.text }))"
+                   :model-value="pendingMethod"
+                   @confirm="(v) => pickPayMethod({ selectedOptions: [{ value: v }] })" />
+
+        <!-- Split Amount Input -->
+        <van-popup v-model:show="payAmountPicker" position="bottom" round>
+          <div style="padding:14px 16px">
+            <div style="font-weight:600;margin-bottom:10px">Amount for {{ pendingMethod }} <span style="color:var(--pv-muted);font-weight:400">(remaining {{ fKs(splitRemaining) }} Ks)</span></div>
+            <van-field v-model.number="payAmountInput" type="number" label="Amount (Ks)" placeholder="0" />
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <van-button block plain @click="payAmountPicker=false">Cancel</van-button>
+              <van-button block type="primary" @click="confirmSplit">Add</van-button>
+            </div>
+          </div>
+        </van-popup>
       </div>
     `,
     setup() {
-      const form = reactive({ member_id: "", name: "", phone: "", initial_mins: 0, amount: 0, kpay: 0, cash: 0, referral_code: "", is_gift: false, pin: "" });
+      // Same method set as the Sale voucher payment picker (active = Cash + MMQR - CB).
+      const PAY_METHODS = ["Cash", "MMQR - CB"];
+      const form = reactive({ member_id: "", name: "", phone: "", initial_mins: 0, amount: 0, payment_splits: [], referral_code: "", is_gift: false, pin: "" });
       const submitting = ref(false);
-      function onGiftToggle(v) { haptic("light"); if (v) { form.amount = 0; form.kpay = 0; form.cash = 0; } }
+      const payPicker = ref(false);
+      const payAmountPicker = ref(false);
+      const pendingMethod = ref("");
+      const payAmountInput = ref(null);
+      const payColumns = PAY_METHODS.map((p) => ({ text: p, value: p }));
+      const amountKs = computed(() => Number(form.amount) || 0);
+      const paidTotal = computed(() => (form.payment_splits || []).reduce((s, x) => s + (Number(x.amount) || 0), 0));
+      const splitRemaining = computed(() => Math.max(0, amountKs.value - paidTotal.value));
+      const overpaid = computed(() => {
+        if (!form.payment_splits || !form.payment_splits.length) return 0;
+        const paid = Number(paidTotal.value) || 0;
+        return paid > amountKs.value + 0.001 ? (paid - amountKs.value) : 0;
+      });
+      // "KPay:0|MMQR - CB:90000"; no split → the whole Amount on Cash.
+      const paymentMethodComputed = computed(() => {
+        const active = (form.payment_splits || []).filter((s) => Number(s.amount) > 0);
+        return active.length ? active.map((s) => `${s.method}:${s.amount}`).join("|") : "Cash:" + amountKs.value;
+      });
+      function openPayMethod() { if (!form.payment_splits.length) form.payment_splits = []; haptic("light"); payPicker.value = true; }
+      function pickPayMethod({ selectedOptions }) { pendingMethod.value = selectedOptions[0].value; payPicker.value = false; payAmountInput.value = splitRemaining.value; payAmountPicker.value = true; }
+      function confirmSplit() {
+        const amt = Number(payAmountInput.value) || 0;
+        if (amt <= 0) { showToast("Enter amount", "warning"); return; }
+        if (amt > splitRemaining.value + 0.001) { showToast("Amount exceeds remaining " + splitRemaining.value, "warning"); return; }
+        if (!form.payment_splits) form.payment_splits = [];
+        form.payment_splits.push({ method: pendingMethod.value, amount: amt });
+        payAmountPicker.value = false;
+      }
+      function removeSplit(i) { form.payment_splits.splice(i, 1); }
+      function onGiftToggle(v) { haptic("light"); if (v) { form.amount = 0; form.payment_splits = []; } }
       async function nextId() { try { const id = PSV.unwrap(await PSV.apiCached("/api/next_member_id")); if (id) form.member_id = String(id); } catch (_e) {} }
       onMounted(nextId);
       async function submit() {
+        if (submitting.value) return;
+        // Split total must match the Amount when the staff used "Add payment".
+        if (!form.is_gift && amountKs.value > 0 && form.payment_splits.length) {
+          if (Number(paidTotal.value) > amountKs.value + 0.001) { showToast("Payments total " + fKs(paidTotal.value) + " > Amount " + fKs(amountKs.value) + " — over-payment not allowed", "warning"); return; }
+          if (Number(paidTotal.value) < amountKs.value - 0.001) { showToast("Payments total " + fKs(paidTotal.value) + " < Amount " + fKs(amountKs.value), "warning"); return; }
+        }
         submitting.value = true; haptic("medium");
         try {
-          const payload = { member_id: form.member_id, name: form.name, phone: form.phone, staff: PSV.getStaff().name, initial_mins: form.initial_mins, amount: form.amount, kpay: form.kpay, cash: form.cash, mins_added: form.initial_mins, referral_code: form.referral_code };
+          const payload = { member_id: form.member_id, name: form.name, phone: form.phone, staff: PSV.getStaff().name, initial_mins: form.initial_mins, amount: form.amount, payment_method: paymentMethodComputed.value, mins_added: form.initial_mins, referral_code: form.referral_code };
           if (form.is_gift) { payload.is_gift = true; payload.pin = form.pin; }  // PIN is never logged
           const raw = await PSV.apiCached("/api/members/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
           if (raw && raw.success === false) throw new Error(raw.error || "Register failed");
           const res = PSV.unwrap(raw);
           showToast("Saved ✓ " + (res && res.member_id ? res.member_id : ""), "success");
-          form.name = ""; form.phone = ""; form.initial_mins = 0; form.amount = 0; form.kpay = 0; form.cash = 0; form.referral_code = ""; form.is_gift = false; form.pin = "";
+          form.name = ""; form.phone = ""; form.initial_mins = 0; form.amount = 0; form.payment_splits = []; form.referral_code = ""; form.is_gift = false; form.pin = "";
           nextId();
         } catch (e) {
           const m = String(e && e.message ? e.message : "");
@@ -2493,7 +2566,7 @@
         }
         finally { submitting.value = false; }
       }
-      return { form, submitting, submit, onGiftToggle };
+      return { form, submitting, submit, onGiftToggle, payPicker, payAmountPicker, pendingMethod, payAmountInput, payColumns, amountKs, paidTotal, splitRemaining, overpaid, openPayMethod, pickPayMethod, confirmSplit, removeSplit, fKs };
     },
   };
 

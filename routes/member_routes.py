@@ -483,6 +483,10 @@ async def api_member_register(req: dict, request: Request, auth=Depends(verify_a
         amount = req.get("amount", 0)
         kpay = req.get("kpay", 0)
         cash = req.get("cash", 0)
+        # Explicit split string from the staff app (e.g. "Cash:0|MMQR - CB:90000").
+        # New-member card sales now use the same "+ Add payment" picker as the Sale
+        # voucher (owner Osmo, 2026-10-14) instead of the fixed KPay/Cash pair.
+        payment_method = str(req.get("payment_method", "") or "").strip()
         mins_added = req.get("mins_added", initial_mins)
         referral_code = req.get("referral_code", "")
         # Gift / free card request (PIN-gated).
@@ -516,7 +520,11 @@ async def api_member_register(req: dict, request: Request, auth=Depends(verify_a
             kpay = 0
             cash = 0
 
-        logger.info("Registering member: %s (%s) mins=%s gift=%s staff=%s", member_id, name, initial_mins, _is_gift_req, staff)
+        # Payment string: prefer the explicit split string, fall back to the legacy
+        # KPay/Cash pair for older clients that still post kpay/cash fields.
+        _pm_str = payment_method or f"KPay:{kpay}/Cash:{cash}"
+
+        logger.info("Registering member: %s (%s) mins=%s gift=%s pm=%s staff=%s", member_id, name, initial_mins, _is_gift_req, _pm_str, staff)
 
         # Upsert into member_wallets
         _mysql_exec(
@@ -528,7 +536,7 @@ async def api_member_register(req: dict, request: Request, auth=Depends(verify_a
         # 🆕 Record cash_movements for member registration income
         if float(amount) > 0:
             try:
-                _parse_pm_and_inject(amount, f"KPay:{kpay}/Cash:{cash}", f"New member {member_id} + {mins_added} mins", staff, category='topup')
+                _parse_pm_and_inject(amount, _pm_str, f"New member {member_id} + {mins_added} mins", staff, category='topup')
             except Exception as _e:
                 logger.warning("Reg cash_movements failed: %s", _e)
         # ✅ Also create sales_daily record for registration
@@ -537,13 +545,13 @@ async def api_member_register(req: dict, request: Request, auth=Depends(verify_a
                 _mysql_exec(
                     "INSERT INTO sales_daily (sale_date, member_id, amount, gross, net, payment_method, notes, staff_name, customer_name, is_topup) "
                     "VALUES (CURDATE(), %s, %s, %s, %s, %s, %s, %s, %s, 1)",
-                    (member_id, amount, amount, amount, f"KPay:{kpay}/Cash:{cash}", f"New member {member_id} + {mins_added} mins", staff, staff))
+                    (member_id, amount, amount, amount, _pm_str, f"New member {member_id} + {mins_added} mins", staff, staff))
             except Exception as _e:
                 logger.warning("Reg sales_daily failed: %s", _e)
 
         # Log into topup_log
         if mins_added > 0:
-            _pm = "Gift" if _is_gift_req else f"KPay:{kpay}/Cash:{cash}"
+            _pm = "Gift" if _is_gift_req else _pm_str
             _notes = f"Gift/Free card issued by {staff}" if _is_gift_req else None
             _mysql_exec(
                 "INSERT INTO topup_log (member_id, amount, mins_added, topup_date, staff_name, payment_method, balance_mins_before, balance_mins_after, notes) "
