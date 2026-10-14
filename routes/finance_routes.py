@@ -1728,6 +1728,7 @@ async def get_reconciliation(
         done_sessions = _mysql_query("""
             SELECT cs.booking_id, cs.console_id, cs.actual_start AS start_time, cs.actual_end AS end_time,
                    cs.actual_duration_mins AS duration_mins, cs.staff_name, cs.customer_name, cb.phone, cs.created_at,
+                   cs.billable_mins, cs.free_mins,
                    TIMESTAMPDIFF(MINUTE, cs.actual_start, cs.actual_end) as actual_mins
             FROM console_sessions cs
             LEFT JOIN console_bookings cb ON cb.id = cs.booking_id
@@ -1747,11 +1748,15 @@ async def get_reconciliation(
             ORDER BY console_id, created_at
         """, (date,)) or []
 
-        # 3. Parse play minutes from sales notes
+        # 3. Parse play minutes from sales notes — 2+1: use the BILLABLE minutes
+        # (excludes the promo FREE hour); Osmo 2026-10-14.
         for sr in sales_records:
             notes = sr.get("notes") or ""
-            m = re.search(r'Mins?:?\s*(\d+)', notes, re.IGNORECASE)
-            sr["_play_mins"] = int(m.group(1)) if m else 0
+            if sr.get("billable_mins"):
+                sr["_play_mins"] = int(sr["billable_mins"])
+            else:
+                m = re.search(r'Mins?:?\s*(\d+)', notes, re.IGNORECASE)
+                sr["_play_mins"] = int(m.group(1)) if m else 0
 
         # 4. Matching logic:
         #    Match by console_id + mins within ±10 + time proximity
@@ -1761,7 +1766,8 @@ async def get_reconciliation(
         for session in done_sessions:
             sid = session["booking_id"]
             cid = session["console_id"]
-            actual = session.get("actual_mins") or 0
+            # 2+1: prefer the BILLABLE minutes (excludes the promo FREE hour).
+            actual = session.get("billable_mins") or session.get("actual_mins") or 0
             if actual <= 0 and session.get("duration_mins"):
                 actual = session["duration_mins"]
 
@@ -1796,7 +1802,7 @@ async def get_reconciliation(
         missing_sales = []
         for session in done_sessions:
             if session["booking_id"] not in matched_session_ids:
-                actual = session.get("actual_mins") or session.get("duration_mins") or 0
+                actual = session.get("billable_mins") or session.get("actual_mins") or session.get("duration_mins") or 0
                 if actual <= 0:
                     actual = session.get("duration_mins") or 0
                 mult = parse_multiplier(session.get("console_id", ""))

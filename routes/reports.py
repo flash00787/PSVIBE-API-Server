@@ -186,7 +186,7 @@ async def dashboard_get_sales_daily(
         sql = f"""
             SELECT id, voucher_no, sale_date, console_id, member_id,
                    amount, gross, discount, net, staff_name,
-                   payment_method, notes, created_at
+                   payment_method, notes, created_at, billable_mins, free_mins
             FROM sales_daily
             WHERE {' AND '.join(where)}
             ORDER BY id DESC
@@ -202,7 +202,7 @@ async def dashboard_get_sales_daily(
         total = count_row["total"] if count_row else 0
 
         summary = _mysql_query_one(
-            f"SELECT COALESCE(SUM(amount), 0) as total_amount, COALESCE(SUM(gross), 0) as total_gross, COALESCE(SUM(discount), 0) as total_discount, COALESCE(SUM(net), 0) as total_net, COALESCE(SUM(gross - amount), 0) as total_food, COALESCE(SUM(CAST(REGEXP_REPLACE(notes, '.*Mins?:? *([0-9]+).*', '$1') AS UNSIGNED)), 0) as total_mins FROM sales_daily WHERE {' AND '.join(where)}",
+            f"SELECT COALESCE(SUM(amount), 0) as total_amount, COALESCE(SUM(gross), 0) as total_gross, COALESCE(SUM(discount), 0) as total_discount, COALESCE(SUM(net), 0) as total_net, COALESCE(SUM(gross - amount), 0) as total_food, COALESCE(SUM(COALESCE(billable_mins, CAST(REGEXP_REPLACE(notes, '.*Mins?:? *([0-9]+).*', '$1') AS UNSIGNED))), 0) as total_mins, COALESCE(SUM(billable_mins), 0) as total_billable_mins, COALESCE(SUM(free_mins), 0) as total_free_mins FROM sales_daily WHERE {' AND '.join(where)}",
             tuple(params[:-2])
         )
 
@@ -211,9 +211,15 @@ async def dashboard_get_sales_daily(
             notes = r.get("notes") or ""
             # Parse play minutes from notes: "Mins: XX" or "Mins:XX"
             play_mins = 0
-            m_mins = re.search(r'Mins?:?\s*(\d+)', notes, re.IGNORECASE)
-            if m_mins:
-                play_mins = int(m_mins.group(1))
+            # 2+1 promo (Osmo 2026-10-14): notes "Mins:" is the TOTAL session time
+            # incl. the FREE hour — use the BILLABLE minutes when present.
+            _bm = r.get("billable_mins")
+            if _bm:
+                play_mins = int(_bm)
+            else:
+                m_mins = re.search(r'Mins?:?\s*(\d+)', notes, re.IGNORECASE)
+                if m_mins:
+                    play_mins = int(m_mins.group(1))
             play_hrs = round(play_mins / 60, 1)
             game_amt = float(r.get("amount") or 0)
             gross = float(r.get("gross") or 0)
@@ -229,6 +235,8 @@ async def dashboard_get_sales_daily(
                 "food_amt": food_amt,
                 "play_mins": play_mins,
                 "play_hrs": play_hrs,
+                "billable_mins": int(r.get("billable_mins") or 0),
+                "free_mins": int(r.get("free_mins") or 0),
                 "gross": gross,
                 "discount": float(r.get("discount") or 0),
                 "net": float(r.get("net") or 0),
@@ -250,6 +258,10 @@ async def dashboard_get_sales_daily(
                 "total_food": float(summary["total_food"] or 0) if summary else 0,
                 "total_mins": int(summary["total_mins"] or 0) if summary else 0,
                 "total_hrs": round(int(summary["total_mins"] or 0) / 60, 1) if summary else 0,
+                # 🆓 2+1 promo free minutes — shown SEPARATELY (never billed).
+                "total_billable_mins": int(summary["total_billable_mins"] or 0) if summary else 0,
+                "total_free_mins": int(summary["total_free_mins"] or 0) if summary else 0,
+                "total_free_hrs": round(int(summary["total_free_mins"] or 0) / 60, 1) if summary else 0,
             }
         }
     except Exception as e:
