@@ -687,6 +687,40 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         game_rev = total_sales - food_rev
         # Ensure no negative game revenue
         if game_rev < 0: game_rev = 0
+        # 🍳/🛒 Split food into ហង់းပဲ (dish / made) vs ready-made (resale) — owner Osmo
+        # 2026-10-14: 'PNL မှာကော နှစ်ခုကို revenue / cost / profit ခွဲပြပါ'. Revenue from
+        # stock_out (classified like the Recipe & Cost report); dish cost =
+        # ingredient_consumption FIFO; resale cost = cogs − dish cost.
+        food_split = None
+        try:
+            from routes.menu_routes import _ingredient_costs, _recipes_by_menu, _inventory_map, classify_item_type
+            _icosts, _conv, _canon = _ingredient_costs(1)
+            _recipes = _recipes_by_menu(1)
+            _invmap = _inventory_map(1)
+            _ny, _nm = (year + 1, 1) if month == 12 else (year, month + 1)
+            _nxt = f"{_ny:04d}-{_nm:02d}-01"
+            _srows = _mq("SELECT item_name, COALESCE(SUM(total),0) AS rev FROM stock_out "
+                         "WHERE branch_id=1 AND created_at >= %s AND created_at < %s GROUP BY item_name",
+                         (f"{ym}-01", _nxt))
+            _dish_rev = 0.0
+            _resale_rev = 0.0
+            for _r in _srows:
+                _nmx = _r["item_name"]
+                _rec = _recipes.get(_nmx) or []
+                _st = (_invmap.get(_nmx) or {}).get("item_type") or "resale"
+                if classify_item_type(_st, bool(_rec)) == "dish":
+                    _dish_rev += float(_r["rev"] or 0)
+                else:
+                    _resale_rev += float(_r["rev"] or 0)
+            _icd = _mqo("SELECT COALESCE(SUM(cost),0) AS t FROM ingredient_consumption WHERE DATE_FORMAT(created_at,'%%Y-%%m')=%s", (ym,))
+            _dish_cost = float((_icd or {}).get("t", 0) or 0)
+            _resale_cost = max(0.0, cogs - _dish_cost)
+            food_split = {
+                "dish": {"revenue": round(_dish_rev, 0), "cost": round(_dish_cost, 0), "profit": round(_dish_rev - _dish_cost, 0)},
+                "resale": {"revenue": round(_resale_rev, 0), "cost": round(_resale_cost, 0), "profit": round(_resale_rev - _resale_cost, 0)},
+            }
+        except Exception as _fse:
+            logger.warning("P&L food_split failed: %s", _fse)
         trows = _mq("SELECT COALESCE(SUM(amount),0) as t FROM topup_log WHERE DATE_FORMAT(topup_date, '%%Y-%%m') = %s", (ym,))
         topup_rev = float(trows[0]["t"] or 0) if trows else 0
         # cogs already computed (from first block above)
@@ -743,6 +777,7 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
             "period": ym,
             "revenue": {"game_revenue": round(game_rev,0), "food_revenue": round(food_rev,0), "topup_revenue": round(topup_rev,0), "wallet_consumed": round(wallet_consumed,0), "topup_deferred": round(topup_sales,0), "discounts": round(discounts,0), "deposit_forfeited": round(deposit_forfeited,0), "total_revenue": round(total_revenue,0)},
             "cogs": round(cogs,0), "food_cogs": round(cogs,0),
+            "food_split": food_split,
             "gross_profit": round(total_gross_profit,0), "game_profit": round(game_profit,0), "food_profit": round(food_profit,0),
             "expenses": {"by_category": expenses_by_cat, "total": round(total_expense,0), "depreciation": round(depreciation_exp,0), "total_with_depreciation": round(total_expense_all,0)},
             "operating_profit": round(total_gross_profit - total_expense,0),
