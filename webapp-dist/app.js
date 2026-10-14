@@ -2508,7 +2508,10 @@
     setup() {
       // Same method set as the Sale voucher payment picker (active = Cash + MMQR - CB).
       const PAY_METHODS = ["Cash", "MMQR - CB"];
-      const form = reactive({ member_id: "", name: "", phone: "", initial_mins: 0, amount: 0, payment_splits: [], referral_code: "", is_gift: false, pin: "" });
+      // Member-card default = 90,000 Ks / 600 mins (owner Osmo, 2026-10-14) — auto-filled.
+      const DEFAULT_MINS = 600;
+      const DEFAULT_AMOUNT = 90000;
+      const form = reactive({ member_id: "", name: "", phone: "", initial_mins: DEFAULT_MINS, amount: DEFAULT_AMOUNT, payment_splits: [], referral_code: "", is_gift: false, pin: "" });
       const submitting = ref(false);
       const payPicker = ref(false);
       const payAmountPicker = ref(false);
@@ -2539,7 +2542,7 @@
         payAmountPicker.value = false;
       }
       function removeSplit(i) { form.payment_splits.splice(i, 1); }
-      function onGiftToggle(v) { haptic("light"); if (v) { form.amount = 0; form.payment_splits = []; } }
+      function onGiftToggle(v) { haptic("light"); if (v) { form.amount = 0; form.payment_splits = []; } else { form.amount = DEFAULT_AMOUNT; form.initial_mins = form.initial_mins || DEFAULT_MINS; } }
       async function nextId() { try { const id = PSV.unwrap(await PSV.apiCached("/api/next_member_id")); if (id) form.member_id = String(id); } catch (_e) {} }
       onMounted(nextId);
       async function submit() {
@@ -2557,7 +2560,7 @@
           if (raw && raw.success === false) throw new Error(raw.error || "Register failed");
           const res = PSV.unwrap(raw);
           showToast("Saved ✓ " + (res && res.member_id ? res.member_id : ""), "success");
-          form.name = ""; form.phone = ""; form.initial_mins = 0; form.amount = 0; form.payment_splits = []; form.referral_code = ""; form.is_gift = false; form.pin = "";
+          form.name = ""; form.phone = ""; form.initial_mins = DEFAULT_MINS; form.amount = DEFAULT_AMOUNT; form.payment_splits = []; form.referral_code = ""; form.is_gift = false; form.pin = "";
           nextId();
         } catch (e) {
           const m = String(e && e.message ? e.message : "");
