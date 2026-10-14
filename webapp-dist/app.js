@@ -1033,6 +1033,7 @@
               <van-cell title="Game" :value="fKs(detailSale.amount) + ' Ks'" />
               <van-cell v-if="foodTotal > 0" title="Food" :value="fKs(foodTotal) + ' Ks'" :label="foodLabel" />
               <van-cell v-if="Number(detailSale.discount) > 0" title="Discount" :value="'-' + fKs(detailSale.discount) + ' Ks'" />
+              <van-cell v-if="Number(detailSale.free_mins) > 0" title="🆓 Free (2+1 promo)" :value="detailSale.free_mins + ' mins (not billed)'" />
               <van-cell title="Net Total" style="font-weight:700">
                 <template #value><span class="pv-amount">{{ fKs(detailSale.net) }} Ks</span></template>
               </van-cell>
