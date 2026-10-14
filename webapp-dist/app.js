@@ -5245,8 +5245,15 @@
               <div>Cost (FIFO) <b>{{ fKsR(summary.theoretical_cost) }}</b> Ks</div>
             </div>
           </div>
-          <div class="psv-recipe-sum__split" style="margin-top:6px;font-size:11px;color:var(--psv-text-dim,#64748b)">
-            🍳 {{ fKsR(splitDish.revenue) }} · 🛒 {{ fKsR(splitResale.revenue) }} <span style="opacity:.7">(rev)</span>
+          <div class="psv-recipe-sum__split" style="margin-top:8px;font-size:12px;color:var(--psv-text-dim,#64748b)">
+            <div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-top:1px solid rgba(127,127,127,.18)">
+              <span>🍳 ဟင်းပွဲ <span style="opacity:.7">({{ splitDish.items || 0 }})</span></span>
+              <span style="text-align:right">rev {{ fKsR(splitDish.revenue) }} · cost {{ fKsR(splitDish.theoretical_cost) }} · <b>{{ splitMarginTxt(splitDish) }}</b></span>
+            </div>
+            <div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-top:1px solid rgba(127,127,127,.18)">
+              <span>🛒 Ready-made <span style="opacity:.7">({{ splitResale.items || 0 }})</span></span>
+              <span style="text-align:right">rev {{ fKsR(splitResale.revenue) }} · cost {{ fKsR(splitResale.theoretical_cost) }} · <b>{{ splitMarginTxt(splitResale) }}</b></span>
+            </div>
           </div>
           <div v-if="sumWarn" class="psv-recipe-sum__warn">⚠️ Food cost above 35% — review recipes & pricing</div>
           <div v-else-if="!dishes.length && !resale.length" class="psv-recipe-sum__hint">Add items above to see costing.</div>
@@ -5613,6 +5620,13 @@
       });
       const splitDish = computed(() => (summary.value.split && summary.value.split.dish) || {});
       const splitResale = computed(() => (summary.value.split && summary.value.split.resale) || {});
+      // 🍳 ဟင်းပွဲ vs 🛒 Ready-made — different margins, shown separately.
+      function splitMarginTxt(g) {
+        if (g == null || Number(g.revenue || 0) <= 0) return "—";
+        const m = (g.gross_margin != null) ? Number(g.gross_margin) : (Number(g.revenue || 0) - Number(g.theoretical_cost || 0));
+        const p = (g.margin_pct != null) ? Number(g.margin_pct) : null;
+        return "margin " + fKsR(m) + (p == null ? "" : (" (" + p + "%)"));
+      }
       const sumPct = computed(() => (summary.value.food_cost_pct == null ? "—" : (Number(summary.value.food_cost_pct) || 0) + "%"));
       const sumWarn = computed(() => summary.value.food_cost_pct != null && Number(summary.value.food_cost_pct) > 35);
       const sumColor = computed(() => {
