@@ -679,13 +679,13 @@
 
         <template v-else>
           <div v-if="nativeMode" class="pv-stats pv-stats--premium">
-            <div class="pv-stat pv-stat--accent"><div class="pv-stat__value">{{ fKs(summary.todayRevenue) }}</div><div class="pv-stat__label">Today's Sales (Ks)</div></div>
+            <div class="pv-stat pv-stat--accent"><div class="pv-stat__value">{{ fKs(summary.todayRevenue) }}</div><div class="pv-stat__label">Today's Sales (Ks)</div><div v-if="summary.walletNet > 0" style="font-size:10px;color:var(--pv-muted);margin-top:2px">incl. wallet {{ fKs(summary.walletNet) }}</div></div>
             <div class="pv-stat pv-stat--ok"><div class="pv-stat__value">{{ summary.activeConsoles }}</div><div class="pv-stat__label">Active Sessions</div></div>
             <div class="pv-stat"><div class="pv-stat__value">{{ summary.bookings }}</div><div class="pv-stat__label">Bookings</div></div>
             <div class="pv-stat pv-stat--warn"><div class="pv-stat__value">{{ summary.pendingDeposits }}</div><div class="pv-stat__label">Pending Deposits</div></div>
           </div>
           <div v-else class="pv-stats">
-            <div class="pv-stat pv-stat--accent"><div class="pv-stat__value">{{ fKs(summary.todayRevenue) }}</div><div class="pv-stat__label">Today's Revenue (Ks)</div></div>
+            <div class="pv-stat pv-stat--accent"><div class="pv-stat__value">{{ fKs(summary.todayRevenue) }}</div><div class="pv-stat__label">Today's Revenue (Ks)</div><div v-if="summary.walletNet > 0" style="font-size:10px;color:var(--pv-muted);margin-top:2px">incl. wallet {{ fKs(summary.walletNet) }}</div></div>
             <div class="pv-stat pv-stat--teal"><div class="pv-stat__value">{{ summary.activeConsoles }}</div><div class="pv-stat__label">Active Consoles</div></div>
             <div class="pv-stat"><div class="pv-stat__value">{{ summary.todaySales }}</div><div class="pv-stat__label">Today's Sales</div></div>
             <div class="pv-stat"><div class="pv-stat__value">{{ summary.totalMembers }}</div><div class="pv-stat__label">Total Members</div></div>
@@ -760,7 +760,7 @@
       function doLogout() { PSV.logout(); showToast("Logged out", "success"); }
       const loading = ref(true);
       const refreshing = ref(false);
-      const summary = reactive({ todayRevenue: 0, activeConsoles: 0, todaySales: 0, totalMembers: 0, bookings: 0, pendingDeposits: 0, reconcile: 0 });
+      const summary = reactive({ todayRevenue: 0, walletNet: 0, activeConsoles: 0, todaySales: 0, totalMembers: 0, bookings: 0, pendingDeposits: 0, reconcile: 0 });
       const nativeMode = NATIVE;
       const initials = computed(() => String(staffName.value || "?").trim().slice(0, 2).toUpperCase());
       const PAY_METHODS = ["Cash", "MMQR - CB"];
@@ -936,7 +936,10 @@
             summary.todayRevenue = s.reduce((a, r) => a + (Number(r.net) || 0), 0);
           } else if (s) {
             summary.todaySales = s.total ?? s.count ?? 0;
-            summary.todayRevenue = s.total_net ?? s.total_revenue ?? s.total ?? 0;
+            // 💳 Wallet-covered member plays have no cash row — add their value
+            // (mins used × the member's own purchase rate) into Today's Sales.
+            summary.walletNet = Number(s.wallet_net || 0) || 0;
+            summary.todayRevenue = (Number(s.total_net ?? s.total_revenue ?? s.total ?? 0) || 0) + summary.walletNet;
           }
         }
         if (recon.status === "fulfilled" && recon.value) {

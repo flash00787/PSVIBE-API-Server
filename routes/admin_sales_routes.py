@@ -317,8 +317,37 @@ async def api_sales_list_today(auth=Depends(verify_api_key)):
             "FROM sales_daily WHERE sale_date >= %s", (_mmt_today_start,))
         total_net = float(total_row["total"]) if total_row else 0.0
         topup_net = float(total_row["topup_total"]) if total_row else 0.0
+        # 💳 Wallet-covered member plays (owner Osmo 2026-10-14): a card session
+        # collects no cash for the game, so sales_daily.net holds only food/extras
+        # and the wallet value never reached "Today's Sales". Count the value of the
+        # wallet minutes consumed — valued at the member's OWN purchase rate
+        # (amount paid ÷ minutes bought in topup_log), NOT the cash base rate.
+        # The deducted minutes are in notes ("Wallet: -180 mins (bal 600 -> 420)").
+        import re as _re
+        wallet_net = 0.0
+        try:
+            _wallet_rows = _mysql_query(
+                "SELECT member_id, billable_mins, notes FROM sales_daily "
+                "WHERE sale_date >= %s AND is_topup=0 AND notes LIKE '%%Wallet: -%%'",
+                (_mmt_today_start,))
+            _rate_map = {}
+            for _r in _mysql_query("SELECT member_id, SUM(amount) AS amt, SUM(mins_added) AS mins FROM topup_log WHERE mins_added > 0 GROUP BY member_id"):
+                _m = float(_r.get("mins") or 0)
+                if _m > 0:
+                    _rate_map[str(_r.get("member_id"))] = float(_r.get("amt") or 0) / _m
+            for _r in _wallet_rows:
+                _note = str(_r.get("notes") or "")
+                _mm = _re.search(r"Wallet:\s*-(\d+)\s*mins", _note)
+                _mins = float(_mm.group(1)) if _mm else float(_r.get("billable_mins") or 0)
+                _rate = _rate_map.get(str(_r.get("member_id"))) or 0.0
+                wallet_net += _mins * _rate
+            wallet_net = round(wallet_net)
+        except Exception as _we:
+            logger.warning("wallet_net calc failed: %s", _we)
+            wallet_net = 0.0
         return ok({"records": rows, "total_net": total_net, "topup_net": topup_net,
-                   "total_collected": total_net + topup_net, "count": len(rows), "date": _mmt_today})
+                   "wallet_net": wallet_net,
+                   "total_collected": total_net + topup_net + wallet_net, "count": len(rows), "date": _mmt_today})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
