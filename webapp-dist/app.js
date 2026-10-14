@@ -8472,9 +8472,14 @@
           <div class="psv-card psv-receipt">
             <div class="psv-receipt__title">Receipt preview</div>
             <div class="psv-row"><span>Member</span><b>{{ member.name || '—' }}</b></div>
+            <div class="psv-row" v-if="member.id"><span>Tier</span><b>{{ tierLabel }}</b></div>
             <div class="psv-row"><span>Amount</span><b class="psv-tabnum">{{ fKs(amount) }} Ks</b></div>
             <div class="psv-row"><span>Method</span><b>{{ method }}</b></div>
-            <div class="psv-row psv-receipt__total"><span>Credit</span><b class="psv-tabnum">{{ fKs(amount) }} Ks</b></div>
+            <div class="psv-row" v-if="Number(amount) > 0"><span>Base</span><b class="psv-tabnum">{{ preview.base }} mins</b></div>
+            <div class="psv-row" v-if="Number(amount) > 0 && preview.bonus > 0"><span>Bonus</span><b class="psv-tabnum">+{{ preview.bonus }} mins</b></div>
+            <div class="psv-row psv-receipt__total" v-if="Number(amount) > 0"><span>Credit</span><b class="psv-tabnum">{{ preview.total }} mins</b></div>
+            <div class="psv-row" v-if="preview.before != null"><span>Before Bal</span><b class="psv-tabnum">{{ preview.before }} mins</b></div>
+            <div class="psv-row" v-if="preview.after != null"><span>After Bal</span><b class="psv-tabnum">{{ preview.after }} mins</b></div>
           </div>
 
           <button class="psv-btn psv-btn--primary psv-btn--block" :disabled="busy || !member.id || !(Number(amount) > 0)" @click="submit">
@@ -8546,7 +8551,50 @@
           catch (e) { showToast("Load failed: " + e.message, "fail"); }
         }
       }
-      function pick(m) { member.id = m.id; member.name = m.name || m.id; picker.value = false; haptic("light"); }
+      function pick(m) { member.id = m.id; member.name = m.name || m.id; picker.value = false; tier.value = m.tier || ""; haptic("light"); loadConfigOnce(); loadMemberPreview(m.id); }
+
+      // ── Top-up bonus + balance preview (owner Osmo, 2026-10-14): show the tier-based
+      // bonus minutes and the Before/After balance on the Deposit screen, like Sale. ──
+      const cfg = reactive({ base_rate: 10000, bonus_table: [], loaded: false });
+      const tier = ref("");
+      const beforeBal = ref(null);
+      const tierLabel = computed(() => tier.value || "Warrior");
+      function calcTopupBonus(rank, amt, table) {
+        if (amt <= 0) return 0;
+        if (!Array.isArray(table) || !table.length) return 0;
+        let chosen = null;
+        for (const row of table) {
+          const thr = Number(row.threshold ?? row[0] ?? 0) || 0;
+          if (thr <= amt && (chosen === null || thr > Number(chosen.threshold ?? chosen[0] ?? 0))) chosen = row;
+        }
+        if (chosen === null) return 0;
+        if (rank === "Immortal") return Number(chosen.immortal_bonus ?? chosen[3] ?? 0) || 0;
+        if (rank === "Master") return Number(chosen.master_bonus ?? chosen[2] ?? 0) || 0;
+        return Number(chosen.warrior_bonus ?? chosen[1] ?? 0) || 0;
+      }
+      const preview = computed(() => {
+        const amt = Number(amount.value) || 0;
+        const base = cfg.base_rate > 0 ? Math.round((amt * 60) / cfg.base_rate) : amt;
+        const bonus = calcTopupBonus(tierLabel.value, amt, cfg.bonus_table);
+        const total = Math.round(base) + bonus;
+        const before = (beforeBal.value == null) ? null : Number(beforeBal.value);
+        return { base: Math.round(base), bonus, total, before, after: before == null ? null : before + total };
+      });
+      async function loadConfigOnce() {
+        if (cfg.loaded) return;
+        cfg.loaded = true;
+        const [base, bonus] = await Promise.allSettled([
+          PSV.apiCached("/api/fetch_base_rate", {}, 600000),
+          PSV.apiCached("/api/fetch_bonus_table", {}, 600000),
+        ]);
+        if (base.status === "fulfilled") { const v = Number(PSV.unwrap(base.value)); if (!isNaN(v) && v > 0) cfg.base_rate = v; }
+        if (bonus.status === "fulfilled") { const b = PSV.unwrap(bonus.value); if (Array.isArray(b) && b.length) cfg.bonus_table = b; }
+      }
+      async function loadMemberPreview(id) {
+        beforeBal.value = null;
+        try { const v = Number(PSV.unwrap(await PSV.apiCached("/api/fetch_wallet_mins/" + encodeURIComponent(id)))); if (!isNaN(v)) beforeBal.value = v; } catch (_e) {}
+        try { const d = PSV.unwrap(await PSV.apiCached("/api/fetch_member_data/" + encodeURIComponent(id))); if (d && d.rank_raw) tier.value = d.rank_raw; } catch (_e) {}
+      }
       // 🧾 WAVE 2 top-up receipt (reuses the PrintScreen / printVoucher 576px pipeline)
       const receiptOpen = ref(false);
       const receiptPng = ref("");
@@ -8603,7 +8651,7 @@
         } catch (e) { showToast("Error: " + e.message, "fail"); }
         finally { busy.value = false; }
       }
-      return { picker, q, members, member, amount, method, busy, quick, filtered, methods: DEPOSIT_METHODS, initials, openPicker, pick, submit, fKs, receiptOpen, receiptPng, printingReceipt, receipt, printReceipt };
+      return { picker, q, members, member, amount, method, busy, quick, filtered, methods: DEPOSIT_METHODS, initials, openPicker, pick, submit, fKs, receiptOpen, receiptPng, printingReceipt, receipt, printReceipt, tier, tierLabel, preview };
     },
   };
 
