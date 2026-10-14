@@ -1508,13 +1508,17 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
         # Cost used for the report = FIFO (matches the P&L); fall back to the
         # recipe/current-price value when FIFO has no layer for this item.
         fifo_cost = fifo_map.get(name)
+        if fifo_cost is None:
+            # Dish: its ingredients ARE stocked and consumed FIFO, but the cost
+            # lives in `ingredient_consumption` (not as a stock layer of the dish
+            # itself). This IS the FIFO cost of the dish.
+            _ic = actual_cogs_map.get(name)
+            if _ic is not None:
+                fifo_cost = float(_ic)
         if fifo_cost is not None:
             cost_used = Decimal(str(fifo_cost))
             cost_source = "fifo"
         else:
-            # No FIFO layer for this item (e.g. a dish whose ingredients are not
-            # stocked). Leave it uncosted so the total stays EXACTLY the P&L's
-            # FIFO food COGS (owner Osmo 2026-10-14: "FIFO နဲ့ပဲ တွက်ပါ").
             cost_used = None
             if uncosted_reason is None:
                 uncosted_reason = "no_fifo_layer"

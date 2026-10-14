@@ -674,6 +674,15 @@ async def get_monthly_pnl(year: int = 2026, month: int = 6, user: dict = Depends
         _sfc2.close()
         prev_cogs = _sfr2["cogs"]
         cogs = max(0.0, cogs_cum - prev_cogs)
+        # 💰 Add DISH ingredient consumption (FIFO). A dish has no stock layer of its
+        # own; its real cost is the FIFO consumption of its ingredients
+        # (`ingredient_consumption`). Owner Osmo 2026-10-14: ingredients ARE stocked
+        # and this cost must be in the P&L food COGS (and match Recipe & Cost).
+        try:
+            _ic_row = _mqo("SELECT COALESCE(SUM(cost),0) AS t FROM ingredient_consumption WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s", (ym,))
+            cogs += float(_ic_row.get("t", 0) or 0) if _ic_row else 0.0
+        except Exception:
+            pass
         # --- GAME REVENUE = total_sales - food_rev (food_REV is already in sales_daily total) ---
         game_rev = total_sales - food_rev
         # Ensure no negative game revenue
