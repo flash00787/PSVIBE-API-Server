@@ -22,6 +22,52 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=['Admin'])
 
+
+def _normalize_pm_to_net(pm, net_total):
+    """Owner Osmo 2026-10-14 (option B): when the SERVER redeems a booking deposit the
+    client's payment split still holds the PRE-deposit bill, so the recorded payment
+    could exceed the net. Rescale the non-deposit parts so their sum == net_total.
+    Deposit '(dep)' parts are preserved verbatim and appended last. Never raises."""
+    try:
+        net = float(net_total or 0)
+        if net <= 0 or not pm:
+            return pm
+        import re as _re
+        toks = [t.strip() for t in _re.split(r"[|/]", str(pm)) if t.strip()]
+        keep, deps, bare = [], [], 0
+        for t in toks:
+            if "(dep)" in t.lower():
+                deps.append(t)
+                continue
+            if ":" in t:
+                m, _, v = t.partition(":")
+                try:
+                    amt = float(v.strip() or "0")
+                except ValueError:
+                    amt = 0.0
+                keep.append([m.strip(), amt])
+            else:
+                keep.append([t, None])  # bare method (no explicit amount)
+                bare += 1
+        if bare:
+            if len(keep) == 1 and bare == 1:
+                keep = [[keep[0][0], net]]   # single bare method = the whole net
+            else:
+                return pm                     # ambiguous → leave the pm untouched
+        _s = sum(a for _m, a in keep)
+        if _s > 0 and abs(_s - net) > 0.5:
+            _f = net / _s
+            scaled = [[m, round(a * _f)] for m, a in keep]
+            _diff = int(round(net - sum(a for _m, a in scaled)))
+            if scaled:
+                scaled[0][1] = int(scaled[0][1] + _diff)
+            keep = scaled
+        out = [f"{m}:{int(round(a))}" for m, a in keep]
+        out += deps
+        return "|".join(out)
+    except Exception:
+        return pm
+
 # ═══════════════════════════════════════
 @router.get("/fetch_staff", response_model=GenericResponse, tags=["Staff"], summary="Fetch staff list [MySQL]")
 async def api_fetch_staff(auth=Depends(verify_api_key)):
@@ -830,6 +876,10 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                             # Staff App path: server is the source of truth -> deduct from net
                             # (deposit was already recognised as income at verify time).
                             net_total = max(0.0, float(net_total) - deposit_deducted)
+                            # 🚨 Owner Osmo 2026-10-14 (option B): the client's split still
+                            # holds the PRE-deposit bill → rescale its non-deposit parts
+                            # to the new net so the recorded payment never exceeds it.
+                            payment_method = _normalize_pm_to_net(payment_method, net_total)
                             # 2026-09-28: include every live method (mmqr_cb was missing ->
                             # an MMQR-paid deposit was mislabelled KPay, understating MMQR by 6,000).
                             _dep_label = {"kpay": "KPay", "wavepay": "WavePay", "aya_pay": "AYA Pay",
