@@ -2347,7 +2347,13 @@
         <van-skeleton title :row="4" v-if="loading" style="margin:12px" />
         <van-empty v-else-if="!filtered.length" description="No members found" />
         <van-cell-group v-else inset style="margin-top:8px">
-          <van-cell v-for="m in filtered" :key="m.id" :title="m.name || m.id" :label="'ID ' + (m.id||'-') + ' · ' + (m.phone||'-') + ' · ' + (m.wallet_balance ?? m.liability_mins ?? 0) + ' mins'" is-link @click="openDetail(m)" />
+          <van-cell v-for="m in filtered" :key="m.id" is-link @click="openDetail(m)">
+            <template #title>
+              <span>{{ m.name || m.id }}</span>
+              <span :style="tierStyle(m.tier)">{{ m.tier || 'Warrior' }}</span>
+            </template>
+            <template #label>{{ 'ID ' + (m.id||'-') + ' · ' + (m.phone||'-') + ' · ' + (m.wallet_balance ?? m.liability_mins ?? 0) + ' mins' }}</template>
+          </van-cell>
         </van-cell-group>
 
         <van-action-sheet v-model:show="detail.show" :title="detail.title">
@@ -2386,6 +2392,18 @@
         if (!q) return members.value;
         return members.value.filter((m) => (m.name && String(m.name).toLowerCase().includes(q)) || (m.phone && String(m.phone).includes(q)) || (m.id && String(m.id).includes(q)));
       });
+
+      // 🏅 Current-tier badge beside each member name (owner Osmo, 2026-10-14).
+      function tierStyle(t) {
+        const base = { display: "inline-block", marginLeft: "8px", padding: "1px 7px", borderRadius: "10px", fontSize: "11px", fontWeight: "700", verticalAlign: "middle", lineHeight: "1.5" };
+        const map = {
+          "Immortal": { background: "#3a2a06", color: "#f5c451", border: "1px solid #b8860b" },
+          "Master":   { background: "#10233b", color: "#6db3ff", border: "1px solid #2f6fbf" },
+          "VIP":      { background: "#2a1030", color: "#e08cff", border: "1px solid #9b30d0" },
+          "Warrior":  { background: "#1b2430", color: "#9fb0c0", border: "1px solid #3a4a5a" },
+        };
+        return Object.assign(base, map[String(t || "").trim()] || map["Warrior"]);
+      }
 
       async function load() {
         loading.value = true;
@@ -2437,7 +2455,7 @@
         } catch (e) { showToast("Error: " + e.message, "fail"); }
       }
 
-      return { query, loading, members, filtered, detail, dlg, fKs, router, openDetail, act, confirmAction };
+      return { query, loading, members, filtered, detail, dlg, fKs, router, openDetail, act, confirmAction, tierStyle };
     },
   };
 
