@@ -1437,6 +1437,31 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
     except Exception:
         pass  # ingredient_consumption may not exist yet
 
+    # 💰 FIFO cost per item — SAME basis as the P&L Food COGS (owner Osmo 2026-10-14:
+    # "FIFO နဲ့ပဲ တွက်ပါ"): cum(month) − cum(prev month) of stock_fifo.calc_fifo.
+    fifo_map = {}
+    try:
+        import os as _os, pymysql as _pmysql, stock_fifo as _sf
+        _pw = _os.environ.get("MYSQL_ROOT_PASSWORD", "")
+        def _fc(ym_):
+            _cn = _pmysql.connect(host="127.0.0.1", user="root", password=_pw, database="psvibe_api")
+            try:
+                return _sf.calc_fifo(_cn, ym_, cumulative=True)
+            finally:
+                _cn.close()
+        _cur = _fc(month)
+        _y2, _m2 = int(month[:4]), int(month[5:7])
+        _prev_ym = f"{_y2-1:04d}-12" if _m2 == 1 else f"{_y2:04d}-{_m2-1:02d}"
+        _prv = _fc(_prev_ym)
+        _pmap = {str(d.get("item") or "").strip(): float(d.get("cogs") or 0) for d in _prv.get("details", [])}
+        for d in _cur.get("details", []):
+            _nm = str(d.get("item") or "").strip()
+            _v = float(d.get("cogs") or 0) - _pmap.get(_nm, 0.0)
+            if abs(_v) > 0.5:
+                fifo_map[_nm] = _v
+    except Exception as _fe:
+        logger.warning("food-cost-report FIFO calc failed: %s", _fe)
+
     breakdown = []
     total_revenue = Decimal("0")
     total_theoretical = Decimal("0")
@@ -1480,9 +1505,22 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
                 portion_cost = unit_cost
 
         theoretical = portion_cost * qty if portion_cost is not None else None
-        if theoretical is not None:
-            total_theoretical += theoretical
-            split[etype]["theoretical_cost"] += theoretical
+        # Cost used for the report = FIFO (matches the P&L); fall back to the
+        # recipe/current-price value when FIFO has no layer for this item.
+        fifo_cost = fifo_map.get(name)
+        if fifo_cost is not None:
+            cost_used = Decimal(str(fifo_cost))
+            cost_source = "fifo"
+        else:
+            # No FIFO layer for this item (e.g. a dish whose ingredients are not
+            # stocked). Leave it uncosted so the total stays EXACTLY the P&L's
+            # FIFO food COGS (owner Osmo 2026-10-14: "FIFO နဲ့ပဲ တွက်ပါ").
+            cost_used = None
+            if uncosted_reason is None:
+                uncosted_reason = "no_fifo_layer"
+        if cost_used is not None:
+            total_theoretical += cost_used
+            split[etype]["theoretical_cost"] += cost_used
         split[etype]["revenue"] += revenue
         split[etype]["items"] += 1
 
@@ -1501,7 +1539,9 @@ async def food_cost_report(month: str = Query(...), request: Request = None,
             "revenue": _num(revenue),
             "unit_cost": _num(unit_cost),
             "portion_cost": _num(portion_cost),
-            "theoretical_cost": _num(theoretical),
+            "theoretical_cost": _num(cost_used),
+            "recipe_cost": _num(theoretical),
+            "fifo_cost": _num(fifo_cost),
             "missing_ingredients": missing,
             "no_purchase_yet": no_purchase,
             "actual_cogs": _num(actual_cogs_map.get(name)),

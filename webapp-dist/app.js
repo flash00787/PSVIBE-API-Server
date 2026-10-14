@@ -5242,7 +5242,7 @@
             </div>
             <div class="psv-recipe-sum__meta">
               <div>Revenue <b>{{ fKsR(summary.revenue) }}</b> Ks</div>
-              <div>Est. cost <b>{{ fKsR(summary.theoretical_cost) }}</b> Ks</div>
+              <div>Cost (FIFO) <b>{{ fKsR(summary.theoretical_cost) }}</b> Ks</div>
             </div>
           </div>
           <div class="psv-recipe-sum__split" style="margin-top:6px;font-size:11px;color:var(--psv-text-dim,#64748b)">
