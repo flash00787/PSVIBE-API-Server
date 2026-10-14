@@ -426,8 +426,14 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
         # (= the whole top-up amount on that account). 2026-10-14 (Osmo):
         # a bare method used to be silently dropped, so a new-member MMQR
         # payment never reached the MMQR - CB balance — parse every shape.
-        topup_rows = _mq("SELECT payment_method, amount FROM topup_log WHERE amount > 0 AND payment_method IS NOT NULL AND topup_date >= %s AND topup_date < %s", (_start, _end))
+        topup_rows = _mq("SELECT member_id, payment_method, amount FROM topup_log WHERE amount > 0 AND payment_method IS NOT NULL AND topup_date >= %s AND topup_date < %s", (_start, _end))
+        # Owner's OWN member card (PSV_A_000) — a self top-up is NOT shop income
+        # (owner Osmo 2026-10-14, option (b): exclude topup #51 50,000 'Cash' 2026-09-19
+        # which had been recognised late and inflated the live Cash balance).
+        _OWNER_SELF_CARDS = {"PSV_A_000"}
         for _tr in topup_rows:
+            if str(_tr.get("member_id") or "").strip() in _OWNER_SELF_CARDS:
+                continue
             _pm = (_tr.get("payment_method") or "").strip()
             if not _pm: continue
             _row_amt = float(_tr.get("amount") or 0)
