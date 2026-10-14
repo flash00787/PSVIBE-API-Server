@@ -420,13 +420,22 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                     method = "mmqr_cb"
                 if method in income_by_account:
                     income_by_account[method] += val
-        # Topup income
+        # Topup income (new-member card sales + top-ups).
+        # Payment strings appear in several shapes: "KPay:90000/Cash:0",
+        # "MMQR - CB:90000|Cash:0", or a BARE single method "MMQR - CB"
+        # (= the whole top-up amount on that account). 2026-10-14 (Osmo):
+        # a bare method used to be silently dropped, so a new-member MMQR
+        # payment never reached the MMQR - CB balance — parse every shape.
         topup_rows = _mq("SELECT payment_method, amount FROM topup_log WHERE amount > 0 AND payment_method IS NOT NULL AND topup_date >= %s AND topup_date < %s", (_start, _end))
         for _tr in topup_rows:
             _pm = (_tr.get("payment_method") or "").strip()
             if not _pm: continue
-            for _part in _pm.split("/"):
-                _part = _part.strip()
+            _row_amt = float(_tr.get("amount") or 0)
+            _parts = [p.strip() for p in re.split(r"[|/]", _pm) if p.strip()]
+            if not _parts: continue
+            _bare = [p for p in _parts if ":" not in p]
+            _bare_share = (_row_amt / len(_bare)) if _bare else 0.0
+            for _part in _parts:
                 if ":" in _part:
                     _method, _, _val = _part.partition(":")
                     _method = _method.strip().lower().replace(" ", "_")
@@ -434,10 +443,15 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                         _val = float(_val.strip() or 0) if _val.strip() else 0
                     except ValueError:
                         continue
-                    if _method == "wavepay": _method = "wave"
-                    if _method == "mmqr_-_cb": _method = "mmqr_cb"
-                    if _method in income_by_account:
-                        income_by_account[_method] += _val
+                else:
+                    # bare method name → the row's amount sits on this account
+                    _method = _part.lower().replace(" ", "_")
+                    _val = _bare_share
+                if _method == "wavepay": _method = "wave"
+                if _method in ("mmqr_-_cb", "mmqr_cb", "mmqr"): _method = "mmqr_cb"
+                if _method == "aya": _method = "aya_pay"
+                if _method in income_by_account and _val > 0:
+                    income_by_account[_method] += _val
 
         opex_rows = _mq("SELECT payment_method, COALESCE(SUM(amount), 0) as total FROM opex WHERE description NOT LIKE %s AND expense_date >= %s AND expense_date < %s GROUP BY payment_method", ("%Prepaid Rent Amortization%", _start, _end))
         opex_by_acct = {acc["key"]: 0.0 for acc in accounts}
