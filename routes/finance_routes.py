@@ -1741,19 +1741,24 @@ async def get_reconciliation(
         # 2. Fetch sales_daily for this date
         sales_records = _mysql_query("""
             SELECT id, voucher_no, console_id, amount, net, gross, discount,
-                   payment_method, notes, created_at, sale_date
+                   payment_method, notes, created_at, sale_date, billable_mins, free_mins
             FROM sales_daily
             WHERE DATE(sale_date) = %s
               AND console_id IS NOT NULL AND console_id != ''
             ORDER BY console_id, created_at
         """, (date,)) or []
 
-        # 3. Parse play minutes from sales notes — 2+1: use the BILLABLE minutes
-        # (excludes the promo FREE hour); Osmo 2026-10-14.
+        # 3. Sale "played minutes" for MATCHING = the TOTAL session time
+        # (billable + promo free) — that is what the console_session duration
+        # measures. 2+1 sales store billable_mins (paid) + free_mins (promo);
+        # their SUM must be compared with the session's actual duration, NOT the
+        # billable alone (Osmo 2026-10-14: 2+1 sessions showed as missing+orphan).
         for sr in sales_records:
             notes = sr.get("notes") or ""
-            if sr.get("billable_mins"):
-                sr["_play_mins"] = int(sr["billable_mins"])
+            _b = int(sr.get("billable_mins") or 0)
+            _f = int(sr.get("free_mins") or 0)
+            if _b or _f:
+                sr["_play_mins"] = _b + _f
             else:
                 m = re.search(r'Mins?:?\s*(\d+)', notes, re.IGNORECASE)
                 sr["_play_mins"] = int(m.group(1)) if m else 0
@@ -1766,8 +1771,9 @@ async def get_reconciliation(
         for session in done_sessions:
             sid = session["booking_id"]
             cid = session["console_id"]
-            # 2+1: prefer the BILLABLE minutes (excludes the promo FREE hour).
-            actual = session.get("billable_mins") or session.get("actual_mins") or 0
+            # MATCHING uses the session's MEASURED duration (what the console ran);
+            # the sale side uses billable+free (total) — see the parse above.
+            actual = session.get("actual_mins") or 0
             if actual <= 0 and session.get("duration_mins"):
                 actual = session["duration_mins"]
 
@@ -1802,9 +1808,11 @@ async def get_reconciliation(
         missing_sales = []
         for session in done_sessions:
             if session["booking_id"] not in matched_session_ids:
+                # Estimate the unrecorded sale at the BILLABLE minutes (excludes the
+                # promo FREE hour) — Osmo 2026-10-14.
                 actual = session.get("billable_mins") or session.get("actual_mins") or session.get("duration_mins") or 0
                 if actual <= 0:
-                    actual = session.get("duration_mins") or 0
+                    actual = session.get("actual_mins") or session.get("duration_mins") or 0
                 mult = parse_multiplier(session.get("console_id", ""))
                 est = round((actual / 60) * 10000 * mult)
                 missing_sales.append({
