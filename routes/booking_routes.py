@@ -1070,6 +1070,37 @@ async def api_bookings_create(req: dict, auth=Depends(verify_api_key), _rl=Depen
 
 
 
+def _raw_mysql_conn():
+    """Open a raw MySQL connection (write paths) with a short retry on transient drops.
+
+    2026-10-15: a momentary "MySQL server has gone away" (2006) on the booking-status
+    endpoint surfaced as a 500 in the Staff App (BK reject). Every other endpoint
+    self-heals through the pooled connection (mysql_db, DBUtils ping=1); this path
+    opens its own connection, so retry briefly here instead of failing the user.
+    """
+    import time as _time
+    _last = None
+    for _attempt in range(3):
+        try:
+            return _mc.connect(
+                host=os.environ.get('MYSQL_HOST', 'localhost'),
+                user=os.environ.get('MYSQL_USER', 'root'),
+                password=os.environ.get('MYSQL_PASSWORD', ''),
+                database=os.environ.get('MYSQL_DATABASE', 'psvibe'),
+                port=int(os.environ.get('MYSQL_PORT', '3306')),
+                charset='utf8mb4',
+                connection_timeout=10,
+            )
+        except Exception as _e:  # only transient drops are retried; others re-raise
+            _last = _e
+            _m = str(_e).lower()
+            if ('gone away' in _m) or ('lost connection' in _m) or ('connection reset' in _m) or ("can't connect" in _m) or ('cannot connect' in _m):
+                _time.sleep(0.25 * (_attempt + 1))
+                continue
+            raise
+    raise _last
+
+
 @router.patch("/bookings/{booking_id}/status", response_model=GenericResponse, tags=["Bookings"], summary="Update booking status (approve/reject) [MySQL]")
 async def api_update_booking_status(booking_id: int, req: dict, request: Request, auth=Depends(verify_api_key)):
     """Update a booking's status and optionally assign a console (approve/reject/cancel).
@@ -1081,14 +1112,7 @@ async def api_update_booking_status(booking_id: int, req: dict, request: Request
         if status not in ("pending", "confirmed", "rejected", "pending_check_in", "checked_in", "Active", "cancelled", "Done"):
             return error_response(message=f"Invalid status: {status}")
         # HI-1: Optimistic lock — only approve pending bookings
-        _app_conn = _mc.connect(
-            host=os.environ.get('MYSQL_HOST', 'localhost'),
-            user=os.environ.get('MYSQL_USER', 'root'),
-            password=os.environ.get('MYSQL_PASSWORD', ''),
-            database=os.environ.get('MYSQL_DATABASE', 'psvibe'),
-            port=int(os.environ.get('MYSQL_PORT', '3306')),
-            charset='utf8mb4'
-        )
+        _app_conn = _raw_mysql_conn()
         _app_conn.start_transaction()
         _app_cur = _app_conn.cursor()
         try:
@@ -1289,6 +1313,7 @@ async def api_update_booking_status(booking_id: int, req: dict, request: Request
                 pass  # non-critical: connection close
         return ok({"booking_id": booking_id, "status": status})
     except Exception as e:
+        logger.exception("api_update_booking_status failed BK#%s status=%s: %s", booking_id, req.get("status"), e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
