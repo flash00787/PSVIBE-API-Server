@@ -1603,6 +1603,10 @@
           label: (bits.join(" · ") || "Draft") + " · " + fKs(Number(cashNetTotal.value) || 0) + " Ks",
           form: JSON.parse(JSON.stringify(form)),
           food: JSON.parse(JSON.stringify(foodLines.value || [])),
+          // ↩️ 2026-10-15: the deposit redemption link MUST ride with the draft —
+          // otherwise restoring it silently drops a paid deposit and the sale
+          // charges the customer the FULL amount (BK#4114 / V-WEB-20261015163319-965).
+          deposit: depositRedeem.value ? { booking_id: depositRedeem.value.booking_id, amount: Number(depositRedeem.value.amount) || 0, method: depositRedeem.value.method || "", applied: !!depositApplied.value } : null,
         };
         await DraftStore.save(snap);
         loadDrafts();
@@ -1619,6 +1623,14 @@
         form.payment_splits = JSON.parse(JSON.stringify(f.payment_splits || []));
         foodLines.value = JSON.parse(JSON.stringify(d.food || []));
         try { recomputeFood(); } catch (_e) {}
+        // ↩️ 2026-10-15: restore the deposit redemption link carried by the draft,
+        // then re-probe (safety net) so an unredeemed verified deposit is re-flagged.
+        if (d.deposit && Number(d.deposit.amount) > 0) {
+          depositRedeem.value = { booking_id: d.deposit.booking_id, amount: Number(d.deposit.amount) || 0, method: d.deposit.method || "", ts: Date.now() };
+          depositApplied.value = !!d.deposit.applied;
+          try { PSV.pendingDepositRedeem = depositRedeem.value; } catch (_e2) {}
+        }
+        try { probeDeposits(); } catch (_e3) {}
         restoredDraftId = d.id;
         // Consumed into the form → remove from server + local list (same as old localStorage behavior).
         DraftStore.remove(d.id);
@@ -2038,6 +2050,8 @@
           label: (bits.join(" · ") || "Draft") + " · " + fKs(Number(cashNetTotal.value) || 0) + " Ks",
           form: JSON.parse(JSON.stringify(form)),
           food: JSON.parse(JSON.stringify(foodLines.value || [])),
+          // ↩️ 2026-10-15: keep the deposit link in the draft (see saveDraft).
+          deposit: depositRedeem.value ? { booking_id: depositRedeem.value.booking_id, amount: Number(depositRedeem.value.amount) || 0, method: depositRedeem.value.method || "", applied: !!depositApplied.value } : null,
         };
         DraftStore.save(snap).then(function () { loadDrafts(); notifyDraftsChanged(); });
         showToast("💾 Saved as draft — find it in Drafts", "success");
