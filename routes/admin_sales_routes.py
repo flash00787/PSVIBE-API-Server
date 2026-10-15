@@ -719,9 +719,14 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                         "SELECT id, actual_start, actual_duration_mins FROM console_sessions "
                         "WHERE console_id=%s AND status='active' ORDER BY id DESC LIMIT 1", (console_id,))
                 if _sess_row and _sess_row.get("actual_start"):
-                    _T = int(_sess_row.get("actual_duration_mins") or 0)
+                    # ⚠️ 2026-10-15 (Osmo/Kai): the 2+1 tier MUST use the ACTUAL played
+                    # minutes from the request (same basis as the billed game amount).
+                    # console_sessions.actual_duration_mins holds the ALLOCATED/planned
+                    # duration — using it priced a 75-min session as 180 min
+                    # (billable 120 = 24,000 Ks instead of 15,000). Fallback only.
+                    _T = int(float(mins or 0) or 0)
                     if _T <= 0:
-                        _T = int(float(mins or 0))
+                        _T = int(_sess_row.get("actual_duration_mins") or 0)
                     _d2p = _compute_d2p(_sess_row.get("actual_start"), _T, _promo_row)
                     if _d2p:
                         _B = _d2p["billable_mins"]
