@@ -1490,11 +1490,15 @@ async def calculate_profit_distribution(
     except Exception:
         wallet_consumed = 0.0
     
-    # Deposit forfeited income (ALIGNED with PNL)
+    # Deposit forfeited income (ALIGNED with PNL) — date by CANCELLED_AT so a
+    # booking created in one month but forfeited in the next lands in the month it
+    # was actually forfeited (the P&L uses COALESCE(cancelled_at, created_at);
+    # 2026-10-16: booking 3015 = 9,000 Ks created 2026-08-31 but cancelled in
+    # September → the distribution had it in August while the P&L had it in Sep).
     _dep_forfeit = _mq(
         "SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings "
         "WHERE deposit_status='forfeited' "
-        "AND DATE_FORMAT(created_at, '%%Y-%%m') = %s",
+        "AND DATE_FORMAT(COALESCE(cancelled_at, created_at), '%%Y-%%m') = %s",
         (ym,)
     )
     deposit_forfeited = float(_dep_forfeit[0]["t"] or 0) if _dep_forfeit else 0
@@ -1525,6 +1529,32 @@ async def calculate_profit_distribution(
         cogs = max(0.0, cogs_cum - prev_cogs)
     except Exception:
         cogs = 0.0
+
+    # 💰 Add DISH ingredient consumption (FIFO) — the P&L food COGS includes it
+    # (owner Osmo 2026-10-14: ingredients ARE stocked; a dish has no stock layer
+    # of its own).  2026-10-16: the distribution was missing this (+51,870 Ks in
+    # Oct-2026) so the shared profit was overstated.
+    try:
+        _ic_rows = _mq(
+            "SELECT COALESCE(SUM(cost),0) AS t FROM ingredient_consumption "
+            "WHERE DATE_FORMAT(created_at, '%%Y-%%m') = %s", (ym,))
+        ingredient_cogs = float(_ic_rows[0]["t"] or 0) if _ic_rows else 0.0
+    except Exception:
+        ingredient_cogs = 0.0
+    cogs += ingredient_cogs
+
+    # ── 4b. Other income / (expense): asset disposal gain/loss ──
+    # The monthly P&L adds `asset_disposals.profit_loss` for the period
+    # (`net_profit = gross - expenses + disposal_gain_loss_net`).  The profit
+    # distribution MUST use the same net, otherwise a month with a big disposal
+    # loss (Oct-2026: -2,190,394 Ks) distributes a profit that does not exist.
+    try:
+        _disp_rows = _mq(
+            "SELECT COALESCE(SUM(profit_loss),0) AS t FROM asset_disposals "
+            "WHERE DATE_FORMAT(disposal_date, '%%Y-%%m') = %s", (ym,))
+        disposal_gain_loss_net = float(_disp_rows[0]["t"] or 0) if _disp_rows else 0.0
+    except Exception:
+        disposal_gain_loss_net = 0.0
     
     # ── 4. Depreciation (TEMPORARILY DISABLED 2026-09-22 Osmo) ──
     if INCLUDE_DEPRECIATION_IN_PNL:
@@ -1539,7 +1569,7 @@ async def calculate_profit_distribution(
     
     # ── 5. Net profit (ALIGNED with PNL) ──
     gross_profit = total_revenue - cogs
-    net_profit = gross_profit - total_expense - total_dep
+    net_profit = gross_profit - total_expense - total_dep + disposal_gain_loss_net
     
     mgmt_fee = round(net_profit * 0.10, 0) if net_profit > 0 else 0
     distributable = round(net_profit * 0.90, 0) if net_profit > 0 else round(net_profit, 0)
@@ -1595,7 +1625,9 @@ async def calculate_profit_distribution(
             "cogs": round(cogs, 0),
             "gross_profit": round(gross_profit, 0),
             "total_expense": round(total_expense, 0),
-            "depreciation": round(total_dep, 0)
+            "depreciation": round(total_dep, 0),
+            "ingredient_cogs": round(ingredient_cogs, 0),
+            "disposal_gain_loss_net": round(disposal_gain_loss_net, 0)
         },
         "is_profitable": net_profit > 0
     }}
