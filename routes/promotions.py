@@ -119,15 +119,15 @@ async def api_promotions_calc(req: dict, auth=Depends(verify_api_key)):
                 if _sid not in (None, "", "0", 0):
                     try:
                         _sess = _mysql_query_one(
-                            "SELECT actual_start, actual_duration_mins FROM console_sessions WHERE id=%s", (int(_sid),))
+                            "SELECT actual_start, actual_end, actual_duration_mins, status, TIMESTAMPDIFF(MINUTE, actual_start, CASE WHEN status='active' THEN NOW() + INTERVAL 390 MINUTE ELSE actual_end END) AS played_mins FROM console_sessions WHERE id=%s", (int(_sid),))
                     except (TypeError, ValueError):
                         _sess = None
                 if not _sess and _bid not in (None, "", 0, "0"):
                     _sess = _mysql_query_one(
-                        "SELECT actual_start, actual_duration_mins FROM console_sessions WHERE booking_id=%s ORDER BY id DESC LIMIT 1", (_bid,))
+                        "SELECT actual_start, actual_end, actual_duration_mins, status, TIMESTAMPDIFF(MINUTE, actual_start, CASE WHEN status='active' THEN NOW() + INTERVAL 390 MINUTE ELSE actual_end END) AS played_mins FROM console_sessions WHERE booking_id=%s ORDER BY id DESC LIMIT 1", (_bid,))
                 if not _sess and _cid:
                     _sess = _mysql_query_one(
-                        "SELECT actual_start, actual_duration_mins FROM console_sessions WHERE console_id=%s AND status='active' ORDER BY id DESC LIMIT 1", (_cid,))
+                        "SELECT actual_start, actual_end, actual_duration_mins, status, TIMESTAMPDIFF(MINUTE, actual_start, CASE WHEN status='active' THEN NOW() + INTERVAL 390 MINUTE ELSE actual_end END) AS played_mins FROM console_sessions WHERE console_id=%s AND status='active' ORDER BY id DESC LIMIT 1", (_cid,))
                 if _sess and _sess.get("actual_start"):
                     # ⚠️ 2026-10-15 (Osmo/Kai): the 2+1 tier MUST use the ACTUAL played
                     # minutes (client "mins" — the same basis as the billed game amount).
@@ -135,11 +135,49 @@ async def api_promotions_calc(req: dict, auth=Depends(verify_api_key)):
                     # duration, so a 75-min session was priced as 180 min
                     # (billable 120 → 24,000 Ks instead of 15,000). actual_duration_mins
                     # is now only a last-resort fallback when no minutes are supplied.
-                    _T = int(float(_req.get("mins") or 0) or 0)
+                    _T = int(_sess.get("played_mins") or 0)   # actual play (end-start)
+                    if _T <= 0:
+                        _T = int(float(_req.get("mins") or 0) or 0)
                     if _T <= 0:
                         _T = int(_sess.get("actual_duration_mins") or 0)
                     _d2p = _compute_d2p(_sess.get("actual_start"), _T, _pro)
                     if _d2p:
+                        # 🪙 2026-10-16 (Osmo): the PREVIEW must price a 2+1 exactly like
+                        # the COMMIT (admin_sales_routes checkout hook) — i.e. WITH the
+                        # member wallet. Without this the Sale screen showed the FULL
+                        # billable amount (120m → 20,000 Ks) instead of the wallet
+                        # shortfall (3m → 500 Ks); the payment box pre-filled that
+                        # inflated figure and staff recorded it
+                        # (V-WEB-20261016121214-478: net 500 but paid 20,000).
+                        try:
+                            from sale_money import price_duration_2plus1 as _price_d2p
+                            _mid = str(_req.get("member_id") or "").strip()
+                            _bal = None
+                            if _mid and _mid not in ("", "0", "0 (Guest)", "-", "Guest"):
+                                _w = _mysql_query_one(
+                                    "SELECT balance_mins FROM member_wallets WHERE member_id=%s", (_mid,))
+                                if _w is not None:
+                                    _bal = int(_w.get("balance_mins") or 0)
+                            _br = float(_req.get("base_rate") or 0) or 10000.0
+                            _mx = float(_req.get("multiplier") or 1.0) or 1.0
+                            if _bal is not None:
+                                _pr = _price_d2p(_d2p["billable_mins"], _br, _mx, _bal)
+                                _d2p = dict(_d2p)
+                                _d2p["cash_mins"] = _pr["cash_mins"]
+                                _d2p["wallet_mins"] = _pr["wallet_mins"]
+                                if _pr["wallet_mins"] > 0 and _pr["cash_mins"] <= 0:
+                                    # wallet covers the whole billable tier → no cash for game
+                                    _req["is_member"] = True
+                                    _req["wallet_mins"] = _pr["wallet_mins"]
+                                    _req["effective_cost_mins"] = _pr["wallet_mins"]
+                                elif _pr["cash_mins"] > 0:
+                                    # partial coverage → wallet + cash shortfall
+                                    _req["is_member"] = False
+                                    _req["wallet_mins"] = 0
+                            _req["base_rate"] = _br
+                            _req["multiplier"] = _mx
+                        except Exception as _we:
+                            logger.warning("wallet-aware 2+1 preview failed: %s", _we)
                         _req["duration_2plus1"] = _d2p
                         _req["promo_id"] = str(_d2p["promo_id"])
         except Exception as _e:

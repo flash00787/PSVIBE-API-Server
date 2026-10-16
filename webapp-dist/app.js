@@ -1761,6 +1761,11 @@
           booking_id: bookingIdOut.value || "",
           console_id: String(form.console_id || "").trim(),
           mins: effectiveMins.value,
+          // 🪙 2026-10-16 (Osmo): the member id MUST reach the preview so the server
+          // can price a 2+1 WITH the wallet (mirror of the commit path). Without it
+          // the Sale screen showed the full billable amount (120m → 20,000 Ks) as the
+          // cash due instead of the wallet shortfall (3m → 500 Ks).
+          member_id: form.member_id || "",
         };
         const walletCovers = isMember.value && wallet.balance > 0 && ecost > 0 && wallet.balance >= ecost;
         const shortfall = isMember.value && wallet.balance > 0 && ecost > 0 && wallet.balance < ecost;
@@ -2103,7 +2108,13 @@
       function clearWalletMember() { wallet.is_member = false; wallet.settle = false; wallet.balance = 0; wallet.effective_cost_mins = 0; wallet.shortfall_mins = 0; wallet.shortfall_ks = 0; }
       function computeWalletSettle() {
         if (!wallet.is_member) { wallet.effective_cost_mins = 0; wallet.shortfall_mins = 0; wallet.shortfall_ks = 0; return; }
-        wallet.effective_cost_mins = effectiveCostMins.value;
+        // 🎁 2+1 Happy Hour: the wallet is charged in BILLABLE minutes (× console
+        // multiplier) — never the raw played minutes. Mirror the server's
+        // price_duration_2plus1 so the shortfall shown here equals the cash due
+        // (2026-10-16: 140 played / 120 billable / 117 wallet → 3 mins ≈ 500 Ks,
+        // NOT 23 mins ≈ 3,833 Ks).
+        const _d2pBillable = (d2p.value && Number(d2p.value.billable_mins) > 0) ? Number(d2p.value.billable_mins) : 0;
+        wallet.effective_cost_mins = _d2pBillable > 0 ? Math.round(_d2pBillable * (Number(form.multiplier) || 1)) : effectiveCostMins.value;
         if (wallet.balance >= wallet.effective_cost_mins) {
           wallet.shortfall_mins = 0; wallet.shortfall_ks = 0;
         } else {
@@ -2112,7 +2123,7 @@
         }
       }
       // Recompute wallet settle whenever mins/multiplier/base_rate change
-      watch([() => effectiveMins.value, () => form.multiplier, () => form.base_rate], () => { computeWalletSettle(); });
+      watch([() => effectiveMins.value, () => form.multiplier, () => form.base_rate, () => d2p.value], () => { computeWalletSettle(); });
       // 🏷️ WAVE 2: re-run the server-side discount calc whenever the cart changes (debounced)
       watch(
         [() => form.game_amt, () => form.food_total, () => form.discount, () => effectiveMins.value,

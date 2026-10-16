@@ -706,17 +706,17 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                 if _sid_in not in (None, "", "0", 0):
                     try:
                         _sess_row = _mysql_query_one(
-                            "SELECT id, actual_start, actual_duration_mins FROM console_sessions WHERE id=%s",
+                            "SELECT id, actual_start, actual_end, actual_duration_mins, status, TIMESTAMPDIFF(MINUTE, actual_start, CASE WHEN status='active' THEN NOW() + INTERVAL 390 MINUTE ELSE actual_end END) AS played_mins FROM console_sessions WHERE id=%s",
                             (int(_sid_in),))
                     except (TypeError, ValueError):
                         _sess_row = None
                 if not _sess_row and booking_id not in (None, "", 0, "0"):
                     _sess_row = _mysql_query_one(
-                        "SELECT id, actual_start, actual_duration_mins FROM console_sessions "
+                        "SELECT id, actual_start, actual_end, actual_duration_mins, status, TIMESTAMPDIFF(MINUTE, actual_start, CASE WHEN status='active' THEN NOW() + INTERVAL 390 MINUTE ELSE actual_end END) AS played_mins FROM console_sessions "
                         "WHERE booking_id=%s ORDER BY id DESC LIMIT 1", (booking_id,))
                 if not _sess_row and console_id:
                     _sess_row = _mysql_query_one(
-                        "SELECT id, actual_start, actual_duration_mins FROM console_sessions "
+                        "SELECT id, actual_start, actual_end, actual_duration_mins, status, TIMESTAMPDIFF(MINUTE, actual_start, CASE WHEN status='active' THEN NOW() + INTERVAL 390 MINUTE ELSE actual_end END) AS played_mins FROM console_sessions "
                         "WHERE console_id=%s AND status='active' ORDER BY id DESC LIMIT 1", (console_id,))
                 if _sess_row and _sess_row.get("actual_start"):
                     # ⚠️ 2026-10-15 (Osmo/Kai): the 2+1 tier MUST use the ACTUAL played
@@ -724,7 +724,9 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                     # console_sessions.actual_duration_mins holds the ALLOCATED/planned
                     # duration — using it priced a 75-min session as 180 min
                     # (billable 120 = 24,000 Ks instead of 15,000). Fallback only.
-                    _T = int(float(mins or 0) or 0)
+                    _T = int(_sess_row.get("played_mins") or 0)   # actual play (end-start)
+                    if _T <= 0:
+                        _T = int(float(mins or 0) or 0)
                     if _T <= 0:
                         _T = int(_sess_row.get("actual_duration_mins") or 0)
                     _d2p = _compute_d2p(_sess_row.get("actual_start"), _T, _promo_row)
