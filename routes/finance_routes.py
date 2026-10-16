@@ -1892,6 +1892,77 @@ async def get_reconciliation(
 
 # ── Daily Stock Check ──
 
+# ── Stock check — dish/ingredient model (2026-10-16, Osmo option A) ────────────
+# A cooked dish (any item with a recipe in menu_recipes, or a Food / Add-On
+# inventory row) cannot be counted on the shelf, so it is NOT part of the daily
+# stock check any more. The raw INGREDIENTS it is made from are checked instead
+# (system qty = FIFO remaining in stock_layers), while packaged goods
+# (snacks / drinks / noodles / coffee) stay in the list unchanged.
+_STOCK_DISH_CATS = ("food", "add-on")
+
+
+def _stock_num(v):
+    """Float-safe stock quantity — whole numbers stay ints (12 → 12, not 12.0)."""
+    try:
+        f = float(v or 0)
+    except (TypeError, ValueError):
+        f = 0.0
+    return int(f) if abs(f - int(f)) < 1e-9 else round(f, 2)
+
+
+def _stock_canon_map():
+    """variant → canonical name (e.g. ကြက်ဉ / Egg → ကြက်ဥ)."""
+    m = {}
+    try:
+        for r in (_mysql_query(
+                "SELECT canonical_name, variant_name FROM ingredient_variants WHERE branch_id = 1") or []):
+            m[str(r.get("variant_name") or "").strip()] = str(r.get("canonical_name") or "").strip()
+    except Exception:
+        pass
+    return m
+
+
+def _stock_canon(name, cmap=None):
+    n = str(name or "").strip()
+    return (cmap or {}).get(n, n)
+
+
+def _stock_ingredient_rows():
+    """kind='ingredient' master rows with their FIFO balance (variant-aware).
+
+    Returns [{name, canonical, unit, fifo_qty}].
+    """
+    cmap = _stock_canon_map()
+    try:
+        rows = _mysql_query(
+            "SELECT id, name, base_unit FROM ingredients WHERE branch_id = 1 AND kind = 'ingredient' "
+            "ORDER BY name") or []
+    except Exception:
+        return []
+    fifo = {}
+    try:
+        for r in (_mysql_query(
+                "SELECT item_name, SUM(qty_remaining) AS q FROM stock_layers "
+                "WHERE branch_id = 1 GROUP BY item_name") or []):
+            c = _stock_canon(r.get("item_name"), cmap)
+            fifo[c] = fifo.get(c, 0.0) + float(r.get("q") or 0)
+    except Exception:
+        fifo = {}
+    out = []
+    for r in rows:
+        nm = str(r.get("name") or "").strip()
+        if not nm:
+            continue
+        c = _stock_canon(nm, cmap)
+        out.append({
+            "name": nm,
+            "canonical": c,
+            "unit": str(r.get("base_unit") or "").strip(),
+            "fifo_qty": _stock_num(fifo.get(c, 0.0)),
+        })
+    return out
+
+
 @router.get("/dashboard/stock-check")
 async def dashboard_get_stock_check(date: str = None, user: dict = Depends(get_staff_or_dashboard_user)):
     """Get daily stock check — system qty vs actual count.
@@ -1901,11 +1972,47 @@ async def dashboard_get_stock_check(date: str = None, user: dict = Depends(get_s
         if not date:
             date = _get_mmt_now().strftime("%Y-%m-%d")
         
-        # Get all inventory items with system quantity
-        items = _mysql_query(
+        # ── Stock check list (2026-10-16, Osmo option A) — dishes OUT, 
+        # ingredients IN (see _stock_ingredient_rows above).
+        try:
+            _recipe_names = {
+                str(r.get("menu_item") or "").strip()
+                for r in (_mysql_query(
+                    "SELECT DISTINCT menu_item FROM menu_recipes WHERE branch_id = 1") or [])
+            }
+        except Exception:
+            _recipe_names = set()
+        _ing_rows = _stock_ingredient_rows()
+        _ing_canon = {r["canonical"] for r in _ing_rows}
+        _cmap = _stock_canon_map()
+
+        _raw_items = _mysql_query(
             "SELECT id, item_name, category, quantity as system_qty, unit_price "
             "FROM inventory WHERE branch_id = 1 ORDER BY category, item_name"
         ) or []
+        items = []
+        for _it in _raw_items:
+            _nm = str(_it.get("item_name") or "").strip()
+            _cat = str(_it.get("category") or "").strip().lower()
+            if _nm in _recipe_names or _cat in _STOCK_DISH_CATS:
+                continue                        # cooked dish → not countable
+            if _stock_canon(_nm, _cmap) in _ing_canon:
+                continue                        # same thing as an ingredient row (use FIFO qty)
+            items.append({
+                "item_name": _nm,
+                "category": _it.get("category", ""),
+                "system_qty": _stock_num(_it.get("system_qty")),
+                "unit": "",
+                "unit_price": float(_it.get("unit_price") or 0),
+            })
+        for _r in _ing_rows:                    # raw ingredients as their own group
+            items.append({
+                "item_name": _r["name"],
+                "category": "Ingredients",
+                "system_qty": _r["fifo_qty"],
+                "unit": _r["unit"],
+                "unit_price": 0,
+            })
         
         # Get today's stock movements (MMT date range)
         mmt_today_start = f"{date} 00:00:00"
@@ -1927,8 +2034,8 @@ async def dashboard_get_stock_check(date: str = None, user: dict = Depends(get_s
                 GROUP BY item_name""",
             (mmt_today_start, mmt_today_end)
         ) or []
-        stock_in_map = {r["item_name"]: int(r["qty"]) for r in stock_in_today}
-        stock_out_map = {r["item_name"]: int(r["qty"]) for r in stock_out_today}
+        stock_in_map = {r["item_name"]: _stock_num(r["qty"]) for r in stock_in_today}
+        stock_out_map = {r["item_name"]: _stock_num(r["qty"]) for r in stock_out_today}
         
         # Get saved actual counts for this date
         checks = _mysql_query(
@@ -1946,19 +2053,19 @@ async def dashboard_get_stock_check(date: str = None, user: dict = Depends(get_s
             saved = check_map.get(name, {})
             actual = saved.get("actual_qty")
             variance = saved.get("variance")
-            if actual is not None:
-                has_any_actual = True
-                variance = int(item["system_qty"]) - int(actual)
-            
             # Live inventory = opening + today's stock_in - today's stock_out
             si_today = stock_in_map.get(name, 0)
             so_today = stock_out_map.get(name, 0)
-            live_system_qty = int(item["system_qty"])
-            opening_qty = live_system_qty - si_today + so_today
+            live_system_qty = _stock_num(item.get("system_qty"))
+            if actual is not None:
+                has_any_actual = True
+                variance = _stock_num(live_system_qty - _stock_num(actual))
+            opening_qty = _stock_num(live_system_qty - si_today + so_today)
             
             result.append({
                 "item_name": name,
                 "category": item.get("category", ""),
+                "unit": item.get("unit", ""),
                 "system_qty": live_system_qty,
                 "opening_qty": opening_qty,
                 "stock_in_today": si_today,
@@ -2011,13 +2118,19 @@ async def dashboard_save_stock_check(req: dict, user: dict = Depends(get_staff_o
                 continue
             notes = it.get("notes", "")
             
-            # Get system qty
+            # System qty: the inventory row when one exists, else the ingredient's
+            # FIFO balance (ingredients are checked now; dishes are not — 2026-10-16)
             inv = _mysql_query_one(
                 "SELECT quantity FROM inventory WHERE item_name = %s AND branch_id = 1",
                 (name,)
             )
-            system_qty = int(inv["quantity"]) if inv else 0
-            variance = system_qty - int(actual_qty)
+            if inv:
+                system_qty = _stock_num(inv.get("quantity"))
+            else:
+                _ing = next((r for r in _stock_ingredient_rows() if r["name"] == name), None)
+                system_qty = _stock_num(_ing["fifo_qty"]) if _ing else 0
+            actual_qty = _stock_num(actual_qty)
+            variance = _stock_num(system_qty - actual_qty)
             
             _mysql_execute(
                 """INSERT INTO daily_stock_check 

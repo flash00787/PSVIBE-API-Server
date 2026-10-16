@@ -7422,7 +7422,7 @@
             <van-cell v-for="it in items" :key="it.item_name" center>
               <template #title>
                 <span>{{ it.item_name }}</span>
-                <span class="psv-check__sys">sys {{ it.system_qty }}</span>
+                <span class="psv-check__sys">sys {{ it.system_qty }}{{ it.unit ? ' ' + it.unit : '' }}</span>
                 <span v-if="variance(it) !== null" class="psv-check__var" :class="variance(it) === 0 ? 'is-ok' : 'is-bad'">Δ {{ variance(it) }}</span>
               </template>
               <template #right-icon>
