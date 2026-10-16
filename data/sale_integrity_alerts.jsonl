@@ -1,0 +1,1 @@
+{"kind": "over_payment_blocked", "voucher_no": "TEST-GUARD-20261016T070826Z", "member_id": "0 (Guest)", "console_id": "", "tendered": 20000.0, "payable": 500.0, "payment_method": "Cash:20000", "staff": "kora-guard-test", "at": "2026-10-16 07:08:26"}

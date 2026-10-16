@@ -15,7 +15,7 @@ from sale_money import (
     price_duration_2plus1 as _price_d2p,
 )
 import staff_audit
-import logging, json as _json, os
+import logging, json as _json, os, re
 from datetime import datetime, timezone, timedelta
 import dish_consumption as _dish_consume
 logger = logging.getLogger(__name__)
@@ -621,6 +621,54 @@ def _resolve_booking_from_console(console_id):
         return (None, None)
 
 
+# ── 💰 Tender-vs-payable guard helpers (2026-10-16, Osmo) ──────────────────────
+# Voucher V-WEB-20261016121214-478 showed a cash due of 20,000 Ks (the full
+# billable time, wallet NOT netted) instead of the real 500 Ks shortfall; the
+# staff entered what the screen showed and the sale was stored net 500 / paid
+# 20,000.  Any tender above the payable is now blocked server-side.
+_INTEGRITY_SPOOL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data",
+                                "sale_integrity_alerts.jsonl")
+
+
+def _pm_tender_total(payment_method):
+    """Cash actually tendered, summed from a ``payment_method`` string.
+
+    Handles ``Cash:10000|MMQR - CB:10000`` and ``Kpay:0/Cash:0/AYA:0`` and skips
+    deposit legs (any part containing ``(`` — e.g. ``MMQR - CB:7000 (dep)``,
+    which is already netted out of the payable by the deposit path).
+    Returns ``None`` when the string carries no amounts at all (top-ups,
+    new-member rows, plain ``MMQR - CB``).
+    """
+    if not payment_method:
+        return None
+    total = 0.0
+    found = False
+    for chunk in re.split(r"[|/]", str(payment_method)):
+        part = chunk.strip()
+        if not part or "(" in part:
+            continue
+        m = re.search(r":\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*$", part)
+        if not m:
+            continue
+        try:
+            total += float(m.group(1).replace(",", ""))
+            found = True
+        except ValueError:
+            continue
+    return total if found else None
+
+
+def _spool_integrity_alert(**payload):
+    """Append one JSON line to the integrity spool (read by the daily re-check)."""
+    try:
+        payload.setdefault("at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        os.makedirs(os.path.dirname(os.path.abspath(_INTEGRITY_SPOOL)), exist_ok=True)
+        with open(_INTEGRITY_SPOOL, "a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception as _e:  # never break a sale on logging
+        logger.warning("integrity spool write failed: %s", _e)
+
+
 @router.post("/sales/record", response_model=GenericResponse, tags=["Sales"], summary="Save sales record [MySQL]")
 async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_key)):
     """Save a sales record to MySQL sales_daily table (replaces direct GSheets write).
@@ -1041,6 +1089,40 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                                 booking_id, _session_id, voucher_no)
             except Exception as _bse:
                 logger.warning("session link backfill failed booking=%s: %s", booking_id, _bse)
+
+        # ── 💰 GUARD: tender must never exceed the payable (2026-10-16, Osmo) ──────
+        # The display bug above let staff hand in 20,000 Ks against a 500 Ks bill.
+        # Reject the write so a wrong screen amount can never reach the books; the
+        # cashier reloads the sale (the preview is wallet-aware since the same fix).
+        # Tolerance 1 Ks covers rounding only.
+        try:
+            _tendered = _pm_tender_total(payment_method)
+            # Deposit sales carry a "(dep)" marker and are reconciled by the deposit
+            # path (their cash leg already includes the deposit) → never guard them.
+            _has_dep = "(" in str(payment_method or "")
+            if _tendered is not None and not _has_dep and _tendered > float(net_total) + 1:
+                _msg = ("Tender %s Ks > cash due %s Ks — over-payment blocked. "
+                        "Refresh the sale and re-enter the payment amount."
+                        % (f"{_tendered:,.0f}", f"{float(net_total):,.0f}"))
+                logger.warning(
+                    "OVER-PAYMENT BLOCKED voucher=%s member=%s console=%s tendered=%s net=%s pm=%s staff=%s",
+                    voucher_no, member_id, console_id, _tendered, net_total, payment_method, staff)
+                _spool_integrity_alert(kind="over_payment_blocked", voucher_no=voucher_no,
+                                       member_id=member_id, console_id=console_id,
+                                       tendered=_tendered, payable=float(net_total),
+                                       payment_method=payment_method, staff=staff)
+                return error_response(message=_msg, code=409,
+                                      detail={"tendered": _tendered, "payable": float(net_total)})
+            if _tendered is not None and not _has_dep and _tendered < float(net_total) - 1:
+                logger.warning(
+                    "UNDER-PAYMENT voucher=%s member=%s console=%s tendered=%s net=%s pm=%s staff=%s",
+                    voucher_no, member_id, console_id, _tendered, net_total, payment_method, staff)
+                _spool_integrity_alert(kind="under_payment", voucher_no=voucher_no,
+                                       member_id=member_id, console_id=console_id,
+                                       tendered=_tendered, payable=float(net_total),
+                                       payment_method=payment_method, staff=staff)
+        except Exception as _ge:
+            logger.warning("tender guard skipped: %s", _ge)
 
         # Never persist a walk-in/unknown name as a member id (report pollution).
         _stored_member_id = member_id

@@ -1393,11 +1393,11 @@
             <span class="pv-amount" style="margin:0 10px">{{ fKs(s.amount) }} Ks</span>
             <van-icon name="cross" style="color:var(--pv-danger);padding:4px" @click="removeSplit(i)" />
           </div>
-          <van-button size="small" plain type="primary" style="width:100%;margin-top:4px" @click="openPayMethod">+ Add payment</van-button>
+          <van-button size="small" plain type="primary" style="width:100%;margin-top:4px" :disabled="walletLoading" @click="openPayMethod">+ Add payment</van-button>
         </div>
         <div style="padding:14px 16px">
         <div style="padding:14px 16px">
-          <van-button type="primary" block :loading="submitting" @click="submit">Save Sale</van-button>
+          <van-button type="primary" block :loading="submitting" :disabled="walletLoading" @click="submit">Save Sale</van-button>
           <van-button block plain type="warning" icon="records" style="margin-top:8px" @click="saveDraft">Save as draft</van-button>
           <div style="margin-top:8px;color:var(--pv-muted);font-size:11px;line-height:1.5">
             Draft = voucher မဖြတ်သေးဘဲ သိမ်းထားသည် · ပိုက်ဆံ ရှင်းချိန် Sales → Drafts tab → Restore → Save Sale
