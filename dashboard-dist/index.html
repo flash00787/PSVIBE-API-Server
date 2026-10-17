@@ -10,5 +10,23 @@
   </head>
   <body class="bg-gray-50 dark:bg-gray-900">
     <div id="app"></div>
-  </body>
+  
+<script id="global-finance-moved-to-vibe-group">
+(function(){
+  const labels = ['Profit Distribution','Dividends','Capital Movements','Shareholders'];
+  const paths = ['/profit-distribution','/dividends','/capital-movements','/shareholders'];
+  function clean(){
+    document.querySelectorAll('nav button, nav a, aside button, aside a').forEach(function(el){
+      const t=(el.textContent||'').trim();
+      if(labels.some(function(x){return t===x;})) el.style.display='none';
+    });
+    const h=location.hash||'';
+    if(paths.some(function(p){return h==='#'+p || h.indexOf('#'+p+'?')===0;})) location.hash='#/';
+  }
+  document.addEventListener('DOMContentLoaded', clean);
+  window.addEventListener('hashchange', clean);
+  setInterval(clean, 500);
+})();
+</script>
+</body>
 </html>
