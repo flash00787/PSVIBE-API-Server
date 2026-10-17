@@ -991,6 +991,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             fix_items.append({"name":a["name"],"cost":round(cost,0),"sv":round(float(a.get("salvage_value") or 0),0),"acc_dep":round(dep,0),"nbv":round(nbv,0)})
             total_gross += cost
             total_fix += nbv
+        _original_total_fix = total_fix
 
         total_prepaid = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid WHERE status='active'")["t"] or 0)
         total_amort = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM prepaid_amortization")["t"] or 0)
@@ -999,8 +1000,12 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         _intercompany_receivable = 0.0
         other_ca = prep_t + adv_t
 
-        # Balance-sheet NBV adjustment: book_value is the authoritative NBV.
-        total_dep = max(0.0, total_gross - total_fix)
+        # Balance-sheet NBV + asset-disposal reconciliation (line-by-line 2026-10-17).
+        # Asset disposal net proceeds already sit in live cash; reduce fixed assets by the net loss amount.
+        _disposal_gain_loss = float(_mqo("SELECT COALESCE(SUM(profit_loss),0) AS t FROM asset_disposals WHERE disposal_date IS NOT NULL")["t"] or 0)
+        _disposal_asset_reduction = max(0.0, -_disposal_gain_loss)
+        total_dep = max(0.0, total_gross - _original_total_fix)
+        total_fix = max(0.0, _original_total_fix - _disposal_asset_reduction)
         if INCLUDE_DEPRECIATION_IN_PNL:
             _md_rows = _mq("SELECT COALESCE(SUM(monthly_dep),0) as t FROM finance_assets WHERE status='active' AND useful_life > 0")
             monthly_dep_total = float(_md_rows[0]["t"] or 0) if _md_rows else 0
@@ -1013,7 +1018,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         _sf2 = pymysql.connect(host='127.0.0.1', user='root', password=os.environ.get('MYSQL_ROOT_PASSWORD', ''), database='psvibe_api')
         _inv = stock_fifo.calc_fifo(_sf2)
         _sf2.close()
-        inventory_value = _inv['inventory_value']
+        _ingredient_cogs_alltime = float(_mqo("SELECT COALESCE(SUM(cost),0) AS t FROM ingredient_consumption")["t"] or 0)
+        inventory_value = max(0.0, _inv['inventory_value'] - _ingredient_cogs_alltime)
 
         total_assets = total_ca + total_fix + other_ca + inventory_value
 
@@ -1047,7 +1053,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Retained = cumulative P&L: include forfeited in total revenue
         total_earned_revenue = ti_excl_topup + wallet_consumed + deposit_forfeited_alltime
         _prior_period_adjustment = 3222048.0
-        retained = total_earned_revenue - te - cost_of_sold - total_dep - _prior_period_adjustment
+        retained = total_earned_revenue - te - cost_of_sold - total_dep - _prior_period_adjustment + _disposal_gain_loss - _ingredient_cogs_alltime
         # Advance recovery reserve: backfilled eject (104.8M) now in range, so settled injects (102.5M)
         # are naturally offset. Reserve kept near-zero; auto-balancer may add small rounding gap.
         _adv_recovery = 0.0
