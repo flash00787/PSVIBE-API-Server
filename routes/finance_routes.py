@@ -1047,7 +1047,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Retained = cumulative P&L: include forfeited in total revenue
         total_earned_revenue = ti_excl_topup + wallet_consumed + deposit_forfeited_alltime
         _prior_period_adjustment = 3222048.0
-        retained = total_earned_revenue - te - cost_of_sold - total_dep - _prior_period_adjustment + _cash_live_adjustment - 7000.0
+        retained = total_earned_revenue - te - cost_of_sold - total_dep - _prior_period_adjustment
         # Advance recovery reserve: backfilled eject (104.8M) now in range, so settled injects (102.5M)
         # are naturally offset. Reserve kept near-zero; auto-balancer may add small rounding gap.
         _adv_recovery = 0.0
