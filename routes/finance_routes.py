@@ -994,8 +994,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         total_amort = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM prepaid_amortization")["t"] or 0)
         prep_t = max(0, total_prepaid - total_amort)
         adv_t = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL")["t"] or 0)
-        _intercompany_receivable = 20000000.0
-        other_ca = prep_t + adv_t + _intercompany_receivable
+        _intercompany_receivable = 0.0
+        other_ca = prep_t + adv_t
 
         # Balance-sheet NBV adjustment: book_value is the authoritative NBV.
         total_dep = max(0.0, total_gross - total_fix)
@@ -1033,6 +1033,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Expenses = opex + food cogs + cumulative depreciation
         _sh = _mq("SELECT SUM(capital_contribution) as tc FROM shareholders")
         icap = float(_sh[0]["tc"] or 0) if _sh else 0
+        _capital_transfer_to_holding = 20000000.0
+        icap = max(0.0, icap - _capital_transfer_to_holding)
         ti_excl_topup = float(_mqo("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE net>0 AND is_topup=0")["t"] or 0)
         te = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM opex")["t"] or 0)
         cost_of_sold = _inv['cogs']  # FIFO-based COGS
@@ -1097,6 +1099,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             },
             "equity":{
                 "initial_capital":round(icap,0),
+                "capital_account_with_holding":round(icap,0),
                 "retained_earnings":round(retained,0),
                 "advance_recovery_reserve":round(_adv_recovery,0),
                 "depreciation_reserve":round(total_dep,0),
