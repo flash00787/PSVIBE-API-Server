@@ -1053,7 +1053,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Retained = cumulative P&L: include forfeited in total revenue
         total_earned_revenue = ti_excl_topup + wallet_consumed + deposit_forfeited_alltime
         _prior_period_adjustment = 3222048.0
-        retained = total_earned_revenue - te - cost_of_sold - total_dep - _prior_period_adjustment + _disposal_gain_loss - _ingredient_cogs_alltime
+        _dividends_payable = 9096593.0
+        retained = total_earned_revenue - te - cost_of_sold - total_dep - _prior_period_adjustment + _disposal_gain_loss - _ingredient_cogs_alltime - _dividends_payable
         # Advance recovery reserve: backfilled eject (104.8M) now in range, so settled injects (102.5M)
         # are naturally offset. Reserve kept near-zero; auto-balancer may add small rounding gap.
         _adv_recovery = 0.0
@@ -1076,7 +1077,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         )
         deposit_forfeited = round(float(_deposit_forfeit.get("t", 0) or 0), 0)
 
-        total_liab = member_liab + deposit_liability
+        total_liab = member_liab + deposit_liability + _dividends_payable
         total_liab_eq = round(total_liab + total_eq, 0)
         total_assets = round(total_assets, 0)
         # Data-entry / rounding gap auto-balance (always balance; log large gaps for audit)
@@ -1100,6 +1101,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             },
             "liabilities":{
                 "member_liability":round(member_liab,0),
+                "dividends_payable":round(_dividends_payable,0),
                 "deposit_liability":deposit_liability,
                 "deposit_forfeited":deposit_forfeited,
                 "member_details":[],
