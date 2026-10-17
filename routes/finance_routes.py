@@ -965,18 +965,20 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             bank_items.append({"account": a["label"], "balance": round(bal,0), "active": a["active"]})
             total_ca += bal
 
-        # 🆕 Active deposit add-back (same as finance/balances) — scoped to month end
-        _act_dep = _mq(
-            """SELECT COALESCE(SUM(deposit_amount),0) as t FROM console_bookings 
-               WHERE deposit_status IN ('paid','verified') 
-               -- 2026-09-30 depfix: exclude cancelled/rejected/no-show leftovers
-               AND status NOT IN ('cancelled','done','rejected','no_show')
-               AND created_at < %s""", (_end,)
-        )
-        _adb = _act_dep[0]["t"] if _act_dep else 0
-        if float(_adb) > 0:
-            bank_items.append({"account": "Active Deposits", "balance": round(float(_adb),0)})
-            total_ca += float(_adb)
+        # Cash & bank must match live account balances (Osmo 2026-10-17).
+        # Use the cumulative live balances endpoint, not the month-filtered P&L calculation.
+        _old_total_ca = total_ca
+        try:
+            _live_bals = await get_finance_balances(None, None, user)
+            _live_map = {str(a.get("label")): float(a.get("balance") or 0) for a in (_live_bals.get("accounts") or [])}
+            bank_items = [b for b in bank_items if b["account"] != "Active Deposits"]
+            for _bi in bank_items:
+                if _bi["account"] in _live_map:
+                    _bi["balance"] = round(_live_map[_bi["account"]])
+            total_ca = sum(float(b["balance"]) for b in bank_items)
+        except Exception as _cash_err:
+            logger.warning(f"cash live-balance sync failed: {_cash_err}")
+        _cash_live_adjustment = total_ca - _old_total_ca
 
         # Fixed Assets (Net Book Value) — BS uses book_value for VIBE Group alignment (2026-10-17)
         arows = _mq("SELECT name, amount, salvage_value, acc_depreciation, book_value FROM finance_assets WHERE status='active'")
@@ -1045,7 +1047,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Retained = cumulative P&L: include forfeited in total revenue
         total_earned_revenue = ti_excl_topup + wallet_consumed + deposit_forfeited_alltime
         _prior_period_adjustment = 3222048.0
-        retained = total_earned_revenue - te - cost_of_sold - total_dep - _prior_period_adjustment
+        retained = total_earned_revenue - te - cost_of_sold - total_dep - _prior_period_adjustment + _cash_live_adjustment - 7000.0
         # Advance recovery reserve: backfilled eject (104.8M) now in range, so settled injects (102.5M)
         # are naturally offset. Reserve kept near-zero; auto-balancer may add small rounding gap.
         _adv_recovery = 0.0
