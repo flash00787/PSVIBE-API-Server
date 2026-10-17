@@ -192,6 +192,9 @@ def _send_telegram_customer_photo(chat_id: str, photo: str, caption: str = ""):
                 data = {"chat_id": str(chat_id)}
                 if caption:
                     data["caption"] = caption
+                    # caption goes through _anim() -> <tg-emoji> HTML tags,
+                    # so Telegram must parse it as HTML (raw tags leaked before).
+                    data["parse_mode"] = "HTML"
                 r = _rq.post(f"{api}/sendPhoto", data=data,
                              files={"photo": (os.path.basename(local), fh, "image/png")},
                              timeout=90)
@@ -206,6 +209,7 @@ def _send_telegram_customer_photo(chat_id: str, photo: str, caption: str = ""):
         payload = {"chat_id": chat_id, "photo": photo}
         if caption:
             payload["caption"] = caption
+            payload["parse_mode"] = "HTML"
         data = _json_notify.dumps(payload).encode()
         req = urllib.request.Request(f"{api}/sendPhoto", data=data,
                                      headers={"Content-Type": "application/json"})
