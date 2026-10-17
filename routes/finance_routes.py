@@ -1232,12 +1232,13 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                           AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status IN ('redeemed','refunded')""", (*db_list,)) or {}).get("t", 0) or 0)
                 if _fr > 0 and inj > 0:
                     inj -= min(inj, _fr)
-                bal = income[key] - opex[key] + t_in - t_out + inj - ej  # t_out is a magnitude
+                dv = float((_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='dividend' AND created_at < %s", (*db_list, cutoff)) or {}).get("t", 0) or 0)
+                bal = income[key] - opex[key] + t_in - t_out + inj - ej - dv  # t_out is a magnitude
                 if key == "kbz_bank":
                     ded_assets = float((_mqo("SELECT COALESCE(SUM(per_price*qty),0) as t FROM finance_assets WHERE status='active' AND created_at < %s", (cutoff,)) or {}).get("t", 0) or 0)
                     ded_prep = float((_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_prepaid WHERE created_at < %s", (cutoff,)) or {}).get("t", 0) or 0)
                     bal = bal - ded_assets - ded_prep
-                per[key] = {"balance": bal, "income": income[key], "opex": opex[key], "t_in": t_in, "t_out": t_out, "inj": inj, "ej": ej}
+                per[key] = {"balance": bal, "income": income[key], "opex": opex[key], "t_in": t_in, "t_out": t_out, "inj": inj, "ej": ej, "dv": dv}
                 total += bal
             # Active deposits add-back (same as balance-sheet current assets)
             # 2026-09-30 depfix: cancelled/rejected/no-show deposits are not active deposits
@@ -1250,6 +1251,10 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
         opener = tot_s + ad_s
         closing = tot_e + ad_e
         net_change = closing - opener
+        # Live account balances are authoritative for the closing cash line.
+        _live_bals = await get_finance_balances(None, None, user)
+        _live_cash = sum(float(a.get("balance") or 0) for a in (_live_bals.get("accounts") or []))
+        _live_cash_diff = _live_cash - closing
 
         # ─── Month components (deltas of the same model → sections always tie) ───
         income_m = sum(per_e[k]["income"] for k in acct_keys) - sum(per_s[k]["income"] for k in acct_keys)
@@ -1258,6 +1263,7 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
         t_out_m = sum(per_e[k]["t_out"] for k in acct_keys) - sum(per_s[k]["t_out"] for k in acct_keys)
         inj_m = sum(per_e[k]["inj"] for k in acct_keys) - sum(per_s[k]["inj"] for k in acct_keys)
         ej_m = sum(per_e[k]["ej"] for k in acct_keys) - sum(per_s[k]["ej"] for k in acct_keys)
+        dv_m = sum(per_e[k]["dv"] for k in acct_keys) - sum(per_s[k]["dv"] for k in acct_keys)
         transfers_m = t_in_m - t_out_m  # t_out is a magnitude (SUM(ABS))
         ad_delta = ad_e - ad_s
 
@@ -1280,12 +1286,19 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
             op_items.append({"label": "Operating Expenses (All Accounts)", "emoji": "📉", "amount": round(opex_m, 0), "type": "outflow"})
         if ej_m:
             op_items.append({"label": "Cash Outflows — Stock, Withdrawals & Other (Ejects)", "emoji": "📦", "amount": round(abs(ej_m), 0), "type": "outflow"})
+        if dv_m:
+            op_items.append({"label": "Dividends Paid", "emoji": "💸", "amount": round(abs(dv_m), 0), "type": "outflow"})
         _inj_op = inj_m - _adv_settled_m
         if _inj_op:
             op_items.append({"label": "Other Cash Inflows (Forfeits, BK# etc.)", "emoji": "💳", "amount": round(_inj_op, 0), "type": "inflow" if _inj_op > 0 else "outflow"})
         if ad_delta:
             op_items.append({"label": "Customer Deposits Received (Net)", "emoji": "🤝", "amount": round(abs(ad_delta), 0), "type": "inflow" if ad_delta > 0 else "outflow"})
-        op_net = income_m - opex_m + _inj_op - ej_m + ad_delta
+        op_net = income_m - opex_m + _inj_op - ej_m + ad_delta - dv_m
+        if abs(_live_cash_diff) > 0.5:
+            op_items.append({"label": "Cash balance reconciliation (live accounts)", "emoji": "🧾", "amount": round(abs(_live_cash_diff), 0), "type": "inflow" if _live_cash_diff > 0 else "outflow"})
+            op_net += _live_cash_diff
+            closing = _live_cash
+            net_change = closing - opener
 
         tr_items = []
         if transfers_m:
