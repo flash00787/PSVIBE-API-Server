@@ -1636,6 +1636,44 @@ async def api_opex_add(body: dict = Body(...), user: dict = Depends(get_staff_or
     return {"success": True, "data": {"msg": f"{cat}: {amt:,} Ks recorded"}}
 
 
+@router.post("/dashboard/opex/record", tags=["OPEX"], summary="Record OPEX from VIBE Group (opex + cash movement)")
+async def api_opex_record_group(body: dict = Body(...), user: dict = Depends(get_staff_or_dashboard_user)):
+    """Called by VIBE Group when OPEX is entered for PS VIBE.
+    Writes BOTH the opex ledger row and a cash_movements row so the expense shows
+    up in the PS VIBE app and affects the computed account balance."""
+    from datetime import datetime as _dt, timedelta as _td
+    _mmt_now = _dt.utcnow() + _td(hours=6, minutes=30)
+    cat = (body.get("category") or "").strip()
+    desc = (body.get("description") or "").strip()
+    try:
+        amt = int(float(body.get("amount", 0) or 0))
+    except Exception:
+        amt = 0
+    pmt = (body.get("payment_method") or "Cash").strip()
+    ref = (body.get("ref") or "").strip()
+    dt = (body.get("expense_date") or _mmt_now.strftime("%Y-%m-%d")).strip()
+    if not cat or amt <= 0:
+        return {"success": False, "error": "Category and amount required"}
+    desc_full = desc + (f" [{ref}]" if ref else "")
+    note = f"OPEX: {cat}" + (f" - {desc}" if desc else "") + (f" [{ref}]" if ref else "")
+    _mysql_exec(
+        "INSERT INTO opex (category,description,amount,payment_method,recorded_by,expense_date) VALUES (%s,%s,%s,%s,%s,%s)",
+        (cat, desc_full, amt, pmt, "VIBE Group", dt))
+    _mysql_exec(
+        "INSERT INTO cash_movements (movement_type,account,amount,note,staff_name,created_at) VALUES (%s,%s,%s,%s,%s,%s)",
+        ("eject", pmt, amt, note, "VIBE Group", dt + " 12:00:00"))
+    return {"success": True, "data": {"ref": ref, "account": pmt, "amount": amt, "category": cat}}
+
+
+@router.delete("/dashboard/opex/record", tags=["OPEX"], summary="Delete a VIBE Group OPEX in PS VIBE")
+async def api_opex_delete_group(ref: str = Query(...), user: dict = Depends(get_staff_or_dashboard_user)):
+    if not ref:
+        return {"success": False, "error": "ref required"}
+    _mysql_exec("DELETE FROM opex WHERE description LIKE %s", (f"%[{ref}]%",))
+    _mysql_exec("DELETE FROM cash_movements WHERE note LIKE %s", (f"%[{ref}]%",))
+    return {"success": True, "data": {"ref": ref}}
+
+
 @router.get("/opex/summary", tags=["OPEX"], summary="Expense summary by category + date")
 async def api_opex_summary(
     date_from: str = "", date_to: str = "",
