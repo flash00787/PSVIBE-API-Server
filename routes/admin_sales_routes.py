@@ -1659,9 +1659,15 @@ async def api_opex_record_group(body: dict = Body(...), user: dict = Depends(get
     _mysql_exec(
         "INSERT INTO opex (category,description,amount,payment_method,recorded_by,expense_date) VALUES (%s,%s,%s,%s,%s,%s)",
         (cat, desc_full, amt, pmt, "VIBE Group", dt))
-    _mysql_exec(
-        "INSERT INTO cash_movements (movement_type,account,amount,note,staff_name,created_at) VALUES (%s,%s,%s,%s,%s,%s)",
-        ("eject", pmt, amt, note, "VIBE Group", dt + " 12:00:00"))
+    # Balance is computed from the opex table itself (get_finance_balances subtracts it),
+    # so we must NOT also write a cash_movements eject (that would double-count).
+    try:
+        acc = _mysql_query_one("SELECT id, balance FROM accounts WHERE account_name = %s", (pmt,))
+        if acc:
+            _mysql_exec("UPDATE accounts SET balance = %s WHERE id = %s",
+                        (float(acc["balance"]) - amt, acc["id"]))
+    except Exception:
+        pass
     return {"success": True, "data": {"ref": ref, "account": pmt, "amount": amt, "category": cat}}
 
 
@@ -1669,9 +1675,18 @@ async def api_opex_record_group(body: dict = Body(...), user: dict = Depends(get
 async def api_opex_delete_group(ref: str = Query(...), user: dict = Depends(get_staff_or_dashboard_user)):
     if not ref:
         return {"success": False, "error": "ref required"}
-    _mysql_exec("DELETE FROM opex WHERE description LIKE %s", (f"%[{ref}]%",))
+    rows = _mysql_query("SELECT id, amount, payment_method FROM opex WHERE description LIKE %s", (f"%[{ref}]%",))
+    for r in rows:
+        _mysql_exec("DELETE FROM opex WHERE id = %s", (r["id"],))
+        try:
+            acc = _mysql_query_one("SELECT id, balance FROM accounts WHERE account_name = %s", (r.get("payment_method") or "",))
+            if acc:
+                _mysql_exec("UPDATE accounts SET balance = %s WHERE id = %s",
+                            (float(acc["balance"]) + float(r.get("amount") or 0), acc["id"]))
+        except Exception:
+            pass
     _mysql_exec("DELETE FROM cash_movements WHERE note LIKE %s", (f"%[{ref}]%",))
-    return {"success": True, "data": {"ref": ref}}
+    return {"success": True, "data": {"ref": ref, "removed": len(rows)}}
 
 
 @router.get("/opex/summary", tags=["OPEX"], summary="Expense summary by category + date")
