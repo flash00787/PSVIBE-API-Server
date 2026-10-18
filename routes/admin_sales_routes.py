@@ -1636,6 +1636,34 @@ async def api_opex_add(body: dict = Body(...), user: dict = Depends(get_staff_or
     return {"success": True, "data": {"msg": f"{cat}: {amt:,} Ks recorded"}}
 
 
+@router.post("/dashboard/cash-movement", tags=["Finance"], summary="Insert a cash movement (VIBE Group settle/refund)")
+async def api_cash_movement_group(body: dict = Body(...), user: dict = Depends(get_staff_or_dashboard_user)):
+    mt = (body.get("movement_type") or "inject").strip()
+    acct = (body.get("account") or "").strip()
+    try:
+        amt = int(float(body.get("amount", 0) or 0))
+    except Exception:
+        amt = 0
+    note = (body.get("note") or "").strip()
+    ref = (body.get("reference") or "").strip()
+    if mt not in ("inject", "eject", "transfer_out", "transfer_in", "dividend"):
+        return {"success": False, "error": "invalid movement_type"}
+    if not acct or amt <= 0:
+        return {"success": False, "error": "account and amount required"}
+    full_note = (note + (f" [{ref}]" if ref else "")).strip()
+    _mysql_exec(
+        "INSERT INTO cash_movements (movement_type,account,amount,note,staff_name,created_at) VALUES (%s,%s,%s,%s,%s,NOW())",
+        (mt, acct, amt, full_note, "VIBE Group"))
+    row = _mysql_query_one("SELECT id FROM cash_movements ORDER BY id DESC LIMIT 1")
+    return {"success": True, "data": {"id": row["id"] if row else None}}
+
+
+@router.delete("/dashboard/cash-movement/{movement_id}", tags=["Finance"], summary="Delete a cash movement (VIBE Group settle undo)")
+async def api_cash_movement_delete_group(movement_id: int, user: dict = Depends(get_staff_or_dashboard_user)):
+    _mysql_exec("DELETE FROM cash_movements WHERE id = %s", (movement_id,))
+    return {"success": True, "data": {"id": movement_id}}
+
+
 @router.post("/dashboard/opex/record", tags=["OPEX"], summary="Record OPEX from VIBE Group (opex + cash movement)")
 async def api_opex_record_group(body: dict = Body(...), user: dict = Depends(get_staff_or_dashboard_user)):
     """Called by VIBE Group when OPEX is entered for PS VIBE.
