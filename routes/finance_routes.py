@@ -887,13 +887,12 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             {"key": "kpay", "label": "KPay"},
             {"key": "aya_pay", "label": "AYA Pay"},
             {"key": "mmqr_cb", "label": "MMQR - CB"},
-            {"key": "kbz_bank", "label": "KBZ Bank"},
-            {"key": "acm_acc", "label": "Main (ACM)"}
+            {"key": "kbz_bank", "label": "KBZ Bank"}
         ]
         for acc in accounts:
             acc["active"] = acc["label"] not in _INACTIVE_ACCOUNT_LABELS
         # Map key -> DB account name for cash_movements queries
-        db_acct = {"cash":"Cash","wave":"Wave","kpay":"KPay","aya_pay":"AYA Pay","mmqr_cb":"MMQR - CB","kbz_bank":"KBZ Bank","acm_acc":"Main (ACM)"}
+        db_acct = {"cash":"Cash","wave":"Wave","kpay":"KPay","aya_pay":"AYA Pay","mmqr_cb":"MMQR - CB","kbz_bank":"KBZ Bank"}
         bank_items = []
         total_ca = 0.0
 
@@ -1089,7 +1088,9 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Advance recovery reserve: backfilled eject (104.8M) now in range, so settled injects (102.5M)
         # are naturally offset. Reserve kept near-zero; auto-balancer may add small rounding gap.
         _adv_recovery = 0.0
-        total_eq = icap + retained + _adv_recovery
+        # total must equal the components shown on the sheet, otherwise the
+        # displayed equity lines never add up to the displayed total (Boss 19:07)
+        total_eq = icap + retained + _adv_recovery + total_dep + deposit_forfeited_alltime
 
         # Deposit liability: deposits that are paid or verified (customer still owes session)
         _deposit_liab = _mqo(
@@ -1117,7 +1118,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         if _bs_diff_abs > 10:
             _adv_recovery += _bs_diff
             _adv_recovery = round(_adv_recovery, 0)
-            total_eq = icap + retained + _adv_recovery
+            total_eq = icap + retained + _adv_recovery + total_dep + deposit_forfeited_alltime
             total_liab_eq = round(total_liab + total_eq, 0)
             if _bs_diff_abs >= 50000:
                 logger.warning(f"BS gap auto-balanced: {_bs_diff:,.0f} Ks (large — may indicate data-entry issue)")
@@ -1144,7 +1145,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 "retained_earnings":round(retained,0),
                 "advance_recovery_reserve":round(_adv_recovery,0),
                 "depreciation_reserve":round(total_dep,0),
-                "deposit_forfeited_income":deposit_forfeited,
+                "deposit_forfeited_income":deposit_forfeited_alltime,
                 "total":round(total_eq,0)
             },
             "total_liabilities_equity":total_liab_eq
