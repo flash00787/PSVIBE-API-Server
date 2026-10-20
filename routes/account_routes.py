@@ -80,7 +80,22 @@ def _is_active_account(name: str) -> bool:
 
 
 def _allowed_accounts(user: dict):
+    """Accounts the caller may actually POST a transfer for.
+
+    Admin keeps owner-only access so internal jobs (e.g. the 00:15 MMQR sweep
+    into Main (ACM)) can still post; what the SHOP UI lists is controlled
+    separately by _listed_accounts().
+    """
     return list(ALL_ACCOUNTS) if _is_admin(user) else list(_OPERATIONAL)
+
+
+def _listed_accounts(user: dict):
+    """Accounts shown in the PS VIBE UI pickers.
+
+    Owner (2026-10-20): the shop only has Cash and MMQR - CB. Main (ACM) lives in
+    VIBE Group now and must not appear on the PS VIBE dashboard.
+    """
+    return list(_OPERATIONAL)
 
 
 def _caller_identity(user: dict) -> str:
@@ -461,7 +476,7 @@ async def list_transferable(user: dict = Depends(get_staff_or_dashboard_user)):
     """
     _ensure_table()
     role = "admin" if _is_admin(user) else "staff"
-    allowed = _allowed_accounts(user)
+    allowed = _listed_accounts(user)
     bals = await _balances_by_name()
     accounts_out = [
         {
