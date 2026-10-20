@@ -1095,7 +1095,15 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Retained = cumulative P&L: include forfeited in total revenue
         total_earned_revenue = ti_excl_topup + wallet_consumed + deposit_forfeited_alltime
         _prior_period_adjustment = 3222048.0
-        _dividends_payable = 9096593.0
+        # Dividends payable = open declarations minus what has already been paid
+        # (2026-10-20: the constant 9,096,593 was correct but had no link to the data;
+        # the dividends table now carries paid_amount, so compute it live).
+        try:
+            _dp = _mqo("""SELECT COALESCE(SUM(amount - COALESCE(paid_amount,0)),0) AS t
+                          FROM dividends WHERE status IN ('pending','partial')""") or {}
+            _dividends_payable = round(float(_dp.get("t", 0) or 0), 0)
+        except Exception:
+            _dividends_payable = 9096593.0
         retained = total_earned_revenue - te - cost_of_sold - total_dep - _prior_period_adjustment + _disposal_gain_loss - _ingredient_cogs_alltime - _dividends_payable
         # Balance transfer (aka advance-recovery reserve): historically held the net of
         # supplier advances that were paid then settled/returned. Since the 104.8M eject
