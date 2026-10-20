@@ -141,7 +141,9 @@ def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, st
             continue
         if ":" in part:
             method, _, val_str = part.partition(":")
-            val = float(val_str.strip() or 0) if val_str.strip() else 0
+            # strip '(dep)' / '(DepositRedeemed)' markers before float()
+            _v = re.sub(r"\([^)]*\)", "", val_str).strip()
+            val = float(_v or 0) if _v else 0
         else:
             method = part
             val = float(total_amount) / len(parts)

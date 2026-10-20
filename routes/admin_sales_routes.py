@@ -645,7 +645,12 @@ def _pm_tender_total(payment_method):
     found = False
     for chunk in re.split(r"[|/]", str(payment_method)):
         part = chunk.strip()
-        if not part or "(" in part:
+        if not part:
+            continue
+        # strip '(dep)' / '(DepositRedeemed)' markers instead of skipping the part,
+        # otherwise deposit-settled sales under-count in the integrity check.
+        part = re.sub(r"\([^)]*\)", "", part).strip()
+        if not part:
             continue
         m = re.search(r":\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*$", part)
         if not m:

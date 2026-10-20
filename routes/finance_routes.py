@@ -49,6 +49,20 @@ def _forfeit_redeemed_total(accounts, q=None):
 
 router = APIRouter(prefix="/api", tags=["Finance"])
 
+
+def _pm_clean(val) -> str:
+    """Strip deposit markers from a payment-method amount token.
+
+    Deposit settle writes amounts like '6000(DepositRedeemed)' and older rows use
+    '6000 (dep)'. Both must collapse to '6000' before float() — the previous
+    replace(" (dep)","") left '(DepositRedeemed)' behind and crashed the balance
+    sheet with "could not convert string to float: '6000(DepositRedeemed)'".
+    """
+    import re as _re
+    return _re.sub(r"\([^)]*\)", "", str(val or "")).strip() or "0"
+
+
+
 # TEMPORARILY DISABLED (2026-09-22, Osmo): depreciation excluded from P&L.
 # Set to True to re-enable depreciation in the P&L statement.
 INCLUDE_DEPRECIATION_IN_PNL = False
@@ -428,8 +442,8 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                     method, _, val = part.partition(":")
                     method = method.strip().lower().replace(" ", "_")
                     try:
-                        _is_dep = "(dep)" in val.lower()  # 🆕 detect deposit portion
-                        _clean = val.strip().replace(" (dep)", "") or "0"
+                        _is_dep = "(dep" in val.lower()  # 🆕 detect deposit portion
+                        _clean = _pm_clean(val)
                         val = float(_clean)
                         if _is_dep and method in dep_total_per_account:
                             dep_total_per_account[method] += val  # 🆕 accumulate dep amounts
@@ -900,8 +914,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 if ":" in part:
                     method, _, val = part.partition(":")
                     method = method.strip().lower().replace(" ", "_")
-                    _clean = val.strip().replace(" (dep)", "") or "0"
-                    _is_dep = "(dep)" in val.lower()  # 🆕 detect deposit portion
+                    _clean = _pm_clean(val)
+                    _is_dep = "(dep" in val.lower()  # 🆕 detect deposit portion
                     val = float(_clean)
                     if _is_dep and method in bs_dep_total_per_account:
                         bs_dep_total_per_account[method] += val  # 🆕 accumulate dep amounts
@@ -1182,7 +1196,7 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                         method, _, val = part.partition(":")
                         method = method.strip().lower().replace(" ", "_")
                         try:
-                            _clean = val.strip().replace(" (dep)", "") or "0"
+                            _clean = _pm_clean(val)
                             val = float(_clean)
                         except ValueError:
                             val = net_amount / max(len(parts), 1)
