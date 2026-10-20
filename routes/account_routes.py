@@ -90,12 +90,20 @@ def _allowed_accounts(user: dict):
 
 
 def _listed_accounts(user: dict):
-    """Accounts shown in the PS VIBE UI pickers.
+    """Accounts shown as SHOP balances (dashboard / account list).
 
-    Owner (2026-10-20): the shop only has Cash and MMQR - CB. Main (ACM) lives in
-    VIBE Group now and must not appear on the PS VIBE dashboard.
+    Owner (2026-10-20): the shop only holds Cash and MMQR - CB.
     """
     return list(_OPERATIONAL)
+
+
+def _transfer_accounts(user: dict):
+    """Accounts offered in the Transfer picker.
+
+    Owner (2026-10-20): shop accounts + Main (ACM) — custody money can be moved
+    back/forth, but it is not part of the shop balance list.
+    """
+    return list(_OPERATIONAL) + ["Main (ACM)"]
 
 
 def _caller_identity(user: dict) -> str:
@@ -476,7 +484,7 @@ async def list_transferable(user: dict = Depends(get_staff_or_dashboard_user)):
     """
     _ensure_table()
     role = "admin" if _is_admin(user) else "staff"
-    allowed = _listed_accounts(user)
+    allowed = _transfer_accounts(user)
     bals = await _balances_by_name()
     accounts_out = [
         {
