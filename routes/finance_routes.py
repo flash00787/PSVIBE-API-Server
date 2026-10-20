@@ -1105,7 +1105,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         _adv_recovery = 0.0
         # total must equal the components shown on the sheet, otherwise the
         # displayed equity lines never add up to the displayed total (Boss 19:07)
-        total_eq = icap + retained + _adv_recovery + total_dep + deposit_forfeited_alltime
+        total_eq = icap + retained + _adv_recovery
 
         # Deposit liability: deposits that are paid or verified (customer still owes session)
         _deposit_liab = _mqo(
@@ -1133,7 +1133,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         if _bs_diff_abs > 10:
             _adv_recovery += _bs_diff
             _adv_recovery = round(_adv_recovery, 0)
-            total_eq = icap + retained + _adv_recovery + total_dep + deposit_forfeited_alltime
+            total_eq = icap + retained + _adv_recovery
             total_liab_eq = round(total_liab + total_eq, 0)
             if _bs_diff_abs >= 50000:
                 logger.warning(f"BS gap auto-balanced: {_bs_diff:,.0f} Ks (large — may indicate data-entry issue)")
