@@ -1,8 +1,8 @@
 {
-  "timestamp": "2026-10-19T08:49:41.027001Z",
+  "timestamp": "2026-10-19T20:01:38.383955Z",
   "date": "2026-10-19",
   "overall_status": "critical",
-  "total_issues": 3256,
+  "total_issues": 3269,
   "checks": {
     "wallet_balance": {
       "status": "critical",
@@ -457,51 +457,6 @@
           "booking_date": "2026-10-01",
           "booking_status": "cancelled",
           "detail": "Booking#3772 (cancelled) on 2026-10-01 has no matching sales_daily record"
-        },
-        {
-          "type": "booking_without_sale",
-          "booking_id": 4236,
-          "console_id": "C-07",
-          "member_id": null,
-          "booking_date": "2026-10-19",
-          "booking_status": "Active",
-          "detail": "Booking#4236 (Active) on 2026-10-19 has no matching sales_daily record"
-        },
-        {
-          "type": "booking_without_sale",
-          "booking_id": 4237,
-          "console_id": "C-04",
-          "member_id": "Guest",
-          "booking_date": "2026-10-19",
-          "booking_status": "Active",
-          "detail": "Booking#4237 (Active) on 2026-10-19 has no matching sales_daily record"
-        },
-        {
-          "type": "booking_without_sale",
-          "booking_id": 4239,
-          "console_id": "C-08",
-          "member_id": "Guest",
-          "booking_date": "2026-10-19",
-          "booking_status": "Active",
-          "detail": "Booking#4239 (Active) on 2026-10-19 has no matching sales_daily record"
-        },
-        {
-          "type": "booking_without_sale",
-          "booking_id": 4240,
-          "console_id": "C-02",
-          "member_id": "Guest",
-          "booking_date": "2026-10-19",
-          "booking_status": "Active",
-          "detail": "Booking#4240 (Active) on 2026-10-19 has no matching sales_daily record"
-        },
-        {
-          "type": "booking_without_sale",
-          "booking_id": 4241,
-          "console_id": "C-03",
-          "member_id": "Guest",
-          "booking_date": "2026-10-19",
-          "booking_status": "Active",
-          "detail": "Booking#4241 (Active) on 2026-10-19 has no matching sales_daily record"
         },
         {
           "type": "sale_without_booking",
@@ -4059,7 +4014,7 @@
           "detail": "Sale#3321 (voucher 20260929-756) on 2026-09-29 has no matching booking"
         }
       ],
-      "count": 427
+      "count": 422
     },
     "inventory": {
       "status": "critical",
@@ -4077,52 +4032,52 @@
         {
           "type": "inventory_mismatch",
           "item_name": "Spicy ကြက်အူချောင်း",
-          "inventory_quantity": 35,
+          "inventory_quantity": 32,
           "stock_in_total": 259,
-          "stock_out_total": 214,
-          "expected_quantity": 45,
+          "stock_out_total": 217,
+          "expected_quantity": 42,
           "drift": -10,
-          "detail": "Spicy ကြက်အူချောင်း: inventory=35, FIFO in(259)-out(214)=45 (drift=-10)"
+          "detail": "Spicy ကြက်အူချောင်း: inventory=32, FIFO in(259)-out(217)=42 (drift=-10)"
         },
         {
           "type": "inventory_mismatch",
           "item_name": "ကြက်အူချောင်း အသေး",
-          "inventory_quantity": 15,
+          "inventory_quantity": 12,
           "stock_in_total": 153,
-          "stock_out_total": 143,
-          "expected_quantity": 10,
+          "stock_out_total": 146,
+          "expected_quantity": 7,
           "drift": 5,
-          "detail": "ကြက်အူချောင်း အသေး: inventory=15, FIFO in(153)-out(143)=10 (drift=5)"
+          "detail": "ကြက်အူချောင်း အသေး: inventory=12, FIFO in(153)-out(146)=7 (drift=5)"
         },
         {
           "type": "inventory_mismatch",
           "item_name": "ကြက်ဥ",
-          "inventory_quantity": 0,
-          "stock_in_total": 631,
+          "inventory_quantity": 20,
+          "stock_in_total": 661,
           "stock_out_total": 627,
-          "expected_quantity": 4,
-          "drift": -4,
-          "detail": "ကြက်ဥ: inventory=0, FIFO in(631)-out(627)=4 (drift=-4)"
+          "expected_quantity": 34,
+          "drift": -14,
+          "detail": "ကြက်ဥ: inventory=20, FIFO in(661)-out(627)=34 (drift=-14)"
         },
         {
           "type": "inventory_mismatch",
           "item_name": "ကြက်ဥကြော်",
           "inventory_quantity": 0,
           "stock_in_total": 0,
-          "stock_out_total": 6,
-          "expected_quantity": -6,
-          "drift": 6,
-          "detail": "ကြက်ဥကြော်: inventory=0, FIFO in(0)-out(6)=-6 (drift=6)"
+          "stock_out_total": 9,
+          "expected_quantity": -9,
+          "drift": 9,
+          "detail": "ကြက်ဥကြော်: inventory=0, FIFO in(0)-out(9)=-9 (drift=9)"
         },
         {
           "type": "inventory_mismatch",
           "item_name": "ကြက်ဥပြုတ်",
           "inventory_quantity": 0,
           "stock_in_total": 0,
-          "stock_out_total": 16,
-          "expected_quantity": -16,
-          "drift": 16,
-          "detail": "ကြက်ဥပြုတ်: inventory=0, FIFO in(0)-out(16)=-16 (drift=16)"
+          "stock_out_total": 24,
+          "expected_quantity": -24,
+          "drift": 24,
+          "detail": "ကြက်ဥပြုတ်: inventory=0, FIFO in(0)-out(24)=-24 (drift=24)"
         },
         {
           "type": "inventory_mismatch",
@@ -4149,10 +4104,10 @@
           "item_name": "လက်ဖက် ထမင်း",
           "inventory_quantity": 0,
           "stock_in_total": 0,
-          "stock_out_total": 35,
-          "expected_quantity": -35,
-          "drift": 35,
-          "detail": "လက်ဖက် ထမင်း: inventory=0, FIFO in(0)-out(35)=-35 (drift=35)"
+          "stock_out_total": 41,
+          "expected_quantity": -41,
+          "drift": 41,
+          "detail": "လက်ဖက် ထမင်း: inventory=0, FIFO in(0)-out(41)=-41 (drift=41)"
         }
       ],
       "count": 9
@@ -5244,9 +5199,9 @@
           "type": "receipt_sale_count_mismatch",
           "date": "2026-10-19",
           "receipt_count": 0,
-          "sale_count": 2,
-          "diff": -2,
-          "detail": "2026-10-19: receipts=0, sales=2 (diff=-2)"
+          "sale_count": 20,
+          "diff": -20,
+          "detail": "2026-10-19: receipts=0, sales=20 (diff=-20)"
         },
         {
           "type": "receipt_sale_count_mismatch",
@@ -15925,9 +15880,99 @@
           "type": "sale_without_receipt",
           "voucher_no": "V-WEB-20261019145437-360",
           "detail": "Voucher V-WEB-20261019145437-360 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019164024-172",
+          "detail": "Voucher V-WEB-20261019164024-172 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019165300-437",
+          "detail": "Voucher V-WEB-20261019165300-437 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019165720-390",
+          "detail": "Voucher V-WEB-20261019165720-390 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019165818-378",
+          "detail": "Voucher V-WEB-20261019165818-378 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019172831-328",
+          "detail": "Voucher V-WEB-20261019172831-328 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019173645-883",
+          "detail": "Voucher V-WEB-20261019173645-883 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019173912-882",
+          "detail": "Voucher V-WEB-20261019173912-882 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019174725-914",
+          "detail": "Voucher V-WEB-20261019174725-914 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019175946-891",
+          "detail": "Voucher V-WEB-20261019175946-891 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019183538-863",
+          "detail": "Voucher V-WEB-20261019183538-863 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019183625-615",
+          "detail": "Voucher V-WEB-20261019183625-615 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019183924-647",
+          "detail": "Voucher V-WEB-20261019183924-647 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019184143-604",
+          "detail": "Voucher V-WEB-20261019184143-604 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019192156-159",
+          "detail": "Voucher V-WEB-20261019192156-159 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019194425-314",
+          "detail": "Voucher V-WEB-20261019194425-314 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019194736-261",
+          "detail": "Voucher V-WEB-20261019194736-261 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019194830-186",
+          "detail": "Voucher V-WEB-20261019194830-186 exists in sales_daily but not in receipts"
+        },
+        {
+          "type": "sale_without_receipt",
+          "voucher_no": "V-WEB-20261019195828-363",
+          "detail": "Voucher V-WEB-20261019195828-363 exists in sales_daily but not in receipts"
         }
       ],
-      "count": 2271
+      "count": 2289
     },
     "negative_sales": {
       "status": "critical",
