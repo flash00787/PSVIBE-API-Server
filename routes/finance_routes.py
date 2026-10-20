@@ -1040,6 +1040,10 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             _ic_net = 0.0
         _intercompany_receivable = max(0.0, _ic_net)          # VG owes the shop
         _intercompany_payable = max(0.0, -_ic_net)            # shop owes VG
+        # 2026-10-20 (Boss): shareholder capital is the full 330,000,000. The 20,000,000
+        # that moved to VIBE Group's Main (ACM) is an intercompany receivable, NOT a
+        # reduction of capital (deducting it understated assets and equity by 20M).
+        _transfer_to_vg = 0.0   # in intercompany_ledger as IC-TRANSFER-VG-20261020 (already summed below)
         # itemised breakdown for the balance sheet (Boss 2026-10-20: show detail)
         def _ic_sum(prefix):
             try:
@@ -1050,8 +1054,9 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         _ic_detail = {
             "suspense": _ic_sum("IC-SUSPENSE"),
             "prior_period": _ic_sum("IC-PRIOR"),
+            "transfer_to_vg": _ic_sum("IC-TRANSFER"),
         }
-        other_ca = prep_t + adv_t + _intercompany_receivable
+        other_ca = prep_t + adv_t + _intercompany_receivable + _transfer_to_vg
 
         # Balance-sheet NBV + asset-disposal reconciliation (line-by-line 2026-10-17).
         # Asset disposal net proceeds already sit in live cash; reduce fixed assets by the net loss amount.
@@ -1094,8 +1099,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Expenses = opex + food cogs + cumulative depreciation
         _sh = _mq("SELECT SUM(capital_contribution) as tc FROM shareholders")
         icap = float(_sh[0]["tc"] or 0) if _sh else 0
-        _capital_transfer_to_holding = 20000000.0
-        icap = max(0.0, icap - _capital_transfer_to_holding)
+        # (see _transfer_to_vg above — capital is kept at the full shareholder amount)
         ti_excl_topup = float(_mqo("SELECT COALESCE(SUM(net),0) as t FROM sales_daily WHERE net>0 AND is_topup=0")["t"] or 0)
         te = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM opex")["t"] or 0)
         cost_of_sold = _inv['cogs']  # FIFO-based COGS
