@@ -1,10 +1,10 @@
 """PS VIBE API — Payment-account balances & account→account transfers (Staff App WAVE 5).
 
 Owner requirements (Osmo 2026-09-19):
-  * Account Balances view → ONLY "ACM's Acc" + "KBZ Bank", owner/admin only.
+  * Account Balances view → ONLY "Main (ACM)" + "KBZ Bank", owner/admin only.
   * Account→account balance transfer, with role rules:
         staff  → Cash / WavePay / KPay / AYA Pay / MMQR - CB
-        admin  → ALL accounts (also ACM's Acc, KBZ Bank)
+        admin  → ALL accounts (also Main (ACM), KBZ Bank)
 
 Endpoints (mounted under /api/accounts):
   GET  /api/accounts/transferable   — accounts the caller may move money between (+ balances)
@@ -17,7 +17,7 @@ Design notes
 * Balances come from the SAME calculator the dashboard/finance uses
   (routes.finance_routes.get_finance_balances) so an app balance == dashboard balance.
 * The 'Wave'/'WavePay' merge lives inside that calculator and only ever affects the
-  WavePay account — it cannot leak into ACM's Acc / KBZ Bank here.
+  WavePay account — it cannot leak into Main (ACM) / KBZ Bank here.
 * A dedicated `account_transfers` ledger row is written in the SAME transaction as the
   two cash_movements legs, giving (a) idempotency via UNIQUE(client_ref) and
   (b) clean per-transfer history with a stable shared reference "TRF-...".
@@ -52,7 +52,7 @@ _OPERATIONAL = ["Cash", "MMQR - CB"]
 # cannot pick them in any payment/balance picker.
 _INACTIVE_ACCOUNTS = ["KPay", "WavePay", "AYA Pay"]
 # Owner-only accounts (never visible/usable to staff).
-_OWNER_ONLY = ["ACM's Acc", "KBZ Bank"]
+_OWNER_ONLY = ["Main (ACM)", "KBZ Bank"]
 ALL_ACCOUNTS = _OPERATIONAL + _INACTIVE_ACCOUNTS + _OWNER_ONLY
 
 # display label -> finance calculator account key (used for balance lookup)
@@ -62,7 +62,7 @@ _KEY_BY_NAME = {
     "KPay": "kpay",
     "AYA Pay": "aya_pay",
     "MMQR - CB": "mmqr_cb",
-    "ACM's Acc": "acm_acc",
+    "Main (ACM)": "acm_acc",
     "KBZ Bank": "kbz_bank",
 }
 
@@ -160,7 +160,7 @@ def _iso(v):
 
 # ── Daily account balance open/close (Staff App) ────────────────────────────
 # Owner 2026-09-24: staff opens/closes the daily balance for the 5 shop accounts
-# (Cash, WavePay, KPay, AYA Pay, MMQR - CB). Owner accounts (ACM's Acc + KBZ Bank) excluded.
+# (Cash, WavePay, KPay, AYA Pay, MMQR - CB). Owner accounts (Main (ACM) + KBZ Bank) excluded.
 
 _daily_bal_table_ready = False
 
@@ -472,7 +472,7 @@ async def list_balances(user: dict = Depends(get_staff_or_dashboard_user)):
     """Role-aware read-only balances.
 
     Staff  → the 5 shop accounts. Admin → all 7, with owner-only ones flagged.
-    (The strictly owner-only ACM's Acc + KBZ Bank view is unchanged and remains
+    (The strictly owner-only Main (ACM) + KBZ Bank view is unchanged and remains
      available at GET /api/finance/account-balances.)
     """
     _ensure_table()
@@ -515,7 +515,7 @@ async def list_balances(user: dict = Depends(get_staff_or_dashboard_user)):
             for r in rows
         },
         # kept for backward-compat with the old owner-only alias consumers
-        "operating": [r for r in rows if r["account"] == "ACM's Acc"],
+        "operating": [r for r in rows if r["account"] == "Main (ACM)"],
         "capital": [r for r in rows if r["account"] == "KBZ Bank"],
     }
 

@@ -156,8 +156,8 @@ def _parse_pm_and_inject(total_amount: float, payment_method: str, note: str, st
             "aya_pay": "AYA Pay",
             "kbz bank": "KBZ Bank",
             "kbz_bank": "KBZ Bank",
-            "acm acc": "ACM's Acc",
-            "acm_acc": "ACM's Acc",
+            "acm acc": "Main (ACM)",
+            "acm_acc": "Main (ACM)",
         }
         account = acct_map.get(method.strip().lower().replace("  ", " "), method)
         if val > 0:

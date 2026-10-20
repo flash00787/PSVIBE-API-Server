@@ -378,7 +378,7 @@ async def dashboard_dispose_asset(asset_id: int, req: dict = {}, user: dict = De
 @router.get("/dashboard/finance/balances")
 async def get_finance_balances(year: int = Query(None), month: int = Query(None), user: dict = Depends(get_current_user)):
     """Returns live balance for each payment account."""
-    accounts = [{"key": "cash", "label": "Cash", "icon": "💰", "type": "operating"},{"key": "wave", "label": "WavePay", "icon": "📱", "type": "digital"},{"key": "aya_pay", "label": "AYA Pay", "icon": "💳", "type": "bank"},{"key": "kpay", "label": "KPay", "icon": "💳", "type": "digital"},{"key": "mmqr_cb", "label": "MMQR - CB", "icon": "🏦", "type": "bank"},{"key": "kbz_bank", "label": "KBZ Bank", "icon": "🏦", "type": "capital"},{"key": "acm_acc", "label": "ACM's Acc", "icon": "🏦", "type": "transfer"}]
+    accounts = [{"key": "cash", "label": "Cash", "icon": "💰", "type": "operating"},{"key": "wave", "label": "WavePay", "icon": "📱", "type": "digital"},{"key": "aya_pay", "label": "AYA Pay", "icon": "💳", "type": "bank"},{"key": "kpay", "label": "KPay", "icon": "💳", "type": "digital"},{"key": "mmqr_cb", "label": "MMQR - CB", "icon": "🏦", "type": "bank"},{"key": "kbz_bank", "label": "KBZ Bank", "icon": "🏦", "type": "capital"},{"key": "acm_acc", "label": "Main (ACM)", "icon": "🏦", "type": "transfer"}]
     for acc in accounts:
         acc["active"] = acc["label"] not in _INACTIVE_ACCOUNT_LABELS
     # Month filter: default to cumulative (from business start) when no month/year specified
@@ -498,7 +498,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
         # Stock-in purchase payments (deducted from accounts)
         # Note: use CONCAT to avoid LIKE '%/%' conflicting with PyMySQL %-formatting
         si_all_rows = _mq("SELECT payment_method, COALESCE(SUM(quantity * unit_cost), 0) as total FROM stock_in WHERE payment_method IS NOT NULL AND payment_method != '' AND created_at >= %s AND created_at < %s GROUP BY payment_method", (_start, _end))
-        si_payments = {"Cash": 0.0, "KPay": 0.0, "Wave": 0.0, "AYA Pay": 0.0, "MMQR - CB": 0.0, "KBZ Bank": 0.0, "ACM's Acc": 0.0}
+        si_payments = {"Cash": 0.0, "KPay": 0.0, "Wave": 0.0, "AYA Pay": 0.0, "MMQR - CB": 0.0, "KBZ Bank": 0.0, "Main (ACM)": 0.0}
         for row in si_all_rows:
             pm = (row.get("payment_method") or "").strip()
             amt = float(row["total"] or 0)
@@ -545,7 +545,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                 cash_map[_k] -= float(_r["total"] or 0)
         # NOTE: Advance settled injects are NOT subtracted — matching eject entries were
         # backfilled on 2026-07-09 (104.8M across 7 advances), so KBZ balance is accurate.
-        key_to_name = {"cash": "Cash", "wave": "Wave", "kpay": "KPay", "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB", "kbz_bank": "KBZ Bank", "acm_acc": "ACM's Acc"}
+        key_to_name = {"cash": "Cash", "wave": "Wave", "kpay": "KPay", "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB", "kbz_bank": "KBZ Bank", "acm_acc": "Main (ACM)"}
         # Capital expenditure queries (all from KBZ Bank)
         _asset_purchases = _mqo("SELECT COALESCE(SUM(per_price * qty), 0) as total FROM finance_assets WHERE status = 'active'")
         _advances_total = _mqo("SELECT COALESCE(SUM(amount), 0) as total FROM finance_advances WHERE status='pending' OR status IS NULL")
@@ -874,12 +874,12 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             {"key": "aya_pay", "label": "AYA Pay"},
             {"key": "mmqr_cb", "label": "MMQR - CB"},
             {"key": "kbz_bank", "label": "KBZ Bank"},
-            {"key": "acm_acc", "label": "ACM's Acc"}
+            {"key": "acm_acc", "label": "Main (ACM)"}
         ]
         for acc in accounts:
             acc["active"] = acc["label"] not in _INACTIVE_ACCOUNT_LABELS
         # Map key -> DB account name for cash_movements queries
-        db_acct = {"cash":"Cash","wave":"Wave","kpay":"KPay","aya_pay":"AYA Pay","mmqr_cb":"MMQR - CB","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
+        db_acct = {"cash":"Cash","wave":"Wave","kpay":"KPay","aya_pay":"AYA Pay","mmqr_cb":"MMQR - CB","kbz_bank":"KBZ Bank","acm_acc":"Main (ACM)"}
         bank_items = []
         total_ca = 0.0
 
@@ -1159,7 +1159,7 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
             _end = f"{year:04d}-{month+1:02d}-01"
 
         acct_keys = ["cash", "wave", "aya_pay", "kpay", "mmqr_cb", "kbz_bank", "acm_acc"]
-        db_names = {"cash": "Cash", "wave": "Wave", "aya_pay": "AYA Pay", "kpay": "KPay", "mmqr_cb": "MMQR - CB", "kbz_bank": "KBZ Bank", "acm_acc": "ACM's Acc"}
+        db_names = {"cash": "Cash", "wave": "Wave", "aya_pay": "AYA Pay", "kpay": "KPay", "mmqr_cb": "MMQR - CB", "kbz_bank": "KBZ Bank", "acm_acc": "Main (ACM)"}
 
         def _position(cutoff):
             """Per-account cash position at `cutoff` — mirrors balance-sheet logic.
@@ -1422,7 +1422,7 @@ async def capital_inject(req: dict, user: dict = Depends(get_current_user)):
         return {"success": False, "error": "Shareholder not found"}
     sh_name = sh[0]["name"]
     new_cap = float(sh[0]["capital_contribution"] or 0) + amount
-    pm_map = {"kpay":"KPay","cash":"Cash","wavepay":"WavePay","wave":"WavePay","aya_pay":"AYA Pay","mmqr_cb":"MMQR - CB","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
+    pm_map = {"kpay":"KPay","cash":"Cash","wavepay":"WavePay","wave":"WavePay","aya_pay":"AYA Pay","mmqr_cb":"MMQR - CB","kbz_bank":"KBZ Bank","acm_acc":"Main (ACM)"}
     db_account = pm_map.get(pm.lower().replace(" ","_"), pm) if pm else "KPay"
     _me("INSERT INTO capital_movements (shareholder_id,shareholder_name,type,amount,payment_method,payment_account,notes) VALUES (%s,%s,%s,%s,%s,%s,%s)",
         (sid, sh_name, "inject", amount, pm, db_account, notes))
@@ -1449,7 +1449,7 @@ async def capital_eject(req: dict, user: dict = Depends(get_current_user)):
     if amount > current_cap:
         return {"success": False, "error": "Eject amount exceeds capital contribution"}
     new_cap = current_cap - amount
-    pm_map = {"kpay":"KPay","cash":"Cash","wavepay":"WavePay","wave":"WavePay","aya_pay":"AYA Pay","mmqr_cb":"MMQR - CB","kbz_bank":"KBZ Bank","acm_acc":"ACM's Acc"}
+    pm_map = {"kpay":"KPay","cash":"Cash","wavepay":"WavePay","wave":"WavePay","aya_pay":"AYA Pay","mmqr_cb":"MMQR - CB","kbz_bank":"KBZ Bank","acm_acc":"Main (ACM)"}
     db_account = pm_map.get(pm.lower().replace(" ","_"), pm) if pm else "Cash"
     _me("INSERT INTO capital_movements (shareholder_id,shareholder_name,type,amount,payment_method,payment_account,notes) VALUES (%s,%s,%s,%s,%s,%s,%s)",
         (sid, sh_name, "eject", amount, pm, db_account, notes))
@@ -1769,7 +1769,7 @@ async def record_dividend(req: dict, user: dict = Depends(get_current_user)):
            VALUES (%s,%s,%s,%s,%s,%s,%s)""",
         (sid, amount, div_date, pm, status, notes, recorded_by))
     
-    pm_map = {'kpay':'KPay','cash':'Cash','wavepay':'WavePay','wave':'WavePay','aya_pay':'AYA Pay','mmqr_cb':'MMQR - CB','kbz_bank':'KBZ Bank','acm_acc':"ACM's Acc"}
+    pm_map = {'kpay':'KPay','cash':'Cash','wavepay':'WavePay','wave':'WavePay','aya_pay':'AYA Pay','mmqr_cb':'MMQR - CB','kbz_bank':'KBZ Bank','acm_acc':"Main (ACM)"}
     db_account = pm_map.get(pm.lower().replace(' ','_'), pm) if pm else 'Cash'
     full_note = 'Dividend: ' + sh[0]['name'] + (' (' + notes + ')' if notes else '')
     _me('INSERT INTO cash_movements (account, movement_type, amount, note, created_at)'

@@ -4003,7 +4003,7 @@
       { en: "Account balance", sub: "Cash position (read-only)", icon: "🏦", path: "/balances" },
     ] },
     { id: "accounts", emoji: "🏦", en: "Accounts", tone: "gold", items: [
-      { en: "Account Balances", sub: "ACM's Acc & KBZ Bank", icon: "🏦", path: "/account-balances", ownerOnly: true },
+      { en: "Account Balances", sub: "Main (ACM) & KBZ Bank", icon: "🏦", path: "/account-balances", ownerOnly: true },
       { en: "Transfer", sub: "Move money between accounts", icon: "🔄", path: "/transfer" },
       { en: "Transfer history", sub: "Recent account transfers", icon: "🧾", path: "/transfer-history" },
       { en: "Daily Balance", sub: "Open / close daily balances", icon: "🌗", path: "/daily-balance" },
@@ -5003,9 +5003,9 @@
       const rowItemPicker = ref(null);
       const submitting = ref(false);
       const PAY_METHODS = ["Cash", "MMQR - CB"];
-      // Owner 2026-09-28 17:51: ACM's Acc is offered to EVERY role here — the owner wants
+      // Owner 2026-09-28 17:51: Main (ACM) is offered to EVERY role here — the owner wants
       // staff to be able to record stock bought with the owner's money.
-      const _stkMethods = PAY_METHODS.concat(["ACM's Acc"]);
+      const _stkMethods = PAY_METHODS.concat(["Main (ACM)"]);
       const payColumns = _stkMethods.map((p) => ({ text: p, value: p }));
       const form = reactive({ payment_method: "Cash" });
       const rows = ref([{ item_name: "", quantity: 0, unit_cost: 0 }]);
@@ -6587,7 +6587,7 @@
     `,
     setup() {
       // Owner 2026-09-28 17:51: expenses paid from the owner's own account
-      const PAY = ["Cash", "MMQR - CB", "ACM's Acc"];
+      const PAY = ["Cash", "MMQR - CB", "Main (ACM)"];
       const payColumns = PAY.map((p) => ({ text: p, value: p }));
       const CATEGORIES = ["Rent", "Staff Salary", "Electricity", "Water", "Internet", "Maintenance", "Marketing", "Software/License", "Snacks/Drinks", "Transaction Charges", "Others"];
       const _role = String((PSV.getStaff() || {}).role || "").trim().toLowerCase();
@@ -7632,7 +7632,7 @@
   };
 
   // ══ WAVE 5 — payment-account helpers ═══════════════════════
-  const ACC_ICONS = { "Cash": "💰", "WavePay": "📱", "KPay": "💳", "AYA Pay": "💳", "MMQR - CB": "🏦", "ACM's Acc": "🏦", "KBZ Bank": "🏦" };
+  const ACC_ICONS = { "Cash": "💰", "WavePay": "📱", "KPay": "💳", "AYA Pay": "💳", "MMQR - CB": "🏦", "Main (ACM)": "🏦", "KBZ Bank": "🏦" };
   const accIcon = (name) => ACC_ICONS[String(name || "")] || "🏦";
   function fmtWhen(iso) {
     if (!iso) return "";
@@ -7661,7 +7661,7 @@
     return m;
   }
 
-  // ── VIEW: Account Balances — owner-only, ACM's Acc + KBZ Bank (WAVE 5) ──
+  // ── VIEW: Account Balances — owner-only, Main (ACM) + KBZ Bank (WAVE 5) ──
   // Endpoint: GET /api/finance/account-balances  (403 for staff). Exactly two cards.
   const AccountBalances = {
     components: { PageHeader },
@@ -7675,7 +7675,7 @@
               <div class="psv-owner-card__ico">🔒</div>
               <div class="psv-owner-card__t">Owner-only</div>
               <div class="psv-owner-card__s">Owner-only — ask the owner to view these account balances.</div>
-              <div class="psv-owner-card__m">ACM's Acc &amp; KBZ Bank are restricted to the owner / admin account.</div>
+              <div class="psv-owner-card__m">Main (ACM) &amp; KBZ Bank are restricted to the owner / admin account.</div>
             </div>
             <van-empty v-else-if="err" image="error" :description="err" />
             <template v-else>
@@ -7741,7 +7741,7 @@
           }
           let rows = (d && d.accounts) || [];
           if (!rows.length) rows = [].concat((d && d.operating) || [], (d && d.capital) || []);
-          // Contract: ONLY ACM's Acc + KBZ Bank — enforce even if the server ever widens.
+          // Contract: ONLY Main (ACM) + KBZ Bank — enforce even if the server ever widens.
           rows = rows.filter((r) => /ACM|KBZ/i.test(String((r && (r.label || r.name || r.account)) || "")));
           accounts.value = rows.map((r) => {
             const label = r.label || r.name || r.account || "Account";
@@ -8129,7 +8129,7 @@
 
   // ── VIEW: Daily Balance — open/close daily balance per operational account ──
   // Owner 2026-09-24: staff opens/closes the daily balance for the 5 shop accounts
-  // (Cash, WavePay, KPay, AYA Pay, MMQR - CB). Owner accounts (ACM's Acc + KBZ Bank) excluded.
+  // (Cash, WavePay, KPay, AYA Pay, MMQR - CB). Owner accounts (Main (ACM) + KBZ Bank) excluded.
   const DailyBalance = {
     components: { PageHeader },
     template: `
@@ -8182,7 +8182,7 @@
                   </div>
                 </template>
               </div>
-              <div class="psv-readonly">🔒 Owner accounts (ACM's Acc &amp; KBZ Bank) are excluded from daily balance.</div>
+              <div class="psv-readonly">🔒 Owner accounts (Main (ACM) &amp; KBZ Bank) are excluded from daily balance.</div>
             </template>
           </template>
         </van-pull-refresh>

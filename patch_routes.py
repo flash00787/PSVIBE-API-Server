@@ -398,7 +398,7 @@ async def _require_owner_or_service(request: Request):
 
 @app.get("/api/finance/account-balances", tags=["Finance"])
 async def api_finance_account_balances(auth=Depends(_require_owner_or_service)):
-    """Owner-only Account Balances — restricted to **ACM's Acc** + **KBZ Bank** (WAVE 5).
+    """Owner-only Account Balances — restricted to **Main (ACM)** + **KBZ Bank** (WAVE 5).
 
     Staff App JWTs (role=staff) receive HTTP 403 "Owner-only — admin access required".
     Dashboard pages/bots authenticating with the service X-API-Key keep working.
@@ -419,7 +419,7 @@ async def api_finance_account_balances(auth=Depends(_require_owner_or_service)):
             for r in _mysql_query(
                 "SELECT account, MAX(created_at) AS last_movement FROM cash_movements "
                 "WHERE account IN (%s, %s) GROUP BY account",
-                ("ACM's Acc", "KBZ Bank"),
+                ("Main (ACM)", "KBZ Bank"),
             ):
                 lm = r.get("last_movement")
                 last[r.get("account")] = lm.isoformat() if hasattr(lm, "isoformat") else lm
@@ -427,15 +427,15 @@ async def api_finance_account_balances(auth=Depends(_require_owner_or_service)):
             logger.warning(f"account-balances last_movement lookup failed: {_le}")
 
         rows = []
-        for name in ("ACM's Acc", "KBZ Bank"):
+        for name in ("Main (ACM)", "KBZ Bank"):
             rows.append({
                 "name": name,
-                "type": "Digital" if name == "ACM's Acc" else "Capital",
+                "type": "Digital" if name == "Main (ACM)" else "Capital",
                 "balance": round(bal_by_label.get(name, 0.0)),
                 "last_movement": last.get(name),
             })
 
-        acm = [r for r in rows if r["name"] == "ACM's Acc"]
+        acm = [r for r in rows if r["name"] == "Main (ACM)"]
         kbz = [r for r in rows if r["name"] == "KBZ Bank"]
         return ok({
             "operating": acm,

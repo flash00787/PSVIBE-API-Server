@@ -40,7 +40,7 @@ def _load_admin_user_ids() -> set[int]:
     """Telegram user IDs that map to the 'admin' role in the Mini App JWT.
 
     Staff get role 'staff' (4 shop accounts in transfer); admins (owner/partners)
-    get role 'admin' (all 6 accounts, incl. ACM's Acc + KBZ Bank). Canonical source
+    get role 'admin' (all 6 accounts, incl. Main (ACM) + KBZ Bank). Canonical source
     is the ADMIN_USER_IDS env var (comma-separated), same as the sales bot uses.
     """
     val = os.environ.get("ADMIN_USER_IDS", "")
