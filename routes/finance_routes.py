@@ -1104,7 +1104,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             _dividends_payable = round(float(_dp.get("t", 0) or 0), 0)
         except Exception:
             _dividends_payable = 9096593.0
-        retained = total_earned_revenue - te - cost_of_sold - total_dep - _prior_period_adjustment + _disposal_gain_loss - _ingredient_cogs_alltime - _dividends_payable
+        retained = total_earned_revenue - te - cost_of_sold - total_dep + _disposal_gain_loss - _ingredient_cogs_alltime - _dividends_payable
         # Balance transfer (aka advance-recovery reserve): historically held the net of
         # supplier advances that were paid then settled/returned. Since the 104.8M eject
         # backfill those injects and ejects offset naturally, so the line starts at 0 and
@@ -1113,7 +1113,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         _adv_recovery = 0.0
         # total must equal the components shown on the sheet, otherwise the
         # displayed equity lines never add up to the displayed total (Boss 19:07)
-        total_eq = icap + retained + _adv_recovery
+        total_eq = icap + retained + _adv_recovery - _prior_period_adjustment
 
         # Deposit liability: deposits that are paid or verified (customer still owes session)
         _deposit_liab = _mqo(
@@ -1141,7 +1141,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         if _bs_diff_abs > 10:
             _adv_recovery += _bs_diff
             _adv_recovery = round(_adv_recovery, 0)
-            total_eq = icap + retained + _adv_recovery
+            total_eq = icap + retained + _adv_recovery - _prior_period_adjustment
             total_liab_eq = round(total_liab + total_eq, 0)
             if _bs_diff_abs >= 50000:
                 logger.warning(f"BS gap auto-balanced: {_bs_diff:,.0f} Ks (large — may indicate data-entry issue)")
@@ -1165,6 +1165,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             },
             "equity":{
                 "initial_capital":round(icap,0),
+                "prior_period_adjustment":round(-_prior_period_adjustment,0),
                 "capital_account_with_holding":round(icap,0),
                 "retained_earnings":round(retained,0),
                 "advance_recovery_reserve":round(_adv_recovery,0),
