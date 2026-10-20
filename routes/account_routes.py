@@ -148,10 +148,31 @@ async def _account_rows_by_name() -> dict:
     return out
 
 
+CUSTODY_FILE = "/etc/psvibe/custody_balance.json"
+
+
+def _custody_overrides() -> dict:
+    """Balance overrides for owner-held custody accounts.
+
+    PS VIBE derives account balances purely from cash_movements, so Main (ACM)
+    shows the flow-net since June (15.94M) instead of the real custody balance
+    (221,281,103 = capital + IC transfer + handoff). VIBE Group holds the
+    authoritative figure; this file mirrors it for display.
+    """
+    try:
+        import json as _json
+        with open(CUSTODY_FILE) as fh:
+            return {str(k): float(v) for k, v in (_json.load(fh).get("balances") or {}).items()}
+    except Exception:
+        return {}
+
+
 async def _balances_by_name() -> dict:
     """Current numeric balance per account label, from the shared finance calculator."""
     meta = await _account_rows_by_name()
-    return {k: v["balance"] for k, v in meta.items()}
+    out = {k: v["balance"] for k, v in meta.items()}
+    out.update({k: v for k, v in _custody_overrides().items() if k in out})
+    return out
 
 
 def _iso(v):
