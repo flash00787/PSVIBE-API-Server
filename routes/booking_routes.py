@@ -4397,6 +4397,117 @@ async def api_deposit_settle(booking_id: int, req: dict, auth=Depends(verify_api
         return error_response(message=str(e))
 
 
+_DEP_LABELS = {"kpay": "KPay", "wavepay": "WavePay", "cash": "Cash", "aya_pay": "AYA Pay",
+               "mmqr_cb": "MMQR - CB", "mmqr": "MMQR - CB"}
+
+
+@router.patch("/bookings/{booking_id}/deposit/refund", response_model=GenericResponse, tags=["Deposits"],
+              summary="Refund a collected deposit back to the guest [MySQL]")
+async def api_deposit_refund(booking_id: int, req: dict, request: Request, auth=Depends(verify_api_key)):
+    """Refund a collected (paid/verified) deposit — cash OUT, status → refunded (2026-10-20).
+
+    Before this endpoint existed the only way to settle a deposit was to redeem it
+    into a sale or hand-edit the DB (which is how BK#4073 ended up with a phantom
+    forfeit). Any outstanding forfeit inject is reversed here as well.
+    """
+    try:
+        row = _mysql_query_one(
+            "SELECT id, deposit_status, deposit_amount, deposit_method, member_id, customer_name "
+            "FROM console_bookings WHERE id=%s", (booking_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Booking #{booking_id} not found")
+        ds = (row.get("deposit_status") or "").lower()
+        amt = int(row.get("deposit_amount") or 0)
+        if ds not in ("paid", "verified"):
+            raise HTTPException(status_code=400, detail=f"Deposit status must be paid/verified (current: {ds})")
+        if amt <= 0:
+            raise HTTPException(status_code=400, detail="Booking has no deposit amount")
+        method = (row.get("deposit_method") or "kpay").lower()
+        label = _DEP_LABELS.get(method, "KPay")
+        staff = staff_audit.identity_from_request(request, req) or "system"
+        reason = str(req.get("reason") or "").strip()
+
+        insert_cash_movement_if_absent(
+            "eject", label, amt, f"Refund BK#{booking_id}%",
+            f"Refund BK#{booking_id} (deposit refund{(' - ' + reason) if reason else ''}) via {label}",
+            staff, "deposit_refund")
+        _reverse_outstanding_forfeits(booking_id)
+        _mysql_exec(
+            "UPDATE console_bookings SET deposit_status='refunded', "
+            "notes=CONCAT(COALESCE(notes,''), %s) WHERE id=%s",
+            (f" | Refunded {amt:,} Ks by {staff}{(' — ' + reason) if reason else ''}", booking_id))
+        _log_booking_event(booking_id, "deposit_change", "deposit_status", ds, "refunded",
+                           staff, "api", f"refund {amt} Ks via {label}; reason={reason}")
+        return ok({"booking_id": booking_id, "deposit_status": "refunded",
+                   "refunded_amount": amt, "method": label})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"deposit/refund error BK#{booking_id}: {e}")
+        return error_response(message=str(e))
+
+
+@router.patch("/bookings/{booking_id}/deposit/wallet-credit", response_model=GenericResponse, tags=["Deposits"],
+              summary="Convert a collected deposit into member wallet minutes [MySQL]")
+async def api_deposit_wallet_credit(booking_id: int, req: dict, request: Request, auth=Depends(verify_api_key)):
+    """Credit the deposit value to the guest's member wallet instead of refunding cash.
+
+    Uses the shop base rate (Ks per hour) exactly like /topup/log so the credited
+    minutes match what the guest would have received at the counter.
+    """
+    try:
+        row = _mysql_query_one(
+            "SELECT id, deposit_status, deposit_amount, deposit_method, member_id, customer_name "
+            "FROM console_bookings WHERE id=%s", (booking_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Booking #{booking_id} not found")
+        ds = (row.get("deposit_status") or "").lower()
+        amt = int(row.get("deposit_amount") or 0)
+        member_id = (row.get("member_id") or "").strip()
+        if ds not in ("paid", "verified"):
+            raise HTTPException(status_code=400, detail=f"Deposit status must be paid/verified (current: {ds})")
+        if amt <= 0:
+            raise HTTPException(status_code=400, detail="Booking has no deposit amount")
+        if not member_id:
+            raise HTTPException(status_code=400, detail="Booking has no member_id — wallet credit not possible")
+        staff = staff_audit.identity_from_request(request, req) or "system"
+
+        base_rate = int(float(_mysql_get_setting("base_rate", 10000) or 10000))
+        mins = round((amt * 60) / base_rate) if base_rate > 0 else amt
+
+        cur = _mysql_query_one(
+            "SELECT balance_mins, total_bought_mins FROM member_wallets WHERE member_id=%s", (member_id,))
+        bal_before = int(cur.get("balance_mins") or 0) if cur else 0
+        bal_after = bal_before + mins
+        bought_before = int(cur.get("total_bought_mins") or 0) if cur else 0
+
+        _mysql_exec(
+            "INSERT INTO topup_log (member_id, amount, mins_added, topup_date, staff_name, payment_method, "
+            "balance_before, balance_after, balance_mins_before, balance_mins_after, notes) "
+            "VALUES (%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s,%s)",
+            (member_id, amt, mins, staff, f"Deposit credit BK#{booking_id}",
+             amt, amt, bal_before, bal_after,
+             f"Deposit converted to wallet credit (booking #{booking_id})"))
+        _mysql_exec(
+            "INSERT INTO member_wallets (member_id, balance_mins, total_bought_mins) VALUES (%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE balance_mins=%s, total_bought_mins=%s, last_updated=NOW()",
+            (member_id, bal_after, bought_before + mins, bal_after, bought_before + mins))
+        _reverse_outstanding_forfeits(booking_id)
+        _mysql_exec(
+            "UPDATE console_bookings SET deposit_status='redeemed', deposit_redeemed_at=NOW(), "
+            "notes=CONCAT(COALESCE(notes,''), %s) WHERE id=%s",
+            (f" | Wallet credit {mins} mins ({amt:,} Ks) by {staff}", booking_id))
+        _log_booking_event(booking_id, "deposit_change", "deposit_status", ds, "redeemed",
+                           staff, "api", f"wallet credit {mins} mins for {amt} Ks (member {member_id})")
+        return ok({"booking_id": booking_id, "deposit_status": "redeemed", "member_id": member_id,
+                   "minutes_credited": mins, "balance_mins": bal_after, "amount": amt})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"deposit/wallet-credit error BK#{booking_id}: {e}")
+        return error_response(message=str(e))
+
+
 @router.get("/deposits/pending", response_model=GenericResponse, tags=["Deposits"], summary="List bookings with pending deposits (paid, unverified) [MySQL]")
 async def api_pending_deposits(auth=Depends(verify_api_key)):
     """List all bookings where deposit_status='paid' (awaiting staff verification).

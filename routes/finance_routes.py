@@ -22,6 +22,31 @@ def _get_mmt_today_str():
 
 logger = logging.getLogger(__name__)
 
+def _forfeit_redeemed_total(accounts, q=None):
+    """Forfeit injects that must be cancelled out because the deposit later became
+    sale income (booking deposit_status = redeemed/refunded).
+
+    Consolidated 2026-10-20: this exact query was copy-pasted in three places
+    (balance sheet, per-account balance, cumulative view) which is how the
+    BK#4073 phantom-forfeit class of bug stayed invisible. One definition now
+    backs all of them.
+    """
+    import mysql_db as _mdb
+    _q = q or _mdb.query_one
+    accounts = list(accounts or [])
+    if not accounts:
+        return 0.0
+    ph = ", ".join(["%s"] * len(accounts))
+    sql = f"""SELECT COALESCE(SUM(cm.amount),0) as t
+        FROM cash_movements cm JOIN console_bookings cb
+          ON cb.id = CAST(REPLACE(cm.note, 'Forfeit BK#', '') AS UNSIGNED)
+        WHERE cm.movement_type='inject' AND cm.account IN ({ph})
+          AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37))
+          AND cb.deposit_status IN ('redeemed','refunded')"""
+    row = _q(sql, tuple(accounts)) or {}
+    return float(row.get("t", 0) or 0)
+
+
 router = APIRouter(prefix="/api", tags=["Finance"])
 
 # TEMPORARILY DISABLED (2026-09-22, Osmo): depreciation excluded from P&L.
@@ -545,11 +570,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             si_pay = si_payments.get(db_name, 0)
             # 🆕 Targeted defensive: only cancel forfeit injects of REDEEMED bookings
             # (their deposit became sale income; a forfeit inject would otherwise double-count).
-            _forfeit_redeemed = float(_mqo("""SELECT COALESCE(SUM(cm.amount),0) as t
-                FROM cash_movements cm JOIN console_bookings cb
-                  ON cb.id = CAST(REPLACE(cm.note, 'Forfeit BK#', '') AS UNSIGNED)
-                WHERE cm.movement_type='inject' AND cm.account IN ({_ph})
-                  AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status IN ('redeemed','refunded')""".format(_ph=", ".join(["%s"] * len(_db_list))), (*_db_list,))["t"] or 0)
+            _forfeit_redeemed = _forfeit_redeemed_total(_db_list, _mqo)
             if _forfeit_redeemed > 0 and inject > 0:
                 inject -= min(inject, _forfeit_redeemed)
             # Formula: income - opex + transfers - stock_in_payments + inject - eject
@@ -943,11 +964,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
 
             # 🆕 Targeted defensive: only cancel forfeit injects of REDEEMED bookings
             # (their deposit became sale income; a forfeit inject would otherwise double-count).
-            _forfeit_redeemed = float(_mqo(f"""SELECT COALESCE(SUM(cm.amount),0) as t
-                FROM cash_movements cm JOIN console_bookings cb
-                  ON cb.id = CAST(REPLACE(cm.note, 'Forfeit BK#', '') AS UNSIGNED)
-                WHERE cm.movement_type='inject' AND cm.account IN ({_ph})
-                  AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status IN ('redeemed','refunded')""", (*db_list,))["t"] or 0)
+            _forfeit_redeemed = _forfeit_redeemed_total(db_list, _mqo)
             if _forfeit_redeemed > 0 and inj > 0:
                 inj -= min(inj, _forfeit_redeemed)
 
@@ -1228,10 +1245,7 @@ async def get_cashflow(year: int = 2026, month: int = 6, user: dict = Depends(ge
                 ej = float((_mqo(f"""SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='eject'
                         AND (note IS NULL OR (note NOT LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) AND note NOT LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) AND note NOT LIKE CONCAT('[Refund]', CHAR(37)) AND note NOT LIKE CONCAT('Refund Deposit', CHAR(37)))) AND created_at < %s""", (*db_list, cutoff)) or {}).get("t", 0) or 0)
                 # Targeted defensive: forfeit injects of REDEEMED bookings (deposit became income)
-                _fr = float((_mqo(f"""SELECT COALESCE(SUM(cm.amount),0) as t FROM cash_movements cm
-                        JOIN console_bookings cb ON cb.id = CAST(REPLACE(cm.note, 'Forfeit BK#', '') AS UNSIGNED)
-                        WHERE cm.movement_type='inject' AND cm.account IN ({ph})
-                          AND cm.note LIKE CONCAT('Forfeit BK#', CHAR(37)) AND cb.deposit_status IN ('redeemed','refunded')""", (*db_list,)) or {}).get("t", 0) or 0)
+                _fr = _forfeit_redeemed_total(db_list, _mqo)
                 if _fr > 0 and inj > 0:
                     inj -= min(inj, _fr)
                 dv = float((_mqo(f"SELECT COALESCE(SUM(amount),0) as t FROM cash_movements WHERE account IN ({ph}) AND movement_type='dividend' AND created_at < %s", (*db_list, cutoff)) or {}).get("t", 0) or 0)

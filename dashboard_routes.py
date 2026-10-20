@@ -3729,6 +3729,78 @@ async def get_deposit_overview(
         return {"success": False, "error": str(e)}
 
 
+@router.get("/deposit-aging")
+async def get_deposit_aging(user: dict = Depends(get_current_user)):
+    """Deposit aging — money collected but never settled (added 2026-10-20).
+
+    A booking whose session has already ended (or that was cancelled) while the
+    deposit is still ``paid``/``verified`` means the guest paid but staff never
+    redeemed/refunded it. These are exactly the rows that produced the BK#4026 /
+    4073 / 4224 / 4236 discrepancy, so the dashboard now surfaces them with age
+    buckets instead of waiting for someone to notice.
+    """
+    try:
+        rows = _mysql_query("""
+            SELECT cb.id, cb.booking_date, cb.console_id, cb.customer_name, cb.phone,
+                   cb.deposit_amount, cb.deposit_method, cb.deposit_status, cb.status,
+                   cb.deposit_verified_at,
+                   (SELECT MAX(cs.actual_end) FROM console_sessions cs
+                     WHERE cs.booking_id = cb.id) AS last_session_end
+            FROM console_bookings cb
+            WHERE cb.deposit_amount > 0
+              AND cb.deposit_status IN ('paid','verified')
+              AND cb.status NOT IN ('confirmed','pending','pending_check_in','checked_in','Active')
+            ORDER BY cb.booking_date ASC
+        """)
+        from datetime import datetime as _dt
+        now = _get_mmt_now().replace(tzinfo=None)
+        buckets = {"0_24h": 0.0, "1_3d": 0.0, "3_7d": 0.0, "7d_plus": 0.0}
+        counts = {"0_24h": 0, "1_3d": 0, "3_7d": 0, "7d_plus": 0}
+        items = []
+        for r in (rows or []):
+            ref = r.get("last_session_end") or r.get("booking_date")
+            age_h = 0.0
+            if ref:
+                try:
+                    age_h = max(0.0, (now - _dt.fromisoformat(str(ref))).total_seconds() / 3600.0)
+                except Exception:
+                    age_h = 0.0
+            key = "0_24h" if age_h <= 24 else "1_3d" if age_h <= 72 else "3_7d" if age_h <= 168 else "7d_plus"
+            amt = float(r.get("deposit_amount") or 0)
+            buckets[key] += amt
+            counts[key] += 1
+            items.append({
+                "booking_id": r.get("id"),
+                "booking_date": str(r.get("booking_date")) if r.get("booking_date") else None,
+                "console_id": r.get("console_id"),
+                "customer_name": r.get("customer_name"),
+                "phone": r.get("phone"),
+                "deposit_amount": amt,
+                "deposit_method": r.get("deposit_method"),
+                "deposit_status": r.get("deposit_status"),
+                "booking_status": r.get("status"),
+                "age_hours": round(age_h, 1),
+                "bucket": key,
+            })
+        items.sort(key=lambda x: x["age_hours"], reverse=True)
+        total = sum(buckets.values())
+        return {
+            "success": True,
+            "data": {
+                "summary": {
+                    "total_unsettled": total,
+                    "total_count": len(items),
+                    "buckets": buckets,
+                    "counts": counts,
+                },
+                "items": items[:100],
+            },
+        }
+    except Exception as e:
+        logger.error(f"GET /deposit-aging error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ══════════════════════════════════════════════════════════════════
 #  DAILY TILL / CASH REGISTER MANAGEMENT
 # ══════════════════════════════════════════════════════════════════
