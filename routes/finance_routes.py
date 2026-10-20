@@ -1027,8 +1027,20 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         total_amort = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM prepaid_amortization")["t"] or 0)
         prep_t = max(0, total_prepaid - total_amort)
         adv_t = float(_mqo("SELECT COALESCE(SUM(amount),0) as t FROM finance_advances WHERE status='pending' OR status IS NULL")["t"] or 0)
-        _intercompany_receivable = 0.0
-        other_ca = prep_t + adv_t
+        # Intercompany with VIBE Group (2026-10-20): VG may settle PS VIBE liabilities
+        # directly. Those settlements post to intercompany_ledger so the shop carries a
+        # Due-from/Due-to VIBE Group position instead of distorting the balancing line.
+        try:
+            _ic = _mqo("""SELECT
+                    COALESCE(SUM(CASE WHEN direction='due_from' THEN amount ELSE 0 END),0) AS d_from,
+                    COALESCE(SUM(CASE WHEN direction='due_to'   THEN amount ELSE 0 END),0) AS d_to
+                FROM intercompany_ledger""") or {}
+            _ic_net = float(_ic.get("d_from", 0) or 0) - float(_ic.get("d_to", 0) or 0)
+        except Exception:
+            _ic_net = 0.0
+        _intercompany_receivable = max(0.0, _ic_net)          # VG owes the shop
+        _intercompany_payable = max(0.0, -_ic_net)            # shop owes VG
+        other_ca = prep_t + adv_t + _intercompany_receivable
 
         # Balance-sheet NBV + asset-disposal reconciliation (line-by-line 2026-10-17).
         # Asset disposal net proceeds already sit in live cash; reduce fixed assets by the net loss amount.
@@ -1112,7 +1124,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         )
         deposit_forfeited = round(float(_deposit_forfeit.get("t", 0) or 0), 0)
 
-        total_liab = member_liab + deposit_liability + _dividends_payable
+        total_liab = member_liab + deposit_liability + _dividends_payable + _intercompany_payable
         total_liab_eq = round(total_liab + total_eq, 0)
         total_assets = round(total_assets, 0)
         # Data-entry / rounding gap auto-balance (always balance; log large gaps for audit)
@@ -1139,6 +1151,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 "dividends_payable":round(_dividends_payable,0),
                 "deposit_liability":deposit_liability,
                 "deposit_forfeited":deposit_forfeited,
+                "intercompany_payable":round(_intercompany_payable,0),
                 "member_details":[],
                 "total":round(total_liab,0)
             },
