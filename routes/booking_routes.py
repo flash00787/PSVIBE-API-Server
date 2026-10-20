@@ -219,6 +219,27 @@ def _send_telegram_customer_photo(chat_id: str, photo: str, caption: str = ""):
         _log.warning("[NOTIFY-PHOTO] Failed to %s: %s", chat_id, e)
 
 
+def _log_booking_event(booking_id, event_type, field=None, old_value=None, new_value=None,
+                       actor=None, source="system", note=None):
+    """Append-only audit trail for booking lifecycle changes (added 2026-10-20).
+
+    The free-text ``console_bookings.notes`` column proved unreliable (12h time
+    formatting, missing move/swap entries), so every status/deposit/reschedule
+    change now leaves a structured row in ``booking_events``. Never raises.
+    """
+    try:
+        _mysql_exec(
+            "INSERT INTO booking_events (booking_id, event_type, field, old_value, new_value, actor, source, note) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (int(booking_id), str(event_type)[:40], (str(field)[:48] if field else None),
+             (str(old_value)[:160] if old_value is not None else None),
+             (str(new_value)[:160] if new_value is not None else None),
+             (str(actor)[:80] if actor else None), str(source)[:24], (str(note)[:2000] if note else None))
+        )
+    except Exception as _ev_err:
+        logger.warning("booking_event log failed BK#%s: %s", booking_id, _ev_err)
+
+
 def _notify_deposit_forfeited(bk_id: int, row: dict, deposit_amount: int):
     """Notify deposit group when a deposit is forfeited (no-show with paid deposit)."""
     import json, urllib.request
@@ -2159,8 +2180,13 @@ async def api_available_slots(
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 @router.put("/end_booking/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="End booking [MySQL]")
-async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
-    """Mark a booking as Done in MySQL. Handles both Active and checked_in bookings."""
+async def api_end_booking(booking_id: str, force: bool = False, auth=Depends(verify_api_key)):
+    """Mark a booking as Done in MySQL. Handles both Active and checked_in bookings.
+
+    🔒 2026-10-20 checkout guard: a session whose deposit is still ``verified``
+    (collected but never applied) cannot be closed silently — that is exactly how
+    BK#4026/4073/4224/4236 ended up with orphaned deposits. Pass ``?force=true``
+    only when the deposit was genuinely handled some other way."""
     try:
         # CI-3: Wrap end update + console_status update in transaction
         now = now_mmt()
@@ -2176,8 +2202,20 @@ async def api_end_booking(booking_id: str, auth=Depends(verify_api_key)):
         _end_cur = _end_conn.cursor(dictionary=True)
         try:
             # Check current status before deciding console cleanup
-            _end_cur.execute("SELECT console_id, status FROM console_bookings WHERE id=%s", (booking_id,))
+            _end_cur.execute(
+                "SELECT console_id, status, deposit_status, deposit_amount, deposit_redeemed_at "
+                "FROM console_bookings WHERE id=%s", (booking_id,))
             row = _end_cur.fetchone()
+            if row and not force:
+                _ds = (row.get("deposit_status") or "").lower()
+                _damt = int(row.get("deposit_amount") or 0)
+                if _ds in ("paid", "verified") and _damt > 0 and not row.get("deposit_redeemed_at"):
+                    _end_conn.rollback(); _end_conn.close()
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(f"Deposit {_damt:,} Ks is still {_ds} — settle it first "
+                                f"(PATCH /bookings/{booking_id}/deposit/settle) or retry with ?force=true"))
+            _ds_before = (row.get("deposit_status") or "") if row else ""
             if not row:
                 _end_conn.rollback()
                 _end_conn.close()
@@ -2992,7 +3030,8 @@ async def api_booking_reschedule(booking_id: int, req: dict, request: Request, a
     old_dur = booking.get("planned_duration_mins") or ""
 
     _before = f"{old_console} / {old_date} {old_time} / {old_dur}m"
-    _after = f"{console_id} / {date_str} {time_slot} / {duration_mins}m"
+    # 24h-normalised (raw staff-app time_slot sometimes arrives as 12h -> "06:30" for 18:30)
+    _after = f"{console_id} / {date_str} {start_dt.strftime('%H:%M')} / {duration_mins}m"
     _note = f"Rescheduled: {_before} \u2192 {_after}"
     if staff:
         _note += f" (by {staff})"
@@ -3042,6 +3081,9 @@ async def api_booking_reschedule(booking_id: int, req: dict, request: Request, a
             )
     except Exception as _dep_err:
         logger.warning("reschedule: deposit restore/reversal failed (non-critical) BK#%s: %s", booking_id, _dep_err)
+
+    _log_booking_event(booking_id, "reschedule", "console/date/time", _before, _after,
+                       staff, "api", f"reactivated={_reactivate}; raw_time_slot={time_slot}")
 
     # ── Re-point any pending 30-min advance reminder (cancel + re-add) ──
     try:
@@ -4338,6 +4380,8 @@ async def api_deposit_settle(booking_id: int, req: dict, auth=Depends(verify_api
             "status='done' WHERE id=%s",
             (booking_id,)
         )
+        _log_booking_event(booking_id, "deposit_change", "deposit_status", "verified", "redeemed",
+                           staff_name, "api", f"settle total_fee={total_fee} sales_daily_id={sales_id}")
         
         return ok({
             "booking_id": booking_id,

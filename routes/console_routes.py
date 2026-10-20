@@ -72,6 +72,21 @@ def now_mmt():
     return datetime.now(timezone(timedelta(hours=6, minutes=30)))
 logger = logging.getLogger(__name__)
 
+
+def _log_bk_event(booking_id, event_type, field, old_value, new_value, actor, source="api", note=None):
+    """Structured booking audit trail (2026-10-20) — mirrors booking_routes._log_booking_event."""
+    try:
+        _mysql_exec(
+            "INSERT INTO booking_events (booking_id, event_type, field, old_value, new_value, actor, source, note) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (int(booking_id), str(event_type)[:40], (str(field)[:48] if field else None),
+             (str(old_value)[:160] if old_value is not None else None),
+             (str(new_value)[:160] if new_value is not None else None),
+             (str(actor)[:80] if actor else None), str(source)[:24], (str(note)[:2000] if note else None))
+        )
+    except Exception as _e:
+        logger.warning("booking_event log failed BK#%s: %s", booking_id, _e)
+
 router = APIRouter(prefix="/api", tags=['Consoles'])
 
 # ═══════════════════════════════════════
@@ -808,6 +823,8 @@ async def api_sessions_move(req: dict, request: Request, auth=Depends(verify_api
             
             _conn.commit()
             
+            _log_bk_event(booking_id, "move", "console_id", _from_cid, to_console_id, _actor, "api",
+                          "sessions/move")
             logger.info(f"Session moved: BK#{booking_id} {_from_cid} -> {to_console_id} by {_actor or 'unknown'}")
             return ok({
                 "booking_id": booking_id,
@@ -924,6 +941,10 @@ async def api_sessions_swap(req: dict, request: Request, auth=Depends(verify_api
             _conn.commit()
             
             _actor2 = staff_audit.identity_from_request(request, req)
+            _log_bk_event(_bid1, "swap", "console_id", _cid1, _cid2, _actor2, "api",
+                          f"swapped with BK#{_bid2}")
+            _log_bk_event(_bid2, "swap", "console_id", _cid2, _cid1, _actor2, "api",
+                          f"swapped with BK#{_bid1}")
             logger.info(f"Sessions swapped: BK#{_bid1} ({_cid1}→{_cid2}) ↔ BK#{_bid2} ({_cid2}→{_cid1}) by {_actor2 or 'unknown'}")
             return ok({
                 "swapped": True,
