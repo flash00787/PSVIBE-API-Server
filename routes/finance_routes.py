@@ -1085,8 +1085,11 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         _prior_period_adjustment = 3222048.0
         _dividends_payable = 9096593.0
         retained = total_earned_revenue - te - cost_of_sold - total_dep - _prior_period_adjustment + _disposal_gain_loss - _ingredient_cogs_alltime - _dividends_payable
-        # Advance recovery reserve: backfilled eject (104.8M) now in range, so settled injects (102.5M)
-        # are naturally offset. Reserve kept near-zero; auto-balancer may add small rounding gap.
+        # Balance transfer (aka advance-recovery reserve): historically held the net of
+        # supplier advances that were paid then settled/returned. Since the 104.8M eject
+        # backfill those injects and ejects offset naturally, so the line starts at 0 and
+        # the auto-balancer below assigns whatever residual keeps Assets = Liabilities+Equity.
+        # It is therefore a BALANCING TRANSFER line, not a real reserve (Boss 2026-10-20).
         _adv_recovery = 0.0
         # total must equal the components shown on the sheet, otherwise the
         # displayed equity lines never add up to the displayed total (Boss 19:07)
@@ -1144,6 +1147,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 "capital_account_with_holding":round(icap,0),
                 "retained_earnings":round(retained,0),
                 "advance_recovery_reserve":round(_adv_recovery,0),
+                "balance_transfer":round(_adv_recovery,0),
                 "depreciation_reserve":round(total_dep,0),
                 "deposit_forfeited_income":deposit_forfeited_alltime,
                 "total":round(total_eq,0)
