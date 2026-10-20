@@ -2905,8 +2905,13 @@ async def api_booking_reschedule(booking_id: int, req: dict, request: Request, a
         raise HTTPException(status_code=404, detail="Booking not found")
 
     # ── Eligibility: confirmed only ──
+    # 🆕 2026-10-20: an auto no-show cancellation may be rebooked (reactivated) instead of
+    # forcing staff to create a duplicate booking — the deposit is restored + the forfeit
+    # income entry is reversed below (BK#4073 phantom-forfeit fix).
     status = (booking.get("status") or "").strip()
-    if status != "confirmed":
+    _auto_noshow = "Auto-cancelled: no-show" in (booking.get("notes") or "")
+    _reactivate = (status == "cancelled" and _auto_noshow)
+    if status != "confirmed" and not _reactivate:
         raise HTTPException(status_code=400, detail=f"Only confirmed bookings can be rescheduled (current: {status or '?'})")
 
     # ── Active-session guard ──
@@ -2997,12 +3002,46 @@ async def api_booking_reschedule(booking_id: int, req: dict, request: Request, a
     _new_notes = ((_prev_notes + " | " + _note) if _prev_notes else _note)
 
     # ── Persist the reschedule ──
-    _mysql_exec(
-        "UPDATE console_bookings SET console_id=%s, booking_date=%s, planned_start=%s, planned_end=%s, "
-        "planned_duration_mins=%s, notes=%s WHERE id=%s",
-        (console_id, date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S'),
-         duration_mins, _new_notes, booking_id)
-    )
+    if _reactivate:
+        _mysql_exec(
+            "UPDATE console_bookings SET console_id=%s, booking_date=%s, planned_start=%s, planned_end=%s, "
+            "planned_duration_mins=%s, notes=%s, status='confirmed', cancelled_at=NULL WHERE id=%s",
+            (console_id, date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S'),
+             duration_mins, _new_notes, booking_id)
+        )
+    else:
+        _mysql_exec(
+            "UPDATE console_bookings SET console_id=%s, booking_date=%s, planned_start=%s, planned_end=%s, "
+            "planned_duration_mins=%s, notes=%s WHERE id=%s",
+            (console_id, date_str, start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S'),
+             duration_mins, _new_notes, booking_id)
+        )
+
+    # ── Deposit safety net (🐛 2026-10-20) ──
+    # Rebooking a booking that was auto-cancelled as a no-show must NOT leave a phantom
+    # "Forfeit BK#N" income entry behind (that is what happened to BK#4073: forfeit kept
+    # while the guest later played). Restore the deposit and reverse any outstanding
+    # forfeit injects — _reverse_outstanding_forfeits() is idempotent (no-op if none).
+    try:
+        _dep_now = _mysql_query_one(
+            "SELECT deposit_status, deposit_amount FROM console_bookings WHERE id=%s",
+            (booking_id,)
+        )
+        if _dep_now and (_dep_now.get("deposit_status") or "") == "forfeited":
+            _mysql_exec(
+                "UPDATE console_bookings SET deposit_status='verified', cancelled_at=NULL "
+                "WHERE id=%s AND deposit_status='forfeited' AND deposit_amount > 0",
+                (booking_id,)
+            )
+            logger.info("reschedule: restored forfeited deposit for BK#%s", booking_id)
+        _rev_count, _rev_total = _reverse_outstanding_forfeits(booking_id)
+        if _rev_count:
+            logger.info(
+                "reschedule: reversed %s phantom forfeit inject(s) for BK#%s (total %s Ks)",
+                _rev_count, booking_id, _rev_total
+            )
+    except Exception as _dep_err:
+        logger.warning("reschedule: deposit restore/reversal failed (non-critical) BK#%s: %s", booking_id, _dep_err)
 
     # ── Re-point any pending 30-min advance reminder (cancel + re-add) ──
     try:
@@ -3047,6 +3086,7 @@ async def api_booking_reschedule(booking_id: int, req: dict, request: Request, a
         "planned_start": start_dt.strftime('%Y-%m-%d %H:%M:%S'),
         "planned_end": end_dt.strftime('%Y-%m-%d %H:%M:%S'),
         "status": "confirmed",
+        "reactivated": bool(_reactivate),
         "notes": _new_notes,
     })
 
