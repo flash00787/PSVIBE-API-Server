@@ -1040,6 +1040,18 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             _ic_net = 0.0
         _intercompany_receivable = max(0.0, _ic_net)          # VG owes the shop
         _intercompany_payable = max(0.0, -_ic_net)            # shop owes VG
+        # itemised breakdown for the balance sheet (Boss 2026-10-20: show detail)
+        def _ic_sum(prefix):
+            try:
+                return round(float((_mqo("SELECT COALESCE(SUM(amount),0) AS t FROM intercompany_ledger "
+                                         "WHERE direction='due_from' AND ref LIKE %s", (prefix + "%",)) or {}).get("t", 0) or 0), 0)
+            except Exception:
+                return 0.0
+        _ic_detail = {
+            "suspense": _ic_sum("IC-SUSPENSE"),
+            "prior_period": _ic_sum("IC-PRIOR"),
+            "depreciation": _ic_sum("IC-DEP"),
+        }
         other_ca = prep_t + adv_t + _intercompany_receivable
 
         # Balance-sheet NBV + asset-disposal reconciliation (line-by-line 2026-10-17).
@@ -1095,6 +1107,16 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         # Retained = cumulative P&L: include forfeited in total revenue
         total_earned_revenue = ti_excl_topup + wallet_consumed + deposit_forfeited_alltime
         _prior_period_adjustment = 3222048.0
+        # VIBE Group settlements (2026-10-20): the Group absorbed the prior-period
+        # adjustment and the accumulated depreciation, so those amounts come back as
+        # equity while the matching intercompany receivable sits on the asset side.
+        try:
+            _vgs_prior = float((_mqo("SELECT COALESCE(SUM(amount),0) AS t FROM intercompany_ledger "
+                                     "WHERE direction='due_from' AND ref LIKE %s", ("IC-PRIOR%",)) or {}).get("t", 0) or 0)
+            _vgs_dep = float((_mqo("SELECT COALESCE(SUM(amount),0) AS t FROM intercompany_ledger "
+                                   "WHERE direction='due_from' AND ref LIKE %s", ("IC-DEP%",)) or {}).get("t", 0) or 0)
+        except Exception:
+            _vgs_prior = _vgs_dep = 0.0
         # Dividends payable = open declarations minus what has already been paid
         # (2026-10-20: the constant 9,096,593 was correct but had no link to the data;
         # the dividends table now carries paid_amount, so compute it live).
@@ -1113,7 +1135,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         _adv_recovery = 0.0
         # total must equal the components shown on the sheet, otherwise the
         # displayed equity lines never add up to the displayed total (Boss 19:07)
-        total_eq = icap + retained + _adv_recovery
+        total_eq = icap + retained + _adv_recovery + _vgs_prior + _vgs_dep
 
         # Deposit liability: deposits that are paid or verified (customer still owes session)
         _deposit_liab = _mqo(
@@ -1141,7 +1163,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
         if _bs_diff_abs > 10:
             _adv_recovery += _bs_diff
             _adv_recovery = round(_adv_recovery, 0)
-            total_eq = icap + retained + _adv_recovery
+            total_eq = icap + retained + _adv_recovery + _vgs_prior + _vgs_dep
             total_liab_eq = round(total_liab + total_eq, 0)
             if _bs_diff_abs >= 50000:
                 logger.warning(f"BS gap auto-balanced: {_bs_diff:,.0f} Ks (large — may indicate data-entry issue)")
@@ -1150,7 +1172,7 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
             "assets": {
                 "current":{"items":bank_items,"total":round(total_ca,0)},
                 "inventory":{"value":round(inventory_value,0)},
-                "other_current":{"prepaid":round(prep_t,0),"advances":round(adv_t,0),"intercompany_receivable":round(_intercompany_receivable,0),"total":round(other_ca,0)},
+                "other_current":{"prepaid":round(prep_t,0),"advances":round(adv_t,0),"intercompany_receivable":round(_intercompany_receivable,0),"intercompany_detail":_ic_detail,"total":round(other_ca,0)},
                 "fixed":{"items":fix_items,"gross_cost":round(total_gross,0),"acc_depreciation":round(total_dep,0),"monthly_dep_total":round(monthly_dep_total,0),"nbv":round(total_fix,0)},
                 "total_assets":total_assets
             },
@@ -1167,6 +1189,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 "initial_capital":round(icap,0),
                 "capital_account_with_holding":round(icap,0),
                 "retained_earnings":round(retained,0),
+                "vg_settled_prior_period":round(_vgs_prior,0),
+                "vg_settled_depreciation":round(_vgs_dep,0),
                 "advance_recovery_reserve":round(_adv_recovery,0),
                 "balance_transfer":round(_adv_recovery,0),
                 # clearer name: this line is the unreconciled suspense difference, not a transfer
