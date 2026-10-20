@@ -1161,6 +1161,8 @@ async def get_balance_sheet(year: int = Query(None), month: int = Query(None), u
                 "retained_earnings":round(retained,0),
                 "advance_recovery_reserve":round(_adv_recovery,0),
                 "balance_transfer":round(_adv_recovery,0),
+                # clearer name: this line is the unreconciled suspense difference, not a transfer
+                "suspense_unreconciled":round(_adv_recovery,0),
                 "depreciation_reserve":round(total_dep,0),
                 "deposit_forfeited_income":deposit_forfeited_alltime,
                 "total":round(total_eq,0)
