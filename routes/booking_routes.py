@@ -2179,6 +2179,91 @@ async def api_available_slots(
         logger.error("api_available_slots: %s", e, exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
+def _auto_settle_deposit(cur, booking_id: int, row: dict, now_dt) -> dict:
+    """Session end → create the sale voucher automatically and redeem the deposit.
+
+    Deposit = 30% of the scheduled fee, so the counter balance is recorded under the
+    same payment channel as the deposit (Boss 2026-10-21: "session end တာနဲ့ တစ်ခါတည်း
+    သူ့ဘာသာသူ sale voucher ထဲ settle လုပ်ရမှာ").
+    """
+    label_map = {"kpay": "KPay", "wavepay": "WavePay", "cash": "Cash",
+                 "aya_pay": "AYA Pay", "mmqr_cb": "MMQR - CB", "mmqr": "MMQR - CB"}
+    dep = int(row.get("deposit_amount") or 0)
+    method = (row.get("deposit_method") or "cash").lower()
+    label = label_map.get(method, "Cash")
+
+    # actual played minutes (fallback: planned duration)
+    cur.execute(
+        "SELECT actual_start FROM console_sessions "
+        "WHERE booking_id=%s AND status IN ('active','checked_in') ORDER BY id DESC LIMIT 1",
+        (booking_id,))
+    sess = cur.fetchone() or {}
+    dur = None
+    start = sess.get("actual_start")
+    if start:
+        try:
+            now_naive = now_dt.replace(tzinfo=None) if getattr(now_dt, "tzinfo", None) else now_dt
+            dur = max(1, int((now_naive - start).total_seconds() / 60))
+        except Exception:
+            dur = None
+    if not dur:
+        dur = int(row.get("planned_duration_mins") or 60)
+
+    base_rate = _mysql_get_setting("base_rate", 10000)
+    if isinstance(base_rate, str):
+        try:
+            base_rate = int(base_rate)
+        except ValueError:
+            base_rate = 10000
+    mults = _mysql_get_setting("console_multipliers", {})
+    if isinstance(mults, str):
+        try:
+            mults = _json_notify.loads(mults)
+        except Exception:
+            mults = {}
+    mult = mults.get(row.get("console_id", ""), 1.0) if isinstance(mults, dict) else 1.0
+    if not isinstance(mult, (int, float)):
+        mult = 1.0
+
+    fee = int(round((dur / 60) * float(base_rate) * float(mult)))
+    total_fee = max(fee, dep)          # never bill less than what was prepaid
+    applied = min(dep, total_fee)
+    remaining = total_fee - applied
+
+    pm_str = f"{label}:{applied}(DepositRedeemed)"
+    if remaining > 0:
+        pm_str += f"|{label}:{remaining}"
+
+    today_str = now_dt.strftime("%Y-%m-%d")
+    staff_name = row.get("staff_name") or "system"
+    member_ref = row.get("member_id") or row.get("phone") or "Guest"
+    game_name, game_id, session_id = resolve_sale_game(
+        row.get("console_id", ""), booking_id=booking_id)
+
+    cur.execute(
+        "INSERT INTO sales_daily (branch_id, sale_date, console_id, member_id, amount, gross, "
+        "discount, net, staff_name, customer_name, payment_method, notes, created_at, "
+        "session_id, game_name, game_id) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s)",
+        (1, today_str, row.get("console_id", ""), member_ref, float(total_fee), float(total_fee),
+         0.0, float(total_fee), staff_name, row.get("customer_name") or staff_name, pm_str,
+         f"Auto-settle at session end - Booking #{booking_id} ({dur} min)",
+         session_id, game_name, game_id))
+    sales_id = cur.lastrowid
+
+    if remaining > 0:
+        cur.execute(
+            "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
+            "VALUES ('inject', %s, %s, %s, %s, NOW())",
+            (label, remaining, f"Auto-settle balance - Booking #{booking_id}", staff_name))
+
+    cur.execute(
+        "UPDATE console_bookings SET deposit_status='redeemed', deposit_redeemed_at=NOW() WHERE id=%s",
+        (booking_id,))
+    return {"sales_daily_id": sales_id, "total_fee": total_fee, "deposit_applied": applied,
+            "remaining": remaining, "duration_mins": dur, "method": label}
+
+
 @router.put("/end_booking/{booking_id}", response_model=GenericResponse, tags=["Bookings"], summary="End booking [MySQL]")
 async def api_end_booking(booking_id: str, force: bool = False, auth=Depends(verify_api_key)):
     """Mark a booking as Done in MySQL. Handles both Active and checked_in bookings.
@@ -2222,18 +2307,18 @@ async def api_end_booking(booking_id: str, force: bool = False, auth=Depends(ver
         try:
             # Check current status before deciding console cleanup
             _end_cur.execute(
-                "SELECT console_id, status, deposit_status, deposit_amount, deposit_redeemed_at "
+                "SELECT console_id, status, deposit_status, deposit_amount, deposit_method, "
+                "       deposit_redeemed_at, planned_duration_mins, member_id, phone, "
+                "       customer_name, staff_name "
                 "FROM console_bookings WHERE id=%s", (booking_id,))
             row = _end_cur.fetchone()
             if row and not force:
                 _ds = (row.get("deposit_status") or "").lower()
                 _damt = int(row.get("deposit_amount") or 0)
                 if _ds in ("paid", "verified") and _damt > 0 and not row.get("deposit_redeemed_at"):
-                    _end_conn.rollback()  # finally closes it — closing here caused a double rollback
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(f"Deposit {_damt:,} Ks is still {_ds} — settle it first "
-                                f"(PATCH /bookings/{booking_id}/deposit/settle) or retry with ?force=true"))
+                    # Boss 2026-10-21: the sale voucher is settled automatically here.
+                    _settled = _auto_settle_deposit(_end_cur, int(booking_id), row, now)
+                    logger.info("end_booking %s auto-settled deposit: %s", booking_id, _settled)
             _ds_before = (row.get("deposit_status") or "") if row else ""
             if not row:
                 _end_conn.rollback()
