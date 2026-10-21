@@ -2312,13 +2312,17 @@ async def api_end_booking(booking_id: str, force: bool = False, auth=Depends(ver
                 "       customer_name, staff_name "
                 "FROM console_bookings WHERE id=%s", (booking_id,))
             row = _end_cur.fetchone()
+            _deposit_pending = False
             if row and not force:
                 _ds = (row.get("deposit_status") or "").lower()
                 _damt = int(row.get("deposit_amount") or 0)
                 if _ds in ("paid", "verified") and _damt > 0 and not row.get("deposit_redeemed_at"):
-                    # Boss 2026-10-21: the sale voucher is settled automatically here.
-                    _settled = _auto_settle_deposit(_end_cur, int(booking_id), row, now)
-                    logger.info("end_booking %s auto-settled deposit: %s", booking_id, _settled)
+                    # Boss 2026-10-21 08:48: do NOT settle here and do NOT block.
+                    # The staff app opens the sale voucher right after this call and
+                    # the deposit is redeemed there (💰 Deduct deposit) by the staff.
+                    _deposit_pending = True
+                    logger.info("end_booking %s: deposit %s still verified — voucher handles it",
+                                booking_id, _damt)
             _ds_before = (row.get("deposit_status") or "") if row else ""
             if not row:
                 _end_conn.rollback()
@@ -2364,7 +2368,8 @@ async def api_end_booking(booking_id: str, force: bool = False, auth=Depends(ver
                 _end_conn.close()
             except Exception:
                 pass  # non-critical: connection close
-        return ok({"booking_id": booking_id, "status": "Done"})
+        return ok({"booking_id": booking_id, "status": "Done",
+                   "deposit_pending": bool(locals().get("_deposit_pending", False))})
     except HTTPException:
         raise  # 404 / 409 deposit-guard must keep their real status + message
     except Exception as e:
