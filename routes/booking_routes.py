@@ -2190,14 +2190,33 @@ async def api_end_booking(booking_id: str, force: bool = False, auth=Depends(ver
     try:
         # CI-3: Wrap end update + console_status update in transaction
         now = now_mmt()
-        _end_conn = _mc.connect(
-            host=os.environ.get('MYSQL_HOST', 'localhost'),
-            user=os.environ.get('MYSQL_USER', 'root'),
-            password=os.environ.get('MYSQL_PASSWORD', ''),
-            database=os.environ.get('MYSQL_DATABASE', 'psvibe'),
-            port=int(os.environ.get('MYSQL_PORT', '3306')),
-            charset='utf8mb4'
-        )
+        # Transient "MySQL server has gone away" (errno 2006/2013) must not reach
+        # the staff app: retry once with a live-pinged connection.
+        _end_conn = None
+        _last_err = None
+        for _attempt in range(2):
+            try:
+                _end_conn = _mc.connect(
+                    host=os.environ.get('MYSQL_HOST', 'localhost'),
+                    user=os.environ.get('MYSQL_USER', 'root'),
+                    password=os.environ.get('MYSQL_PASSWORD', ''),
+                    database=os.environ.get('MYSQL_DATABASE', 'psvibe_api'),
+                    port=int(os.environ.get('MYSQL_PORT', '3306')),
+                    charset='utf8mb4',
+                    connection_timeout=10,
+                )
+                _end_conn.ping(reconnect=True, attempts=2, delay=1)
+                break
+            except Exception as _ce:
+                _last_err = _ce
+                _end_conn = None
+                logger.warning("end_booking %s: DB connect attempt %s failed: %s",
+                               booking_id, _attempt + 1, _ce)
+                if _attempt == 0:
+                    import time as _t
+                    _t.sleep(0.5)
+        if _end_conn is None:
+            raise _last_err or RuntimeError("database unavailable")
         _end_conn.start_transaction()
         _end_cur = _end_conn.cursor(dictionary=True)
         try:
@@ -2210,7 +2229,7 @@ async def api_end_booking(booking_id: str, force: bool = False, auth=Depends(ver
                 _ds = (row.get("deposit_status") or "").lower()
                 _damt = int(row.get("deposit_amount") or 0)
                 if _ds in ("paid", "verified") and _damt > 0 and not row.get("deposit_redeemed_at"):
-                    _end_conn.rollback(); _end_conn.close()
+                    _end_conn.rollback()  # finally closes it — closing here caused a double rollback
                     raise HTTPException(
                         status_code=409,
                         detail=(f"Deposit {_damt:,} Ks is still {_ds} — settle it first "
@@ -2218,7 +2237,6 @@ async def api_end_booking(booking_id: str, force: bool = False, auth=Depends(ver
             _ds_before = (row.get("deposit_status") or "") if row else ""
             if not row:
                 _end_conn.rollback()
-                _end_conn.close()
                 raise HTTPException(status_code=404, detail="Booking not found")
             current_status = row.get("status", "")
             _console_id = row.get("console_id")  # save for _sync_console_status
@@ -2250,7 +2268,11 @@ async def api_end_booking(booking_id: str, force: bool = False, auth=Depends(ver
             _mysql_exec("UPDATE stock_hold SET status = 'cancelled', updated_at = NOW() WHERE booking_id = %s AND status = 'held'", (booking_id,))
 
         except Exception:
-            _end_conn.rollback()
+            try:
+                if not _end_conn.is_closed():
+                    _end_conn.rollback()
+            except Exception:
+                pass  # connection already gone — never mask the real error with 2006
             raise
         finally:
             try:
@@ -2258,7 +2280,10 @@ async def api_end_booking(booking_id: str, force: bool = False, auth=Depends(ver
             except Exception:
                 pass  # non-critical: connection close
         return ok({"booking_id": booking_id, "status": "Done"})
+    except HTTPException:
+        raise  # 404 / 409 deposit-guard must keep their real status + message
     except Exception as e:
+        logger.exception("end_booking %s failed", booking_id)
         raise HTTPException(status_code=500, detail=str(e))
 
 
