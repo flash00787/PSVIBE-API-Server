@@ -840,10 +840,19 @@ def _undo_stock_in_row(row: dict) -> dict:
         for note in ("Stock In: %s x%s" % (name, qty_txt), "Stock In (batch): %s" % voucher):
             try:
                 cm = _mysql_query_one(
-                    "SELECT id FROM cash_movements WHERE movement_type='eject' AND note=%s AND amount=%s "
+                    "SELECT id, account FROM cash_movements WHERE movement_type='eject' AND note=%s AND amount=%s "
                     "ORDER BY id DESC LIMIT 1", (note, total))
                 if cm:
-                    out["cash_removed"] = int(_mysql_delete("DELETE FROM cash_movements WHERE id=%s", (cm["id"],)) or 0)
+                    # Audit-safe reversal: keep the original eject and post the opposite
+                    # movement, so the payment history stays traceable (Osmo 2026-10-21).
+                    _mysql_execute(
+                        "INSERT INTO cash_movements (branch_id, movement_type, account, amount, note, staff_name) "
+                        "VALUES (1, 'inject', %s, %s, %s, %s)",
+                        (cm.get("account") or "Main (ACM)", total,
+                         "Stock In deleted (reversal of #%s): %s" % (cm.get("id"), note),
+                         row.get("staff_name") or "system"))
+                    out["cash_reversed"] = int(total)
+                    out["cash_reversed_from"] = int(cm.get("id") or 0)
                     break
             except Exception:
                 pass
