@@ -1284,8 +1284,11 @@ async def api_update_booking_status(booking_id: int, req: dict, request: Request
                             f"Refund forfeit BK#{booking_id} (reactivated) via {_meth_label}", "system", "deposit_refund")
                         logger.info(f"BK#{booking_id}: deposit forfeit {_dep_amt}Ks reversed (eject), cancelled_at cleared")
 
-            # 📢 Customer notification on confirm/cancel (fire-and-forget)
-            if status in ("confirmed", "cancelled"):
+            # 📢 Customer notification on confirm/cancel/reject (fire-and-forget)
+            # 🐛 2026-10-25 Osmo: "booking req ကို reject လုပ်လိုက်တာ customer ဆီ noti
+            # လည်း ပြန်မရောက်ဘူး" — "rejected" was missing from this tuple, so a
+            # rejected booking never told the customer anything.
+            if status in ("confirmed", "cancelled", "rejected"):
                 logger.info("[NOTIFY] Triggering notification for BK#%s status=%s", booking_id, status)
                 _notify_row = _mysql_query_one(
                     "SELECT telegram_chat_id, console_id, booking_date, planned_start AS start_time, planned_duration_mins AS duration_mins FROM console_bookings WHERE id=%s",
@@ -1294,17 +1297,27 @@ async def api_update_booking_status(booking_id: int, req: dict, request: Request
                 if _notify_row and _notify_row.get("telegram_chat_id"):
                     _tg_id = _notify_row["telegram_chat_id"]
                     _bk_id = str(booking_id)
+                    _console = _notify_row.get("console_id", "") or "TBD"
+                    _date = str(_notify_row.get("booking_date", ""))
+                    _time = str(_notify_row.get("start_time", ""))[:16] if _notify_row.get("start_time") else ""
+                    _dur = str(_notify_row.get("duration_mins", ""))
                     if status == "confirmed":
-                        _console = _notify_row.get("console_id", "") or "TBD"
-                        _date = str(_notify_row.get("booking_date", ""))
-                        _time = str(_notify_row.get("start_time", ""))[:16] if _notify_row.get("start_time") else ""
-                        _dur = str(_notify_row.get("duration_mins", ""))
                         _msg = (
                             f"✅ <b>Booking Confirmed!</b>\n\n"
                             f"🎫 Booking <b>#{_bk_id}</b>\n"
                             f"📅 {_date}  ⏰ {_time}\n"
                             f"🎮 Console: {_console}  ⏱️ {_dur} min\n\n"
                             f"📲 Booking ချိန်ရောက်ရင် Staff ကို Check-in ပြပေးပါ။ 🎮"
+                        )
+                    elif status == "rejected":
+                        _note = str(req.get("staffNote") or req.get("staff_note") or "").strip()
+                        _msg = (
+                            f"❌ <b>Booking #{_bk_id} ကို လက်မခံနိုင်ပါ</b>\n\n"
+                            f"📅 {_date}  ⏰ {_time}\n"
+                            f"🎮 Console: {_console}  ⏱️ {_dur} min\n\n"
+                            f"Slot မအားတာ သို့မဟုတ် အခြေအနေတစ်ခုကြောင့် Booking ကို အတည်မပြုနိုင်ပါ။"
+                            + (f"\n📝 {_note}" if _note else "")
+                            + "\n\n📲 အခြား အချိန်/Console ဖြင့် Booking အသစ် ပြန်တင်ပေးပါ။"
                         )
                     else:
                         _msg = (
@@ -2338,6 +2351,28 @@ async def api_end_booking(booking_id: str, force: bool = False, auth=Depends(ver
             _session_consoles = [r["console_id"] for r in _end_cur.fetchall()]
             # End session: update console_sessions with actual_end and done status
             _end_cur.execute("UPDATE console_sessions SET actual_end=%s, status='done' WHERE booking_id=%s AND status IN ('active','checked_in')", (now, booking_id))
+            # 🎮 Owner 2026-11-07: ending a session must ALSO stop the controller
+            # rental timers. They used to stay open, so the rent kept ticking after
+            # the game ended (screenshot: 114 minutes on a 60-minute session) and a
+            # draft showed a "running" controller forever.
+            try:
+                try:
+                    from routes.console_routes import _ctrl_settle_open as _settle_ctrl
+                except ImportError:
+                    from console_routes import _ctrl_settle_open as _settle_ctrl
+                _sess_rows = _mysql_query(
+                    "SELECT id FROM console_sessions WHERE booking_id=%s AND status='done' ORDER BY id DESC LIMIT 5",
+                    (booking_id,))
+                for _srow in _sess_rows or []:
+                    _sid = int(_srow.get("id"))
+                    _q, _m, _a = _settle_ctrl(_sid, None)
+                    _mysql_exec(
+                        "UPDATE console_sessions SET extra_ctrls=%s, extra_ctrl_mins=%s, extra_ctrl_amount=%s WHERE id=%s",
+                        (_q, _m, _a, _sid))
+                    logger.info("session end settled controllers: session=%s qty=%s mins=%s amount=%s",
+                                _sid, _q, _m, _a)
+            except Exception as _ce:
+                logger.warning("controller settle on session end failed (booking %s): %s", booking_id, _ce)
             # Also update console_bookings status to 'done' to reflect booking completed
             _end_cur.execute("UPDATE console_bookings SET status='done' WHERE id=%s", (booking_id,))
             # Free every console this booking's sessions ran on (session consoles + booking console)

@@ -150,7 +150,7 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
         
         # Check if session is still active
         booking = _mysql_query("SELECT id, status, telegram_chat_id FROM console_bookings WHERE id=%s", (booking_id,))
-        if not booking or booking[0]["status"] != "Active":
+        if not booking or str(booking[0].get("status") or "").strip().lower() != "active":
             logger.info(f"Session {booking_id} no longer active, skipping reminder")
             return
         
@@ -229,6 +229,39 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
             if not booking_data:
                 logger.info(f"Session {booking_id} gone — stopping reminder loop")
                 break
+
+            # ── Owner 2026-10-25: "Session end လိုက်ပြီးသားကို noti လာတက်နေတယ်" ──
+            # The loop used to send FIRST and only then check whether the booking was
+            # still Active, so a session that ended while we slept always produced one
+            # more (overdue) alert. Check the live state BEFORE sending:
+            #   · booking must still be Active
+            #   · console_sessions.actual_end must be NULL (session not ended)
+            _live = _mysql_query(
+                "SELECT cb.status AS booking_status, cs.actual_end AS session_end, "
+                "       cs.status AS session_status "
+                "FROM console_bookings cb "
+                "LEFT JOIN console_sessions cs ON cs.booking_id = cb.id "
+                "WHERE cb.id=%s ORDER BY cs.id DESC LIMIT 1",
+                (booking_id,))
+            if not _live:
+                logger.info(f"Session {booking_id} vanished — stopping reminder loop")
+                break
+            _st = _live[0]
+            _bstat = str(_st.get("booking_status") or "").strip().lower()
+            _sstat = str(_st.get("session_status") or "").strip().lower()
+            # NOTE (2026-10-25): console_sessions.actual_end is PRE-FILLED with the
+            # planned end when the session starts, so "session_end is not None" was
+            # true for every live session and killed every reminder ("already
+            # finished ... WITHOUT notifying"). Judge by status only — an ended
+            # session is marked done/ended/completed/cancelled.
+            if (_bstat != "active"
+                    or _sstat in ("done", "ended", "completed", "cancelled")):
+                logger.info(
+                    "Session %s already finished (booking=%s session=%s end=%s) — "
+                    "stopping reminder loop WITHOUT notifying",
+                    booking_id, _bstat or "?", _sstat or "-", _st.get("session_end"))
+                break
+
             b = booking_data[0]
             actual_end = b.get("end_time") or (start_time + timedelta(minutes=duration_mins))
             if isinstance(actual_end, str):
@@ -283,7 +316,7 @@ async def _session_timer_task(booking_id: int, console_id: str, member_id: str,
             
             # Stop repeating if session no longer active
             chk = _mysql_query("SELECT status FROM console_bookings WHERE id=%s", (booking_id,))
-            if not chk or chk[0].get("status") != "Active":
+            if not chk or str(chk[0].get("status") or "").strip().lower() != "active":
                 logger.info(f"Session {booking_id} ended — stopping reminder loop")
                 # ── Silent-fail guard (owner 2026-09-29 Osmo: "C09 session end လိုက်တာ
                 #    voucher မရောက်ဘဲ silently fail") ─────────────────────────────
@@ -417,6 +450,19 @@ def end_session_now(booking_id: int) -> Dict[str, Any]:
             cur.execute("UPDATE console_bookings SET status='Done' WHERE id=%s", (booking_id,))
             now_mmt = datetime.now(timezone(timedelta(hours=6, minutes=30)))
             cur.execute("UPDATE console_sessions SET status='done', actual_end=%s WHERE booking_id=%s", (now_mmt, booking_id))
+            # 🎮 Owner 2026-11-07: stop the controller rental timers with the session.
+            try:
+                try:
+                    from routes.console_routes import _ctrl_settle_open as _settle_ctrl
+                except ImportError:
+                    from console_routes import _ctrl_settle_open as _settle_ctrl
+                for _sid in [r.get("id") for r in (rows or []) if r.get("id")]:
+                    _q, _m, _a = _settle_ctrl(int(_sid), None)
+                    cur.execute(
+                        "UPDATE console_sessions SET extra_ctrls=%s, extra_ctrl_mins=%s, extra_ctrl_amount=%s WHERE id=%s",
+                        (_q, _m, _a, int(_sid)))
+            except Exception as _ce:
+                logger.warning("controller settle on timer end failed (booking %s): %s", booking_id, _ce)
             cur.execute(
                 "UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL WHERE console_id=%s",
                 (console_id,))
