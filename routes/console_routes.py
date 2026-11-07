@@ -871,7 +871,8 @@ async def api_end_session_by_id(session_id: int, auth=Depends(verify_api_key)):
     """
     try:
         row = _mysql_query_one(
-            "SELECT id, booking_id, console_id, status FROM console_sessions WHERE id=%s",
+            "SELECT id, booking_id, console_id, status, member_id, customer_name, game_name, actual_start "
+            "FROM console_sessions WHERE id=%s",
             (session_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -907,8 +908,24 @@ async def api_end_session_by_id(session_id: int, auth=Depends(verify_api_key)):
             _mysql_exec("UPDATE console_bookings SET status='done' WHERE id=%s", (_bid,))
         logger.info("session %s ended via API: controllers qty=%s mins=%s amount=%s",
                     session_id, _q, _m, _a)
+        # Hand the app everything it needs to build the voucher form, so it does
+        # not have to guess the played minutes from a stale console row.
+        _played = 0
+        if row.get("actual_start"):
+            try:
+                _d = _mysql_query_one(
+                    "SELECT GREATEST(0, TIMESTAMPDIFF(MINUTE, %s, %s)) AS m",
+                    (row.get("actual_start"), when)) or {}
+                _played = int(_d.get("m") or 0)
+            except Exception:
+                _played = 0
         return ok({"session_id": session_id, "ctrl_qty": _q, "ctrl_mins": _m,
-                   "ctrl_amount": _a, "ended_at": str(when)})
+                   "ctrl_amount": _a, "ended_at": str(when),
+                   "duration_mins": _played,
+                   "console_id": row.get("console_id"),
+                   "member_id": row.get("member_id"),
+                   "customer_name": row.get("customer_name"),
+                   "game_name": row.get("game_name")})
     except HTTPException:
         raise
     except Exception as e:
