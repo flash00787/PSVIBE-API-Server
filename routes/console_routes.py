@@ -861,6 +861,43 @@ async def api_session_controllers(session_id: int, auth=Depends(verify_api_key))
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/sessions/{session_id}/end", response_model=GenericResponse, tags=["Sessions"], summary="End a session by id: settle controllers, free the console [MySQL]")
+async def api_end_session_by_id(session_id: int, auth=Depends(verify_api_key)):
+    """Close a session without needing its booking id.
+
+    Owner 2026-11-07: the app ended sessions through PUT /api/end_booking/{id},
+    which needs a booking, so a session could stay 'active' for hours and its
+    controller rentals kept ticking (129 minutes on a 30-minute booking).
+    """
+    try:
+        row = _mysql_query_one(
+            "SELECT id, booking_id, console_id, status FROM console_sessions WHERE id=%s",
+            (session_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+        when = now_mmt()
+        _q, _m, _a = _ctrl_settle_open(session_id, when)
+        _mysql_exec(
+            "UPDATE console_sessions SET status='done', actual_end=%s, "
+            "actual_duration_mins=GREATEST(0, TIMESTAMPDIFF(MINUTE, actual_start, %s)), "
+            "extra_ctrls=%s, extra_ctrl_mins=%s, extra_ctrl_amount=%s WHERE id=%s",
+            (when, when, _q, _m, _a, session_id))
+        _mysql_exec(
+            "UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL "
+            "WHERE console_id=%s", (row.get("console_id"),))
+        _bid = row.get("booking_id")
+        if _bid:
+            _mysql_exec("UPDATE console_bookings SET status='done' WHERE id=%s", (_bid,))
+        logger.info("session %s ended via API: controllers qty=%s mins=%s amount=%s",
+                    session_id, _q, _m, _a)
+        return ok({"session_id": session_id, "ctrl_qty": _q, "ctrl_mins": _m,
+                   "ctrl_amount": _a, "ended_at": str(when)})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/consoles/{console_id}/controllers", response_model=GenericResponse, tags=["Consoles"], summary="Controller rentals for a console's live (or just-ended) session [MySQL]")
 async def api_console_controllers(console_id: str, auth=Depends(verify_api_key)):
     """Same resolution as /api/sales/record: the console's active session, else the
