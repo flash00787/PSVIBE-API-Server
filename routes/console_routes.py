@@ -875,6 +875,10 @@ async def api_end_session_by_id(session_id: int, auth=Depends(verify_api_key)):
             (session_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Session not found")
+        # Never touch an already-finished session: doing so used to free the
+        # console row even though a NEWER session was live on it.
+        if str(row.get("status") or "").lower() != "active":
+            return ok({"session_id": session_id, "already_done": True, "ctrl_amount": 0})
         when = now_mmt()
         _q, _m, _a = _ctrl_settle_open(session_id, when)
         _mysql_exec(
@@ -882,9 +886,22 @@ async def api_end_session_by_id(session_id: int, auth=Depends(verify_api_key)):
             "actual_duration_mins=GREATEST(0, TIMESTAMPDIFF(MINUTE, actual_start, %s)), "
             "extra_ctrls=%s, extra_ctrl_mins=%s, extra_ctrl_amount=%s WHERE id=%s",
             (when, when, _q, _m, _a, session_id))
-        _mysql_exec(
-            "UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL "
-            "WHERE console_id=%s", (row.get("console_id"),))
+        # Only free the console when no OTHER session is still running on it,
+        # otherwise re-point it at the remaining session (owner 2026-11-07).
+        _other = _mysql_query_one(
+            "SELECT id, member_id, customer_name, game_name, actual_start FROM console_sessions "
+            "WHERE console_id=%s AND status='active' AND id<>%s ORDER BY id DESC LIMIT 1",
+            (row.get("console_id"), session_id))
+        if _other:
+            _mysql_exec(
+                "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=%s "
+                "WHERE console_id=%s",
+                (_other.get("customer_name") or _other.get("member_id") or "Guest",
+                 _other.get("game_name"), _other.get("actual_start"), row.get("console_id")))
+        else:
+            _mysql_exec(
+                "UPDATE console_status SET status='Free', current_member=NULL, current_game=NULL, start_time=NULL "
+                "WHERE console_id=%s", (row.get("console_id"),))
         _bid = row.get("booking_id")
         if _bid:
             _mysql_exec("UPDATE console_bookings SET status='done' WHERE id=%s", (_bid,))
