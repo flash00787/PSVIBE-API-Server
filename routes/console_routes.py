@@ -95,7 +95,7 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)) -> JSONResponse
     """Fetch live console statuses from MySQL console_status table."""
     try:
         rows = _mysql_query(
-            "SELECT cs.console_id, cs.status, cs.console_type, cs.current_game, cs.current_member, DATE_FORMAT(cs.start_time, '%%H:%%i') as start_time, DATE_FORMAT(cs.start_time, '%%Y-%%m-%%d %%H:%%i:%%s') as start_time_dt, cb.id as booking_id, cb.staff_name, cb.customer_name, cobk.member_id as booking_member_id, COALESCE(cb.actual_duration_mins, cobk.planned_duration_mins) as duration_mins FROM console_status cs LEFT JOIN (    SELECT cbsn1.booking_id as id, cbsn1.console_id, cbsn1.staff_name, cbsn1.customer_name, cbsn1.actual_duration_mins     FROM console_sessions cbsn1     INNER JOIN (        SELECT console_id, MAX(id) as max_id         FROM console_sessions WHERE status = 'active' GROUP BY console_id    ) cbsn2 ON cbsn1.id = cbsn2.max_id) cb ON REPLACE(cb.console_id, ' ', '') LIKE CONCAT(REPLACE(cs.console_id, ' ', ''), '%%') LEFT JOIN console_bookings cobk ON cobk.id=cb.id ORDER BY cs.console_id")
+            "SELECT cs.console_id, cs.status, cs.console_type, cs.current_game, cs.current_member, DATE_FORMAT(cs.start_time, '%%H:%%i') as start_time, DATE_FORMAT(cs.start_time, '%%Y-%%m-%%d %%H:%%i:%%s') as start_time_dt, cb.id as booking_id, cb.session_id, cb.staff_name, cb.customer_name, cobk.member_id as booking_member_id, COALESCE(cb.actual_duration_mins, cobk.planned_duration_mins) as duration_mins FROM console_status cs LEFT JOIN (    SELECT cbsn1.booking_id as id, cbsn1.id AS session_id, cbsn1.console_id, cbsn1.staff_name, cbsn1.customer_name, cbsn1.actual_duration_mins, cbsn1.extra_ctrls     FROM console_sessions cbsn1     INNER JOIN (        SELECT console_id, MAX(id) as max_id         FROM console_sessions WHERE status = 'active' GROUP BY console_id    ) cbsn2 ON cbsn1.id = cbsn2.max_id) cb ON REPLACE(cb.console_id, ' ', '') LIKE CONCAT(REPLACE(cs.console_id, ' ', ''), '%%') LEFT JOIN console_bookings cobk ON cobk.id=cb.id ORDER BY cs.console_id")
         # Add id alias for backward compat — bot code uses c["id"] everywhere
         for r in rows:
             if "id" not in r:
@@ -115,6 +115,23 @@ async def api_fetch_console_status(auth=Depends(verify_api_key)) -> JSONResponse
                     r["plan_end_dt"] = _end.strftime("%Y-%m-%d %H:%M:%S")
                     _el = int((_now_mmt - _st_dt).total_seconds() // 60)
                     r["elapsed_mins"] = max(0, _el)
+
+            except Exception:
+                pass
+            # 🎮 rented controllers (owner 2026-10-25: show it on the console card)
+            # open_qty = controllers still out; ctrl_amount = accrued so far
+            # (closed rentals use stored minutes/amount, open ones accrue live).
+            try:
+                _sid_c = r.get("session_id")
+                if _sid_c:
+                    _cr = _mysql_query_one(
+                        "SELECT COALESCE(SUM(CASE WHEN ended_at IS NULL THEN qty ELSE 0 END),0) AS open_qty, "
+                        "COALESCE(SUM(qty * (CASE WHEN ended_at IS NULL "
+                        "  THEN TIMESTAMPDIFF(MINUTE, started_at, NOW() + INTERVAL 390 MINUTE) "
+                        "  ELSE minutes END) / 60.0 * rate),0) AS amt "
+                        "FROM session_controller_rentals WHERE session_id=%s", (_sid_c,)) or {}
+                    r["ctrl_qty"] = int(_cr.get("open_qty") or 0)
+                    r["ctrl_amount"] = round(float(_cr.get("amt") or 0))
             except Exception:
                 pass
         # Display-only Reserved: show Free consoles as "Reserved" if a confirmed
@@ -294,6 +311,10 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
         member_id = req.get('member_id') or req.get('memberId') or 'Guest'
         game_name = req.get('game_name') or req.get('gameName') or ''
         duration_mins = req.get('duration_mins') if req.get('duration_mins') is not None else (req.get('durationMins') if req.get('durationMins') is not None else 60)
+        # 🎮 Extra controllers (owner 2026-10-25): count of controllers BEYOND the
+        # 2 included ones. Stored on the session so staff can see it while playing.
+        _extra_ctrls = int(req.get('extra_ctrls') or req.get('extraCtrls') or 0)
+        _extra_ctrls = max(0, min(6, _extra_ctrls))
         if duration_mins < 1 or duration_mins > 1440:
             return error_response(message="durationMins must be between 1 and 1440")
         if not console_id:
@@ -387,9 +408,9 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 # If staff_name provided, use it (overrides customer name from booking's staff_name)
                 if req.get("staff_name", "") or req.get("staff", ""):
                     _start_staff = req.get("staff_name", "") or req.get("staff", "")
-                    _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), staff_name=%s, customer_name=COALESCE(NULLIF(customer_name,''), staff_name) WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, _start_staff, booking_id))
+                    _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), staff_name=%s, customer_name=COALESCE(NULLIF(customer_name,''), staff_name), extra_ctrls=%s WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, _start_staff, _extra_ctrls, booking_id))
                 else:
-                    _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), customer_name=COALESCE(NULLIF(customer_name,''), staff_name) WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, booking_id))
+                    _start_cur.execute("UPDATE console_sessions SET status='active', actual_duration_mins=%s, actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), customer_name=COALESCE(NULLIF(customer_name,''), staff_name), extra_ctrls=%s WHERE booking_id=%s AND status='checked_in'", (duration_mins, _now_ref, _now_ref, _dur_end2, _extra_ctrls, booking_id))
                 logger.info(f"Auto-checkin booking #{booking_id} for console {console_id}")
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
@@ -406,8 +427,8 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
                 booking_id = _start_cur.lastrowid
                 # Walk-in: create session row in console_sessions
                 _start_cur.execute(
-                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_duration_mins, actual_end, game_name, staff_name, customer_name, created_at, source) VALUES (%s,%s,%s,'active',%s,%s,DATE_ADD(%s, INTERVAL %s MINUTE),%s,%s,%s,NOW(),'walkin')",
-                    (booking_id, console_id, member_id, _now_ref, duration_mins, _now_ref, _dur_end5, game_name, member_id, member_id)
+                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_duration_mins, actual_end, game_name, staff_name, customer_name, created_at, source, extra_ctrls) VALUES (%s,%s,%s,'active',%s,%s,DATE_ADD(%s, INTERVAL %s MINUTE),%s,%s,%s,NOW(),'walkin',%s)",
+                    (booking_id, console_id, member_id, _now_ref, duration_mins, _now_ref, _dur_end5, game_name, member_id, member_id, _extra_ctrls)
                 )
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
@@ -497,6 +518,9 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
         except (ValueError, TypeError):
             return JSONResponse(content={"success": False, "error": "duration_mins must be a number"}, status_code=400)
         
+        # 🎮 extra controllers beyond the 2 included (owner 2026-10-25)
+        _extra_ctrls = int(req.get("extra_ctrls") or req.get("extraCtrls") or 0)
+        _extra_ctrls = max(0, min(6, _extra_ctrls))
         MAX_SESSION_MINS = 1440
         if duration_mins < 0 or duration_mins > MAX_SESSION_MINS:
             return JSONResponse(content={"success": False, "error": f"duration_mins must be 0-{MAX_SESSION_MINS} (0=no timer)"}, status_code=400)
@@ -612,13 +636,13 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 # If staff_name provided, use it (overrides customer name from booking)
                 if req_staff_name:
                     cur.execute(
-                        "UPDATE console_sessions SET status='active', actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), actual_duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), staff_name=%s, customer_name=COALESCE(NULLIF(customer_name,''), staff_name), console_id=%s WHERE booking_id=%s AND status='checked_in'",
-                        (_now_ref, _now_ref, _dur_end3, duration_mins, game_name, req_staff_name, console_id, linked_booking_id)
+                        "UPDATE console_sessions SET status='active', actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), actual_duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), staff_name=%s, customer_name=COALESCE(NULLIF(customer_name,''), staff_name), console_id=%s, extra_ctrls=%s WHERE booking_id=%s AND status='checked_in'",
+                        (_now_ref, _now_ref, _dur_end3, duration_mins, game_name, req_staff_name, console_id, _extra_ctrls, linked_booking_id)
                     )
                 else:
                     cur.execute(
-                        "UPDATE console_sessions SET status='active', actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), actual_duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), customer_name=COALESCE(NULLIF(customer_name,''), staff_name), console_id=%s WHERE booking_id=%s AND status='checked_in'",
-                        (_now_ref, _now_ref, _dur_end3, duration_mins, game_name, console_id, linked_booking_id)
+                        "UPDATE console_sessions SET status='active', actual_start=%s, actual_end=DATE_ADD(%s, INTERVAL %s MINUTE), actual_duration_mins=%s, game_name=COALESCE(NULLIF(%s, ''), game_name), customer_name=COALESCE(NULLIF(customer_name,''), staff_name), console_id=%s, extra_ctrls=%s WHERE booking_id=%s AND status='checked_in'",
+                        (_now_ref, _now_ref, _dur_end3, duration_mins, game_name, console_id, _extra_ctrls, linked_booking_id)
                     )
                 booking_id = linked_booking_id
                 if duration_mins and duration_mins > 0:
@@ -637,8 +661,8 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 # Use req_staff_name if provided (actual staff), else member_name defaults
                 _ses_staff = req_staff_name if req_staff_name else member_name
                 cur.execute(
-                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_end, actual_duration_mins, game_name, staff_name, customer_name, created_at, source) VALUES (%s, %s, %s, 'active', %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s, %s, %s, NOW(), 'walkin')",
-                    (booking_id, console_id, member_id, _now_ref, _now_ref, _dur_end4, duration_mins, game_name, _ses_staff, member_name)
+                    "INSERT INTO console_sessions (booking_id, console_id, member_id, status, actual_start, actual_end, actual_duration_mins, game_name, staff_name, customer_name, created_at, source, extra_ctrls) VALUES (%s, %s, %s, 'active', %s, DATE_ADD(%s, INTERVAL %s MINUTE), %s, %s, %s, %s, NOW(), 'walkin', %s)",
+                    (booking_id, console_id, member_id, _now_ref, _now_ref, _dur_end4, duration_mins, game_name, _ses_staff, member_name, _extra_ctrls)
                 )
                 if duration_mins and duration_mins > 0:
                     try: schedule_session_timer(booking_id, console_id, member_id, _now_ref, duration_mins)
@@ -647,6 +671,27 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                     except Exception: pass
             
             # Sync console_status
+
+            # 🎮 controllers bound at session start → one OPEN ledger event, so the
+            # card/voucher count and charge everything from a single source
+            # (owner: "session စတုန်းက ၁ ခု bind၊ နောက် ၁ ခု ငှား → ၁ ခုတည်း ပြ").
+            if _extra_ctrls and booking_id:
+                try:
+                    _rate0 = 3000
+                    try:
+                        _rate0 = int(float(_mysql_get_setting("extra_controller_rate", 3000) or 3000))
+                    except Exception:
+                        pass
+                    _mysql_exec(
+                        "INSERT INTO session_controller_rentals "
+                        "(session_id, booking_id, console_id, qty, rate, started_at, staff_name) "
+                        "SELECT id, booking_id, console_id, %s, %s, %s, %s FROM console_sessions "
+                        "WHERE booking_id=%s ORDER BY id DESC LIMIT 1",
+                        (_extra_ctrls, _rate0, _now_ref.strftime("%Y-%m-%d %H:%M:%S"),
+                         req_staff_name or member_name, booking_id))
+                    logger.info("controller bind at start: booking %s +%s", booking_id, _extra_ctrls)
+                except Exception as _cbe:
+                    logger.warning("controller bind at start failed (booking %s): %s", booking_id, _cbe)
             cur.execute(
                 "UPDATE console_status SET status='Active', current_member=%s, current_game=%s, start_time=%s WHERE console_id=%s",
                 (member_id, game_name, _now_ref, console_id)
@@ -711,6 +756,248 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
 # ═══════════════════════════════════════
 #  MUTATION — move active session to another console
 # ═══════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
+# 🎮 Controller rentals — per-rental ledger (owner Osmo 2026-10-25)
+#   · every rental is its own event: started_at → ended_at
+#   · charge = qty × (minutes ÷ 60) × rate   (prorated PER MINUTE)
+#   · mid-session rentals: staff rents more while the session runs
+#   · controllers can be returned before the session ends → charge stops then
+#   · the 2 included controllers are never recorded here (only extras)
+# ════════════════════════════════════════════════════════════════════
+
+def _ctrl_aware(dt, ref):
+    """MySQL DATETIMEs come back naive (MMT wall clock) while now_mmt() is
+    tz-aware — subtracting them raises TypeError (that was the 500 on
+    /api/sessions/{id}/controllers). Attach the same tz as `ref`."""
+    try:
+        if dt is not None and getattr(dt, "tzinfo", None) is None and getattr(ref, "tzinfo", None) is not None:
+            return dt.replace(tzinfo=ref.tzinfo)
+    except Exception:
+        pass
+    return dt
+
+
+def _ctrl_rate():
+    try:
+        return int(float(_mysql_get_setting("extra_controller_rate", 3000) or 3000))
+    except Exception:
+        return 3000
+
+
+def _ctrl_settle_open(session_id, when=None):
+    """Close every OPEN rental of a session at `when` (default: now, MMT) and
+    return (total_qty, total_minutes, total_amount)."""
+    when = when or now_mmt()
+    rows = _mysql_query(
+        "SELECT id, qty, rate, started_at FROM session_controller_rentals "
+        "WHERE session_id=%s AND ended_at IS NULL", (session_id,))
+    qty_t = mins_t = 0
+    amt_t = 0.0
+    for r in rows:
+        st = _ctrl_aware(r.get("started_at"), when)
+        if not st:
+            continue
+        mins = max(0, int((when - st).total_seconds() // 60))
+        amt = round(int(r.get("qty") or 0) * (mins / 60.0) * int(r.get("rate") or 0))
+        _mysql_exec(
+            "UPDATE session_controller_rentals SET ended_at=%s, minutes=%s, amount=%s WHERE id=%s",
+            (when.strftime("%Y-%m-%d %H:%M:%S"), mins, amt, r["id"]))
+        qty_t += int(r.get("qty") or 0)
+        mins_t += mins
+        amt_t += amt
+    return qty_t, mins_t, amt_t
+
+
+def _controllers_payload(session_id: int):
+    """Ledger rows + running totals for one session (shared by the endpoints)."""
+    if True:
+        rows = _mysql_query(
+            "SELECT id, qty, rate, started_at, ended_at, minutes, amount, staff_name, closed_by "
+            "FROM session_controller_rentals WHERE session_id=%s ORDER BY id", (session_id,))
+        now = now_mmt()
+        open_qty = 0
+        settled = 0.0
+        running = 0.0
+        items = []
+        for r in rows:
+            o = dict(r)
+            amt = float(r.get("amount") or 0)
+            if r.get("ended_at"):
+                running += amt
+                settled += amt
+            else:
+                open_qty += int(r.get("qty") or 0)
+                st = _ctrl_aware(r.get("started_at"), now)
+                mins = max(0, int((now - st).total_seconds() // 60)) if st else 0
+                live = round(int(r.get("qty") or 0) * (mins / 60.0) * int(r.get("rate") or 0))
+                o["live_minutes"] = mins
+                o["live_amount"] = live
+                running += live
+            for k in ("started_at", "ended_at"):
+                if o.get(k) is not None:
+                    o[k] = str(o[k])
+            items.append(o)
+        return {"items": items, "open_qty": open_qty, "settled": round(settled),
+                "running_total": round(running), "rate": _ctrl_rate()}
+
+
+@router.get("/sessions/{session_id}/controllers", response_model=GenericResponse, tags=["Sessions"], summary="Controller rentals for a session [MySQL]")
+async def api_session_controllers(session_id: int, auth=Depends(verify_api_key)):
+    try:
+        body = _controllers_payload(session_id)
+        body["session_id"] = session_id
+        return ok(body)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/consoles/{console_id}/controllers", response_model=GenericResponse, tags=["Consoles"], summary="Controller rentals for a console's live (or just-ended) session [MySQL]")
+async def api_console_controllers(console_id: str, auth=Depends(verify_api_key)):
+    """Same resolution as /api/sales/record: the console's active session, else the
+    most recent session that ended within the last 2h and has no sales_daily row.
+
+    Owner 2026-11-07: the sale form showed "Count 0" whenever staff closed the
+    console before filling the voucher, because the ledger was only fetched for a
+    LIVE session id.
+    """
+    try:
+        row = _mysql_query_one(
+            "SELECT cs.id FROM console_sessions cs "
+            "WHERE cs.console_id=%s "
+            "  AND (cs.status='active' OR cs.actual_end >= (NOW() + INTERVAL 390 MINUTE) - INTERVAL 120 MINUTE) "
+            "  AND NOT EXISTS (SELECT 1 FROM sales_daily sd WHERE sd.session_id=cs.id) "
+            "ORDER BY cs.id DESC LIMIT 1", (console_id,))
+        if not row:
+            return ok({"items": [], "open_qty": 0, "settled": 0, "running_total": 0,
+                       "rate": _ctrl_rate(), "session_id": None})
+        sid = int(row.get("id"))
+        body = _controllers_payload(sid)
+        body["session_id"] = sid
+        return ok(body)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/controllers/rent", response_model=GenericResponse, tags=["Sessions"], summary="Rent extra controller(s) on a live session [MySQL]")
+async def api_rent_controllers(session_id: int, req: dict, auth=Depends(verify_api_key)):
+    """Add an OPEN rental event. Only extras are recorded (the 2 included are free)."""
+    try:
+        qty = int(req.get("qty") or req.get("controllers") or 1)
+        qty = max(1, min(4, qty))
+        staff = str(req.get("staff_name") or req.get("staff") or "")[:64]
+        sess = _mysql_query_one(
+            "SELECT id, booking_id, console_id, status FROM console_sessions WHERE id=%s", (session_id,))
+        if not sess:
+            return error_response(message="session not found")
+        if str(sess.get("status") or "").lower() not in ("active", "checked_in"):
+            return error_response(message="session is not running")
+        rate = _ctrl_rate()
+        _mysql_exec(
+            "INSERT INTO session_controller_rentals "
+            "(session_id, booking_id, console_id, qty, rate, started_at, staff_name) "
+            "VALUES (%s,%s,%s,%s,%s,DATE_ADD(NOW(), INTERVAL 390 MINUTE),%s)",
+            (session_id, sess.get("booking_id"), sess.get("console_id"), qty, rate, staff))
+        # keep the session's rolled-up counter in sync (open qty)
+        open_qty = _mysql_query_one(
+            "SELECT COALESCE(SUM(qty),0) AS q FROM session_controller_rentals "
+            "WHERE session_id=%s AND ended_at IS NULL", (session_id,)) or {}
+        _mysql_exec("UPDATE console_sessions SET extra_ctrls=%s WHERE id=%s",
+                    (int(open_qty.get("q") or 0), session_id))
+        logger.info("controller rent: session %s +%s (open=%s) by %s", session_id, qty, open_qty.get("q"), staff)
+        return ok({"rented": qty, "open_qty": int(open_qty.get("q") or 0), "rate": rate})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/controllers/return", response_model=GenericResponse, tags=["Sessions"], summary="Return rented controller(s) before session end [MySQL]")
+async def api_return_controllers(session_id: int, req: dict, auth=Depends(verify_api_key)):
+    """Close rented controllers (FIFO). The charge stops at the return moment."""
+    try:
+        want = int(req.get("qty") or req.get("controllers") or 1)
+        want = max(1, want)
+        staff = str(req.get("staff_name") or req.get("staff") or "")[:64]
+        rows = _mysql_query(
+            "SELECT id, qty, rate, started_at FROM session_controller_rentals "
+            "WHERE session_id=%s AND ended_at IS NULL ORDER BY id", (session_id,))
+        now = now_mmt()
+        remaining = want
+        closed = 0
+        amount_closed = 0.0
+        for r in rows:
+            if remaining <= 0:
+                break
+            rq = int(r.get("qty") or 0)
+            take = min(rq, remaining)
+            mins = max(0, int((now - _ctrl_aware(r["started_at"], now)).total_seconds() // 60))
+            amt = round(take * (mins / 60.0) * int(r.get("rate") or 0))
+            if take == rq:
+                _mysql_exec(
+                    "UPDATE session_controller_rentals SET ended_at=%s, minutes=%s, amount=%s, closed_by=%s WHERE id=%s",
+                    (now.strftime("%Y-%m-%d %H:%M:%S"), mins, amt, staff, r["id"]))
+            else:
+                # partial return: shrink the open row, add a closed row for the returned ones
+                _mysql_exec("UPDATE session_controller_rentals SET qty=qty-%s WHERE id=%s", (take, r["id"]))
+                _mysql_exec(
+                    "INSERT INTO session_controller_rentals "
+                    "(session_id, booking_id, console_id, qty, rate, started_at, ended_at, minutes, amount, staff_name, closed_by) "
+                    "SELECT session_id, booking_id, console_id, %s, rate, started_at, %s, %s, %s, staff_name, %s "
+                    "FROM session_controller_rentals WHERE id=%s",
+                    (take, now.strftime("%Y-%m-%d %H:%M:%S"), mins, amt, staff, r["id"]))
+            remaining -= take
+            closed += take
+            amount_closed += amt
+        open_qty = _mysql_query_one(
+            "SELECT COALESCE(SUM(qty),0) AS q FROM session_controller_rentals "
+            "WHERE session_id=%s AND ended_at IS NULL", (session_id,)) or {}
+        _mysql_exec("UPDATE console_sessions SET extra_ctrls=%s WHERE id=%s",
+                    (int(open_qty.get("q") or 0), session_id))
+        logger.info("controller return: session %s -%s (open=%s) charged=%s",
+                    session_id, closed, open_qty.get("q"), amount_closed)
+        return ok({"returned": closed, "open_qty": int(open_qty.get("q") or 0),
+                   "charged": round(amount_closed)})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Console-keyed controller rentals (owner 2026-10-25) ──────────────────
+# The Staff App's console objects do not always carry session_id, which made the
+# session-keyed endpoints fail with "session မရပါ". These wrappers resolve the
+# console's LIVE session server-side so the client only needs the console id.
+
+def _active_session_for_console(console_id):
+    try:
+        return _mysql_query_one(
+            "SELECT id, booking_id, console_id, status FROM console_sessions "
+            "WHERE REPLACE(console_id,' ','')=%s AND status IN ('active','checked_in') "
+            "ORDER BY id DESC LIMIT 1", (str(console_id or '').replace(' ', ''),))
+    except Exception:
+        return None
+
+
+@router.get("/consoles/{console_id}/controllers", response_model=GenericResponse, tags=["Consoles"], summary="Controller rentals for a console's live session [MySQL]")
+async def api_console_controllers(console_id: str, auth=Depends(verify_api_key)):
+    sess = _active_session_for_console(console_id)
+    if not sess:
+        return error_response(message="no active session on this console")
+    return await api_session_controllers(int(sess["id"]), auth)
+
+
+@router.post("/consoles/{console_id}/controllers/rent", response_model=GenericResponse, tags=["Consoles"], summary="Rent extra controller(s) on a live console [MySQL]")
+async def api_console_rent(console_id: str, req: dict, auth=Depends(verify_api_key)):
+    sess = _active_session_for_console(console_id)
+    if not sess:
+        return error_response(message="no active session on this console")
+    return await api_rent_controllers(int(sess["id"]), req, auth)
+
+
+@router.post("/consoles/{console_id}/controllers/return", response_model=GenericResponse, tags=["Consoles"], summary="Return rented controller(s) on a live console [MySQL]")
+async def api_console_return(console_id: str, req: dict, auth=Depends(verify_api_key)):
+    sess = _active_session_for_console(console_id)
+    if not sess:
+        return error_response(message="no active session on this console")
+    return await api_return_controllers(int(sess["id"]), req, auth)
+
+
 @router.post("/sessions/move", response_model=GenericResponse, tags=["Sessions"], summary="Move a booking (Active/confirmed/checked_in) to another console [MySQL]")
 async def api_sessions_move(req: dict, request: Request, auth=Depends(verify_api_key)):
     """Move a booking to another console.
