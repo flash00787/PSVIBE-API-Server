@@ -815,6 +815,16 @@ def _controllers_payload(session_id: int):
             "SELECT id, qty, rate, started_at, ended_at, minutes, amount, staff_name, closed_by "
             "FROM session_controller_rentals WHERE session_id=%s ORDER BY id", (session_id,))
         now = now_mmt()
+        # A finished session must price open rentals at its END time, not at "now".
+        # Owner 2026-11-07: the preview kept ticking after the console closed, so the
+        # amount shown grew past what the sale actually settled.
+        try:
+            _srow = _mysql_query_one(
+                "SELECT status, actual_end FROM console_sessions WHERE id=%s", (session_id,))
+            if _srow and str(_srow.get("status") or "") != "active" and _srow.get("actual_end"):
+                now = _ctrl_aware(_srow["actual_end"], now)
+        except Exception:
+            pass
         open_qty = 0
         settled = 0.0
         running = 0.0
@@ -873,6 +883,18 @@ async def api_console_controllers(console_id: str, auth=Depends(verify_api_key))
         sid = int(row.get("id"))
         body = _controllers_payload(sid)
         body["session_id"] = sid
+        # Owner 2026-11-07: staff may fill the voucher AFTER the console was closed,
+        # and the app used to drop the member selected at session start — so the
+        # wallet was never applied. Return the session identity with the ledger.
+        try:
+            _sr = _mysql_query_one(
+                "SELECT id, booking_id, console_id, member_id, customer_name, game_name, status, "
+                "actual_start, actual_end, actual_duration_mins "
+                "FROM console_sessions WHERE id=%s", (sid,))
+            if _sr:
+                body["session"] = {k: (str(v) if v is not None else None) for k, v in _sr.items()}
+        except Exception as _se:
+            logger.warning("console controllers session info failed (session %s): %s", sid, _se)
         return ok(body)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
