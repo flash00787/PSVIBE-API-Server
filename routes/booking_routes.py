@@ -1753,7 +1753,7 @@ def _hm(v):
 #  GET /api/bookings - list bookings by status
 # ================================================================
 @router.get("/bookings", response_model=GenericResponse, tags=["Bookings"], summary="List bookings by status [MySQL]")
-async def api_get_bookings(request: Request, status: str = "", member_id: str = Query(""), date: str = Query(""), auth=Depends(verify_api_key)):
+async def api_get_bookings(request: Request, status: str = "", member_id: str = Query(""), date: str = Query(""), deposit_status: str = Query(""), auth=Depends(verify_api_key)):
     """List bookings with optional status, member_id, and date filters.
 
     ``deposit_ref`` (payment proof) is only included for trusted staff/service callers.
@@ -1787,6 +1787,10 @@ async def api_get_bookings(request: Request, status: str = "", member_id: str = 
             else:
                 where_clauses.append("LOWER(cb.status)=%s")
                 params.append(status_lower)
+        if deposit_status:
+            # Owner 2026-11-08: lets the staff app list refund requests directly.
+            where_clauses.append("cb.deposit_status=%s")
+            params.append(deposit_status)
         if member_id:
             where_clauses.append("cb.member_id=%s")
             params.append(member_id)
