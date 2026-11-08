@@ -348,3 +348,70 @@ async def add_promotion_log(data: dict, auth=Depends(verify_api_key)):
         ),
     )
     return {"success": True, "message": "Logged"}
+
+
+# ── Staff App: promotion CRUD (2026-10-31) ─────────────────────────────
+@router.post("/promotions", response_model=GenericResponse, tags=["Promotions"])
+async def api_promotions_create(payload: dict, auth=Depends(verify_api_key)):
+    """Create a promotion (staff app admin screen)."""
+    try:
+        name = str(payload.get("name") or payload.get("title") or "").strip()
+        if not name:
+            return error_response("name is required")
+        promo_type = str(payload.get("promo_type") or payload.get("type") or "discount")
+        discount_type = str(payload.get("discount_type") or "percent")
+        discount_value = float(payload.get("discount_value") or payload.get("discount_percent") or 0)
+        start_date = payload.get("start_date") or None
+        end_date = payload.get("end_date") or None
+        notes = str(payload.get("notes") or "")
+        status = str(payload.get("status") or "active")
+        _mysql_exec(
+            "INSERT INTO promotions (name, promo_name, promo_type, discount_type, discount_value, "
+            "                      start_date, end_date, status, notes) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (name, name, promo_type, discount_type, discount_value, start_date, end_date, status, notes),
+        )
+        row = _mysql_query_one("SELECT * FROM promotions ORDER BY id DESC LIMIT 1")
+        return ok({"promotion": row}, message="created")
+    except Exception as e:
+        logger.exception("promotion create failed")
+        return error_response(str(e))
+
+
+@router.patch("/promotions/{promo_id}", response_model=GenericResponse, tags=["Promotions"])
+async def api_promotions_update(promo_id: int, payload: dict, auth=Depends(verify_api_key)):
+    """Update a promotion."""
+    try:
+        existing = _mysql_query_one("SELECT * FROM promotions WHERE id=%s", (int(promo_id),))
+        if not existing:
+            return error_response("promotion not found")
+        fields, values = [], []
+        for key in ("name", "promo_type", "discount_type", "discount_value",
+                    "start_date", "end_date", "status", "notes"):
+            if key in payload:
+                fields.append(key + "=%s")
+                values.append(payload[key])
+        if not fields:
+            return error_response("nothing to update")
+        values.append(int(promo_id))
+        _mysql_exec("UPDATE promotions SET " + ", ".join(fields) + " WHERE id=%s", tuple(values))
+        row = _mysql_query_one("SELECT * FROM promotions WHERE id=%s", (int(promo_id),))
+        return ok({"promotion": row}, message="updated")
+    except Exception as e:
+        logger.exception("promotion update failed")
+        return error_response(str(e))
+
+
+@router.delete("/promotions/{promo_id}", response_model=GenericResponse, tags=["Promotions"])
+async def api_promotions_delete(promo_id: int, auth=Depends(verify_api_key)):
+    """Archive a promotion (soft delete: status=archived)."""
+    try:
+        existing = _mysql_query_one("SELECT id FROM promotions WHERE id=%s", (int(promo_id),))
+        if not existing:
+            return error_response("promotion not found")
+        _mysql_exec("UPDATE promotions SET status='archived' WHERE id=%s", (int(promo_id),))
+        return ok({"id": int(promo_id)}, message="archived")
+    except Exception as e:
+        logger.exception("promotion delete failed")
+        return error_response(str(e))
+

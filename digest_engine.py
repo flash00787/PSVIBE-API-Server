@@ -752,7 +752,7 @@ def generate_daily_digest(date=None):
         # ── Food Sales ──
         food = _query_one(
             "SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as total "
-            "FROM stock_out WHERE DATE(sale_date) = %s",
+            "FROM stock_out WHERE DATE(sale_date) = %s AND COALESCE(staff_name,'') <> 'recipe'",
             (target_date,)
         )
         summary["food_sales"] = {

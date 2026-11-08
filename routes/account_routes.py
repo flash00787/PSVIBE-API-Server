@@ -167,6 +167,10 @@ async def _account_rows_by_name() -> dict:
                 "fee_amount": float(a.get("fee_amount") or 0),
                 "net_balance": float(a.get("net_balance") or 0),
                 "fee_note": str(a.get("fee_note") or ""),
+                "today_in": float(a.get("today_in") or 0),
+                "today_out": float(a.get("today_out") or 0),
+                "today_net": float(a.get("today_net") or 0),
+                "today_date": str(a.get("today_date") or ""),
             }
     return out
 
@@ -281,6 +285,32 @@ def _prev_closing(account: str, date_str: str):
     return None
 
 
+def _carry_opening(account: str, date_str: str):
+    """မနေ့က closing ကနေ ဒီနေ့ opening ကို အလိုလို သယ် (owner Osmo 2026-10-26).
+
+    Nightly MMQR sweep က ညသန်းခေါင်မှာ အကောင့်ကို ရှင်းလိုက်တာမို့ closing ကို
+    တိုက်ရိုက် သယ်ရင် မှားမယ် — ဒါကြောင့် ဒီနေ့ (MMT) sweep/transfer_out ပမာဏကို
+    နုတ်ပြီးမှ သယ်တယ်. ရလဒ်: sweep ပြီးတဲ့ account က 0 ကနေ စမယ်.
+    """
+    prev = _prev_closing(account, date_str)
+    if prev is None:
+        return None
+    swept = 0.0
+    try:
+        r = _q(
+            "SELECT COALESCE(SUM(ABS(amount)),0) AS s FROM cash_movements "
+            "WHERE account=%s AND movement_type='transfer_out' "
+            "AND note LIKE '%%sweep%%' "
+            "AND DATE(created_at + INTERVAL 390 MINUTE) = %s",
+            (account, date_str),
+        )
+        if r:
+            swept = float(r[0].get("s") or 0)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"sweep lookup failed for {account}: {e}")
+    return max(0.0, float(prev) - swept)
+
+
 @router.get("/daily-balances/today")
 async def daily_balances_today(user: dict = Depends(get_staff_or_dashboard_user)):
     """Today's daily balance open/close state for the ACTIVE operational accounts.
@@ -292,8 +322,19 @@ async def daily_balances_today(user: dict = Depends(get_staff_or_dashboard_user)
     _ensure_daily_balances_table()
     today = _mmt_today_str()
     for acc in _OPERATIONAL:
-        if not _q("SELECT id FROM daily_account_balances WHERE balance_date=%s AND account=%s", (today, acc)):
-            _ex("INSERT INTO daily_account_balances (balance_date, account, status) VALUES (%s,%s,'open')", (today, acc))
+        carry = _carry_opening(acc, today)
+        row = _q("SELECT id, status, opening_balance FROM daily_account_balances "
+                 "WHERE balance_date=%s AND account=%s", (today, acc))
+        if not row:
+            # owner 2026-10-26: opening is CARRIED, never created empty
+            _ex("INSERT INTO daily_account_balances (balance_date, account, status, opening_balance) "
+                "VALUES (%s,%s,'open',%s)", (today, acc, carry or 0))
+        elif carry is not None and (row[0].get("status") or "").lower() != "closed":
+            # still-open day that was created empty / typed as 1 Ks → carry it
+            current = float(row[0].get("opening_balance") or 0)
+            if current <= 1 and abs(current - carry) > 0.5:
+                _ex("UPDATE daily_account_balances SET opening_balance=%s "
+                    "WHERE balance_date=%s AND account=%s", (carry, today, acc))
     rows = _q("SELECT * FROM daily_account_balances WHERE balance_date=%s ORDER BY id", (today,))
     # Only ACTIVE accounts participate in today's open/close ritual; inactive ones
     # (with rows already created earlier today) are excluded from this list but
@@ -308,7 +349,7 @@ async def daily_balances_today(user: dict = Depends(get_staff_or_dashboard_user)
         live = round(float(bals.get(acc, 0)))
         # Owner 2026-09-29: surface the carried opening + any mismatch so the
         # app can warn instead of silently accepting a wrong typed number.
-        prev_c = _prev_closing(acc, today)
+        prev_c = _carry_opening(acc, today)
         # Variance = actually counted (closing) − recorded/system (live) balance.
         # Prefer the value frozen at close time; fall back to live for legacy rows.
         if r["status"] == "closed":
@@ -546,6 +587,10 @@ async def list_balances(user: dict = Depends(get_staff_or_dashboard_user)):
             "fee_amount": (meta.get(name) or {}).get("fee_amount", 0.0),
             "net_balance": (meta.get(name) or {}).get("net_balance", round(bals.get(name, 0), 2)),
             "fee_note": (meta.get(name) or {}).get("fee_note", ""),
+            "today_in": round((meta.get(name) or {}).get("today_in", 0.0)),
+            "today_out": round((meta.get(name) or {}).get("today_out", 0.0)),
+            "today_net": round((meta.get(name) or {}).get("today_net", 0.0)),
+            "today_date": (meta.get(name) or {}).get("today_date", ""),
         }
         for name in allowed
     ]

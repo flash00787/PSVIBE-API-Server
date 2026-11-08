@@ -150,7 +150,7 @@ def _historical_consumption(branch_id=1):
     regression).  Read-only."""
     canon = _canonical_map(branch_id)
     consumption = {}
-    for r in _q("SELECT item_name, SUM(quantity) AS qty FROM stock_out WHERE branch_id=%s GROUP BY item_name", (branch_id,)):
+    for r in _q("SELECT item_name, SUM(quantity) AS qty FROM stock_out WHERE branch_id=%s AND COALESCE(staff_name,'') <> 'recipe' GROUP BY item_name", (branch_id,)):
         cname = canon.get(r["item_name"], r["item_name"])
         consumption[cname] = consumption.get(cname, Decimal("0")) + _d(r["qty"])
     dish_sales = dict(consumption)
@@ -335,6 +335,19 @@ def consume_dish_recipe(dish_item, qty_sold, ref, voucher_no=None, branch_id=1) 
                     "UPDATE inventory SET quantity = GREATEST(0, quantity - %s), last_updated = NOW() WHERE item_name = %s",
                     (split["consumed"], canon),
                 )
+                # 2b) mirror the movement into stock_out (staff_name='recipe') so
+                # stock_in - stock_out reconciles with inventory.quantity. Sales
+                # reports exclude these rows (see digest_engine / backfill).
+                if split["consumed"] > 0:
+                    cur.execute(
+                        "INSERT INTO stock_out "
+                        "(branch_id, item_name, quantity, unit_price, total, sale_date, staff_name, notes) "
+                        "VALUES (%s,%s,%s,%s,%s,NOW(),%s,%s)",
+                        (branch_id, canon, split["consumed"],
+                         unit_cost if unit_cost is not None else Decimal("0"), cost,
+                         "recipe",
+                         ("auto:recipe " + str(dish_item) + " x" + str(qty_sold) + " " + str(ref))[:255]),
+                    )
                 # 3) record consumption (FIFO cost)
                 cur.execute(
                     "INSERT INTO ingredient_consumption "

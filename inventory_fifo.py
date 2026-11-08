@@ -25,7 +25,12 @@ def get_fifo_stock(item_name: Optional[str] = None) -> List[Dict[str, Any]]:
     rows = cur.fetchall()
     result = []
     for r in rows:
-        avail = r['stock_in_qty'] - r['stock_out_qty']
+        # 2026-10-29 (Osmo: eggs showed 94 while the counted stock was 12):
+        # inventory.quantity is the maintained on-hand figure — dish sales consume
+        # ingredients through stock_layers, which never writes stock_out rows, so
+        # in-out overstates ingredient stock. Prefer the inventory row and keep
+        # FIFO in-out only as a fallback when no counted quantity exists.
+        avail = int(r['inv_qty'] or 0) if r.get('inv_qty') is not None else (r['stock_in_qty'] - r['stock_out_qty'])
         # Subtract held (reserved) stock quantities
         try:
             cur2 = conn.cursor(dictionary=True)

@@ -315,7 +315,10 @@ def _fifo_consumption(branch_id: int, canon: dict):
 
     consumption = {}
     for c in set(direct) | set(recipe_usage):
-        consumption[c] = direct.get(c, Decimal("0")) + recipe_usage.get(c, Decimal("0"))
+        # Owner 2026-11-06: direct stock-out already records real usage, and the
+        # recipe estimate adds the same consumption a second time (eggs: 660 +
+        # 141 > 751 purchased). Use the stronger signal instead of the sum.
+        consumption[c] = max(direct.get(c, Decimal("0")), recipe_usage.get(c, Decimal("0")))
     return consumption, recipe_referenced
 
 
@@ -348,6 +351,7 @@ def _ingredient_costs(branch_id: int):
             conv[cname] = r
         elif cname not in conv:
             conv[cname] = r
+
     global_basis = _global_cost_basis()
     fifo_layers_map = _canonical_fifo_layers(branch_id, canon)
     ledger_map = _ledger_fifo_layers(branch_id, canon)
@@ -468,6 +472,17 @@ def _stock_items(branch_id: int):
     for n in conv_raw:
         names.add(canon.get(n, n))
 
+    # 2026-10-29: on-hand comes from inventory.quantity (counted), summed per
+    # canonical — stock_in aggregates drift because recipe consumption only
+    # touched stock_layers.
+    inv_qty_by_canon = {}
+    try:
+        for _r in _q("SELECT item_name, quantity FROM inventory WHERE branch_id=%s", (branch_id,)):
+            _c = canon.get(_r["item_name"], _r["item_name"])
+            inv_qty_by_canon[_c] = inv_qty_by_canon.get(_c, 0) + float(_r.get("quantity") or 0)
+    except Exception:
+        inv_qty_by_canon = {}
+
     global_basis = _global_cost_basis()
     fifo_layers_map = _canonical_fifo_layers(branch_id, canon)
     ledger_map = _ledger_fifo_layers(branch_id, canon)
@@ -512,7 +527,7 @@ def _stock_items(branch_id: int):
             "explicit_cost_basis": normalize_cost_basis(own.get("cost_basis")),
             "cost_per_base_unit": _num(cpb),
             "last_purchase": str(s.get("last_in")) if s.get("last_in") else None,
-            "total_qty": _num(s.get("total_qty")),
+            "total_qty": _num(inv_qty_by_canon.get(name, s.get("total_qty"))),
             "fifo_unit_cost": _num(fifo_unit),
             "fifo_layer_cost": _num(f["fifo_layer_cost"]),
             "fifo_layer_date": f["fifo_layer_date"],
@@ -861,6 +876,43 @@ async def menu_register_list(request: Request, user: dict = Depends(require_admi
     order = {"dish": 0, "resale": 1, "ingredient": 2}
     items.sort(key=lambda i: (order.get(i["type"], 9), i["item_name"]))
     return {"success": True, "data": items}
+
+
+@router.get("/register-list")
+async def menu_register_list(request: Request, user: dict = Depends(require_admin_user)):
+    """ADMIN-only: menu register — every sellable item with its active flag."""
+    branch = _branch(request)
+    _ensure_tables()
+    rows = _q(
+        "SELECT id, item_name, category, unit_price, item_type, quantity, "
+        "COALESCE(is_active,1) AS is_active FROM inventory WHERE branch_id=%s "
+        "ORDER BY category, item_name", (branch,)
+    ) or []
+    items = [{
+        "id": r.get("id"),
+        "item_name": r.get("item_name"),
+        "category": r.get("category") or "",
+        "selling_price": _num(r.get("unit_price")),
+        "item_type": (r.get("item_type") or "resale"),
+        "quantity": _num(r.get("quantity")),
+        "is_active": bool(int(r.get("is_active") or 0)),
+    } for r in rows]
+    return {"success": True, "data": {"items": items, "count": len(items)}}
+
+
+@router.patch("/register-active")
+async def menu_register_active(body: dict = Body(...), request: Request = None,
+                               user: dict = Depends(require_admin_user)):
+    """ADMIN-only: switch a menu item active / inactive (hidden from the POS menu)."""
+    name = normalize_item_name(body.get("item_name", body.get("name")))
+    if not name:
+        raise HTTPException(status_code=422, detail={"success": False, "error": "item_name is required", "code": 422})
+    active = 1 if bool(body.get("is_active")) else 0
+    row = _q1("SELECT id FROM inventory WHERE item_name=%s", (name,))
+    if not row:
+        raise HTTPException(status_code=404, detail={"success": False, "error": f"'{name}' not found", "code": 404})
+    _ex("UPDATE inventory SET is_active=%s WHERE id=%s", (active, row["id"]))
+    return {"success": True, "data": {"item_name": name, "is_active": bool(active)}}
 
 
 @router.post("/register")

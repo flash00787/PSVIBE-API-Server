@@ -75,7 +75,9 @@ async def dashboard_get_inventory(
 async def dashboard_create_inventory(req: dict, user: dict = Depends(get_current_user)):
     """Create a new inventory item."""
     try:
-        item_name = req.get("item_name", "")
+        # 🩹 2026-11-05 (Osmo): strip so "Oishi Prawn " never lands in the DB —
+        # trailing spaces broke the Stock-In exact-name match.
+        item_name = str(req.get("item_name", "") or "").strip()
         if not item_name:
             return {"success": False, "error": "item_name is required"}
 
@@ -121,7 +123,10 @@ async def dashboard_update_inventory(item_id: int, req: dict, user: dict = Depen
         for field in ["item_name", "category", "quantity", "unit_price", "reorder_level"]:
             if field in req:
                 updates.append(f"{field} = %s")
-                params.append(req[field])
+                _v = req[field]
+                if field == "item_name":
+                    _v = str(_v or "").strip()
+                params.append(_v)
 
         if not updates:
             return {"success": False, "error": "No fields to update"}
@@ -923,3 +928,199 @@ async def delete_stock_voucher(voucher: str, force: int = Query(0),
     except Exception as e:
         logger.error(f"DELETE /stock/voucher/{voucher} error: {e}")
         raise HTTPException(status_code=500, detail={"success": False, "error": str(e), "code": 500})
+
+
+# ── Unit lookup for the Stock In screen (owner 2026-11-06) ─────────────
+@router.get("/stock/units")
+async def stock_units(user: dict = Depends(get_staff_or_dashboard_user)):
+    """Purchase-unit map for every ingredient — staff readable.
+
+    The Stock In screen needs to show "Buy unit: liter · 1 liter = 1000 ml"
+    BEFORE anything is saved, and /api/menu/* is admin-only, so staff got no
+    units at all. This is a thin read of the ingredients table.
+    """
+    try:
+        rows = _mysql_query(
+            "SELECT name, kind, base_unit, purchase_unit, base_per_purchase "
+            "FROM ingredients WHERE branch_id = 1 ORDER BY name"
+        ) or []
+        items = []
+        for r in rows:
+            items.append({
+                "name": r.get("name"),
+                "kind": (r.get("kind") or "").strip().lower(),
+                "base_unit": r.get("base_unit") or "",
+                "purchase_unit": r.get("purchase_unit") or "",
+                "base_per_purchase": float(r.get("base_per_purchase") or 0),
+            })
+        return {"success": True, "data": {"items": items}, "total": len(items)}
+    except Exception as e:
+        logger.error(f"GET /stock/units error: {e}")
+        return {"success": False, "error": str(e), "data": {"items": []}}
+
+
+
+# ── Physical count adjustment (owner 2026-11-06) ────────────────────────
+@router.post("/stock/physical-count")
+async def stock_physical_count(req: dict, user: dict = Depends(get_staff_or_dashboard_user)):
+    """Set an ingredient's on-hand to the physically counted quantity.
+
+    Adjusts ONLY the FIFO ledger (stock_layers): a shortage consumes the oldest
+    layers first, a surplus appends an adjustment layer at the last known cost.
+    Stock adjustments are admin-only.
+    """
+    role = str((user or {}).get("role") or "").strip().lower()
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Physical count is admin-only.")
+    name = str(req.get("item_name") or "").strip()
+    try:
+        actual = float(req.get("actual_qty"))
+    except Exception:
+        return {"success": False, "error": "actual_qty must be a number"}
+    if not name:
+        return {"success": False, "error": "item_name is required"}
+    try:
+        layers = _mysql_query(
+            "SELECT id, qty_remaining, unit_cost FROM stock_layers "
+            "WHERE branch_id = 1 AND item_name = %s AND qty_remaining > 0 "
+            "ORDER BY purchased_at ASC, id ASC",
+            (name,),
+        ) or []
+        before = sum(float(l.get("qty_remaining") or 0) for l in layers)
+        diff = round(actual - before, 4)
+        if abs(diff) < 0.0001:
+            return {"success": True, "data": {"item_name": name, "before": before, "after": actual, "diff": 0}}
+        if diff < 0:
+            need = abs(diff)
+            for l in layers:
+                if need <= 0:
+                    break
+                have = float(l.get("qty_remaining") or 0)
+                take = min(have, need)
+                _mysql_execute(
+                    "UPDATE stock_layers SET qty_remaining = qty_remaining - %s WHERE id = %s",
+                    (take, l["id"]),
+                )
+                need -= take
+        else:
+            last = _mysql_query_one(
+                "SELECT unit_cost FROM stock_layers WHERE branch_id = 1 AND item_name = %s "
+                "ORDER BY purchased_at DESC, id DESC LIMIT 1",
+                (name,),
+            ) or {}
+            _mysql_execute(
+                "INSERT INTO stock_layers (branch_id, item_name, qty_in, qty_remaining, unit_cost, purchased_at) "
+                "VALUES (1, %s, %s, %s, %s, NOW())",
+                (name, diff, diff, float(last.get("unit_cost") or 0)),
+            )
+        logger.info("physical count %s: before=%s actual=%s diff=%s by %s",
+                    name, before, actual, diff, (user or {}).get("username"))
+        return {"success": True, "data": {
+            "item_name": name, "before": before, "after": actual, "diff": diff,
+            "staff": (user or {}).get("username", ""),
+        }}
+    except Exception as e:
+        logger.error(f"POST /stock/physical-count error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+
+# ── Unified stock alerts (owner 2026-11-06) ────────────────────────────
+@router.get("/alerts/stock")
+async def stock_alerts(user: dict = Depends(get_staff_or_dashboard_user)):
+    """One alert feed for BOTH apps: inventory low/out + ingredients out.
+
+    The old /dashboard/inventory/alerts only looked at reorder_level, and only
+    3 of 69 items have one — so it was almost always empty. This also counts
+    zero-stock rows and ingredient FIFO layers so the badge means something.
+    """
+    try:
+        items = []
+        inv = _mysql_query(
+            "SELECT item_name, category, quantity, COALESCE(reorder_level,0) AS reorder_level, unit_price "
+            "FROM inventory WHERE branch_id = 1 "
+            "AND COALESCE(item_type, '') <> 'dish' "
+            "AND COALESCE(is_active, 1) = 1 "
+            "AND (quantity <= 0 OR (reorder_level > 0 AND quantity <= reorder_level)) "
+            "ORDER BY (quantity <= 0) DESC, item_name"
+        ) or []
+        for r in inv:
+            qty = float(r.get("quantity") or 0)
+            lvl = float(r.get("reorder_level") or 0)
+            items.append({
+                "kind": "inventory",
+                "name": r.get("item_name"),
+                "category": r.get("category") or "",
+                "qty": qty,
+                "unit": "pcs",
+                "reorder_level": lvl,
+                "status": "out" if qty <= 0 else "low",
+                "shortage": max(0.0, lvl - qty) if lvl > 0 else 0.0,
+            })
+        try:
+            # Ingredients: ONLY the ingredient master (kind=ingredient), canonicalised
+            # through ingredient_variants, never a product or a dish (owner 2026-11-06:
+            # "inactive item တွေပါပြနေတယ် / count မမှန်ဘူး").
+            master = _mysql_query(
+                "SELECT name FROM ingredients WHERE branch_id = 1 "
+                "AND COALESCE(kind, 'ingredient') = 'ingredient'"
+            ) or []
+            variants = {}
+            for v in (_mysql_query(
+                "SELECT canonical_name, variant_name FROM ingredient_variants WHERE branch_id = 1"
+            ) or []):
+                variants[(v.get("variant_name") or "").strip()] = (v.get("canonical_name") or "").strip()
+            layers = _mysql_query(
+                "SELECT item_name, SUM(qty_remaining) AS qty, SUM(qty_in) AS bought "
+                "FROM stock_layers WHERE branch_id = 1 GROUP BY item_name"
+            ) or []
+            agg = {}
+            for l in layers:
+                raw = (l.get("item_name") or "").strip()
+                canon = variants.get(raw, raw)
+                slot = agg.setdefault(canon, {"qty": 0.0, "bought": 0.0})
+                slot["qty"] += float(l.get("qty") or 0)
+                slot["bought"] += float(l.get("bought") or 0)
+            inv_names = {(r.get("item_name") or "").strip() for r in (_mysql_query(
+                "SELECT item_name FROM inventory WHERE branch_id = 1"
+            ) or [])}
+            seen_ing = set()
+            for m in master:
+                name = (m.get("name") or "").strip()
+                if not name or name in inv_names:
+                    continue                      # sellable product → not an ingredient alert
+                canon = variants.get(name, name)
+                if canon in seen_ing:
+                    continue
+                seen_ing.add(canon)
+                slot = agg.get(canon) or agg.get(name) or {"qty": 0.0, "bought": 0.0}
+                qty = slot["qty"]
+                bought = slot["bought"]
+                if qty <= 0:
+                    status = "out"
+                elif bought > 0 and qty <= bought * 0.25:
+                    status = "low"
+                else:
+                    continue
+                items.append({
+                    "kind": "ingredient", "name": name, "category": "Ingredients",
+                    "qty": round(qty, 2), "unit": "", "reorder_level": 0,
+                    "status": status, "shortage": 0.0, "purchased": round(bought, 2),
+                })
+        except Exception:
+            pass
+        products = [i for i in items if i.get("kind") == "inventory"]
+        ingredients = [i for i in items if i.get("kind") == "ingredient"]
+        return {"success": True, "data": {
+            "items": items,
+            "count": len(items),
+            "out": sum(1 for i in items if i["status"] == "out"),
+            "product_count": len(products),
+            "ingredient_count": len(ingredients),
+            "product_out": sum(1 for i in products if i["status"] == "out"),
+            "ingredient_out": sum(1 for i in ingredients if i["status"] == "out"),
+        }}
+    except Exception as e:
+        logger.error(f"GET /alerts/stock error: {e}")
+        return {"success": False, "error": str(e), "data": {"items": [], "count": 0, "out": 0}}
+

@@ -414,6 +414,18 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             _end = f"{year+1:04d}-01-01"
         else:
             _end = f"{year:04d}-{month+1:02d}-01"
+    # ── UTC boundaries for cash_movements (stored as UTC TIMESTAMP) ──
+    # sales_daily/opex/topup use MMT DATE columns → keep _start/_end (MMT) as-is.
+    # cash_movements.created_at is UTC, so shift the MMT date boundaries back 6:30.
+    _start_dt_mmt = datetime.strptime(_start, "%Y-%m-%d")
+    _end_dt_mmt = datetime.strptime(_end, "%Y-%m-%d")
+    _start_utc = (_start_dt_mmt - _mmt_offset).strftime("%Y-%m-%d %H:%M:%S")
+    _end_utc = (_end_dt_mmt - _mmt_offset).strftime("%Y-%m-%d %H:%M:%S")
+    # Today (MMT) window for per-account in/out figures (owner 2026-10-27)
+    _today_mmt_str = _now_mmt.strftime("%Y-%m-%d")
+    _tomorrow_mmt = _now_mmt + timedelta(days=1)
+    _today_utc_start = (_now_mmt.replace(hour=0, minute=0, second=0, microsecond=0) - _mmt_offset).strftime("%Y-%m-%d %H:%M:%S")
+    _tomorrow_utc_start = (_tomorrow_mmt.replace(hour=0, minute=0, second=0, microsecond=0) - _mmt_offset).strftime("%Y-%m-%d %H:%M:%S")
     try:
         from mysql_db import query as _mq, query_one as _mqo, execute as _me
         import re
@@ -531,7 +543,7 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                                 pass
                             break
 
-        cash_rows = _mq("SELECT movement_type, account, COALESCE(SUM(amount), 0) as total, COALESCE(SUM(ABS(amount)), 0) as abs_total FROM cash_movements WHERE created_at >= %s AND created_at < %s GROUP BY movement_type, account", (_start, _end))
+        cash_rows = _mq("SELECT movement_type, account, COALESCE(SUM(amount), 0) as total, COALESCE(SUM(ABS(amount)), 0) as abs_total FROM cash_movements WHERE created_at >= %s AND created_at < %s GROUP BY movement_type, account", (_start_utc, _end_utc))
         cash_map = {}
         cash_abs_map = {}
         for row in cash_rows:
@@ -540,19 +552,19 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
             cash_abs_map[key] = cash_abs_map.get(key, 0) + float(row["abs_total"] or 0)
         # Map account keys to DB account names for cash_movements lookup
         # Subtract inject entries that overlap with topup (notes start with Topup or New member)
-        _bad_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND category = 'topup' AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
+        _bad_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND category = 'topup' AND created_at >= %s AND created_at < %s GROUP BY account", (_start_utc, _end_utc))
         for _r in _bad_inject_rows:
             _k = "inject|" + _r["account"]
             if _k in cash_map:
                 cash_map[_k] -= float(_r["total"] or 0)
         # Subtract booking-related injects (Deposit # and BK#) since income already captures them
-        _bk_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Deposit #', CHAR(37)) OR note LIKE CONCAT('BK#', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
+        _bk_inject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'inject' AND (note IS NOT NULL AND (note LIKE CONCAT('Deposit #', CHAR(37)) OR note LIKE CONCAT('BK#', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start_utc, _end_utc))
         for _r in _bk_inject_rows:
             _k = "inject|" + _r["account"]
             if _k in cash_map:
                 cash_map[_k] -= float(_r["total"] or 0)
         # Also subtract booking-related ejects (deposit reversals) to keep paired entries net zero
-        _bk_eject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'eject' AND (note IS NOT NULL AND (note LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) OR note LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) OR note LIKE CONCAT('[Refund]', CHAR(37)) OR note LIKE CONCAT('Refund Deposit', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start, _end))
+        _bk_eject_rows = _mq("SELECT account, COALESCE(SUM(amount), 0) as total FROM cash_movements WHERE movement_type = 'eject' AND (note IS NOT NULL AND (note LIKE CONCAT(CHAR(37), 'deposit reverse', CHAR(37)) OR note LIKE CONCAT(CHAR(37), 'Test deposit', CHAR(37)) OR note LIKE CONCAT('[Refund]', CHAR(37)) OR note LIKE CONCAT('Refund Deposit', CHAR(37)))) AND created_at >= %s AND created_at < %s GROUP BY account", (_start_utc, _end_utc))
         for _r in _bk_eject_rows:
             _k = "eject|" + _r["account"]
             if _k in cash_map:
@@ -565,6 +577,61 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
         _advances_total = _mqo("SELECT COALESCE(SUM(amount), 0) as total FROM finance_advances WHERE status='pending' OR status IS NULL")
         _prepaid_total = _mqo("SELECT COALESCE(SUM(amount), 0) as total FROM finance_prepaid")
         _disposal_proceeds = _mqo("SELECT COALESCE(SUM(disposal_amount), 0) as total FROM finance_assets WHERE status = 'disposed' AND disposal_amount > 0")
+        # ── Today (MMT) per-account in/out figures (owner 2026-10-27) ──
+        # today_in  = sales_daily income (sale_date = MMT today) + transfer_in + non-deposit inject
+        # today_out = transfer_out + eject + dividend magnitudes (MMT today)
+        _today_income_rows = _mq("SELECT payment_method, net, notes, is_topup FROM sales_daily WHERE payment_method IS NOT NULL AND payment_method != '' AND sale_date = %s", (_today_mmt_str,))
+        _today_income_by_key = {acc["key"]: 0.0 for acc in accounts}
+        for _tr_ in _today_income_rows:
+            if int(_tr_.get("is_topup") or 0): continue
+            _pm = (_tr_.get("payment_method") or "").strip()
+            _net = float(_tr_.get("net") or 0)
+            if _net <= 0 or not _pm: continue
+            _parts = _pm.split("|")
+            for _part in _parts:
+                _part = _part.strip()
+                if ":" in _part:
+                    _method, _, _val = _part.partition(":")
+                    _method = _method.strip().lower().replace(" ", "_")
+                    try:
+                        _val = float(_pm_clean(_val))
+                    except ValueError:
+                        _val = _net / len(_parts) if _parts else 0
+                else:
+                    _method = _part.lower().replace(" ", "_")
+                    _val = _net / len(_parts) if _parts else 0
+                if _method == "wavepay": _method = "wave"
+                if _method == "mmqr_-_cb": _method = "mmqr_cb"
+                if _method in _today_income_by_key:
+                    _today_income_by_key[_method] += _val
+        _today_cash_rows = _mq("""
+            SELECT movement_type, account, COALESCE(SUM(amount),0) AS total, COALESCE(SUM(ABS(amount)),0) AS abs_total
+            FROM cash_movements WHERE created_at >= %s AND created_at < %s
+            GROUP BY movement_type, account
+        """, (_today_utc_start, _tomorrow_utc_start))
+        _today_in_by_acct = {}   # transfer_in + inject (raw) keyed by DB account name
+        _today_out_by_acct = {}  # transfer_out + eject + dividend magnitudes keyed by DB account name
+        for _tr_ in _today_cash_rows:
+            _mt = _tr_["movement_type"]; _acct = _tr_["account"]
+            if _mt in ("transfer_in", "inject"):
+                _today_in_by_acct[_acct] = _today_in_by_acct.get(_acct, 0.0) + float(_tr_["total"] or 0)
+            elif _mt in ("transfer_out", "eject", "dividend"):
+                _today_out_by_acct[_acct] = _today_out_by_acct.get(_acct, 0.0) + float(_tr_["abs_total"] or 0)
+        # Exclude deposit/booking injects from today_in — that money is either already
+        # captured as a sale or held as an active deposit (added back to balance separately).
+        _today_dep_inject_rows = _mq("""
+            SELECT account, COALESCE(SUM(amount),0) AS total FROM cash_movements
+            WHERE movement_type='inject'
+              AND (category IN ('deposit','deposit_forfeit','topup')
+                   OR note LIKE CONCAT('Deposit #', CHAR(37))
+                   OR note LIKE CONCAT('Forfeit BK#', CHAR(37))
+                   OR note LIKE CONCAT('BK#', CHAR(37)))
+              AND created_at >= %s AND created_at < %s
+            GROUP BY account
+        """, (_today_utc_start, _tomorrow_utc_start))
+        for _r_ in _today_dep_inject_rows:
+            _acct = _r_["account"]
+            _today_in_by_acct[_acct] = _today_in_by_acct.get(_acct, 0.0) - float(_r_["total"] or 0)
         result = []
         for acc in accounts:
             key = acc["key"]
@@ -604,7 +671,11 @@ async def get_finance_balances(year: int = Query(None), month: int = Query(None)
                 ded_prepaid = float(_prepaid_total.get("total", 0) or 0)
                 add_proceeds = float(_disposal_proceeds.get("total", 0) or 0)
                 balance = balance - ded_assets - ded_advances - ded_prepaid + add_proceeds
-            result.append({"key": key, "label": acc["label"], "icon": acc["icon"], "type": acc["type"], "active": acc["active"], "income": round(income, 0), "opex": round(opex, 0), "transfers_in": round(trans_in, 0), "transfers_out": round(trans_out, 0), "injections": round(inject, 0), "ejections": round(eject, 0), "dividends": round(div, 0), "stock_in_payments": round(si_pay, 0), "capital_asset_purchases": round(ded_assets, 0), "capital_advances": round(ded_advances, 0), "capital_prepaid": round(ded_prepaid, 0), "capital_disposal_proceeds": round(add_proceeds, 0), "balance": round(balance, 0)})
+            # Today (MMT) in/out figures
+            today_in = _today_income_by_key.get(key, 0) + sum(_today_in_by_acct.get(n, 0) for n in _db_list)
+            today_out = sum(_today_out_by_acct.get(n, 0) for n in _db_list)
+            today_net = today_in - today_out
+            result.append({"key": key, "label": acc["label"], "icon": acc["icon"], "type": acc["type"], "active": acc["active"], "income": round(income, 0), "opex": round(opex, 0), "transfers_in": round(trans_in, 0), "transfers_out": round(trans_out, 0), "injections": round(inject, 0), "ejections": round(eject, 0), "dividends": round(div, 0), "stock_in_payments": round(si_pay, 0), "capital_asset_purchases": round(ded_assets, 0), "capital_advances": round(ded_advances, 0), "capital_prepaid": round(ded_prepaid, 0), "capital_disposal_proceeds": round(add_proceeds, 0), "balance": round(balance, 0), "today_in": round(today_in, 0), "today_out": round(today_out, 0), "today_net": round(today_net, 0), "today_date": _today_mmt_str})
 
         # 🆕 Add back active deposits (paid/verified, not yet redeemed/forfeited)
         # Anti-double-count subtracts ALL "Deposit #" injects, but active deposits
@@ -2089,6 +2160,18 @@ def _stock_ingredient_rows():
             fifo[c] = fifo.get(c, 0.0) + float(r.get("q") or 0)
     except Exception:
         fifo = {}
+    # 2026-10-29 (Osmo: Recipe & Cost showed eggs 134 while the counted stock was
+    # 12): display the maintained inventory.quantity, not the stale layer sum.
+    # stock_layers are only decremented by recipe consumption, so SUM(qty_remaining)
+    # drifts above the real on-hand; inventory.quantity is the counted figure.
+    inv_qty_map = {}
+    try:
+        for r in (_mysql_query(
+                "SELECT item_name, quantity FROM inventory WHERE branch_id = 1") or []):
+            c = _stock_canon(r.get("item_name"), cmap)
+            inv_qty_map[c] = float(r.get("quantity") or 0)
+    except Exception:
+        inv_qty_map = {}
     out = []
     for r in rows:
         nm = str(r.get("name") or "").strip()
@@ -2099,7 +2182,7 @@ def _stock_ingredient_rows():
             "name": nm,
             "canonical": c,
             "unit": str(r.get("base_unit") or "").strip(),
-            "fifo_qty": _stock_num(fifo.get(c, 0.0)),
+            "fifo_qty": _stock_num(inv_qty_map.get(c, fifo.get(c, 0.0))),
         })
     return out
 

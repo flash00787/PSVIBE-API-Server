@@ -41,6 +41,7 @@ def find_missing(conn):
             SELECT 1 FROM stock_out so
             WHERE so.item_name = fc.item_name
               AND so.quantity = fc.quantity
+              AND COALESCE(so.staff_name,'') <> 'recipe'
               AND so.sale_date >= DATE_SUB(fc.created_at, INTERVAL 1 HOUR)
               AND so.sale_date <= DATE_ADD(fc.created_at, INTERVAL 1 HOUR)
         )

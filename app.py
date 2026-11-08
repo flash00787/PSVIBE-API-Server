@@ -221,6 +221,11 @@ _trusted_origins = [
     "http://127.0.0.1:8888",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
+    # Native shells that load the web app from the app bundle (Capacitor):
+    # iOS = capacitor://localhost, Android = https://localhost
+    "capacitor://localhost",
+    "ionic://localhost",
+    "https://localhost",
 ]
 # Allow additional origins from env (comma-separated)
 _extra_origins = os.environ.get("CORS_EXTRA_ORIGINS", "")
@@ -734,6 +739,10 @@ try:
                     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                     resp.headers["Pragma"] = "no-cache"
                     resp.headers["Expires"] = "0"
+                # Static manifests/APKs are fetched by the native wallet app from the
+                # https://localhost Capacitor origin — without CORS the update check
+                # dies with "Failed to fetch" (owner 2026-10-26).
+                resp.headers["Access-Control-Allow-Origin"] = "*"
                 return resp
 
         app.mount("/psvibe-assets", _NoCacheStaticFiles(directory=os.path.join(dashboard_dir, "assets")), name="dashboard_assets")
@@ -867,6 +876,25 @@ try:
                 headers=resp_headers
             )
 
+        # === ACM Personal Wallet App API Proxy (mobile shell reaches ps-vibe.com) ===
+        @app.api_route("/wallet-app/{path:path}", methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS"])
+        async def proxy_wallet_app(request: Request, path: str):
+            import httpx
+            from starlette.responses import Response as _WalletResp
+            target = f"http://127.0.0.1:8095/{path}"
+            qs = str(request.url.query)
+            if qs:
+                target += f"?{qs}"
+            body = await request.body() if request.method in ("POST", "PUT", "PATCH", "DELETE") else None
+            headers = {k: v for k, v in request.headers.items()
+                       if k.lower() not in ("host", "content-length", "connection", "transfer-encoding", "accept-encoding")}
+            async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+                resp = await client.request(method=request.method, url=target, headers=headers, content=body or None)
+            resp_headers = {k: v for k, v in resp.headers.items()
+                            if k.lower() not in ("transfer-encoding", "content-encoding", "content-length", "set-cookie")}
+            resp_headers["Cache-Control"] = "no-store, max-age=0"
+            return _WalletResp(content=resp.content, status_code=resp.status_code, headers=resp_headers)
+
         # ═══ Uploads Static File Serving ═══
         # Serve uploaded files (tournament payment screenshots, etc.)
         # Must be registered BEFORE the SPA catch-all
@@ -954,6 +982,15 @@ try:
                     content={"success": False, "error": "Not Found", "code": 404},
                     status_code=404
                 )
+            # Mounted sub-apps need an explicit trailing-slash redirect:
+            # WITHOUT this "/webapp" fell through to the dashboard SPA and
+            # staff opened the admin dashboard instead of the staff app
+            # (owner 2026-10-30). Keep BEFORE the dashboard index fallback.
+            _mounted = ("webapp", "staff-app", "currency-exchange")
+            if full_path in _mounted:
+                from starlette.responses import RedirectResponse
+                return RedirectResponse(url="/" + full_path + "/", status_code=307)
+
             idx = os.path.join(dashboard_dir, "index.html")
             if os.path.isfile(idx):
                 resp = FileResponse(idx, media_type="text/html")

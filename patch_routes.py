@@ -1396,3 +1396,35 @@ async def api_promotions_log_post_v2(req: dict, auth=Depends(verify_api_key)):
         return ok({"saved": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── App error telemetry (2026-10-30) ─────────────────────────────────────────
+@app.post("/api/app-error")
+async def api_app_error(req: dict):
+    """Collect client-side errors from the staff app / webapp."""
+    try:
+        _mysql_exec(
+            "CREATE TABLE IF NOT EXISTS app_errors ("
+            " id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+            " created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            " app VARCHAR(40) DEFAULT '', version VARCHAR(30) DEFAULT '',"
+            " screen VARCHAR(120) DEFAULT '', kind VARCHAR(30) DEFAULT '',"
+            " message VARCHAR(500) DEFAULT '', stack TEXT,"
+            " ua VARCHAR(255) DEFAULT '',"
+            " KEY idx_created (created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )
+    except Exception:
+        pass
+    d = req or {}
+    try:
+        _mysql_exec(
+            "INSERT INTO app_errors (app, version, screen, kind, message, stack, ua) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (str(d.get("app") or "")[:40], str(d.get("version") or "")[:30],
+             str(d.get("screen") or "")[:120], str(d.get("kind") or "")[:30],
+             str(d.get("message") or "")[:500], str(d.get("stack") or "")[:8000],
+             str(d.get("ua") or "")[:255]),
+        )
+    except Exception as e:
+        logger.warning("app-error insert failed: %s", e)
+    return ok({"logged": True})

@@ -77,6 +77,17 @@ async def register_device(body: dict = Body(...), user: dict = Depends(get_staff
     """Upsert a staff device by fcm_token (Bearer JWT required — staff or dashboard user)."""
     _ensure_table()
     fcm_token = str(body.get("fcm_token") or "").strip()
+    # 2026-10-25 diagnostics: iOS push registration debugging — log every attempt
+    # (platform + token length + user) so an empty token is visible in the log.
+    try:
+        logger.info(
+            "POST /staff/devices: user=%s platform=%s app_version=%s token_len=%d keys=%s",
+            (user.get("username") if isinstance(user, dict) else "?"),
+            body.get("platform"), body.get("app_version"), len(fcm_token),
+            sorted(body.keys()),
+        )
+    except Exception:
+        pass
     if not fcm_token:
         return {"success": False, "error": "fcm_token is required"}
     platform = (str(body.get("platform") or "").strip() or None)

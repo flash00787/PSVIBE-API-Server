@@ -347,15 +347,44 @@ def register_auth_routes(app):
         return {"success": True}
 
     @app.post("/api/profile/photo")
-    async def api_profile_photo(request: Request, file: UploadFile = File(...), token: str = ""):
+    async def api_profile_photo(request: Request,
+                                file: Optional[UploadFile] = File(None),
+                                token: str = ""):
+        """Accept BOTH multipart (webapp) and JSON {"image_base64": ...} (iOS app).
+
+        The iOS app posts base64 JSON, but File(...) forced multipart and FastAPI
+        answered 422 before the handler ran (owner 2026-11-06 "profile picture
+        တင်မရဘူး"). Now either shape works.
+        """
+        import base64 as _b64
+        import binascii as _binascii
         auth_header = request.headers.get("authorization", "")
         user = _user_from_any(auth_header, token)
         from mysql_db import execute as _me
         import os as _os
-        ext = _os.path.splitext(file.filename or "")[1].lower()
-        if ext not in (".png", ".jpg", ".jpeg", ".webp"):
-            raise HTTPException(status_code=400, detail="Only PNG/JPG/WEBP images are allowed")
-        data = await file.read()
+
+        if file is not None:
+            ext = _os.path.splitext(file.filename or "")[1].lower()
+            if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+                raise HTTPException(status_code=400, detail="Only PNG/JPG/WEBP images are allowed")
+            data = await file.read()
+        else:
+            try:
+                body = await request.json()
+            except Exception:
+                raise HTTPException(status_code=400, detail="Send multipart file or JSON image_base64")
+            raw = (body or {}).get("image_base64") or ""
+            if not raw:
+                raise HTTPException(status_code=400, detail="image_base64 is required")
+            if "," in raw[:64] and "base64" in raw[:64]:
+                raw = raw.split(",", 1)[1]
+            try:
+                data = _b64.b64decode(raw, validate=False)
+            except (_binascii.Error, ValueError):
+                raise HTTPException(status_code=400, detail="image_base64 is not valid base64")
+            # PNG magic → keep .png, otherwise assume JPEG.
+            ext = ".png" if data[:8] == b"\x89PNG\r\n\x1a\n" else ".jpg"
+
         if not data or len(data) > 2 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="Image must be smaller than 2 MB")
         d = _os.path.join(_os.path.dirname(__file__), "uploads", "avatars")

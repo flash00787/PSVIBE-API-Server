@@ -704,6 +704,23 @@ def commit_deposit_redemption(
         amount = int(dep["amount"])
         method = dep.get("method") or "kpay"
 
+        # 🩹 2026-10-27 (BK#4447): explicit idempotency guard — if a redemption row
+        # already exists for this booking (ANY sale_ref), never redeem a second time.
+        # (The atomic status transition below is the single-winner, but a stale
+        # 'verified' status + an existing audit row must still short-circuit.)
+        try:
+            _existing = _mysql_query_one(
+                "SELECT id FROM deposit_redemptions WHERE booking_id=%s LIMIT 1",
+                (booking_id,),
+            )
+        except Exception:
+            _existing = None
+        if _existing:
+            out["already"] = True
+            out["amount"] = amount
+            out["reason"] = "already-redeemed (existing redemption row)"
+            return out
+
         # Atomic single-winner transition (guarded on the verified status).
         affected = 0
         try:
