@@ -23,6 +23,54 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=['Admin'])
 
 
+def _pm_paid_total(pm) -> float:
+    """Sum the amounts inside a payment-method string ("Cash:10000|KPay:5000")."""
+    if not pm:
+        return 0.0
+    import re
+    total = 0.0
+    for part in re.split(r"[|/]", str(pm)):
+        part = part.strip()
+        if ":" in part:
+            _, _, val = part.partition(":")
+            try:
+                total += float(val.strip() or 0)
+            except ValueError:
+                pass
+    return total
+
+
+def _record_sale_due(voucher_no, sale_ref, console_id, staff, net_total, paid, reason):
+    """2026-10-30 (Osmo option 2): keep the shortfall as a Payment Due receivable."""
+    try:
+        due = round(float(net_total) - float(paid), 2)
+        if due <= 0.5:
+            return
+        _mysql_exec(
+            "CREATE TABLE IF NOT EXISTS sale_dues ("
+            " id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+            " created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            " voucher_no VARCHAR(64) DEFAULT '', client_ref VARCHAR(80) DEFAULT '',"
+            " console_id VARCHAR(32) DEFAULT '', staff_name VARCHAR(64) DEFAULT '',"
+            " net_total DECIMAL(14,2) DEFAULT 0, paid_total DECIMAL(14,2) DEFAULT 0,"
+            " due_amount DECIMAL(14,2) DEFAULT 0, reason VARCHAR(255) DEFAULT '',"
+            " status VARCHAR(16) NOT NULL DEFAULT 'open',"
+            " KEY idx_status (status), KEY idx_created (created_at)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )
+        _mysql_exec(
+            "INSERT INTO sale_dues (voucher_no, client_ref, console_id, staff_name,"
+            " net_total, paid_total, due_amount, reason) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (str(voucher_no or "")[:64], str(sale_ref or "")[:80], str(console_id or "")[:32],
+             str(staff or "")[:64], float(net_total or 0), float(paid or 0), due,
+             str(reason or "unspecified")[:255]),
+        )
+        logger.warning("sale due recorded: %s short %.0f Ks (paid %.0f / net %.0f)",
+                       voucher_no, due, paid, float(net_total or 0))
+    except Exception as e:
+        logger.warning("sale due record failed (%s): %s", voucher_no, e)
+
+
 def _normalize_pm_to_net(pm, net_total):
     """Owner Osmo 2026-10-14 (option B): when the SERVER redeems a booking deposit the
     client's payment split still holds the PRE-deposit bill, so the recorded payment
@@ -347,13 +395,22 @@ async def api_sales_list_today(auth=Depends(verify_api_key)):
     """Return today's sales records + total net for the Mini App."""
     try:
         import datetime as _dt
-        _mmt_today = (_dt.datetime.now(_dt.timezone(_dt.timedelta(hours=6, minutes=30)))).strftime("%Y-%m-%d")
+        _MMT = _dt.timezone(_dt.timedelta(hours=6, minutes=30))
+        _mmt_today = (_dt.datetime.now(_MMT)).strftime("%Y-%m-%d")
         _mmt_today_start = _mmt_today + " 00:00:00"
+        # 🐛 2026-10-25 Osmo: "Deposit/refund က UTC နဲ့ ဖြစ်နေတယ". MySQL runs in UTC, so
+        # cash_movements.created_at is UTC while everything else (sales_daily,
+        # console_sessions) is MMT. Build the UTC bounds that correspond to the
+        # MMT day so the Today filter and the displayed time are both correct.
+        _utc_today_start = (_dt.datetime.strptime(_mmt_today + " 00:00:00", "%Y-%m-%d %H:%M:%S")
+                            - _dt.timedelta(minutes=390)).strftime("%Y-%m-%d %H:%M:%S")
+        _utc_tomorrow_start = (_dt.datetime.strptime(_mmt_today + " 00:00:00", "%Y-%m-%d %H:%M:%S")
+                               + _dt.timedelta(days=1, minutes=-390)).strftime("%Y-%m-%d %H:%M:%S")
         rows = _mysql_query(
             "SELECT sd.id, sd.voucher_no, sd.sale_date, DATE_FORMAT(COALESCE(sd.created_at, sd.sale_date), '%%H:%%i') AS sale_time, "
             "sd.console_id, sd.member_id, "
             "COALESCE(NULLIF(w.member_name, ''), sd.customer_name) AS customer_name, "
-            "sd.gross, sd.amount, sd.discount, sd.net, sd.staff_name, sd.payment_method, sd.notes, sd.billable_mins, sd.free_mins "
+            "sd.gross, sd.amount, sd.discount, sd.net, sd.staff_name, sd.payment_method, sd.notes, sd.billable_mins, sd.free_mins, sd.is_topup "
             "FROM sales_daily sd "
             "LEFT JOIN member_wallets w ON w.member_id = sd.member_id AND sd.member_id NOT IN ('', '0', '0 (Guest)', '-', 'Guest') "
             "WHERE sd.sale_date >= %s ORDER BY sd.sale_date DESC, sd.id DESC LIMIT 200", (_mmt_today_start,))
@@ -391,8 +448,56 @@ async def api_sales_list_today(auth=Depends(verify_api_key)):
         except Exception as _we:
             logger.warning("wallet_net calc failed: %s", _we)
             wallet_net = 0.0
+        # 💰 Deposit / refund / forfeit legs (owner Osmo 2026-10-24: "Deposit/refund
+        # တွေက trx ပျောက်နေတယ် အဲ့တာတွေပါ today sale ထဲ ပြပေးပါ"). These live in
+        # cash_movements (category 'deposit' | 'deposit_refund' | 'deposit_forfeit'),
+        # NOT in sales_daily — so the Staff App Today list never showed them.
+        # They are appended as read-only rows (tx_kind set) sorted by time.
+        deposit_net = 0.0
+        refund_net = 0.0
+        try:
+            _moves = _mysql_query(
+                "SELECT id, movement_type, account, amount, note, staff_name, created_at, category "
+                "FROM cash_movements WHERE created_at >= %s AND created_at < %s "
+                "AND category IN ('deposit','deposit_refund') "
+                # Owner Osmo 2026-10-24 22:21: forfeit + rebook rows are noise here
+                # ("Forfeit နဲ့ rebook တော့ ဖြုတ်ပေးပါ") — a forfeited booking that is
+                # later reactivated writes BOTH a forfeit and a 'Refund forfeit …
+                # (reactivated)' row, so the pair only confuses the Today list.
+                "AND note NOT LIKE '%%forfeit%%' AND note NOT LIKE '%%reactivat%%' "
+                "AND note NOT LIKE '%%rebook%%' "
+                "ORDER BY created_at DESC, id DESC LIMIT 200",
+                (_utc_today_start, _utc_tomorrow_start))
+            for _mv in _moves:
+                _cat = str(_mv.get("category") or "")
+                _amt = float(_mv.get("amount") or 0)
+                _kind = {"deposit": "deposit", "deposit_refund": "refund",
+                         "deposit_forfeit": "forfeit"}.get(_cat, "deposit")
+                # cash_movements stores ejects as negative already; keep the sign.
+                _net = abs(_amt) if _kind == "deposit" else -abs(_amt)
+                if _kind == "deposit":
+                    deposit_net += abs(_amt)
+                else:
+                    refund_net += abs(_amt)
+                _ct_raw = _mv.get("created_at")
+                # created_at is UTC → shift to MMT for display
+                _ct = (_ct_raw + _dt.timedelta(minutes=390)) if hasattr(_ct_raw, "strftime") else _ct_raw
+                rows.append({
+                    "id": "cm-%s" % _mv.get("id"),
+                    "voucher_no": (str(_mv.get("note") or "").split(" via ")[0].strip() or ("Deposit" if _kind == "deposit" else _kind.title())),
+                    "sale_date": _ct.strftime("%Y-%m-%d") if hasattr(_ct, "strftime") else _mmt_today,
+                    "sale_time": _ct.strftime("%H:%M") if hasattr(_ct, "strftime") else "",
+                    "console_id": "", "member_id": "-", "customer_name": "",
+                    "gross": _net, "amount": _net, "discount": 0, "net": _net,
+                    "staff_name": _mv.get("staff_name") or "",
+                    "payment_method": _mv.get("account") or "",
+                    "notes": _mv.get("note") or "", "billable_mins": 0, "free_mins": 0,
+                    "tx_kind": _kind,
+                })
+        except Exception as _de:
+            logger.warning("deposit/refund rows failed: %s", _de)
         return ok({"records": rows, "total_net": total_net, "topup_net": topup_net,
-                   "wallet_net": wallet_net,
+                   "wallet_net": wallet_net, "deposit_net": deposit_net, "refund_net": refund_net,
                    "total_collected": total_net + topup_net + wallet_net, "count": len(rows), "date": _mmt_today})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -691,6 +796,15 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
         member_id = req.get("member_id", "")
         console_id = req.get("console_id", "")
         mins = req.get("mins", 0)
+        # ⏱️ 2026-11-05 (Osmo): the staff app sends the ±10 "Adjust" from the
+        # session-end voucher. Keep the explicit delta so the wallet clamp and the
+        # 2+1 re-pricing honour the staff correction instead of silently reverting
+        # to the raw session minutes (voucher used to print the ORIGINAL mins).
+        try:
+            mins_adjust = int(float(req.get("mins_adjust") or 0))
+        except (TypeError, ValueError):
+            mins_adjust = 0
+        mins_adjust = max(-10, min(10, mins_adjust))
         base_rate = float(req.get("base_rate", 0))
         multiplier = float(req.get("multiplier", 1.0))
         game_amt = float(req.get("game_amt", 0))
@@ -782,6 +896,9 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                         _T = int(float(mins or 0) or 0)
                     if _T <= 0:
                         _T = int(_sess_row.get("actual_duration_mins") or 0)
+                    # Explicit staff adjust (±10) wins over the session-derived value.
+                    if mins_adjust and _T > 0:
+                        _T = max(0, _T + mins_adjust)
                     _d2p = _compute_d2p(_sess_row.get("actual_start"), _T, _promo_row)
                     if _d2p:
                         _B = _d2p["billable_mins"]
@@ -900,6 +1017,38 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                 except Exception as _ple:
                     logger.warning("promotions_log insert failed: %s", _ple)
 
+        # ── 🎮 Extra controller rental (owner Osmo 2026-10-25) ─────────────────
+        # A console includes N controllers (setting included_controllers, default 2).
+        # Every controller BEYOND that is chargeable at extra_controller_rate
+        # (default 3,000 Ks/hour), prorated PER MINUTE, CASH ONLY (never wallet).
+        # Accepts extra_ctrls (TOTAL controllers incl. the free ones) or
+        # extra_ctrl_qty (already-net extra count).
+        extra_ctrl_qty = 0
+        extra_ctrl_mins = 0
+        extra_ctrl_amount = 0.0
+        _ctrl_rate = 3000.0
+        try:
+            _incl = int(float(_mysql_get_setting("included_controllers", 2) or 2))
+            _ctrl_rate = float(_mysql_get_setting("extra_controller_rate", 3000) or 3000)
+            _tot_in = req.get("extra_ctrls")
+            _qty_in = req.get("extra_ctrl_qty")
+            if _tot_in not in (None, "", 0, "0", "0.0"):
+                extra_ctrl_qty = max(0, int(float(_tot_in)) - _incl)
+            elif _qty_in not in (None, "", 0, "0", "0.0"):
+                extra_ctrl_qty = max(0, int(float(_qty_in)))
+            _mins_in = req.get("extra_ctrl_mins")
+            if _mins_in not in (None, "", 0, "0", "0.0"):
+                extra_ctrl_mins = max(0, int(float(_mins_in)))
+            elif mins:
+                extra_ctrl_mins = max(0, int(float(mins)))
+            if extra_ctrl_qty > 0 and extra_ctrl_mins > 0:
+                extra_ctrl_amount = round(extra_ctrl_qty * (extra_ctrl_mins / 60.0) * _ctrl_rate)
+                net_total += extra_ctrl_amount
+                logger.info("extra controllers: qty=%s mins=%s rate=%s -> %s Ks (voucher %s)",
+                            extra_ctrl_qty, extra_ctrl_mins, _ctrl_rate, extra_ctrl_amount, voucher_no)
+        except Exception as _ec:
+            logger.warning("extra controller calc failed (voucher %s): %s", voucher_no, _ec)
+
         # ── Deposit redemption (server-side, exactly once) ───────────────────────
         deposit_deducted = 0
         deposit_info = None
@@ -977,12 +1126,26 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
             extra_notes.append(f"Coupon: {coupon_code}")
         if deposit_deducted:
             extra_notes.append(f"DepositRedeemed: {deposit_deducted}")
+        # Owner 2026-11-08: a settled sale must release the food holds for that
+        # booking, otherwise held rows pile up forever (2 were already stale).
+        try:
+            if booking_id:
+                _mysql_exec(
+                    "UPDATE stock_hold SET status='released', updated_at=NOW() "
+                    "WHERE booking_id=%s AND status='held'", (booking_id,))
+        except Exception as _she:
+            logger.warning("stock hold release on sale failed (bk %s): %s", booking_id, _she)
         if sale_ref:
-            extra_notes.append(f"SaleRef: {sale_ref}")
+            # note the human voucher number; client_ref keeps its "sale:" prefix for
+            # idempotency but the printed/sales note must not read "sale:V-WEB-..."
+            extra_notes.append(f"SaleRef: {voucher_no or str(sale_ref).replace('sale:', '')}")
         if mins:
             extra_notes.append(f"Mins: {mins}")
         if base_rate:
             extra_notes.append(f"BaseRate: {base_rate}")
+        if extra_ctrl_qty > 0:
+            extra_notes.append(
+                f"ExtraCtrl: {extra_ctrl_qty} x {extra_ctrl_mins}min @{int(_ctrl_rate)} = {int(extra_ctrl_amount)}")
         if multiplier and multiplier != 1.0:
             extra_notes.append(f"Multiplier: {multiplier}")
         # ── Session food detail (2026-09-20) ──────────────────────────────────
@@ -1046,6 +1209,32 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                 "SELECT member_id, member_name, COALESCE(balance_mins, 0) AS balance_mins FROM member_wallets WHERE member_id=%s",
                 (_member_id_clean,))
         _is_member_sale = bool(_member_wallet_row)
+        # ⏱️ Clamp to the session's ACTUAL minutes (owner 2026-10-25). The app used to
+        # send the PLANNED block (60) for a 26-minute session, so the member was
+        # charged 60 mins. Never let the wallet be debited more than was played.
+        if _wallet_deduct > 0 and _is_member_sale:
+            try:
+                _w_sid = req.get("session_id")
+                _w_row = None
+                if _w_sid not in (None, "", "0", 0):
+                    _w_row = _mysql_query_one(
+                        "SELECT TIMESTAMPDIFF(MINUTE, actual_start, COALESCE(actual_end, (NOW() + INTERVAL 390 MINUTE))) AS m "
+                        "FROM console_sessions WHERE id=%s", (int(_w_sid),))
+                elif booking_id not in (None, "", 0, "0"):
+                    _w_row = _mysql_query_one(
+                        "SELECT TIMESTAMPDIFF(MINUTE, actual_start, COALESCE(actual_end, (NOW() + INTERVAL 390 MINUTE))) AS m "
+                        "FROM console_sessions WHERE booking_id=%s ORDER BY id DESC LIMIT 1", (booking_id,))
+                if _w_row and _w_row.get("m") is not None:
+                    _w_actual = max(0, int(_w_row["m"]))
+                    # Allow the staff's explicit positive adjust (≤ +10) on top of the
+                    # actual play time; anything larger is still a mis-send and clamped.
+                    _w_cap = int(round((_w_actual + max(0, mins_adjust)) * (float(req.get("multiplier") or 1) or 1)))
+                    if _w_actual > 0 and _wallet_deduct > _w_cap + 2:
+                        logger.warning("wallet deduct clamped to ACTUAL minutes: %s -> %s (session %s, voucher %s)",
+                                       _wallet_deduct, _w_cap, _w_sid, voucher_no)
+                        _wallet_deduct = _w_cap
+            except Exception as _wce:
+                logger.warning("wallet actual-min clamp skipped: %s", _wce)
         if _wallet_deduct > 0 and _is_member_sale:
             try:
                 _wallet_before = int(float(_member_wallet_row.get("balance_mins") or 0))
@@ -1063,7 +1252,7 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
             combined_notes = (notes + " | " if notes else "") + " | ".join(extra_notes)
 
         sale_date = created_at if created_at else datetime.now(timezone(timedelta(hours=6, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
-        gross = game_amt + food_total
+        gross = game_amt + food_total + extra_ctrl_amount
 
         # Resolve customer_name from member_wallets ONLY for a real member (staff name
         # must NOT leak here). Walk-in/unknown member_ids preserve the supplied guest
@@ -1094,6 +1283,79 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
                                 booking_id, _session_id, voucher_no)
             except Exception as _bse:
                 logger.warning("session link backfill failed booking=%s: %s", booking_id, _bse)
+
+        # ── 🎮 Session fallback (2026-10-25, owner: "Save sale လုပ်လိုက်တာ မပေါ်လာဘူး") ──
+        # A sale saved from the app sometimes arrives WITHOUT session_id (console-picked
+        # voucher / older bundle). The controller-rental ledger is then never settled, so
+        # net_total stays 0 and the tender guard blocks a legitimate controller payment:
+        #   "OVER-PAYMENT BLOCKED ... tendered=1750.0 net=0.0"
+        # Resolve the console's most recent session (still active, or ended within the
+        # last 2h in MMT — NOW()+390min because session timestamps are stored in MMT)
+        # that has no sales_daily row yet, and use it for the ledger + voucher link.
+        if not _session_id and console_id:
+            try:
+                _cand = _mysql_query_one(
+                    "SELECT cs.id FROM console_sessions cs "
+                    "WHERE cs.console_id=%s "
+                    "  AND (cs.status='active' OR cs.actual_end >= (NOW() + INTERVAL 390 MINUTE) - INTERVAL 120 MINUTE) "
+                    "  AND NOT EXISTS (SELECT 1 FROM sales_daily sd WHERE sd.session_id=cs.id) "
+                    "ORDER BY cs.id DESC LIMIT 1", (console_id,))
+                if _cand:
+                    _session_id = _cand.get("id")
+                    logger.info("sale session fallback: console=%s session=%s voucher=%s",
+                                console_id, _session_id, voucher_no)
+            except Exception as _cfe:
+                logger.warning("sale session fallback failed console=%s: %s", console_id, _cfe)
+
+        # ── 🎮 Controller-rental ledger (owner Osmo 2026-10-25) ────────────────
+        # When the session has rental EVENTS (rented mid-session, maybe returned
+        # early), the ledger is authoritative — each event carries its own
+        # start/return time and is prorated per minute. Settle whatever is still
+        # open at checkout and use the ledger totals instead of the manual stepper.
+        if _session_id:
+            try:
+                # 🐞 2026-10-25: the ledger import used the TOP-LEVEL name and blew up
+                # ("No module named 'console_routes'") on every sale → rentals never
+                # settled → net_total stayed 0 → OVER-PAYMENT BLOCKED. Routers live in
+                # the `routes` package, so import that first with a flat fallback.
+                try:
+                    from routes.console_routes import _ctrl_settle_open as _settle_ctrl
+                except ImportError:
+                    from console_routes import _ctrl_settle_open as _settle_ctrl
+                # ⏱️ Settle at the session's END time when the session is already done —
+                # settling at "now" kept the rental timer running while staff filled the
+                # voucher, inflating the controller charge past what the screen showed
+                # (C-01/4866: 21:38:36 end gave exactly 1,750 Ks; settling 10 min late
+                # gave 2,450 Ks -> the tender 1,750 would be rejected as under-payment).
+                _when = None
+                try:
+                    try:
+                        from routes.console_routes import now_mmt as _now_mmt, _ctrl_aware as _aware
+                    except ImportError:
+                        from console_routes import now_mmt as _now_mmt, _ctrl_aware as _aware
+                    _srow = _mysql_query_one(
+                        "SELECT status, actual_end FROM console_sessions WHERE id=%s", (_session_id,))
+                    if _srow and str(_srow.get("status") or "") != "active" and _srow.get("actual_end"):
+                        _when = _aware(_srow["actual_end"], _now_mmt())
+                except Exception:
+                    _when = None
+                _settle_ctrl(_session_id, _when)
+                _lr = _mysql_query_one(
+                    "SELECT COALESCE(SUM(qty),0) AS q, COALESCE(SUM(minutes),0) AS m, "
+                    "COALESCE(SUM(amount),0) AS a FROM session_controller_rentals "
+                    "WHERE session_id=%s", (_session_id,)) or {}
+                _lq = int(_lr.get("q") or 0)
+                _la = float(_lr.get("a") or 0)
+                if _lq > 0 or _la > 0:
+                    net_total += (_la - float(extra_ctrl_amount or 0))
+                    extra_ctrl_qty = _lq
+                    extra_ctrl_mins = int(_lr.get("m") or 0)
+                    extra_ctrl_amount = _la
+                    gross = game_amt + food_total + extra_ctrl_amount
+                    logger.info("controller ledger: session=%s qty=%s mins=%s amount=%s (voucher %s)",
+                                _session_id, _lq, extra_ctrl_mins, _la, voucher_no)
+            except Exception as _lge:
+                logger.warning("controller ledger settle failed (session %s): %s", _session_id, _lge)
 
         # ── 💰 GUARD: tender must never exceed the payable (2026-10-16, Osmo) ──────
         # The display bug above let staff hand in 20,000 Ks against a 500 Ks bill.
@@ -1129,16 +1391,81 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
         except Exception as _ge:
             logger.warning("tender guard skipped: %s", _ge)
 
+        # ── 🐛 Duplicate-sale guard (owner Osmo 2026-10-25: "ဒီ voucher နှစ်ဆက
+        # တူနေသလိုပဲ့") ─────────────────────────────────────────────────────
+        # A session that is closed by the session-end auto-sale can ALSO be saved
+        # by the Staff App from an older draft → two sales_daily rows for one
+        # physical session (2026-10-25 C-03: V-WEB-…140450-696 session 4837 at
+        # 14:04:59 + V-WEB-…125854-798 session NULL at 14:05:15, both 10,000 Ks).
+        # voucher_no/client_ref idempotency cannot catch it because the drafts
+        # carry DIFFERENT voucher numbers. Guard on the SESSION instead.
+        try:
+            _dup_sale = None
+            if _session_id:
+                _dup_sale = _mysql_query_one(
+                    "SELECT voucher_no, net FROM sales_daily WHERE session_id=%s LIMIT 1",
+                    (_session_id,))
+            if not _dup_sale and console_id:
+                # No session on the request → use the console's most recent CLOSED
+                # session (a new/active session must never block a fresh sale).
+                _last_sess = _mysql_query_one(
+                    "SELECT id, status FROM console_sessions WHERE console_id=%s "
+                    "ORDER BY id DESC LIMIT 1", (console_id,))
+                if _last_sess and str(_last_sess.get("status") or "").lower() in ("done", "ended", "completed"):
+                    _dup_sale = _mysql_query_one(
+                        "SELECT sd.voucher_no, sd.net FROM sales_daily sd "
+                        "WHERE sd.session_id=%s "
+                        "AND ABS(TIMESTAMPDIFF(SECOND, sd.created_at, NOW() + INTERVAL 390 MINUTE)) <= 900 "
+                        "LIMIT 1", (_last_sess["id"],))
+            if _dup_sale:
+                _dup_net = float(_dup_sale.get("net") or 0)
+                if abs(_dup_net - float(net_total)) <= 1:
+                    logger.warning(
+                        "DUPLICATE SALE BLOCKED voucher=%s console=%s session=%s net=%s staff=%s existing=%s",
+                        voucher_no, console_id, _session_id, net_total, staff,
+                        _dup_sale.get("voucher_no"))
+                    return ok({"success": True, "duplicate": True, "existing": True,
+                               "voucher_no": _dup_sale.get("voucher_no", ""),
+                               "message": "This session is already billed — duplicate sale not saved."})
+        except Exception as _dg:
+            logger.warning("duplicate-sale guard skipped: %s", _dg)
+
         # Never persist a walk-in/unknown name as a member id (report pollution).
         _stored_member_id = member_id
         if not _is_member_sale and not _is_guest_label:
             _stored_member_id = ""
         _mysql_exec(
-            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, customer_name, payment_method, notes, client_ref, session_id, game_name, game_id, billable_mins, free_mins) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO sales_daily (voucher_no, sale_date, console_id, member_id, amount, gross, discount, net, staff_name, customer_name, payment_method, notes, client_ref, session_id, game_name, game_id, billable_mins, free_mins, extra_ctrl_qty, extra_ctrl_mins, extra_ctrl_amount) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (voucher_no, sale_date, console_id, _stored_member_id, game_amt, gross, discount, net_total, staff, customer_name, payment_method, combined_notes, client_ref, _session_id, _game_name, _game_id,
-             (_d2p_applied or {}).get("billable_mins"), (_d2p_applied or {}).get("free_mins"))
+             (_d2p_applied or {}).get("billable_mins"), (_d2p_applied or {}).get("free_mins"),
+             extra_ctrl_qty, extra_ctrl_mins, extra_ctrl_amount)
         )
+
+        # ── Payment Due (owner Osmo 2026-10-30, option 2) ─────────────────────
+        # A sale may settle for less than the net total; keep the shortfall as a
+        # receivable instead of silently losing it.
+        try:
+            _paid_now = _pm_paid_total(payment_method)
+            _record_sale_due(voucher_no, client_ref, console_id, staff,
+                             net_total, _paid_now,
+                             req.get("due_reason") or req.get("notes") or "unspecified")
+        except Exception as _de:
+            logger.warning("payment-due block skipped: %s", _de)
+
+        # ── 🎮 Controller rental snapshot on the session (owner Osmo 2026-10-25) ──
+        # Keeps console_sessions as the single source of truth for "how many extra
+        # controllers were rented" so the console card / reports can show it.
+        if _session_id and extra_ctrl_qty > 0:
+            try:
+                _mysql_exec(
+                    "UPDATE console_sessions SET extra_ctrls=%s, extra_ctrl_mins=%s, "
+                    "extra_ctrl_amount=%s WHERE id=%s",
+                    (extra_ctrl_qty, extra_ctrl_mins, extra_ctrl_amount, _session_id))
+                logger.info("session %s: extra controllers %s x %smin = %s Ks",
+                            _session_id, extra_ctrl_qty, extra_ctrl_mins, extra_ctrl_amount)
+            except Exception as _sce:
+                logger.warning("session controller snapshot failed (session %s): %s", _session_id, _sce)
 
         # ── 2+1 promo snapshot on the session (owner Osmo 2026-10-08) ──────────
         if _d2p_applied:
@@ -1452,17 +1779,41 @@ async def api_stock_in_batch(req: dict, auth=Depends(verify_api_key)):
         # new inventory row and never touches inventory.unit_price (the selling
         # price is set in Recipe & Cost).  Ingredients / stock-only items stay
         # purchasable; unknown names are rejected up front (no partial writes).
+        def _find_inv(name):
+            """Exact match first, then TRIM-insensitive (owner Osmo 2026-11-05:
+            'Oishi Prawn' / 'SunKist' were saved with a trailing space, so the
+            trimmed picker value never matched them and the batch was rejected)."""
+            row = _mysql_query_one("SELECT id, item_name, quantity FROM inventory WHERE item_name=%s", (name,))
+            if row:
+                return row
+            return _mysql_query_one(
+                "SELECT id, item_name, quantity FROM inventory WHERE TRIM(item_name)=%s ORDER BY id LIMIT 1",
+                (name.strip(),))
+
+        def _exists_ing(name):
+            if _mysql_query_one("SELECT id FROM ingredients WHERE name=%s", (name,)):
+                return True
+            return bool(_mysql_query_one(
+                "SELECT id FROM ingredients WHERE TRIM(name)=%s LIMIT 1", (name.strip(),)))
+
+        def _exists_hist(name):
+            if _mysql_query_one("SELECT id FROM stock_in WHERE item_name=%s LIMIT 1", (name,)):
+                return True
+            return bool(_mysql_query_one(
+                "SELECT id FROM stock_in WHERE TRIM(item_name)=%s LIMIT 1", (name.strip(),)))
+
         unknown = []
         targets = []
         for it in cleaned:
-            inv = _mysql_query_one("SELECT id, quantity FROM inventory WHERE item_name=%s", (it["item_name"],))
+            canon = it["item_name"].strip()
+            inv = _find_inv(it["item_name"])
             if inv:
-                targets.append({"item": it, "inv_id": inv["id"]})
+                # Always store the canonical (trimmed) name on the new lot row.
+                targets.append({"item": it, "inv_id": inv["id"],
+                                "name": (inv.get("item_name") or canon).strip() or canon})
                 continue
-            ing = _mysql_query_one("SELECT id FROM ingredients WHERE name=%s", (it["item_name"],))
-            hist = _mysql_query_one("SELECT id FROM stock_in WHERE item_name=%s LIMIT 1", (it["item_name"],))
-            if ing or hist:
-                targets.append({"item": it, "inv_id": None})
+            if _exists_ing(it["item_name"]) or _exists_hist(it["item_name"]):
+                targets.append({"item": it, "inv_id": None, "name": canon})
             else:
                 unknown.append(it["item_name"])
         if unknown:
@@ -1473,6 +1824,7 @@ async def api_stock_in_batch(req: dict, auth=Depends(verify_api_key)):
         added_rows = []
         for idx, t in enumerate(targets, start=1):
             it = t["item"]
+            _nm = t.get("name") or (it.get("item_name") or "").strip()
             batch_id = f"{base_id}-{idx:02d}"
             if t["inv_id"]:
                 _mysql_exec(
@@ -1482,11 +1834,11 @@ async def api_stock_in_batch(req: dict, auth=Depends(verify_api_key)):
             sid = _mysql_exec(
                 """INSERT INTO stock_in (batch_id, item_name, quantity, unit_cost, source, receipt_no, payment_method, paid_by, staff_name)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (batch_id, it["item_name"], it["quantity"], it["unit_cost"], source or "", receipt_no or "", payment_method, paid_by, staff_name)
+                (batch_id, _nm, it["quantity"], it["unit_cost"], source or "", receipt_no or "", payment_method, paid_by, staff_name)
             )
             _dish_consume.ensure_layer_for_stock_in(sid)
             added_rows.append({
-                "item_name": it["item_name"],
+                "item_name": _nm,
                 "qty": it["quantity"],
                 "unit_cost": it["unit_cost"],
                 "subtotal": it["quantity"] * it["unit_cost"],
@@ -1532,56 +1884,83 @@ async def api_stock_in_batch(req: dict, auth=Depends(verify_api_key)):
 
 @router.get("/stock/pick-items", response_model=GenericResponse, tags=["Stock"], summary="Item names selectable in Stock-In [MySQL]")
 async def api_stock_pick_items(auth=Depends(verify_api_key)):
-    """Distinct item names the Stock-In picker may select (owner 2026-09-28).
+    """Stock-In picker: ingredients/products only (dishes excluded), deduped.
 
-    = inventory (sellable menu items) + ingredients (raw) + prior stock_in names.
-    Stock-In no longer creates items, so this is the full set of EXISTING items.
+    2026-10-29 (Osmo): "ဟင်းပွဲတွေကို stock in item မှာ ဖြုတ်ပေးပါ" — a dish is
+    produced, never purchased, so it must not appear here. Each row also carries
+    the counted qty + its buy unit so the picker can show "12 pcs".
     """
     try:
-        inv_names = set()
-        for r in _mysql_query("SELECT item_name FROM inventory"):
-            inv_names.add((r["item_name"] or "").strip())
+        inv = {}
+        for r in _mysql_query("SELECT item_name, quantity, item_type FROM inventory"):
+            nm = (r["item_name"] or "").strip()
+            if nm:
+                inv[nm] = {"qty": float(r.get("quantity") or 0),
+                           "type": (r.get("item_type") or "").strip().lower()}
 
-        kind_map = {}
+        dishes = set()
         try:
-            for r in _mysql_query("SELECT name, kind FROM ingredients"):
-                kind_map[(r["name"] or "").strip()] = (r.get("kind") or "").strip().lower()
+            for r in _mysql_query("SELECT DISTINCT menu_item FROM menu_recipes"):
+                dishes.add((r["menu_item"] or "").strip())
         except Exception:
-            kind_map = {}
+            dishes = set()
 
-        # Variant merge (owner 2026-09-29): a name that is a *variant* of another takes the
-        # canonical's kind, so e.g. "Egg"/"ကြက်ဉ" follow ကြက်ဥ and are no longer offered as
-        # ingredients once the canonical is a product.
+        kind_map, conv = {}, {}
+        try:
+            for r in _mysql_query("SELECT name, kind, purchase_unit, base_unit FROM ingredients"):
+                nm = (r["name"] or "").strip()
+                kind_map[nm] = (r.get("kind") or "").strip().lower()
+                conv[nm] = {"purchase_unit": (r.get("purchase_unit") or "").strip(),
+                            "base_unit": (r.get("base_unit") or "").strip()}
+        except Exception:
+            pass
+
         var_map = {}
         try:
             for r in _mysql_query("SELECT canonical_name, variant_name FROM ingredient_variants"):
                 var_map[(r["variant_name"] or "").strip()] = (r["canonical_name"] or "").strip()
         except Exception:
-            var_map = {}
+            pass
 
-        names = set(inv_names) | set(kind_map)
-        for r in _mysql_query("SELECT DISTINCT item_name FROM stock_in"):
-            names.add((r["item_name"] or "").strip())
+        names = set(inv.keys()) | set(kind_map.keys())
+        try:
+            for r in _mysql_query("SELECT DISTINCT item_name FROM stock_in"):
+                names.add((r["item_name"] or "").strip())
+        except Exception:
+            pass
+
+        qty_by_canon = {}
+        for nm, v in inv.items():
+            c = var_map.get(nm) or nm
+            qty_by_canon[c] = qty_by_canon.get(c, 0.0) + v["qty"]
 
         items, details = [], []
         for n in sorted(x for x in names if x):
             canon = var_map.get(n) or n
-            k = kind_map.get(n) or kind_map.get(canon) or ""
-            if k not in ("ingredient", "product"):
-                k = "product" if (n in inv_names or canon in inv_names) else "ingredient"
+            if n != canon:
+                continue  # variants collapse into the canonical row
+            t = (inv.get(n) or {}).get("type") or ""
+            if t == "dish" or n in dishes:
+                continue  # dishes are produced, never stock-in
+            if n in inv:
+                k = kind_map.get(n) or "product"
+            else:
+                k = kind_map.get(n) or "ingredient"
+            c = conv.get(n) or {}
+            unit = c.get("purchase_unit") or c.get("base_unit") or ""
             items.append(n)
             details.append({
                 "name": n,
                 "kind": k,
                 "canonical": canon,
-                "variant_of": (canon if canon != n else None),
+                "variant_of": None,
+                "qty": round(qty_by_canon.get(n, 0.0), 3),
+                "unit": unit,
             })
         return ok({"items": items, "details": details})
     except Exception as e:
         logger.error(f"api_stock_pick_items: {e}")
         return error_response(str(e))
-
-
 
 
 
