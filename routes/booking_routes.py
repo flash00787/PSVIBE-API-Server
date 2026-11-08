@@ -3727,6 +3727,20 @@ async def api_booking_cancel_customer(booking_id: int, auth=Depends(verify_api_k
                 _notify_refund_request_pending(booking_id, row, dep_amt)
             except Exception as _n_e:
                 logger.warning(f"cancel bk#{booking_id} refund-request staff notify: {_n_e}")
+            # Owner 2026-11-08: also record it in the staff app Notifications list
+            # (until now a refund request only reached the Telegram group).
+            try:
+                import fcm as _fcm_rr
+                _rr_name = (row.get("customer_name") or row.get("member_id") or "Guest")
+                _rr_title = "Refund request — BK#" + str(booking_id)
+                _rr_body = str(_rr_name) + " · " + str(int(dep_amt or 0)) + " Ks · cancelled"
+                _fcm_rr.record_notification(ntype="refund_request", title=_rr_title,
+                                            body=_rr_body, booking_id=booking_id)
+                _fcm_rr.send_to_staff(title="Refund request",
+                                      body=_rr_body,
+                                      data={"type": "refund_request", "booking_id": str(booking_id)})
+            except Exception as _rr_e:
+                logger.warning(f"refund request notification bk#{booking_id}: {_rr_e}")
             # DM customer
             if tg_chat_id:
                 _cust_msg = (
