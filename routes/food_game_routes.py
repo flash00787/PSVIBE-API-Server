@@ -50,15 +50,38 @@ async def api_fetch_food_menu(all: int = 0, auth=Depends(verify_api_key)):
     """
     try:
         if int(all or 0) == 1:
-            rows = _mysql_query("SELECT item_name, unit_price, category FROM inventory WHERE item_name NOT IN (SELECT name FROM ingredients WHERE kind='ingredient') ORDER BY category, item_name")
+            # 2026-10-29 (Osmo: "ဟင်းပွဲတွေကို stock in item မှာ ဖြုတ်ပေးပါ") — a dish
+            # is produced, never purchased: drop item_type='dish' and anything that
+            # is a recipe menu item. Variant spellings collapse into the canonical
+            # row so "ကြက်ဥ" appears once.
+            _dishes = set()
+            try:
+                for _r in _mysql_query("SELECT DISTINCT menu_item FROM menu_recipes"):
+                    _dishes.add((_r.get("menu_item") or "").strip())
+            except Exception:
+                _dishes = set()
+            _varmap = {}
+            try:
+                for _r in _mysql_query("SELECT canonical_name, variant_name FROM ingredient_variants"):
+                    _varmap[(_r.get("variant_name") or "").strip()] = (_r.get("canonical_name") or "").strip()
+            except Exception:
+                _varmap = {}
+            rows = _mysql_query(
+                "SELECT item_name, unit_price, category, quantity, item_type FROM inventory "
+                "WHERE COALESCE(item_type,'') <> 'dish' ORDER BY category, item_name")
         else:
             rows = _mysql_query(
-                f"SELECT item_name, unit_price, category FROM inventory WHERE {SELLABLE_FOOD_WHERE} ORDER BY category, item_name",
+                f"SELECT item_name, unit_price, category FROM inventory WHERE {SELLABLE_FOOD_WHERE} AND COALESCE(is_active,1)=1 ORDER BY category, item_name",
                 FOOD_CATEGORIES)
         result = {}
         for r in rows:
             cat = r["category"]
-            name = r["item_name"]
+            name = (r["item_name"] or "").strip()
+            if not name:
+                continue
+            _v = _varmap.get(name) if int(all or 0) == 1 else None
+            if int(all or 0) == 1 and (name in _dishes or (_v and _v != name)):
+                continue
             price = int(float(r["unit_price"])) if r["unit_price"] else 0
             if cat not in result:
                 result[cat] = {}
@@ -243,6 +266,37 @@ async def api_update_game_library_install(req: dict, auth=Depends(verify_api_key
         _mysql_exec("UPDATE games_library SET final_status=%s WHERE game_title=%s", (new_final, game_title))
         
         return ok({"game_title": game_title, "console_id": console_id, "installed": installed})
+    except Exception as e:
+        return error_response(message=str(e))
+
+
+@router.put("/set_console_game_install_type", tags=["Games"], summary="Set where a game is installed (Internal SSD / SSD Copy / Moved / Session) [MySQL]")
+async def api_set_console_game_install_type(req: dict, auth=Depends(verify_api_key)):
+    """Owner 2026-11-08: the staff app needs to record WHERE a title lives.
+
+    Only the four values already used by console_games are accepted; anything else
+    is rejected so the column never fills with invented labels ("Library" etc.).
+    """
+    try:
+        ALLOWED = ("Internal SSD", "SSD Copy", "Moved", "Session")
+        game_title = (req.get("game_title") or "").strip()
+        console_id = (req.get("console_id") or "").replace(" ", "")
+        install_type = (req.get("install_type") or "").strip()
+        if not game_title or not console_id:
+            return error_response(message="game_title and console_id required")
+        if install_type not in ALLOWED:
+            return error_response(message="install_type must be one of: " + ", ".join(ALLOWED))
+        row = _mysql_query_one(
+            "SELECT id FROM console_games WHERE REPLACE(console_id,' ','')=%s AND game_title=%s LIMIT 1",
+            (console_id, game_title))
+        if not row:
+            return error_response(message=f"{game_title} is not recorded on {console_id}")
+        _mysql_exec(
+            "UPDATE console_games SET install_type=%s, updated_at=NOW() "
+            "WHERE REPLACE(console_id,' ','')=%s AND game_title=%s",
+            (install_type, console_id, game_title))
+        logger.info("install_type set: %s on %s -> %s", game_title, console_id, install_type)
+        return ok({"game_title": game_title, "console_id": console_id, "install_type": install_type})
     except Exception as e:
         return error_response(message=str(e))
 
