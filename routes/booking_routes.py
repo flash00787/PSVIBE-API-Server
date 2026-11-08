@@ -1752,7 +1752,7 @@ def _hm(v):
 # ================================================================
 #  GET /api/bookings - list bookings by status
 # ================================================================
-@router.get("/bookings/counts", response_model=GenericResponse, tags=["Bookings"], summary="Booking counts per status / refund queue [MySQL]")
+@router.get("/bookings-counts", response_model=GenericResponse, tags=["Bookings"], summary="Booking counts per status / refund queue [MySQL]")
 async def api_booking_counts(auth=Depends(verify_api_key)):
     """Owner 2026-11-08: the staff app shows a count on every filter chip."""
     try:
