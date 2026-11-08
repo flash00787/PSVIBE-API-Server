@@ -1842,11 +1842,9 @@ async def api_get_bookings(request: Request, status: str = "", member_id: str = 
             where_clauses.append("(cb.deposit_status IN ('paid', 'verified') OR (cb.member_id IS NOT NULL AND cb.member_id != ''))")
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
-        # Server-side filter: cancelled bookings — forfeited deposits show all day, regular only 2 hours
-        # Server-side filter: cancelled bookings — forfeited deposits show all day, regular only 2 hours
-        if status == "cancelled":
-            sql += " AND " if where_clauses else " WHERE "
-            sql += "(cb.deposit_status = 'forfeited' OR cb.cancelled_at >= DATE_ADD(NOW(), INTERVAL 390 MINUTE) - INTERVAL 2 HOUR)"
+        # 🐞 2026-11-08: a legacy "regular cancellations only 2 hours" filter was
+        # appended here while the badge counted 3 days, so the list showed 1 of 5.
+        # The 3-day window in the WHERE clause above is now the single source of truth.
         sql += " ORDER BY cb.booking_date DESC, COALESCE(cs.actual_start, cb.planned_start) DESC"
         rows = _mysql_query(sql, tuple(params)) if params else _mysql_query(sql)
         if not rows:
