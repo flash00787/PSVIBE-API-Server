@@ -1764,7 +1764,10 @@ async def api_booking_counts(auth=Depends(verify_api_key)):
             "all": _count("WHERE LOWER(cb.status) IN ('pending','confirmed','pending_check_in','checked_in')"),
             "pending": _count("WHERE LOWER(cb.status) IN ('pending','pending_check_in')"),
             "confirmed": _count("WHERE LOWER(cb.status)='confirmed'"),
-            "cancelled": _count("WHERE LOWER(cb.status) IN ('cancelled','rejected')"),
+            # Owner 2026-11-08: the Cancelled badge only looks at the last 3 days
+            # (cancelled_at is stored in MMT, hence the +390 minute offset).
+            "cancelled": _count("WHERE LOWER(cb.status) IN ('cancelled','rejected') "
+                                "AND cb.cancelled_at >= (NOW() + INTERVAL 390 MINUTE) - INTERVAL 3 DAY"),
             "refund": _count("WHERE cb.deposit_status='refund_requested'"),
         })
     except Exception as e:
@@ -1807,6 +1810,9 @@ async def api_get_bookings(request: Request, status: str = "", member_id: str = 
             else:
                 where_clauses.append("LOWER(cb.status)=%s")
                 params.append(status_lower)
+                if status_lower == "cancelled":
+                    # Keep the list in step with the 3-day Cancelled badge.
+                    where_clauses.append("cb.cancelled_at >= (NOW() + INTERVAL 390 MINUTE) - INTERVAL 3 DAY")
         if deposit_status:
             # Owner 2026-11-08: lets the staff app list refund requests directly.
             where_clauses.append("cb.deposit_status=%s")
