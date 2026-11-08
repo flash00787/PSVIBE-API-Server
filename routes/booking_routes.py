@@ -1752,6 +1752,26 @@ def _hm(v):
 # ================================================================
 #  GET /api/bookings - list bookings by status
 # ================================================================
+@router.get("/bookings/counts", response_model=GenericResponse, tags=["Bookings"], summary="Booking counts per status / refund queue [MySQL]")
+async def api_booking_counts(auth=Depends(verify_api_key)):
+    """Owner 2026-11-08: the staff app shows a count on every filter chip."""
+    try:
+        def _count(where: str, args=()):
+            row = _mysql_query_one("SELECT COUNT(*) AS c FROM console_bookings cb " + where, args) or {}
+            return int(row.get("c") or 0)
+
+        return ok({
+            "all": _count("WHERE LOWER(cb.status) IN ('pending','confirmed','pending_check_in','checked_in')"),
+            "pending": _count("WHERE LOWER(cb.status) IN ('pending','pending_check_in')"),
+            "confirmed": _count("WHERE LOWER(cb.status)='confirmed'"),
+            "cancelled": _count("WHERE LOWER(cb.status) IN ('cancelled','rejected')"),
+            "refund": _count("WHERE cb.deposit_status='refund_requested'"),
+        })
+    except Exception as e:
+        logger.error("booking counts failed: %s", e)
+        return error_response(message=str(e))
+
+
 @router.get("/bookings", response_model=GenericResponse, tags=["Bookings"], summary="List bookings by status [MySQL]")
 async def api_get_bookings(request: Request, status: str = "", member_id: str = Query(""), date: str = Query(""), deposit_status: str = Query(""), auth=Depends(verify_api_key)):
     """List bookings with optional status, member_id, and date filters.
