@@ -84,9 +84,9 @@ async def register_device(body: dict = Body(...), user: dict = Depends(get_staff
     # (platform + token length + user) so an empty token is visible in the log.
     try:
         logger.info(
-            "POST /staff/devices: user=%s platform=%s app_version=%s token_len=%d keys=%s",
+            "POST /staff/devices: user=%s platform=%s app_version=%s fcm_len=%d apns_len=%d keys=%s",
             (user.get("username") if isinstance(user, dict) else "?"),
-            body.get("platform"), body.get("app_version"), len(fcm_token),
+            body.get("platform"), body.get("app_version"), len(fcm_token), len(apns_token),
             sorted(body.keys()),
         )
     except Exception:
@@ -114,6 +114,17 @@ async def register_device(body: dict = Body(...), user: dict = Depends(get_staff
             (username, fcm_token, apns_token or None, platform, app_version),
         )
         row = _mysql_query_one("SELECT id FROM staff_devices WHERE fcm_token = %s", (fcm_token,))
+        # Owner 2026-11-08: prove the token works immediately — send a welcome push
+        # through APNs right here and log the result (200 = Apple accepted it).
+        if apns_token:
+            try:
+                import apns_push as _apns
+                _r = _apns.send("PS VIBE", "Push connected ✓ — notifications are live",
+                                {"type": "registration"}, [apns_token])
+                logger.info("APNs registration test: sent=%s failed=%s results=%s",
+                            _r.get("sent"), _r.get("failed"), _r.get("results"))
+            except Exception as _ape:
+                logger.warning("APNs registration test failed: %s", _ape)
         return {"success": True, "data": {"id": row["id"] if row else None, "username": username}}
     except Exception as e:
         logger.error(f"POST /staff/devices error: {e}")

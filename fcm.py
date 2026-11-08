@@ -207,13 +207,17 @@ def _load_tokens(usernames: Optional[Iterable[Any]] = None) -> List[Dict[str, An
                 "SELECT id, username, fcm_token FROM staff_devices "
                 "WHERE fcm_token IS NOT NULL AND fcm_token <> ''"
             )
-        return [dict(r) for r in rows]
+        # Native-iOS rows carry a synthetic fcm_token ("apns:<token>") and must never
+        # be sent to FCM (it rejects them and _prune_tokens would delete the device).
+        return [dict(r) for r in rows if not str(r.get("fcm_token") or "").startswith("apns:")]
     except Exception as e:
         logger.warning("FCM token load failed: %s", e)
         return []
 
 
 def _prune_tokens(tokens: List[str]) -> int:
+    # Never prune a native-iOS device row: its fcm_token is a synthetic "apns:" key.
+    tokens = [t for t in (tokens or []) if not str(t).startswith("apns:")]
     if not tokens:
         return 0
     try:
