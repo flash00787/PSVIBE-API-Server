@@ -59,6 +59,36 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
         )
         today_converted = today_converted["cnt"] if today_converted else 0
 
+        # Owner 2026-11-07: the Home cards were wrong — "bookings" came from
+        # today_bookings (reservations-only, today) and "pending_deposits" was not
+        # returned at all, so the app showed 0. Expose the real open-booking and
+        # pending-deposit counts.
+        open_bookings = _mysql_query_one(
+            "SELECT COUNT(*) as cnt FROM console_bookings "
+            "WHERE LOWER(status) IN ('pending','confirmed','pending_check_in','checked_in')"
+        )
+        open_bookings = open_bookings["cnt"] if open_bookings else 0
+        # Owner 2026-11-07: only deposits on STILL-OPEN bookings count — the two
+        # rows with deposit_status='pending' were cancelled bookings from July.
+        pending_deposits = _mysql_query_one(
+            "SELECT COUNT(*) as cnt FROM console_bookings "
+            "WHERE LOWER(COALESCE(deposit_status, '')) = 'pending' "
+            "AND LOWER(status) IN ('pending','confirmed','pending_check_in','checked_in','active')"
+        )
+        pending_deposits = pending_deposits["cnt"] if pending_deposits else 0
+        # Owner 2026-11-08: the Home card is a BOOKING card, not a deposit card, and
+        # a refund request deserves its own card.
+        pending_bookings = _mysql_query_one(
+            "SELECT COUNT(*) as cnt FROM console_bookings "
+            "WHERE LOWER(status) IN ('pending','pending_check_in')"
+        )
+        pending_bookings = pending_bookings["cnt"] if pending_bookings else 0
+        refund_requests = _mysql_query_one(
+            "SELECT COUNT(*) as cnt FROM console_bookings "
+            "WHERE LOWER(COALESCE(deposit_status,'')) = 'refund_requested'"
+        )
+        refund_requests = refund_requests["cnt"] if refund_requests else 0
+
         active_players = _mysql_query_one(
             "SELECT COUNT(*) as cnt FROM console_status WHERE status = 'Active'"
         )
@@ -114,6 +144,14 @@ async def get_dashboard_stats(user: dict = Depends(get_staff_or_dashboard_user))
         return {
             "success": True,
             "data": {
+                "bookings": open_bookings,
+                "open_bookings": open_bookings,
+                "pending_deposits": pending_deposits,
+                "pendingDeposits": pending_deposits,
+                "pending_bookings": pending_bookings,
+                "pendingBookings": pending_bookings,
+                "refund_requests": refund_requests,
+                "refundRequests": refund_requests,
                 "today_bookings": today_bookings,
                 "today_sessions": today_sessions,
                 "today_converted_bookings": today_converted,
