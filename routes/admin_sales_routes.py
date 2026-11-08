@@ -1509,38 +1509,6 @@ async def api_sales_record(req: dict, request: Request, auth=Depends(verify_api_
         if _wallet_deduct > 0 and _is_member_sale:
             logger.debug("wallet already deducted for voucher=%s member=%s", voucher_no, member_id)
 
-        # 💰 Owner 2026-11-08: a recorded sale must move the drawer too. The payment
-        # string is "Cash:5000|MMQR:3000" (or "Cash:2500"), so split it and inject each
-        # part into its own account. Idempotent: the note carries the voucher number
-        # and an identical inject is never duplicated.
-        try:
-            _sale_note = "Sale " + str(voucher_no or sale_ref)
-            for _part in [x.strip() for x in re.split(r"[|/]", str(payment_method or "")) if x.strip()]:
-                if ":" not in _part:
-                    continue
-                _acct, _amt = _part.rsplit(":", 1)
-                _acct = _acct.strip()
-                try:
-                    _amt_f = float(_amt)
-                except (TypeError, ValueError):
-                    continue
-                if not _acct or _amt_f <= 0:
-                    continue
-                _dup = _mysql_query_one(
-                    "SELECT id FROM cash_movements WHERE movement_type='inject' "
-                    "AND account=%s AND amount=%s AND note=%s LIMIT 1",
-                    (_acct, _amt_f, _sale_note))
-                if _dup:
-                    logger.info("sale cash inject skipped (exists): %s %s", _acct, _amt_f)
-                    continue
-                _mysql_exec(
-                    "INSERT INTO cash_movements (movement_type, account, amount, note, staff_name, created_at) "
-                    "VALUES ('inject', %s, %s, %s, %s, NOW())",
-                    (_acct, _amt_f, _sale_note, staff))
-                logger.info("sale cash inject: voucher=%s account=%s amount=%s", voucher_no, _acct, _amt_f)
-        except Exception as _cme:
-            logger.warning("sale cash inject failed (voucher %s): %s", voucher_no, _cme)
-
         logger.info("Sales record saved: voucher=%s member=%s console=%s net=%s deposit_deducted=%s staff=%s", voucher_no, member_id, console_id, net_total, deposit_deducted, staff)
         return ok({
             "voucher_no": voucher_no,
