@@ -1753,7 +1753,10 @@ def _hm(v):
 #  GET /api/bookings - list bookings by status
 # ================================================================
 @router.get("/bookings-counts", response_model=GenericResponse, tags=["Bookings"], summary="Booking counts per status / refund queue [MySQL]")
-async def api_booking_counts(auth=Depends(verify_api_key)):
+async def api_booking_counts(response: Response, auth=Depends(verify_api_key)):
+    # 🐞 2026-11-08: without no-store the phone served a cached JSON, so the badge
+    # never moved after an approve/rebook.
+    response.headers["Cache-Control"] = "no-store, max-age=0"
     """Owner 2026-11-08: the staff app shows a count on every filter chip."""
     try:
         def _count(where: str, args=()):
