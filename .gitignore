@@ -17,3 +17,8 @@ uploads/tournaments/*.jpg
 uploads/tournaments/*.png
 uploads/deposits/
 firebase-service-account.json
+
+# Generated web/app bundles (deployed artifacts, not source)
+webapp-dist/
+staff-app-dist/
+digest_history/
