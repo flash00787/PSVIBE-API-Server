@@ -586,6 +586,31 @@ async def api_sessions_start(req: dict, auth=Depends(verify_api_key)):
                 _lk_dur = linked_booking.get("duration_mins") or 0
                 duration_mins = _lk_dur if _lk_dur > 0 else 0  # keep 0=No Timer if linked booking also has no duration
         
+        # Owner 2026-11-08: starting from the console board (no linked_booking_id)
+        # must still adopt a booking the guest already checked in — otherwise the
+        # session is billed as a walk-in and the deposit never redeems at sale time.
+        if not linked_booking:
+            _ci = _mysql_query_one(
+                "SELECT id, console_id, branch_id, member_id, booking_date, "
+                "planned_start AS start_time, planned_end AS end_time, "
+                "planned_duration_mins AS duration_mins, status, staff_name, notes, "
+                "telegram_chat_id, phone, game_name, admin_notify_msg_id, created_at, cancelled_at "
+                "FROM console_bookings WHERE console_id=%s AND status='checked_in' "
+                "AND DATE(booking_date)=%s ORDER BY planned_start DESC LIMIT 1",
+                (console_id, now_mmt().strftime("%Y-%m-%d")))
+            if _ci:
+                linked_booking = _ci
+                linked_booking_id = _ci.get("id")
+                if not member_id or member_id == "Guest":
+                    member_id = _ci.get("member_id", "") or member_id
+                if not game_name:
+                    game_name = _ci.get("game_name", "") or game_name
+                if duration_mins <= 0:
+                    _d = _ci.get("duration_mins") or 0
+                    duration_mins = _d if _d > 0 else duration_mins
+                logger.info("sessions/start: auto-linked checked-in booking %s on %s",
+                            linked_booking_id, console_id)
+
         booking_date = req.get("booking_date") or now_mmt().strftime("%Y-%m-%d")
         
         # Check if console already Active
