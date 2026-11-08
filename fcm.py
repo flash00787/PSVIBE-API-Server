@@ -169,6 +169,27 @@ def _get_app():
             return None
 
 
+def _load_apns_tokens(usernames: Optional[Iterable[Any]] = None) -> List[str]:
+    """APNs device tokens registered by the native iOS shell (staff_devices.apns_token)."""
+    try:
+        from mysql_db import query as _q
+        if usernames:
+            names = [str(u) for u in usernames]
+            ph = ",".join(["%s"] * len(names))
+            rows = _q(
+                "SELECT apns_token FROM staff_devices "
+                "WHERE apns_token IS NOT NULL AND apns_token <> '' "
+                f"AND username IN ({ph})", tuple(names))
+        else:
+            rows = _q(
+                "SELECT apns_token FROM staff_devices "
+                "WHERE apns_token IS NOT NULL AND apns_token <> ''")
+        return [r.get("apns_token") for r in rows if r.get("apns_token")]
+    except Exception as e:
+        logger.warning("APNs token load failed: %s", e)
+        return []
+
+
 def _load_tokens(usernames: Optional[Iterable[Any]] = None) -> List[Dict[str, Any]]:
     """Return [{id, username, fcm_token}] from staff_devices (active, non-empty)."""
     try:
@@ -282,6 +303,18 @@ def send_to_staff(title: str, body: str, data: Optional[Dict[str, Any]] = None,
     except Exception as e:  # pragma: no cover - defensive
         logger.warning("FCM send failed: %s", e)
         result["error"] = str(e)
+
+    # Native iOS (SwiftUI shell, no Capacitor bridge): deliver the same alert
+    # straight through APNs so push works without FCM tokens.
+    try:
+        import apns_push as _apns
+        _tokens = _load_apns_tokens(usernames)
+        if _tokens:
+            _ares = _apns.send(title or "", body or "", data=data, tokens=_tokens)
+            result["apns"] = {"sent": _ares.get("sent", 0), "failed": _ares.get("failed", 0)}
+            logger.info("APNs side-send: %s", result["apns"])
+    except Exception as _ae:
+        logger.warning("APNs side-send failed: %s", _ae)
     return result
 
 

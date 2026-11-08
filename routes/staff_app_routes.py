@@ -77,6 +77,9 @@ async def register_device(body: dict = Body(...), user: dict = Depends(get_staff
     """Upsert a staff device by fcm_token (Bearer JWT required — staff or dashboard user)."""
     _ensure_table()
     fcm_token = str(body.get("fcm_token") or "").strip()
+    # Owner 2026-11-08: the native SwiftUI shell cannot run the Capacitor JS bridge,
+    # so iOS registers its raw APNs token here and the API pushes via APNs directly.
+    apns_token = str(body.get("apns_token") or "").strip().lower()
     # 2026-10-25 diagnostics: iOS push registration debugging — log every attempt
     # (platform + token length + user) so an empty token is visible in the log.
     try:
@@ -88,23 +91,27 @@ async def register_device(body: dict = Body(...), user: dict = Depends(get_staff
         )
     except Exception:
         pass
+    if not fcm_token and not apns_token:
+        return {"success": False, "error": "fcm_token or apns_token is required"}
+    # Keep the fcm_token unique index happy for APNs-only (native iOS) devices.
     if not fcm_token:
-        return {"success": False, "error": "fcm_token is required"}
+        fcm_token = "apns:" + apns_token[:60]
     platform = (str(body.get("platform") or "").strip() or None)
     app_version = (str(body.get("app_version") or "").strip() or None)
     username = str(user.get("username") or "").strip() or "unknown"
     try:
         _mysql_execute(
             """
-            INSERT INTO staff_devices (username, fcm_token, platform, app_version, last_seen, created_at)
-            VALUES (%s, %s, %s, %s, NOW(), NOW())
+            INSERT INTO staff_devices (username, fcm_token, apns_token, platform, app_version, last_seen, created_at)
+            VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
             ON DUPLICATE KEY UPDATE
                 username = VALUES(username),
+                apns_token = COALESCE(NULLIF(VALUES(apns_token), ''), apns_token),
                 platform = VALUES(platform),
                 app_version = VALUES(app_version),
                 last_seen = NOW()
             """,
-            (username, fcm_token, platform, app_version),
+            (username, fcm_token, apns_token or None, platform, app_version),
         )
         row = _mysql_query_one("SELECT id FROM staff_devices WHERE fcm_token = %s", (fcm_token,))
         return {"success": True, "data": {"id": row["id"] if row else None, "username": username}}
