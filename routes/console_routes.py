@@ -323,14 +323,43 @@ async def api_start_console_session(req: dict, auth=Depends(verify_api_key)):
         # HI-2: Only auto-checkin if booking time is within ±30 minutes
         today = now_mmt().strftime('%Y-%m-%d')
         _now_mmt = now_mmt()
-        bk = _mysql_query_one(
-            "SELECT id, member_id, game_name, planned_duration_mins AS duration_mins, telegram_chat_id, staff_name, customer_name, phone FROM console_bookings "
-            "WHERE console_id=%s AND status IN ('confirmed','checked_in') AND DATE(booking_date)=%s "
-            "AND planned_start <= DATE_ADD(%s, INTERVAL 30 MINUTE) "
-            "AND planned_end >= %s "
-            "ORDER BY created_at DESC LIMIT 1",
-            (console_id, today, _now_mmt, _now_mmt)
-        )
+        _bk_cols = ("SELECT id, member_id, game_name, planned_duration_mins AS duration_mins, "
+                    "telegram_chat_id, staff_name, customer_name, phone FROM console_bookings ")
+        # Owner 2026-11-08: the caller may name the booking it is starting. A
+        # checked-in guest whose slot is outside the ±30 min window previously fell
+        # through to a walk-in session, so the booking never linked and its deposit
+        # could not redeem at sale time.
+        _req_bid = req.get('booking_id') or req.get('bookingId') or req.get('linked_booking_id')
+        bk = None
+        if _req_bid not in (None, "", 0, "0"):
+            try:
+                bk = _mysql_query_one(
+                    _bk_cols + "WHERE id=%s AND status IN ('confirmed','checked_in') AND console_id=%s",
+                    (int(_req_bid), console_id))
+            except Exception:
+                bk = None
+            if not bk:
+                logger.warning("start-session: booking %s not linkable (status or console mismatch)", _req_bid)
+        if not bk:
+            bk = _mysql_query_one(
+                _bk_cols +
+                "WHERE console_id=%s AND status IN ('confirmed','checked_in') AND DATE(booking_date)=%s "
+                "AND planned_start <= DATE_ADD(%s, INTERVAL 30 MINUTE) "
+                "AND planned_end >= %s "
+                "ORDER BY created_at DESC LIMIT 1",
+                (console_id, today, _now_mmt, _now_mmt)
+            )
+        if not bk:
+            # Fallback: any booking already CHECKED IN on this console today links,
+            # even when its planned slot has passed.
+            bk = _mysql_query_one(
+                _bk_cols +
+                "WHERE console_id=%s AND status='checked_in' AND DATE(booking_date)=%s "
+                "ORDER BY planned_start DESC LIMIT 1",
+                (console_id, today)
+            )
+            if bk:
+                logger.info("start-session: linked checked-in booking %s outside the time window", bk.get("id"))
 
         # CI-3: Wrap conflict check + console_status update in transaction with row locking
         _now_ref = now_mmt()
